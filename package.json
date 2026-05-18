@@ -68,7 +68,7 @@
     "better-sqlite3": "^12.9.0",
     "js-yaml": "^4.1.0",
     "smol-toml": "^1.6.1",
-    "which": "^5.0.0",
+    "which": "^7.0.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
