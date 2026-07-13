@@ -6,7 +6,7 @@
     <title>harness-router - Local Routing for Coding Agents</title>
     <meta
       name="description"
-      content="harness-router routes coding work across Claude Code, Codex, Cursor, Gemini CLI, and OpenAI-compatible endpoints with billing-aware safety policy, a small MCP surface, and a local REST API."
+      content="harness-router routes coding work across Claude Code, Codex, Cursor, Antigravity, and OpenAI-compatible endpoints with billing-aware safety policy, a small MCP surface, and a local REST API."
     />
     <meta property="og:title" content="harness-router" />
     <meta
@@ -341,7 +341,7 @@
           <h1>One router for the coding harnesses you already use.</h1>
           <p class="lead">
             harness-router gives agents a single local interface for Claude Code, Codex,
-            Cursor, Gemini CLI, and OpenAI-compatible endpoints. It routes by task fit,
+            Cursor, Antigravity, and OpenAI-compatible endpoints. It routes by task fit,
             route readiness, billing policy, safety profile, workspace policy, and your
             configured priority.
           </p>
@@ -417,7 +417,7 @@ Next pick: claude_code (tier 1, score 0.91)</code></pre>
               want to use with the router.
             </p>
             <ol class="list">
-              <li>Detect Claude Code, Codex, Cursor, Gemini, and configured HTTP/local endpoints.</li>
+              <li>Detect Claude Code, Codex, Cursor, Antigravity, and configured HTTP/local endpoints.</li>
               <li>Verify harness availability and auth without spending quota where possible.</li>
               <li>Choose billing policy, endpoint mode, safety profile, workspace policy, and routed harnesses.</li>
               <li>Write config and connect MCP agents or print snippets.</li>
@@ -449,7 +449,7 @@ harness-router status --json</code></pre>
           <div class="grid">
             <article class="card">
               <h3>MCP</h3>
-              <p><strong>Tools:</strong> code and job</p>
+              <p><strong>Tools:</strong> code, job, and usage</p>
               <p><strong>Resources:</strong> harness-router://status and status.json</p>
             </article>
             <article class="card">
@@ -513,7 +513,7 @@ harness-router auth show</code></pre>
             <tbody>
               <tr>
                 <td>Agent CLIs</td>
-                <td>Delegates to Claude Code, Codex, Cursor, Gemini, or HTTP endpoints.</td>
+                <td>Delegates to Claude Code, Codex, Cursor, Antigravity, or HTTP endpoints.</td>
                 <td>It is not a replacement coding agent.</td>
               </tr>
               <tr>
