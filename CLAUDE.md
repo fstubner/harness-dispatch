@@ -1,46 +1,20 @@
-# Coding Agent — Global Routing Instructions
+# Harness Router — Local Agent Instructions
 
-For all coding tasks in any project, route through the coding-agent MCP tools
-instead of responding directly. You are the orchestrator — delegate, then synthesize.
+Use `harness-router` as a local router for coding work when it is configured.
 
-## When to route
+Public MCP surface:
 
-Route any task involving: writing code, fixing bugs, running tests, code review,
-architecture decisions, refactoring, debugging, or explaining code.
+- Tools: `code`, `job`, `usage`
+- Resources: `harness-router://status`, `harness-router://status.json`
 
-## How to route
+For most work, call `code` with `mode: "single"` and an appropriate
+`hints.taskType`: `execute`, `plan`, `review`, or `local`.
 
-Use `code_auto` with a `task_type` hint that matches what the task actually is:
+For multiple perspectives, call `code` with `mode: "fanout"` and optional
+`models`.
 
-```
-code_auto(
-  prompt="<full task description>",
-  working_dir="<absolute path to project>",
-  hints={"task_type": "execute" | "plan" | "review"}
-)
-```
+Use `job` only when a slow route needs a bundle-backed async run that can be
+inspected later.
 
-| task_type | Use for | Best service |
-|-----------|---------|--------------|
-| execute | Running tests, applying fixes, autonomous multi-step coding | Codex → Cursor |
-| plan | Architecture, design decisions, "how should we build X" | Claude Code (Opus) |
-| review | Code review, security audit, explain code, refactor suggestions | Claude Code (Opus) |
-
-## Model escalation (claude_code)
-
-claude_code automatically picks the right Claude model:
-- execute / unspecified → Sonnet 4.6 (fast, cheap, 1M context)
-- plan / review → Opus 4.6 (extended thinking, 1M context)
-
-## For multiple perspectives
-
-Use `code_mixture` when the task benefits from different model opinions (architecture
-decisions, design tradeoffs, anything where blind spots matter):
-
-```
-code_mixture(prompt="<task>", task_type="plan")
-```
-
-## Health check
-
-Run `dashboard` if you're unsure about service availability before routing.
+Use the status resource when route readiness, billing policy, safety, quota
+state, or breaker state could affect delegation.

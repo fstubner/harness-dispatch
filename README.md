@@ -1,264 +1,369 @@
-# coding-agent-mcp
+# harness-router
 
-An MCP server that routes coding tasks across multiple AI CLI agents — Claude Code, Cursor, Codex, and Gemini CLI — with quota-aware load balancing, circuit breaking, and intelligent task-type routing.
+Local routing for coding agents and coding harnesses.
 
-## Architecture: model x harness
+`harness-router` sits between an agent client and the coding tools you already use:
+Claude Code, Codex, Cursor Agent, Antigravity CLI, and OpenAI-compatible local or metered
+endpoints. It detects available harnesses, verifies route readiness, applies billing
+and safety policy, and exposes a small MCP surface plus an OpenAI-compatible HTTP surface.
+(There is no Gemini CLI dispatcher — Google discontinued that CLI's backend in mid-2026;
+Antigravity CLI is its replacement.)
 
-Each configured service is a **(model, harness)** pair. The harness is the CLI agent scaffold (which adds agentic value beyond the raw model API); the model is the exact string passed via `--model`.
+It is not marketed as a generic cost optimizer. The current product promise is
+billing-aware, safety-aware routing for coding work, with these actual rules:
 
+- Any route where paid usage is possible is blocked with `paid_blocked` until you
+  set `allow_paid_usage: true` on that route. This covers metered API routes (e.g.
+  a raw `api.openai.com` key), routes with unknown billing, and included-plan
+  routes whose billing kind allows overage (e.g. the default Codex, Claude Code,
+  and Cursor classifications).
+- With `allow_paid_usage: true`, the route may be auto-selected like any other —
+  the opt-in is per route, so you can allow overage on Codex while keeping a raw
+  API endpoint blocked.
+- Routes that cannot incur paid usage (`local_compute`, `free_quota`,
+  `included_plan_usage`) run by default with no opt-in required.
+
+Check a route's `billing.kind` / `billing.paidUsagePossible` in `status --json` before
+assuming it is (or isn't) blocked.
+
+## Requirements
+
+- Node.js `>=24.0.0`
+- At least one configured harness or OpenAI-compatible endpoint
+
+## Install
+
+```bash
+npm install -g harness-router
+harness-router configure
+harness-router doctor --live
 ```
-claude_code_opus  = claude-opus-4-6            x claude_code harness
-cursor_sonnet     = claude-sonnet-4-6          x cursor harness
-codex_gpt54       = gpt-5.4                    x codex harness
-gemini31pro       = gemini-3.1-pro-preview     x gemini_cli harness
+
+`doctor` verifies the install end-to-end: binary + config load, harness
+detection, auth/billing classification, and route readiness. `--live` goes one
+step further and routes a single tiny prompt through the best eligible route so
+you see a real completion before wiring the server into your agent. The live
+probe respects billing policy — it never touches paid or unknown-billing routes
+unless you pass `--allow-paid`.
+
+> This repo publishes as `harness-router` (currently `0.4.0` here vs. an older `0.3.2`
+> on the registry). A separate, older package named `harness-router-mcp` (`0.2.0`) also
+> exists on npm from an earlier iteration of this project — it lacks `usage`,
+> `/v1/models`, `/v1/usage`, Antigravity, and every fix in this README's changelog.
+> Double-check any `mcpServers`/`claude_desktop_config.json` entry actually invokes
+> **this** package (or your local build's `dist/bin.js`), not the old one.
+
+You can also run without a global install:
+
+```bash
+npx harness-router configure
 ```
 
-The same model in different harnesses gets different scores. Cursor's codebase indexing and Claude Code's file/bash tools produce meaningfully different results on the same underlying model, which is why `cli_capability` is a separate multiplier from ELO.
+### Plugin install (Claude Code / Claude Desktop / Codex)
 
-## MCP tools
+The `plugin/` directory packages the MCP server plus a delegation skill and
+`/route` + `/jobs` commands for one-step installs — see
+[plugin/README.md](./plugin/README.md). Claude Code:
+`/plugin marketplace add <repo path or URL>` then
+`/plugin install harness-router@harness-router`. Codex:
+`node plugin/scripts/install-codex.mjs`.
 
-| Tool | Description |
-|------|-------------|
-| `code_auto` | Auto-route to the best available service. Accepts `hints` for task type, harness, or context size. |
-| `code_mixture` | Dispatch to multiple services in parallel and return all outputs for synthesis. |
-| `code_with_claude` | Route to any enabled `claude_code` harness service. |
-| `code_with_cursor` | Route to any enabled `cursor` harness service. |
-| `code_with_codex` | Route to any enabled `codex` harness service. |
-| `code_with_gemini` | Route to any enabled `gemini_cli` harness service. |
-| `get_quota_status` | JSON summary of quota usage and circuit-breaker state per service. |
-| `list_available_services` | JSON listing of which services are enabled and CLI-reachable. |
-| `dashboard` | Formatted overview of all services, tiers, ELO scores, and quota state. |
-| `setup` | Guided setup: checks CLI auth, quota access, and config validity. |
+## CLI
 
-### Routing hints
+```bash
+harness-router                         # stdio MCP
+harness-router configure               # detect harnesses and prepare config
+harness-router configure --print       # inspect generated config YAML
+harness-router doctor                  # validate install, auth, config, and routes
+harness-router doctor --live           # run one eligible live routed probe
+harness-router doctor --live --allow-paid
+harness-router status                  # readable route readiness
+harness-router status --json           # structured route metadata
+harness-router status --watch          # live status refresh
+harness-router serve --port 3333       # /mcp and /v1/* over local HTTP
+harness-router auth show               # print HTTP bearer token
+harness-router auth rotate             # rotate HTTP bearer token
+```
 
-Pass `hints` to `code_auto` or `code_mixture` to influence routing:
+Hidden compatibility aliases currently map old alpha commands to the new surface:
+`dashboard` and `list-services` map to `status`, and `mcp --http <port>` maps to `serve`.
+They are not part of the public v0.4.0 vocabulary.
+
+## MCP Surface
+
+`tools/list` returns three tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `code` | Route one coding task or fan out to multiple selected models. Blocks until the harness finishes — only safe for short (under ~1-2 min) tasks. |
+| `job` | Start (returns a `jobId` immediately) or inspect an async route job. Preferred for anything slower, since it can't hit an MCP client timeout. |
+| `usage` | Per-route call counts, quota, billing kind, and breaker state for the current session — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. |
+
+`workingDir` is effectively required on `code` and `job`: if you omit it, the task runs
+in the router server's own process directory instead of your project, and the response
+carries a `warning` field saying so.
+
+`code` accepts:
 
 ```json
-{ "task_type": "execute" }          // execute | plan | review | local
-{ "harness": "cursor" }             // restrict to a specific harness
-{ "prefer_large_context": true }    // boost Gemini (1M token context)
-{ "service": "claude_code_opus" }   // force a specific service
+{
+  "mode": "single",
+  "prompt": "Review this package for release blockers.",
+  "files": [],
+  "workingDir": "/path/to/project",
+  "workspacePolicy": "shared_locked",
+  "hints": {
+    "model": "gpt-5.4",
+    "taskType": "review",
+    "preferLargeContext": false,
+    "safetyProfile": "workspace_edit"
+  }
+}
 ```
 
-## Scoring
+For fanout:
 
-Each service is scored per task:
-
+```json
+{
+  "mode": "fanout",
+  "prompt": "Compare the maintainability tradeoffs in this refactor.",
+  "models": ["claude-opus-4-6", "gpt-5.4"],
+  "workspacePolicy": "copy",
+  "hints": {
+    "taskType": "plan",
+    "safetyProfile": "workspace_edit"
+  }
+}
 ```
-score = quality_score × cli_capability × capabilities[task_type] × quota_score × weight
+
+`job` with `action: "start"` returns a `jobId` plus `nextPollSeconds` and `instructions`
+telling the caller how long to wait before calling `action: "get"` with that `jobId`.
+While still running, `get` returns a `partialOutput` tail of live stdout/stderr; once
+`status` is `completed` or `failed`, it returns the full `result`. Nothing is lost by
+polling late — everything persists under `~/.harness-router/jobs/<jobId>/`.
+
+Status is exposed as resources:
+
+- `harness-router://status`
+- `harness-router://status.json`
+
+## HTTP Surface
+
+`harness-router serve` starts an authenticated local server on `127.0.0.1`.
+
+Endpoints:
+
+- `POST /mcp` for streamable HTTP MCP
+- `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
+  `harness-router://status.json`)
+- `GET /v1/usage` — per-route call counts, quota, billing kind, and breaker state only
+- `GET /v1/models` — OpenAI-style model list; each entry's `id` is a route id you can
+  pass as `model` in `/v1/chat/completions`
+- `POST /v1/chat/completions`
+
+HTTP uses the bearer token from `harness-router auth show`. The same token protects
+MCP-over-HTTP and `/v1/*`.
+
+Example:
+
+```bash
+TOKEN="$(harness-router auth show)"
+
+curl http://127.0.0.1:3333/v1/chat/completions \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-5.4",
+    "messages": [{"role": "user", "content": "Fix the failing tests."}],
+    "workingDir": "/path/to/project",
+    "safetyProfile": "workspace_edit",
+    "workspacePolicy": "copy"
+  }'
 ```
 
-Where `quality_score = normalized_elo × thinking_mult`, and:
+The REST surface is OpenAI-compatible enough for local clients that can speak
+`/v1/chat/completions`. The `model` field is treated as a routing/model hint.
 
-- **normalized_elo** — ELO score mapped to [0.60, 1.00]. Source priority: (1) `data/coding_benchmarks.json` blended score (Arena + Aider + SWE-bench) if present, (2) live Arena AI Code leaderboard (24h cached), (3) 0.85 default.
-- **thinking_mult** — 1.00 (none/low) | 1.07 (medium) | 1.15 (high). Applies when `thinking_level` is set on the service.
-- **cli_capability** — harness amplification factor set in `config.yaml`. Captures how much the agentic scaffold adds beyond raw model ELO. Reference points: `claude_code` 1.10, `codex` 1.08, `cursor` 1.05, `gemini_cli` 1.00.
-- **capabilities** — per-service relative strength for `execute` / `plan` / `review`. 1.0 = best in class; values below 1.0 represent weaker fit for that task type.
-- **quota_score** — live availability [0, 1], tracked automatically per service.
-- **weight** — static preference multiplier from config (default 1.0).
+## Endpoint Modes
 
-Services are grouped into tiers (Frontier / Strong / Fast) based on ELO. The router always tries tier 1 first and falls back only when all tier-1 services are circuit-broken or quota-exhausted. Tier thresholds: ELO >= 1350 = tier 1, ELO >= 1200 = tier 2, ELO < 1200 = tier 3. When `thinking_level: high` is set, the threshold relaxes by 25 ELO points.
+Harness Router supports two local/custom endpoint patterns:
 
-### Model escalation
+- `direct_openai_compatible`: Harness Router calls an OpenAI-compatible
+  `/v1/chat/completions` endpoint directly. This is the right mode for Ollama,
+  LM Studio, vLLM, LiteLLM, and private local HTTP model servers.
+- `harness_native_endpoint`: a downstream CLI keeps its agent scaffold but is
+  pointed at a supported local provider. Codex currently supports this for
+  `ollama` and `lmstudio` through `--oss --local-provider`.
 
-A service can automatically escalate to a stronger model for reasoning-heavy task types:
+Example direct local route:
 
 ```yaml
-claude_code_sonnet:
-  model: claude-sonnet-4-6
-  escalate_model: claude-opus-4-6
-  escalate_on: [plan, review]   # Sonnet for execute, Opus for plan/review
-```
-
-`code_auto` resolves the right model per task before dispatch, so you get Sonnet speed on execution and Opus depth on design decisions without manual switching.
-
-## Prerequisites
-
-- **Python 3.13+**
-- **uv and uvx** (recommended, for on-demand Python package installation)
-- **Node.js 18+** (if installing via npm)
-- **CLI tools** — at least one of: `claude` (Claude Code), `codex`, `gemini`, or Cursor
-
-## Installation
-
-### Option A: npm (recommended)
-
-No cloning or Python setup needed. The npm wrapper installs the Python package on demand via `uvx`.
-
-```bash
-# One-time setup
-npx coding-agent-mcp
-
-# Or install globally
-npm install -g coding-agent-mcp
-coding-agent-mcp
-```
-
-Then configure `config.yaml` (see below).
-
-### Option B: Python direct
-
-Clone the repository and install:
-
-```bash
-git clone https://github.com/fstubner/coding-agent-mcp.git
-cd coding-agent-mcp
-pip install -e .
-```
-
-Or install from PyPI:
-
-```bash
-pip install coding-agent-mcp
-```
-
-## CLI Authentication
-
-Authenticate each CLI you want to use:
-
-```bash
-# Claude Code CLI (requires Claude Pro / Max)
-claude auth login
-
-# Codex CLI (requires ChatGPT Pro)
-codex auth login
-
-# Gemini CLI (set GEMINI_API_KEY or run auth)
-gemini auth
-export GEMINI_API_KEY="your-api-key"
-
-# Cursor — sign in via the Cursor desktop app
-```
-
-## Configuration
-
-The server works with no config file at all — on startup it probes your PATH for installed CLIs (`claude`, `codex`, `gemini`, `agent`) and uses built-in defaults for each one found.
-
-If you need to pass an API key or tweak something, create a `config.yaml` (or point `CODING_AGENT_CONFIG` to a custom path):
-
-```yaml
-# Minimal — just supply the Gemini API key
-gemini_api_key: ${GEMINI_API_KEY}
-```
-
-That's it for most setups. Other available fields:
-
-```yaml
-# Skip a CLI even if it's installed
-disabled: [cursor]
-
-# Add local or third-party endpoints that can't be auto-detected
 endpoints:
   - name: ollama
     base_url: http://localhost:11434/v1
-    model: llama3.2
+    model: qwen2.5-coder
+    endpoint_mode: direct_openai_compatible
+    endpoint_provider: ollama
+    wire_protocol: openai_chat_completions
+```
+
+Example Codex harness-native local route:
+
+```yaml
+services:
+  codex_ollama:
+    enabled: true
+    type: cli
+    harness: codex
+    command: codex
+    model: qwen3-coder:latest
+    endpoint_mode: harness_native_endpoint
+    endpoint_provider: ollama
+    wire_protocol: openai_chat_completions
+    billing_kind: local_compute
+    paid_usage_possible: false
     tier: 3
-
-# Tweak auto-detected defaults without a full config
-overrides:
-  claude_code:
-    weight: 1.2
-  gemini_cli:
-    thinking_level: medium
+    weight: 0.75
+    cli_capability: 1.0
+    capabilities:
+      execute: 0.8
+      plan: 0.7
+      review: 0.7
 ```
 
-### Advanced configuration
+## Configure
 
-For full control — custom models per service, multiple entries per harness, per-task capability scores, model escalation — see `config.example.yaml`. That format is also fully supported: if your config file has a `services:` key the server uses it as-is.
+`configure` is the main setup flow:
 
-## Claude Desktop / Cursor Integration
+1. Detect installed harnesses.
+2. Verify configured routes without spending quota where possible.
+3. Classify auth and billing so paid or unknown-paid routes are not selected by accident.
+4. Choose routed harnesses, model priority, and safety profile.
+5. Write v0.4 config YAML.
+6. Connect selected MCP agents or print snippets.
 
-### macOS
+The current command is conservative: it prints detected routes by default and writes
+only when explicitly asked with `--yes`.
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+## Status Model
 
-```json
-{
-  "mcpServers": {
-    "coding-agent": {
-      "command": "npx",
-      "args": ["coding-agent-mcp"],
-      "env": {
-        "CODING_AGENT_CONFIG": "/path/to/config.yaml",
-        "GEMINI_API_KEY": "your-gemini-key"
-      }
-    }
-  }
-}
+`status --json`, `/v1/status`, and `harness-router://status.json` share the same
+shape. Each route includes:
+
+- route id and harness
+- billing provider, surface, auth source, billing kind, paid-use flags, and confidence
+- configured and effective safety profile
+- effective workspace policy
+- availability
+- tier and model metadata
+- quota score and local call count
+- circuit breaker state
+- skip reason when a route is disabled, unavailable, paid-blocked, unknown-billing,
+  safety-incompatible, or circuit-broken
+- token limits when known
+
+Safety profiles:
+
+- `read_only`: inspect-only routes.
+- `workspace_edit`: default; routes may edit files in the workspace without broad shell access.
+- `full_auto`: permits routes that require shell/write automation beyond workspace-edit mode.
+
+Workspace policy:
+
+- `shared`: run directly in the caller's `workingDir`.
+- `shared_locked`: run directly in `workingDir`, but serialize write-capable
+  dispatches for the same directory inside one router process.
+- `copy`: copy the project into `.harness-router/workspaces/...`, run the agent
+  there, and return the isolated workspace path plus changed-file metadata.
+- `git_worktree`: create a detached git worktree for the route and return the
+  worktree path plus changed-file metadata. This starts from `HEAD`, so
+  uncommitted source-workspace changes are not copied.
+
+Write-capable fanout is allowed only with `workspacePolicy: "copy"` or
+`workspacePolicy: "git_worktree"`. These modes isolate project state and process
+cwd. They are not hardened OS sandboxes: a route with broad shell permission can
+still access the host unless the downstream harness or operating system enforces
+that boundary.
+
+Provider notes:
+
+- Claude Code `claude -p` is treated date-aware: before June 15, 2026 it is classified
+  as plan usage; from June 15, 2026 it is classified as Agent SDK credits with possible
+  overage.
+- Codex CLI/SDK uses the official Codex product surface unless a route is explicitly
+  configured with an API key, in which case it is API billing.
+- Cursor Agent CLI is classified as included usage with possible on-demand continuation.
+- OpenAI-compatible `api.openai.com` routes are metered; known local runtimes are local;
+  unknown loopback/custom endpoints require explicit billing metadata.
+
+## Observability & Privacy
+
+harness-router contains **no phone-home telemetry** — nothing is ever sent to
+the author or any third party. The built-in observability is OpenTelemetry
+tracing for your own use:
+
+- Traces export via OTLP/HTTP to `http://localhost:4318` (the standard local
+  collector port) by default. If nothing is listening there, spans are simply
+  dropped — no data leaves your machine.
+- Traces only go somewhere else if *you* set `OTEL_EXPORTER_OTLP_ENDPOINT` to
+  a remote collector.
+- Set `OTEL_SDK_DISABLED=true` to skip OpenTelemetry initialization entirely.
+
+Prompts and outputs otherwise flow only to the harnesses/endpoints you
+configured. The router's only other network call is the leaderboard refresh —
+a GET of public Arena ELO benchmark data from `api.wulong.dev` used for route
+scoring; it sends nothing about you or your prompts.
+
+## Development
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm run smoke
+npm audit --omit=dev
+npm pack --dry-run
 ```
 
-### Windows
+Live agent workflow smoke tests are opt-in because they call real harnesses and
+can consume quota or product-plan usage. They create a disposable tiny Node
+project under `.harness-router/smoke-workspaces`, write the detailed task into a
+workspace-local `.harness-router/agent-task.md`, send the harness a short prompt
+pointing at that brief, then verify `node test.mjs` passes.
 
-Edit `%APPDATA%\Claude\claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "coding-agent": {
-      "command": "npx",
-      "args": ["coding-agent-mcp"],
-      "env": {
-        "CODING_AGENT_CONFIG": "C:\\path\\to\\config.yaml",
-        "GEMINI_API_KEY": "your-gemini-key"
-      }
-    }
-  }
-}
+```powershell
+$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+npm run build
+npm run smoke:agents -- --config config.yaml
 ```
 
-Alternatively, if using Python directly:
+To temporarily include routes that can incur paid usage:
 
-```json
-{
-  "mcpServers": {
-    "coding-agent": {
-      "command": "python",
-      "args": ["-m", "coding_agent"],
-      "env": {
-        "CODING_AGENT_CONFIG": "/path/to/config.yaml",
-        "GEMINI_API_KEY": "your-gemini-key"
-      }
-    }
-  }
-}
+```powershell
+$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+npm run smoke:agents -- --config config.yaml --allow-paid
 ```
 
-Restart Claude Desktop after updating the config.
+To include Cursor's full-auto print-mode route:
 
-## Adding a new service
-
-Any (model, harness) combination can be added to `config.yaml`. The `harness` field selects the dispatcher; the `model` string is passed via `--model` to the CLI. Each enabled entry auto-generates a `code_with_<name>` MCP tool.
-
-```yaml
-cursor_opus:
-  enabled: true
-  harness: cursor
-  command: agent
-  model: claude-opus-4-6-thinking-max
-  tier: 1
-  leaderboard_model: "claude-opus-4-6"
-  cli_capability: 1.05
-  weight: 1.0
-  capabilities:
-    execute: 0.94
-    plan:    0.97
-    review:  0.96
+```powershell
+$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+npm run smoke:agents -- --config config.yaml --allow-paid --safety full_auto
 ```
 
-OpenAI-compatible local endpoints (Ollama, LM Studio, OpenRouter) are also supported:
+Release gates:
 
-```yaml
-ollama_local:
-  enabled: true
-  type: openai_compatible
-  base_url: http://localhost:11434/v1
-  model: llama3.2
-  api_key: ""
-  tier: 3
-  weight: 0.6
+```bash
+npm run check
+npm run build
+npm run test:coverage
+npm run smoke
+npm audit --omit=dev
+npm pack --dry-run
 ```
 
-## Cowork Plugin
-
-A Cowork plugin is available at `coding-agent.plugin` for integrated skill management and scheduling within the Cowork environment.
+Before publishing, also run `smoke:agents` with the installed harnesses you want
+to claim as validated, and record which routes passed, failed, or were skipped.
+Set `HARNESS_ROUTER_AGENT_SMOKE_ROOT` only when you need the disposable
+workspaces somewhere other than the repo-local shared smoke cache.

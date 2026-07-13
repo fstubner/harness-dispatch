@@ -16,6 +16,11 @@ coverage/
 .nvx/
 .playwright-mcp/
 
+# Personal live config and internal working docs (ship config.example.yaml instead)
+config.yaml
+LAUNCH-PLAN.md
+BILLING_AUTH_AUDIT.md
+
 # Editor + OS
 .vscode/
 .idea/

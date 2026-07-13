@@ -1,17 +1,17 @@
-# coding-agent-mcp — service configuration
+# harness-router — route configuration
 #
 # ── Architecture: (model × harness) ─────────────────────────────────────────
 #
 # Each service is a (model, harness) pair:
 #
 #   harness   — which CLI agent scaffold runs the model. Determines dispatcher:
-#               "claude_code" | "cursor" | "codex" | "gemini_cli"
+#               "claude_code" | "cursor" | "codex" | "antigravity_cli"
 #               The harness adds agent scaffolding value beyond the raw model API.
 #
 #   model     — the exact model string passed to the CLI (--model flag).
 #               Claude Code / Cursor: e.g. claude-opus-4-6-thinking-max
 #               Codex:  gpt-5.4, gpt-5.4-mini, gpt-5.3-codex
-#               Gemini: pro, flash, gemini-3.1-pro-preview
+#               Antigravity (agy): model selection lives in the CLI's own config
 #
 # The same model running in different harnesses gets different cli_capability
 # scores — e.g. claude-opus-4-6 in Claude Code vs Cursor perform differently.
@@ -49,10 +49,22 @@
 #   gpt-5.4-max                           → GPT-5.4 with max reasoning
 #   gemini-2.5-pro-medium                 → Gemini 2.5 Pro with medium thinking
 #
-# ── API keys ─────────────────────────────────────────────────────────────────
+# ── Billing, auth, and safety ────────────────────────────────────────────────
 #
 # Use ${ENV_VAR} to reference environment variables set in claude_desktop_config.json.
-# OAuth-authenticated CLIs (claude_code, codex) don't need an api_key field.
+# Product-login CLIs do not need an api_key field. Adding api_key changes the
+# auth and billing classification for that route.
+#
+# Paid or unknown-paid routes are blocked until allow_paid_usage: true is set.
+# Default safety_profile is workspace_edit. Cursor print mode has write and shell
+# capability, so Cursor routes are skipped under workspace_edit unless you set
+# safety_profile: full_auto for that route or request full_auto per call.
+#
+# Workspace policy controls where a route runs:
+# - shared: direct use of the caller workingDir.
+# - shared_locked: direct use of workingDir with per-process write serialization.
+# - copy: copied project workspace under .harness-router/workspaces.
+# - git_worktree: detached git worktree for isolated route output.
 
 services:
 
@@ -71,7 +83,10 @@ services:
     command: claude
     model: claude-opus-4-6           # extended thinking enabled via --effort high
     tier: 1
-    # api_key: ${ANTHROPIC_API_KEY}  # Claude Max/Pro → OAuth via `claude auth login`
+    # Subscription plans can incur overage past included quota, so this route
+    # classifies as paid-usage-possible and is blocked until you opt in:
+    allow_paid_usage: true
+    # api_key: ${ANTHROPIC_API_KEY}  # API billing; omit for Claude product login
     leaderboard_model: "claude-opus-4-6"   # Arena Code ELO ~1504 (April 2026)
     cli_capability: 1.10             # Claude Code scaffold: strong file ops + bash
     weight: 1.0
@@ -83,7 +98,7 @@ services:
   # ── Claude Sonnet 4.6 via Claude Code CLI ────────────────────────────────────
   #
   # Best for: execute. Fast, 5× cheaper than Opus, 79.6% SWE-bench Verified.
-  # 1M token context. Escalate to claude_code_opus for plan/review via code_auto.
+# 1M token context. Escalate to claude_code_opus for plan/review via code hints.
 
   claude_code_sonnet:
     enabled: true
@@ -91,6 +106,7 @@ services:
     command: claude
     model: claude-sonnet-4-6
     tier: 1
+    allow_paid_usage: true           # see claude_code_opus note
     # api_key: ${ANTHROPIC_API_KEY}
     leaderboard_model: "claude-sonnet-4-6"  # Arena Code ELO ~1310 (April 2026)
     cli_capability: 1.10
@@ -98,7 +114,7 @@ services:
     capabilities:
       execute: 0.96   # near-identical to Opus on SWE-bench (1.2pt gap)
       plan:    0.85   # no extended thinking; fine for everyday design tasks
-      review:  0.88   # solid but code_auto will prefer Opus for deep reviews
+      review:  0.88   # solid; model/task hints can prefer Opus for deep reviews
 
   # ── GPT-5.4 via Codex CLI (full-auto) ────────────────────────────────────────
   #
@@ -111,7 +127,8 @@ services:
     command: codex
     model: gpt-5.4
     tier: 1
-    # api_key: ${OPENAI_API_KEY}  # ChatGPT Pro → OAuth via `codex auth login`
+    allow_paid_usage: true           # see claude_code_opus note
+    # api_key: ${OPENAI_API_KEY}  # API billing; omit for Codex product login
     leaderboard_model: "gpt-5.4"    # Arena Code ELO ~1480 (April 2026)
     # Codex --full-auto: code execution, test-runner, multi-step self-correction.
     # SWE-bench Pro agent score ~46% (best execution scaffold, April 2026).
@@ -122,26 +139,25 @@ services:
       plan:    0.83   # execution-focused model; weaker at open-ended design
       review:  0.82   # optimised for doing, not explaining
 
-  # ── Gemini 3.1 Pro via Gemini CLI (high thinking) ────────────────────────────
+  # ── Antigravity CLI (agy) ────────────────────────────────────────────────────
   #
-  # Best for: plan + review. 1M token context holds entire codebases.
-  # thinking_level: high injected via ~/.gemini/settings.json (thread-safe).
+  # Google's successor to Gemini CLI (which Google shut down 2026-06-18 — there
+  # is no gemini_cli harness anymore). Best for: plan + review. 1M+ token
+  # context holds entire codebases; free_quota billing, so no paid opt-in needed.
+  # Model selection is configured in the agy CLI itself, not per route.
 
-  gemini31pro:
+  antigravity:
     enabled: true
-    harness: gemini_cli
-    command: gemini
-    model: gemini-3.1-pro-preview     # gemini-3-pro-preview was shut down March 9 2026
+    harness: antigravity_cli
+    command: agy
     tier: 1
-    api_key: ${GEMINI_API_KEY}       # or OAuth via `gemini auth`
-    leaderboard_model: "gemini-3.1-pro-preview"  # Arena Code ELO ~1456 (April 2026)
-    thinking_level: high             # injects thinkingLevel: HIGH into settings.json
-    cli_capability: 1.00             # thin API wrapper; no agentic scaffold
+    leaderboard_model: "gemini-3.1-pro-preview"  # closest benchmarked model for scoring
+    cli_capability: 1.00             # thin wrapper; no agentic scaffold
     weight: 1.0
     capabilities:
-      execute: 0.87   # no code-execution loop; thin CLI wrapper
-      plan:    0.97   # high thinking + 1M context = full codebase in view
-      review:  0.95   # 1M context lets it hold every file + import simultaneously
+      execute: 0.87   # no code-execution loop
+      plan:    0.97   # high thinking + huge context = full codebase in view
+      review:  0.95   # holds every file + import simultaneously
 
   # ── Claude Sonnet 4.6 via Cursor CLI ─────────────────────────────────────────
   #
@@ -151,9 +167,10 @@ services:
   cursor_sonnet:
     enabled: true
     harness: cursor
-    command: agent
+    command: cursor-agent
     model: claude-sonnet-4-6         # passed via --model flag
     tier: 1
+    allow_paid_usage: true           # see claude_code_opus note
     leaderboard_model: "claude-sonnet-4-6"
     cli_capability: 1.05             # editor-aware context + codebase index
     weight: 1.0
@@ -171,7 +188,8 @@ services:
   cursor_opus:
     enabled: false
     harness: cursor
-    command: agent
+    command: cursor-agent
+    allow_paid_usage: true           # see claude_code_opus note
     model: claude-opus-4-6-thinking-max
     tier: 1
     leaderboard_model: "claude-opus-4-6"
@@ -190,7 +208,8 @@ services:
   cursor_gpt54:
     enabled: false
     harness: cursor
-    command: agent
+    command: cursor-agent
+    allow_paid_usage: true           # see claude_code_opus note
     model: gpt-5.4-max               # Cursor model string from --list-models
     tier: 1
     leaderboard_model: "gpt-5.4"
@@ -208,7 +227,8 @@ services:
   cursor_gemini25pro:
     enabled: false
     harness: cursor
-    command: agent
+    command: cursor-agent
+    allow_paid_usage: true           # see claude_code_opus note
     model: gemini-2.5-pro-medium
     tier: 2
     leaderboard_model: "gemini-2.5-pro"
@@ -222,18 +242,6 @@ services:
   # ════════════════════════════════════════════════════════════════════════════
   # TIER 2 — STRONG
   # ════════════════════════════════════════════════════════════════════════════
-
-  # gemini25pro_gemini:
-  #   enabled: false
-  #   harness: gemini_cli
-  #   command: gemini
-  #   model: gemini-2.5-pro
-  #   tier: 2
-  #   api_key: ${GEMINI_API_KEY}
-  #   thinking_level: medium
-  #   leaderboard_model: "gemini-2.5-pro"
-  #   cli_capability: 1.00
-  #   weight: 0.90
 
   # gpt53_codex:
   #   enabled: false
@@ -259,16 +267,17 @@ services:
   #   cli_capability: 1.08
   #   weight: 0.70
 
-  # gemini25flash:
+  # Gemini via the direct AI Studio API (OpenAI-compatible endpoint; the old
+  # gemini_cli harness is gone — use antigravity above for product-login Gemini):
+  # gemini_api:
   #   enabled: false
-  #   harness: gemini_cli
-  #   command: gemini
+  #   type: openai_compatible
+  #   base_url: https://generativelanguage.googleapis.com/v1beta/openai
   #   model: gemini-2.5-flash
-  #   tier: 3
   #   api_key: ${GEMINI_API_KEY}
-  #   thinking_level: low
-  #   leaderboard_model: "gemini-2.5-flash"
-  #   cli_capability: 1.00
+  #   billing_kind: free_quota       # AI Studio free tier; adjust if you add billing
+  #   paid_usage_possible: false
+  #   tier: 3
   #   weight: 0.70
 
   # gpt54mini_codex:
@@ -285,7 +294,7 @@ services:
   #   enabled: false
   #   harness: codex
   #   command: codex
-  #   model: gpt-5.3-codex-spark      # 1000+ TPS, near-instant; ChatGPT Pro only
+  #   model: gpt-5.3-codex-spark
   #   tier: 3
   #   leaderboard_model: "gpt-5.3-codex"
   #   cli_capability: 1.04
@@ -294,7 +303,7 @@ services:
   # cursor_haiku:
   #   enabled: false
   #   harness: cursor
-  #   command: agent
+  #   command: cursor-agent
   #   model: claude-haiku-4-5-20251001
   #   tier: 3
   #   leaderboard_model: "claude haiku 4.5"
@@ -303,7 +312,7 @@ services:
 
   # ════════════════════════════════════════════════════════════════════════════
   # OpenAI-compatible local / third-party endpoints
-  # Each enabled entry auto-generates a code_with_<name> MCP tool.
+  # Enabled entries are available to the single MCP `code` tool and REST router.
   # ════════════════════════════════════════════════════════════════════════════
 
   # ollama:
@@ -312,6 +321,12 @@ services:
   #   base_url: http://localhost:11434/v1
   #   model: llama3.2
   #   api_key: ""
+  #   endpoint_mode: direct_openai_compatible
+  #   endpoint_provider: ollama
+  #   wire_protocol: openai_chat_completions
+  #   billing_kind: local_compute
+  #   paid_usage_possible: false
+  #   workspace_policy: shared
   #   weight: 0.6
   #   tier: 3
 
@@ -321,8 +336,35 @@ services:
   #   base_url: http://localhost:1234/v1
   #   model: mistral-7b-instruct
   #   api_key: lm-studio
+  #   endpoint_mode: direct_openai_compatible
+  #   endpoint_provider: lmstudio
+  #   wire_protocol: openai_chat_completions
+  #   billing_kind: local_compute
+  #   paid_usage_possible: false
+  #   workspace_policy: shared
   #   weight: 0.6
   #   tier: 3
+
+  # codex_ollama:
+  #   enabled: false
+  #   type: cli
+  #   harness: codex
+  #   command: codex
+  #   model: qwen3-coder:latest
+  #   endpoint_mode: harness_native_endpoint
+  #   endpoint_provider: ollama
+  #   wire_protocol: openai_chat_completions
+  #   billing_kind: local_compute
+  #   paid_usage_possible: false
+  #   safety_profile: workspace_edit
+  #   workspace_policy: shared_locked
+  #   weight: 0.75
+  #   tier: 3
+  #   cli_capability: 1.0
+  #   capabilities:
+  #     execute: 0.8
+  #     plan: 0.7
+  #     review: 0.7
 
   # openrouter_gpt54:
   #   enabled: false
