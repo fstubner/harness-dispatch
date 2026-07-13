@@ -1,19 +1,10 @@
 /**
  * OpenAI Codex CLI dispatcher for harness-router.
  *
- * Dispatch:  codex exec "<prompt>" --full-auto --json --skip-git-repo-check
- *                  [--model <m>] [--cd <dir>]
- *   codex exec:               non-interactive mode.
- *   --full-auto:              bypass per-action approval prompts.
- *   --json:                   newline-delimited JSON events for structured parsing.
- *   --skip-git-repo-check:    skip codex 0.125+'s session-level trusted-directory
- *                             prompt. Required because the router invokes codex
- *                             headlessly from arbitrary cwds (onboarding probes,
- *                             non-repo workspaces) — there is no terminal to
- *                             accept the prompt on. The user has already opted
- *                             into delegated execution by configuring the router,
- *                             which mirrors the implicit trust granted to the
- *                             other harnesses (claude_code/cursor/gemini).
+ * Dispatch:  codex exec --json [safety] [--model <m>] [--cd <dir>] -
+ *   codex exec: non-interactive mode.
+ *   --full-auto: bypass approval prompts.
+ *   --json:      newline-delimited JSON events for structured parsing.
  *
  * Quota: Reactive only. Codex uses token-based pricing (no hard monthly limit);
  * circuit breaker handles exhaustion from 429 responses.
@@ -23,10 +14,17 @@
  */
 
 import which from "which";
-import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig } from "../types.js";
-import { BaseDispatcher, type DispatchOpts, type DispatcherInitOpts } from "./base.js";
-import { detectRateLimitInText } from "./shared/rate-limit-text.js";
+import type {
+  DispatchResult,
+  DispatcherEvent,
+  QuotaInfo,
+  SafetyProfile,
+  ServiceConfig,
+} from "../types.js";
+import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { streamSubprocess } from "./shared/stream-subprocess.js";
+import { resolveCliCommand } from "./shared/windows-cmd.js";
+import { commandAvailable } from "./shared/which-available.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -38,19 +36,9 @@ interface CodexJsonEvent {
     name?: string;
     input?: unknown;
   };
-  message?: string | { content?: string };
-  /**
-   * Codex emits a top-level `error` event on quota / rate-limit / runtime
-   * failures, e.g.:
-   *   {"type":"error","message":"You've hit your usage limit. ... try again at May 5th, 2026 11:45 AM."}
-   * and a `turn.failed` follow-up:
-   *   {"type":"turn.failed","error":{"message":"You've hit your usage limit. …"}}
-   * Either shape carries the user-actionable error text. The dispatcher
-   * was previously ignoring these — surfacing only the noisy stderr from
-   * codex's internal MCP transport instead. We now lift the message into
-   * `result.error` and run rate-limit detection over it.
-   */
-  error?: { message?: string };
+  message?: {
+    content?: string;
+  };
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -59,17 +47,36 @@ interface CodexJsonEvent {
   };
 }
 
+function codexSafetyArgs(profile: SafetyProfile): string[] {
+  switch (profile) {
+    case "read_only":
+      return ["--sandbox", "read-only"];
+    case "workspace_edit":
+      return ["--sandbox", "workspace-write"];
+    case "full_auto":
+      return ["--full-auto"];
+  }
+}
+
 export class CodexDispatcher extends BaseDispatcher {
   readonly id = "codex";
-  private readonly available: boolean;
+  private readonly command: string;
+  private readonly apiKey: string | undefined;
+  private readonly configuredModel: string | undefined;
+  private readonly endpointMode: ServiceConfig["endpointMode"];
+  private readonly endpointProvider: ServiceConfig["endpointProvider"];
 
-  constructor(_svc?: ServiceConfig, opts: DispatcherInitOpts = {}) {
+  constructor(svc?: ServiceConfig) {
     super();
-    this.available = opts.cliPath !== null;
+    this.command = svc?.command ?? "codex";
+    this.apiKey = svc?.apiKey;
+    this.configuredModel = svc?.model;
+    this.endpointMode = svc?.endpointMode;
+    this.endpointProvider = svc?.endpointProvider;
   }
 
   isAvailable(): boolean {
-    return this.available;
+    return commandAvailable(this.command);
   }
 
   async checkQuota(): Promise<QuotaInfo> {
@@ -91,7 +98,7 @@ export class CodexDispatcher extends BaseDispatcher {
     workingDir: string,
     opts: DispatchOpts,
   ): AsyncGenerator<DispatcherEvent> {
-    const foundPath = await which("codex", { nothrow: true });
+    const foundPath = await which(this.command, { nothrow: true });
     if (!foundPath) {
       yield {
         type: "completion",
@@ -104,6 +111,7 @@ export class CodexDispatcher extends BaseDispatcher {
       };
       return;
     }
+    const resolved = await resolveCliCommand(this.command);
 
     let fullPrompt = prompt;
     if (files.length > 0) {
@@ -111,22 +119,35 @@ export class CodexDispatcher extends BaseDispatcher {
       fullPrompt = `${prompt}\n\nFiles to work with:\n${fileList}`;
     }
 
-    const args: string[] = ["exec", fullPrompt, "--full-auto", "--json", "--skip-git-repo-check"];
-    if (opts.modelOverride) {
-      args.push("--model", opts.modelOverride);
+    const args: string[] = [
+      ...resolved.prefixArgs,
+      "exec",
+      ...this.#endpointArgs(),
+      "--json",
+      ...codexSafetyArgs(opts.safetyProfile ?? "workspace_edit"),
+    ];
+    const effectiveModel = opts.modelOverride ?? this.configuredModel;
+    if (effectiveModel) {
+      args.push("--model", effectiveModel);
     }
     if (workingDir) {
       args.push("--cd", workingDir);
+      args.push("--skip-git-repo-check");
     }
+    args.push("-");
 
     const extraEnv: Record<string, string> = {};
-    const apiKey = process.env["OPENAI_API_KEY"];
-    if (apiKey) {
-      extraEnv["OPENAI_API_KEY"] = apiKey;
+    if (this.apiKey) {
+      extraEnv["OPENAI_API_KEY"] = this.apiKey;
+    } else if (process.env["OPENAI_API_KEY"]) {
+      extraEnv["OPENAI_API_KEY"] = "";
     }
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const subOpts: Parameters<typeof streamSubprocess>[2] = { timeoutMs };
+    const subOpts: Parameters<typeof streamSubprocess>[2] = {
+      timeoutMs,
+      stdin: fullPrompt,
+    };
     if (workingDir) subOpts.cwd = workingDir;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
 
@@ -146,12 +167,6 @@ export class CodexDispatcher extends BaseDispatcher {
     let outputTokens = 0;
     let sawUsage = false;
     let sawAnyJson = false;
-    // Captures the user-actionable message from codex's `{type: "error"}`
-    // or `{type: "turn.failed", error: {message}}` JSONL events. When set,
-    // this becomes the `error` field on the failure result — replacing the
-    // noisy stderr (codex's GitHub-MCP transport spam) with the rate-limit
-    // / quota / runtime message the user actually needs to see.
-    let codexErrorMessage: string | undefined;
 
     const emitLine = (line: string): DispatcherEvent[] => {
       const out: DispatcherEvent[] = [];
@@ -165,31 +180,25 @@ export class CodexDispatcher extends BaseDispatcher {
       }
       sawAnyJson = true;
 
-      if (event.type === "item.completed" && event.item && event.item.type === "agent_message") {
+      if (
+        event.type === "item.completed" &&
+        event.item &&
+        event.item.type === "agent_message"
+      ) {
         const t = event.item.text;
         if (typeof t === "string" && t.length > 0) {
           lastText = t;
         }
       }
-      if (event.type === "message" && event.message) {
-        // Codex variants: some emit `message.content`, others a flat
-        // `message: "..."` string. Handle both.
-        const content = typeof event.message === "string" ? event.message : event.message.content;
-        if (typeof content === "string" && content.length > 0) {
-          lastText = content;
-        }
+      if (event.type === "message" && event.message?.content) {
+        lastText = event.message.content;
       }
 
-      // Quota / runtime / fatal-error events. Capture the message so the
-      // dispatcher's failure result surfaces the human-readable cause
-      // (e.g. "You've hit your usage limit, try again at …").
-      if (event.type === "error" && typeof event.message === "string") {
-        codexErrorMessage = event.message;
-      } else if (event.type === "turn.failed" && event.error?.message) {
-        codexErrorMessage = event.error.message;
-      }
-
-      if (event.item && event.item.type === "tool_use" && typeof event.item.name === "string") {
+      if (
+        event.item &&
+        event.item.type === "tool_use" &&
+        typeof event.item.name === "string"
+      ) {
         out.push({
           type: "tool_use",
           name: event.item.name,
@@ -211,7 +220,7 @@ export class CodexDispatcher extends BaseDispatcher {
       return out;
     };
 
-    for await (const evt of streamSubprocess("codex", args, subOpts)) {
+    for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
       if ("stream" in evt) {
         if (evt.stream === "stdout") {
           stdoutBuf.push(evt.chunk);
@@ -267,52 +276,29 @@ export class CodexDispatcher extends BaseDispatcher {
     }
 
     const parsedText = sawAnyJson ? lastText.trim() : "";
-    // Treat the call as failed if we saw a top-level error event in the
-    // JSONL stream, even when codex's exit code is 0. This catches the
-    // quota / rate-limit / fatal-runtime case where codex prints the
-    // error event then exits cleanly: the dispatch DID fail from the
-    // user's perspective.
-    const sawErrorEvent = codexErrorMessage !== undefined;
-    const success = exitCode === 0 && !sawErrorEvent;
-    // Output: prefer parsed agent text; if absent (typical on failure),
-    // fall back to the human-readable error message; only fall through
-    // to raw stdout/stderr as a last resort.
-    const output =
-      parsedText || (sawErrorEvent ? codexErrorMessage! : "") || stdout.trim() || stderr.trim();
+    const output = parsedText || stdout.trim() || stderr.trim();
 
     const result: DispatchResult = {
       output,
       service: "codex",
-      success,
+      success: exitCode === 0,
       durationMs,
     };
     if (sawUsage) {
       result.tokensUsed = { input: inputTokens, output: outputTokens };
     }
-    if (!success) {
-      // Error-message priority on the failure path:
-      //   1. The codex JSONL `{type:"error"}` / `turn.failed` message
-      //      — this is the user-actionable text (rate-limit, quota,
-      //      fatal runtime). Always preferred when available.
-      //   2. stderr — fallback when the JSONL stream gave us nothing.
-      //      Note: codex's stderr commonly includes startup chatter
-      //      (e.g. the GitHub-MCP transport's `Bearer error="invalid_token"`
-      //      that fires regardless of dispatch success). We use it only
-      //      when we have nothing better.
-      //   3. Generic exit-code message when both are empty.
-      result.error = codexErrorMessage ?? stderr.trim() ?? `Exit code ${exitCode}`;
-      // Rate-limit / quota detection. Run over the JSONL error message
-      // (most informative) AND over stdout+stderr as a backstop. The
-      // shared detector matches `usage limit`, `rate limit`,
-      // `too many requests`, `quota exceeded`, `429`, etc.
-      const haystack = [codexErrorMessage ?? "", stdout, stderr].join("\n");
-      const { rateLimited, retryAfter } = detectRateLimitInText(haystack);
-      if (rateLimited) {
-        result.rateLimited = true;
-        if (retryAfter !== null) result.retryAfter = retryAfter;
-      }
+    if (exitCode !== 0) {
+      result.error = stderr.trim() || `Exit code ${exitCode}`;
     }
 
     yield { type: "completion", result };
+  }
+
+  #endpointArgs(): string[] {
+    if (this.endpointMode !== "harness_native_endpoint") return [];
+    if (this.endpointProvider === "ollama" || this.endpointProvider === "lmstudio") {
+      return ["--oss", "--local-provider", this.endpointProvider];
+    }
+    return [];
   }
 }

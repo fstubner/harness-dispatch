@@ -1,24 +1,15 @@
 /**
- * harness-router — TypeScript rewrite.
+ * harness-router — TypeScript package.
  *
- * Public library surface. Stable starting at R3.
+ * Public library surface.
  */
 
 export { Router } from "./router.js";
 export type { RouterStreamEvent } from "./router.js";
 export { CircuitBreaker } from "./circuit-breaker.js";
 export { QuotaCache, QuotaState } from "./quota.js";
-export {
-  loadConfig,
-  watchConfig,
-  ConfigMissingError,
-  ConfigError,
-  type Config,
-  type ModelEntry,
-  type SubscriptionRoute,
-  type MeteredRoute,
-  type HttpConfig,
-} from "./config/index.js";
+export { LeaderboardCache } from "./leaderboard.js";
+export { loadConfig, watchConfig } from "./config.js";
 export * from "./types.js";
 export type { Dispatcher, DispatchOpts } from "./dispatchers/base.js";
 export { BaseDispatcher, drainDispatcherStream } from "./dispatchers/base.js";
@@ -37,14 +28,21 @@ export {
 export {
   buildMcpServer,
   startMcpServer,
-  startMcpHttpServer,
   type BuildMcpOptions,
-  type StartHttpOptions,
   type McpHandle,
-  type HttpMcpHandle,
 } from "./mcp/server.js";
+export {
+  startHttpServer,
+  startMcpHttpServer,
+  type StartHttpOptions,
+  type HttpServerHandle,
+} from "./http/server.js";
 export { buildDispatchers } from "./mcp/dispatcher-factory.js";
 export { TOOL_NAMES } from "./mcp/tools.js";
+export { buildStatus, renderStatusText, type HarnessRouterStatus } from "./status.js";
+export { ensureHttpToken, readHttpToken, rotateHttpToken } from "./auth.js";
+export { buildRouteBilling, billingIsBlocked, billingIsUnknown } from "./billing.js";
+export { evaluateRoutePolicy } from "./route-policy.js";
 
 // Observability (R3)
 export {
@@ -60,6 +58,4 @@ export {
 // Live dashboard (R3)
 export { renderDashboard, type DashboardState } from "./dashboard/live.js";
 
-// Single source of truth for the package version. Reads package.json at
-// module load — see src/version.ts for the rationale.
 export { VERSION } from "./version.js";

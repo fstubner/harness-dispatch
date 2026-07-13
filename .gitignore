@@ -10,6 +10,11 @@ quota_state.json
 test_state.json
 coverage/
 .vitest-cache/
+.harness-router/
+
+# Local tool state
+.nvx/
+.playwright-mcp/
 
 # Editor + OS
 .vscode/
@@ -24,10 +29,11 @@ Thumbs.db
 # Backup files
 *.bak
 
-# Local env
-.env
-.env.local
-
-# Local config — users copy config.example.yaml to config.yaml and customize.
-# The example is the source of truth; per-user config stays untracked.
-config.yaml
+# Python archive remnants (safe to delete once archive/python-v1 is the only Python source)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+pytest-cache-files-*/

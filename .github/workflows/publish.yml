@@ -4,82 +4,69 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write # for npm provenance
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-python@v5
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          python-version: "3.13"
 
-      - name: Install
-        run: npm ci
+      - name: Install dependencies
+        run: pip install -e ".[dev]" --break-system-packages
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Lint
+        run: python -m pyflakes src/coding_agent/
 
       - name: Test
-        run: npm test
+        run: python -m pytest tests/smoke_test.py -q
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: test
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write  # for OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - name: Build
-        run: npm run build
+        run: |
+          pip install build --break-system-packages
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # Uses OIDC trusted publishing — no API token needed.
+        # Set up at: https://pypi.org/manage/account/publishing/
 
   publish-npm:
     name: Publish to npm
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install
-        run: npm ci
-
-      - name: Check npm package version
-        id: npm-registry
-        run: |
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          VERSION="${GITHUB_REF_NAME#v}"
-          if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$PACKAGE_NAME@$VERSION already exists on npm; skipping publish."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set version from tag
-        if: steps.npm-registry.outputs.exists != 'true'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          # --allow-same-version makes this idempotent when package.json
-          # already carries the tag's version (the common case).
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm version "$VERSION" --no-git-tag-version
 
-      - name: Build
-        if: steps.npm-registry.outputs.exists != 'true'
-        run: npm run build
-
-      - name: Publish
-        if: steps.npm-registry.outputs.exists != 'true'
-        run: npm publish --access public --provenance
+      - name: Publish to npm
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

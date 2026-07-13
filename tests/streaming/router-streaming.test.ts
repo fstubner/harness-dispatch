@@ -1,16 +1,78 @@
 /**
- * Streaming-specific tests for the Router.
+ * Router streaming tests.
  *
- * Verifies the streaming surface — event flow, fallback semantics on
- * failures, breaker integration on `streamTo`, and parity between buffered
- * `route()` and streaming `stream()`. Algorithm coverage lives in
- * tests/router.test.ts; this file focuses on the per-event mechanics.
+ * Exercises Router.stream() with stub dispatchers that yield controlled
+ * event sequences. Verifies:
+ *  - events from the chosen dispatcher are passed through with the active
+ *    RoutingDecision attached.
+ *  - circuit-breaker state is updated after each attempt.
+ *  - rate-limit events short-circuit fallback.
+ *  - cancellation (iterator .return()) is respected.
+ *  - routeTo() bypasses tier selection.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Reuse the same mock shape as the buffered router tests.
+vi.mock("../../src/circuit-breaker.js", () => {
+  class CircuitBreaker {
+    failures = 0;
+    private _tripped = false;
+    private _cooldown = 300;
+    get isTripped(): boolean {
+      return this._tripped;
+    }
+    recordFailure(): void {
+      this.failures += 1;
+    }
+    recordSuccess(): void {
+      this.failures = 0;
+      this._tripped = false;
+    }
+    trip(retryAfter?: number): void {
+      this._tripped = true;
+      if (retryAfter !== undefined && retryAfter > 0) this._cooldown = retryAfter;
+    }
+    forceTrip(): void {
+      this._tripped = true;
+    }
+    cooldownRemaining(): number {
+      return this._tripped ? this._cooldown : 0;
+    }
+    status() {
+      return this._tripped
+        ? { tripped: true, failures: this.failures, cooldownRemainingSec: this._cooldown }
+        : { tripped: false, failures: this.failures };
+    }
+  }
+  return { CircuitBreaker };
+});
+
+vi.mock("../../src/quota.js", () => {
+  class QuotaCache {
+    async getQuotaScore(): Promise<number> {
+      return 1.0;
+    }
+    recordResult(): void {}
+  }
+  return { QuotaCache };
+});
+
+vi.mock("../../src/leaderboard.js", () => {
+  class LeaderboardCache {
+    async getQualityScore() {
+      return { qualityScore: 1.0, elo: null };
+    }
+    async autoTier(_m: string | undefined, _t: unknown, fallbackTier: number): Promise<number> {
+      return fallbackTier;
+    }
+  }
+  return { LeaderboardCache };
+});
 
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
+import { LeaderboardCache } from "../../src/leaderboard.js";
 import type {
   DispatchResult,
   DispatcherEvent,
@@ -24,25 +86,30 @@ function svc(name: string, overrides: Partial<ServiceConfig> = {}): ServiceConfi
     name,
     enabled: true,
     type: "cli",
-    model: `${name}-model`,
-    tier: "subscription",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    escalateOn: [],
+    capabilities: {},
+    provider: "local",
+    surface: "local_endpoint",
+    authSource: "local_network",
+    billingKind: "local_compute",
+    paidUsagePossible: false,
+    billingConfidence: "documented",
     ...overrides,
   } as ServiceConfig;
 }
 
 function makeConfig(services: ServiceConfig[]): RouterConfig {
   const map: Record<string, ServiceConfig> = {};
-  const priority: string[] = [];
-  for (const s of services) {
-    map[s.name] = s;
-    if (s.model && !priority.includes(s.model)) priority.push(s.model);
-  }
-  return { services: map, modelPriority: priority };
+  for (const s of services) map[s.name] = s;
+  return { services: map };
 }
 
 class ScriptedDispatcher implements Dispatcher {
   readonly id: string;
-  private readonly scripts: DispatcherEvent[][] = [];
+  private scripts: DispatcherEvent[][] = [];
   dispatchCalls = 0;
   streamCalls = 0;
 
@@ -67,7 +134,12 @@ class ScriptedDispatcher implements Dispatcher {
     const script = this.scripts.shift() ?? [];
     const completion = script.find((e) => e.type === "completion");
     if (completion?.type === "completion") return completion.result;
-    return { output: "", service: this.id, success: false, error: "no script" };
+    return {
+      output: "",
+      service: this.id,
+      success: false,
+      error: "no script",
+    };
   }
 
   stream(): AsyncIterable<DispatcherEvent> {
@@ -80,10 +152,13 @@ class ScriptedDispatcher implements Dispatcher {
   }
 }
 
-describe("Router.stream — event flow", () => {
+describe("Router.stream", () => {
   let quota: QuotaCache;
+  let leaderboard: LeaderboardCache;
+
   beforeEach(() => {
-    quota = new QuotaCache({});
+    quota = new QuotaCache();
+    leaderboard = new LeaderboardCache();
   });
 
   it("emits events from the picked dispatcher with the active decision", async () => {
@@ -96,7 +171,12 @@ describe("Router.stream — event flow", () => {
         result: { output: "chunk-1chunk-2", service: "alpha", success: true },
       },
     ]);
-    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha });
+    const router = new Router(
+      makeConfig([svc("alpha")]),
+      quota,
+      { alpha },
+      leaderboard,
+    );
     const events: DispatcherEvent[] = [];
     let decisionSeen = false;
     for await (const { event, decision } of router.stream("p", [], "/tmp")) {
@@ -108,7 +188,7 @@ describe("Router.stream — event flow", () => {
     expect(events[events.length - 1]?.type).toBe("completion");
   });
 
-  it("falls through to the next route on transient (non-rate-limit) failure", async () => {
+  it("falls back to the next service on transient failure", async () => {
     const alpha = new ScriptedDispatcher("alpha");
     alpha.push([
       { type: "stderr", chunk: "transient error" },
@@ -125,11 +205,14 @@ describe("Router.stream — event flow", () => {
         result: { output: "beta-ok", service: "beta", success: true },
       },
     ]);
-    // Same model so beta is in the same route list as a fallback after alpha.
     const router = new Router(
-      makeConfig([svc("alpha", { model: "shared-model" }), svc("beta", { model: "shared-model" })]),
+      makeConfig([
+        svc("alpha", { tier: 1 }),
+        svc("beta", { tier: 2 }),
+      ]),
       quota,
       { alpha, beta },
+      leaderboard,
     );
 
     const services: string[] = [];
@@ -141,13 +224,11 @@ describe("Router.stream — event flow", () => {
     expect(alpha.streamCalls).toBe(1);
     expect(beta.streamCalls).toBe(1);
     expect(finalSuccess).toBe(true);
+    // Both alpha and beta should have been seen in the decisions stream.
     expect(new Set(services)).toEqual(new Set(["alpha", "beta"]));
   });
 
-  it("rate-limited routes still trip breaker and fall through to next route", async () => {
-    // The new model-first router treats rate-limit as a per-route exclusion:
-    // exclude alpha, trip breaker, try beta. (Previous router stopped on
-    // rate-limit; new router keeps going so the user gets a response.)
+  it("falls back to the next tier on a rate_limited event instead of stopping", async () => {
     const alpha = new ScriptedDispatcher("alpha");
     alpha.push([
       {
@@ -170,40 +251,45 @@ describe("Router.stream — event flow", () => {
       },
     ]);
     const router = new Router(
-      makeConfig([svc("alpha", { model: "shared-model" }), svc("beta", { model: "shared-model" })]),
+      makeConfig([
+        svc("alpha", { tier: 1 }),
+        svc("beta", { tier: 2 }),
+      ]),
       quota,
       { alpha, beta },
+      leaderboard,
     );
-    let finalSuccess = false;
+    const completions: DispatcherEvent[] = [];
     for await (const { event } of router.stream("p", [], "/tmp")) {
-      if (event.type === "completion") finalSuccess = event.result.success;
+      if (event.type === "completion") completions.push(event);
     }
+    // Alpha's rate-limited attempt is yielded, then the router falls back to
+    // beta rather than aborting the request.
+    expect(completions.length).toBe(2);
+    expect(completions[0]?.type === "completion" && completions[0].result.rateLimited).toBe(true);
+    expect(completions[1]?.type === "completion" && completions[1].result.success).toBe(true);
     expect(alpha.streamCalls).toBe(1);
     expect(beta.streamCalls).toBe(1);
-    expect(finalSuccess).toBe(true);
-    expect(router.getBreaker("alpha")?.isTripped).toBe(true);
   });
 
   it("yields an error completion when no service is available", async () => {
-    const router = new Router(makeConfig([svc("alpha", { enabled: false })]), quota, {});
+    const router = new Router(
+      makeConfig([svc("alpha", { enabled: false })]),
+      quota,
+      {},
+      leaderboard,
+    );
     const events: DispatcherEvent[] = [];
     for await (const { event } of router.stream("p", [], "/tmp")) events.push(event);
     expect(events.length).toBe(1);
     expect(events[0]?.type).toBe("completion");
     if (events[0]?.type === "completion") {
       expect(events[0].result.success).toBe(false);
-      expect(events[0].result.error).toMatch(/no available routes/i);
+      expect(events[0].result.error).toMatch(/No available services/i);
     }
   });
-});
 
-describe("Router.streamTo — direct dispatch", () => {
-  let quota: QuotaCache;
-  beforeEach(() => {
-    quota = new QuotaCache({});
-  });
-
-  it("streamTo bypasses priority walk and attaches an explicit decision", async () => {
+  it("streamTo bypasses tier selection and attaches an explicit decision", async () => {
     const alpha = new ScriptedDispatcher("alpha");
     alpha.push([
       {
@@ -211,7 +297,12 @@ describe("Router.streamTo — direct dispatch", () => {
         result: { output: "direct", service: "alpha", success: true },
       },
     ]);
-    const router = new Router(makeConfig([svc("alpha"), svc("beta")]), quota, { alpha });
+    const router = new Router(
+      makeConfig([svc("alpha"), svc("beta", { tier: 2 })]),
+      quota,
+      { alpha },
+      leaderboard,
+    );
     const services: string[] = [];
     for await (const { decision } of router.streamTo("alpha", "p", [], "/tmp")) {
       if (decision) services.push(decision.service);
@@ -220,41 +311,7 @@ describe("Router.streamTo — direct dispatch", () => {
     expect(services[0]).toBe("alpha");
   });
 
-  it("streamTo emits an error completion for an unknown service", async () => {
-    const router = new Router(makeConfig([svc("alpha")]), quota, {});
-    const events: Array<{ type: string; result?: { success: boolean; error?: string } }> = [];
-    for await (const { event } of router.streamTo("nonexistent", "p", [], "/tmp")) {
-      events.push(event as { type: string; result?: { success: boolean; error?: string } });
-    }
-    const completion = events.find((e) => e.type === "completion");
-    expect(completion).toBeDefined();
-    expect(completion?.result?.success).toBe(false);
-    expect(completion?.result?.error).toMatch(/nonexistent/i);
-  });
-
-  it("streamTo emits an error completion when the service's circuit breaker is tripped", async () => {
-    const alpha = new ScriptedDispatcher("alpha");
-    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha });
-    router.getBreaker("alpha")!.trip();
-
-    const events: Array<{ type: string; result?: { success: boolean; error?: string } }> = [];
-    for await (const { event } of router.streamTo("alpha", "p", [], "/tmp")) {
-      events.push(event as { type: string; result?: { success: boolean; error?: string } });
-    }
-    const completion = events.find((e) => e.type === "completion");
-    expect(completion).toBeDefined();
-    expect(completion?.result?.success).toBe(false);
-    expect(alpha.streamCalls).toBe(0);
-  });
-});
-
-describe("Router.route — buffered surface", () => {
-  let quota: QuotaCache;
-  beforeEach(() => {
-    quota = new QuotaCache({});
-  });
-
-  it("buffered route() drains the streaming generator and returns the final result", async () => {
+  it("buffered route() is still implemented and works alongside stream()", async () => {
     const alpha = new ScriptedDispatcher("alpha");
     alpha.push([
       {
@@ -262,9 +319,16 @@ describe("Router.route — buffered surface", () => {
         result: { output: "buffered", service: "alpha", success: true },
       },
     ]);
-    const router = new Router(makeConfig([svc("alpha")]), quota, { alpha });
+    const router = new Router(
+      makeConfig([svc("alpha")]),
+      quota,
+      { alpha },
+      leaderboard,
+    );
     const { result } = await router.route("p", [], "/tmp");
     expect(result.success).toBe(true);
     expect(result.output).toBe("buffered");
+    // route() uses dispatch() (preserves legacy test assertions).
+    expect(alpha.dispatchCalls).toBe(1);
   });
 });

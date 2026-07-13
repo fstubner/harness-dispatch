@@ -4,22 +4,34 @@ import type {
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
 
-// Mock `runSubprocess` and `which`. Tests never spawn real subprocesses.
-// Windows .cmd/.bat shim quoting lives inside `safeSpawn` and is exercised
-// by `tests/safe-spawn.test.ts`.
+// Mock the shared modules Agent 1 writes + `which` (used for availability check).
+// Tests never spawn real subprocesses.
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
+}));
+vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
+  resolveCliCommand: vi.fn(),
 }));
 vi.mock("which", () => ({
   default: vi.fn(),
 }));
 
 // Import the mocked symbols and the dispatcher AFTER registering mocks.
-const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const { runSubprocess } = await import(
+  "../../src/dispatchers/shared/subprocess.js"
+);
+const { resolveCliCommand } = await import(
+  "../../src/dispatchers/shared/windows-cmd.js"
+);
 const { default: which } = await import("which");
-const { ClaudeCodeDispatcher } = await import("../../src/dispatchers/claude-code.js");
+const { ClaudeCodeDispatcher } = await import(
+  "../../src/dispatchers/claude-code.js"
+);
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
+const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
+  typeof vi.fn
+>;
 const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
@@ -50,10 +62,15 @@ function captureSubprocessCall(index: number): {
 
 function mockFound(commandPath = "/usr/local/bin/claude"): void {
   whichMock.mockResolvedValue(commandPath);
+  resolveCliCommandMock.mockResolvedValue({
+    command: commandPath,
+    prefixArgs: [],
+  });
 }
 
 beforeEach(() => {
   runSubprocessMock.mockReset();
+  resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 });
 
@@ -69,19 +86,7 @@ describe("ClaudeCodeDispatcher", () => {
     expect(res.error).toMatch(/claude CLI not found/i);
     expect(res.output).toBe("");
     expect(runSubprocessMock).not.toHaveBeenCalled();
-  });
-
-  it("passes the bare command name (`claude`) to runSubprocess; safeSpawn does the resolution", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
-
-    const d = new ClaudeCodeDispatcher();
-    await d.dispatch("hi", [], "");
-
-    const { command } = captureSubprocessCall(0);
-    // The bare-name contract: dispatchers don't pre-resolve to a path.
-    // safeSpawn (inside streamSubprocess) handles which() + .cmd shim quoting.
-    expect(command).toBe("claude");
+    expect(resolveCliCommandMock).not.toHaveBeenCalled();
   });
 
   it("parses structured JSON output on a successful run", async () => {
@@ -107,7 +112,9 @@ describe("ClaudeCodeDispatcher", () => {
 
   it("falls back to raw stdout when JSON parsing fails but exit code is 0", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: "not valid json at all" }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: "not valid json at all" }),
+    );
 
     const d = new ClaudeCodeDispatcher();
     const res = await d.dispatch("do thing", [], "");
@@ -136,7 +143,9 @@ describe("ClaudeCodeDispatcher", () => {
 
   it("passes --model <override> through to the subprocess", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new ClaudeCodeDispatcher();
     await d.dispatch("do thing", [], "", {
@@ -152,7 +161,9 @@ describe("ClaudeCodeDispatcher", () => {
 
   it("propagates the provided timeoutMs to runSubprocess", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new ClaudeCodeDispatcher();
     await d.dispatch("go", [], "", { timeoutMs: 5000 });
@@ -177,27 +188,6 @@ describe("ClaudeCodeDispatcher", () => {
 
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/timed out/i);
-  });
-
-  it("flags rate-limit signals in stderr and lifts retry-after onto the result", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({
-        exitCode: 1,
-        stderr: "Error: 429 too many requests. retry-after: 30",
-      }),
-    );
-
-    const d = new ClaudeCodeDispatcher();
-    const res = await d.dispatch("hi", [], "");
-
-    // The earlier R3 comment ("Reactive circuit-breaker handles rate limits.
-    // Deferred to R3.") was a forgotten TODO — this asserts the wiring now
-    // exists so the breaker honours retry-after instead of treating claude
-    // failures as opaque.
-    expect(res.success).toBe(false);
-    expect(res.rateLimited).toBe(true);
-    expect(res.retryAfter).toBe(30);
   });
 
   it("reports 'unknown' quota in R1", async () => {

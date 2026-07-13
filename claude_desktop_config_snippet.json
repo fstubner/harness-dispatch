@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "harness-router": {
+    "coding-agent": {
       "command": "npx",
-      "args": ["-y", "harness-router"],
+      "args": ["coding-agent-mcp"],
       "env": {
-        "HARNESS_ROUTER_CONFIG": "/path/to/your/config.yaml",
+        "CODING_AGENT_CONFIG": "/path/to/your/config.yaml",
         "GEMINI_API_KEY": "your-gemini-api-key-here"
       }
     }

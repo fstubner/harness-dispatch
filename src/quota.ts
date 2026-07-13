@@ -1,28 +1,29 @@
 /**
  * Quota management for harness-router.
  *
- * Two-layer approach:
+ * Ported from `coding_agent.quota`. Two-layer approach:
  *   1. Reactive — quota state is updated from every dispatch response
  *      (rate-limit headers on 429s, or usage headers on success).
  *   2. Proactive — each dispatcher can optionally implement `checkQuota()`
  *      for a live snapshot. Results are cached with a TTL to avoid
  *      hammering provider APIs.
- *
- * Persistence is delegated to a {@link QuotaStore} (SQLite WAL). Multiple
- * processes opening the same DB see each other's call counts in real time
- * via the store's additive UPSERT — no per-PID delta files, no daemon, no
- * IPC. The cache layer below holds an in-memory mirror for the current
- * process; cross-process totals are read from the store on `fullStatus()`.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { rename, unlink, writeFile } from "node:fs/promises";
 
 import type { DispatchResult, QuotaInfo } from "./types.js";
 import type { Dispatcher } from "./dispatchers/base.js";
-import { parseLimit, parseRemaining } from "./dispatchers/shared/rate-limit-headers.js";
-import { QuotaStore, defaultStateDbPath } from "./state/quota-store.js";
+import {
+  parseLimit,
+  parseRemaining,
+} from "./dispatchers/shared/rate-limit-headers.js";
 
 export const DEFAULT_QUOTA_TTL_MS = 300_000; // 5 minutes
 export const PROACTIVE_CHECK_TIMEOUT_MS = 15_000;
@@ -39,11 +40,8 @@ export interface QuotaStateJSON {
   score: number;
   source: string;
   updatedAgeSec: number;
-  /** Total dispatch attempts seen across all processes sharing the DB. */
   localCallCount: number;
-  /** Subset of localCallCount that succeeded. */
   localSuccessCount: number;
-  /** Subset of localCallCount that failed (success=false at dispatch). */
   localFailureCount: number;
 }
 
@@ -88,70 +86,49 @@ export class QuotaState {
       resetAt: this.resetAt,
       score: this.score,
       source: this.source,
-      updatedAgeSec: this.updatedAtSec === 0 ? 0 : monotonicSec() - this.updatedAtSec,
+      updatedAgeSec:
+        Math.round((monotonicSec() - this.updatedAtSec) * 10) / 10,
     };
   }
 }
 
 export interface QuotaCacheOptions {
   ttlMs?: number;
-  /**
-   * Override the persistence layer. Tests typically pass a `QuotaStore`
-   * backed by `:memory:`. Production omits this and gets the default DB
-   * at `~/.harness-router/state.db`.
-   */
-  store?: QuotaStore;
+  stateFile?: string;
 }
 
 /**
  * Manages quota state for all dispatchers.
- *
- * Holds a process-local in-memory snapshot for fast scoring; persists call
- * counts to the shared SQLite store on every `recordResult`. The store's
- * additive UPSERT means concurrent processes accumulate cleanly — no
- * read-modify-write race.
  */
 export class QuotaCache {
-  private readonly dispatchers: Record<string, Dispatcher>;
-  private readonly ttlMs: number;
-  private readonly store: QuotaStore;
-  /** True when this cache opened its own store and owns the lifecycle. */
-  private readonly ownsStore: boolean;
+  private dispatchers: Record<string, Dispatcher>;
+  private ttlMs: number;
+  private stateFile: string;
   private states: Record<string, QuotaState> = {};
   /** performance.now() seconds of last proactive check per service. */
   private lastChecked: Record<string, number> = {};
+  private localCounts: Record<string, number>;
+  private localSuccessCounts: Record<string, number>;
+  private localFailureCounts: Record<string, number>;
+  private persistVersion = 0;
+  private persistCounter = 0;
+  private persistQueue: Promise<void> = Promise.resolve();
 
-  constructor(dispatchers: Record<string, Dispatcher>, opts: QuotaCacheOptions = {}) {
+  constructor(
+    dispatchers: Record<string, Dispatcher>,
+    opts: QuotaCacheOptions = {},
+  ) {
     this.dispatchers = dispatchers;
     this.ttlMs = opts.ttlMs ?? DEFAULT_QUOTA_TTL_MS;
-
-    if (opts.store) {
-      this.store = opts.store;
-      this.ownsStore = false;
-    } else {
-      this.store = new QuotaStore({ path: defaultStateDbPath() });
-      this.ownsStore = true;
-      // One-shot legacy import: fold any v0.2 quota_state.json into the DB
-      // and delete it. Idempotent because the legacy file is removed after
-      // a successful import.
-      this.importLegacyState();
-    }
+    this.stateFile = opts.stateFile ?? "quota_state.json";
 
     for (const name of Object.keys(dispatchers)) {
       this.states[name] = new QuotaState(name);
     }
-  }
-
-  /** Wait for any pending writes. SQLite writes are synchronous; this is now a no-op. */
-  async flush(): Promise<void> {
-    // Retained as an `async` no-op so callers (hot-reload) keep their
-    // `await flush()` shape during the v0.2 → v0.3 cutover.
-    return;
-  }
-
-  /** Close the store if this cache owns it. Safe to call multiple times. */
-  close(): void {
-    if (this.ownsStore) this.store.close();
+    const loaded = this.loadLocalCounts();
+    this.localCounts = loaded.calls;
+    this.localSuccessCounts = loaded.success;
+    this.localFailureCounts = loaded.failure;
   }
 
   // ------------------------------------------------------------------
@@ -165,15 +142,17 @@ export class QuotaCache {
   }
 
   recordResult(service: string, result: DispatchResult): void {
-    // Each dispatch is one delta-of-1 to the store. Concurrent processes
-    // accumulate cleanly via SQLite's additive UPSERT (`local_calls = local_calls
-    // + excluded.local_calls`). No read-modify-write race.
-    this.store.applyCounterDelta({
-      service,
-      total: 1,
-      success: result.success ? 1 : 0,
-      failure: result.success ? 0 : 1,
-    });
+    this.localCounts[service] = (this.localCounts[service] ?? 0) + 1;
+    if (result.success) {
+      this.localSuccessCounts[service] = (this.localSuccessCounts[service] ?? 0) + 1;
+    } else {
+      this.localFailureCounts[service] = (this.localFailureCounts[service] ?? 0) + 1;
+    }
+
+    // CLI commands often exit immediately after a route. Use the synchronous
+    // atomic path so local-count persistence cannot leave a temp file behind.
+    this.persistVersion += 1;
+    this.saveLocalCountsSync();
 
     if (!result.rateLimitHeaders && !result.rateLimited) {
       return;
@@ -216,19 +195,14 @@ export class QuotaCache {
 
   async fullStatus(): Promise<Record<string, QuotaStateJSON>> {
     const out: Record<string, QuotaStateJSON> = {};
-    // Single read of the store gives us cross-process totals for every
-    // service in the DB, including any service this process hasn't itself
-    // dispatched to yet.
-    const counts = this.store.loadAllCounters();
     for (const service of Object.keys(this.dispatchers)) {
       await this.maybeRefresh(service);
       const state = this.states[service] ?? new QuotaState(service);
-      const c = counts.get(service);
       out[service] = {
         ...state.toJSON(),
-        localCallCount: c?.total ?? 0,
-        localSuccessCount: c?.success ?? 0,
-        localFailureCount: c?.failure ?? 0,
+        localCallCount: this.localCounts[service] ?? 0,
+        localSuccessCount: this.localSuccessCounts[service] ?? 0,
+        localFailureCount: this.localFailureCounts[service] ?? 0,
       };
     }
     return out;
@@ -255,7 +229,10 @@ export class QuotaCache {
 
     this.lastChecked[service] = monotonicSec();
     try {
-      const info = await withTimeout(dispatcher.checkQuota(), PROACTIVE_CHECK_TIMEOUT_MS);
+      const info = await withTimeout(
+        dispatcher.checkQuota(),
+        PROACTIVE_CHECK_TIMEOUT_MS,
+      );
       if (info.source !== "unknown") {
         let state = this.states[service];
         if (!state) {
@@ -264,50 +241,139 @@ export class QuotaCache {
         }
         state.updateFromQuotaInfo(info);
       }
-    } catch (err) {
-      // Proactive check failed — fall back to reactive state. Surface a
-      // diagnostic to stderr (gated by HARNESS_ROUTER_QUOTA_DEBUG) so the
-      // "why is the quota score stuck at 1.0?" question is answerable
-      // without code-instrumenting.
-      if (process.env.HARNESS_ROUTER_QUOTA_DEBUG === "1") {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[quota] proactive checkQuota(${service}) failed: ${msg}\n`);
-      }
+    } catch {
+      // Proactive check failed — rely on reactive state.
     }
   }
 
   // ------------------------------------------------------------------
-  // Local counts: cross-process reads, per-call delta writes
+  // Local count persistence
   // ------------------------------------------------------------------
 
-  /**
-   * Cross-process total counts for one service. Reads from the store every
-   * call so concurrent processes' counts are visible immediately.
-   */
-  getCounts(service: string): { total: number; success: number; failure: number } {
-    const c = this.store.loadAllCounters().get(service);
-    return c ? { ...c } : { total: 0, success: 0, failure: 0 };
+  private loadLocalCounts(): {
+    calls: Record<string, number>;
+    success: Record<string, number>;
+    failure: Record<string, number>;
+  } {
+    if (!existsSync(this.stateFile)) {
+      return { calls: {}, success: {}, failure: {} };
+    }
+    try {
+      const raw = readFileSync(this.stateFile, "utf-8");
+      const data = JSON.parse(raw) as Record<
+        string,
+        { local_calls?: number; local_success?: number; local_failure?: number } | null
+      >;
+      const calls: Record<string, number> = {};
+      const success: Record<string, number> = {};
+      const failure: Record<string, number> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (!v) continue;
+        if (typeof v.local_calls === "number") calls[k] = v.local_calls;
+        if (typeof v.local_success === "number") success[k] = v.local_success;
+        if (typeof v.local_failure === "number") failure[k] = v.local_failure;
+      }
+      return { calls, success, failure };
+    } catch {
+      return { calls: {}, success: {}, failure: {} };
+    }
   }
 
-  // ------------------------------------------------------------------
-  // Legacy v0.2 quota_state.json import (one-shot at first boot)
-  // ------------------------------------------------------------------
-
-  private importLegacyState(): void {
-    const legacyPath = join(homedir(), ".harness-router", "quota_state.json");
-    if (!existsSync(legacyPath)) return;
+  /** Build the on-disk payload, merging new counts over any existing state. */
+  private buildStatePayload(): string {
+    let existing: Record<string, Record<string, unknown>> = {};
     try {
-      const text = readFileSync(legacyPath, "utf-8");
-      const n = this.store.importLegacyJson(text);
-      if (n > 0 && process.env.HARNESS_ROUTER_QUOTA_DEBUG === "1") {
-        process.stderr.write(`[quota] migrated ${n} services from legacy quota_state.json\n`);
+      if (existsSync(this.stateFile)) {
+        const raw = readFileSync(this.stateFile, "utf-8");
+        const parsed = JSON.parse(raw) as Record<
+          string,
+          Record<string, unknown>
+        > | null;
+        if (parsed && typeof parsed === "object") {
+          existing = parsed;
+        }
       }
-      // Delete after successful import. Keeps the import idempotent across
-      // restarts (no double-counting on the next boot).
-      unlinkSync(legacyPath);
     } catch {
-      // Best-effort. If the legacy file is unreadable or the import errors,
-      // we leave it on disk; the user can clean it up manually.
+      existing = {};
+    }
+    for (const [service, count] of Object.entries(this.localCounts)) {
+      const bucket = existing[service] ?? {};
+      bucket["local_calls"] = count;
+      existing[service] = bucket;
+    }
+    for (const [service, count] of Object.entries(this.localSuccessCounts)) {
+      const bucket = existing[service] ?? {};
+      bucket["local_success"] = count;
+      existing[service] = bucket;
+    }
+    for (const [service, count] of Object.entries(this.localFailureCounts)) {
+      const bucket = existing[service] ?? {};
+      bucket["local_failure"] = count;
+      existing[service] = bucket;
+    }
+    return JSON.stringify(existing, null, 2);
+  }
+
+  private nextTempStateFile(): string {
+    this.persistCounter += 1;
+    return `${this.stateFile}.${process.pid}.${Date.now()}.${this.persistCounter}.tmp`;
+  }
+
+  private async writeStatePayloadAtomic(payload: string): Promise<void> {
+    const tmp = this.nextTempStateFile();
+    try {
+      await writeFile(tmp, payload);
+      await rename(tmp, this.stateFile);
+    } catch (err) {
+      try {
+        await unlink(tmp);
+      } catch {
+        // Ignore cleanup failures; the original write error is intentionally
+        // swallowed by the caller because persistence is best-effort.
+      }
+      throw err;
+    }
+  }
+
+  private writeStatePayloadAtomicSync(payload: string): void {
+    const tmp = this.nextTempStateFile();
+    try {
+      writeFileSync(tmp, payload);
+      renameSync(tmp, this.stateFile);
+    } catch (err) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // Ignore cleanup failures.
+      }
+      throw err;
+    }
+  }
+
+  private async saveLocalCounts(version: number): Promise<void> {
+    this.persistQueue = this.persistQueue.then(async () => {
+      if (version < this.persistVersion) {
+        return;
+      }
+      try {
+        const payload = this.buildStatePayload();
+        if (version < this.persistVersion) {
+          return;
+        }
+        await this.writeStatePayloadAtomic(payload);
+      } catch {
+        // Best-effort; the in-memory count remains correct.
+      }
+    });
+    await this.persistQueue;
+  }
+
+  /** Synchronous variant for tests where awaiting the async write is awkward. */
+  saveLocalCountsSync(): void {
+    try {
+      this.writeStatePayloadAtomicSync(this.buildStatePayload());
+    } catch {
+      // Ignore.
     }
   }
 }

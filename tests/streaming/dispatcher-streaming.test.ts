@@ -11,21 +11,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
 import type { DispatcherEvent } from "../../src/types.js";
 
-// Dispatchers no longer call resolveCliCommand directly — Windows .cmd
-// quoting now lives in safeSpawn (covered by tests/safe-spawn.test.ts).
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
+}));
+vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
+  resolveCliCommand: vi.fn(),
 }));
 vi.mock("which", () => ({ default: vi.fn() }));
 
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
 const { ClaudeCodeDispatcher } = await import("../../src/dispatchers/claude-code.js");
 const { CodexDispatcher } = await import("../../src/dispatchers/codex.js");
 const { CursorDispatcher } = await import("../../src/dispatchers/cursor.js");
-const { GeminiDispatcher } = await import("../../src/dispatchers/gemini.js");
+const { AntigravityDispatcher } = await import("../../src/dispatchers/antigravity.js");
 
 const runMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
+const resolveMock = resolveCliCommand as unknown as ReturnType<typeof vi.fn>;
 const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
@@ -41,6 +44,7 @@ function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
 
 function mockFound(cmd = "/usr/local/bin/fake"): void {
   whichMock.mockResolvedValue(cmd);
+  resolveMock.mockResolvedValue({ command: cmd, prefixArgs: [] });
 }
 
 async function collect(iter: AsyncIterable<DispatcherEvent>): Promise<DispatcherEvent[]> {
@@ -51,6 +55,7 @@ async function collect(iter: AsyncIterable<DispatcherEvent>): Promise<Dispatcher
 
 beforeEach(() => {
   runMock.mockReset();
+  resolveMock.mockReset();
   whichMock.mockReset();
 });
 
@@ -58,12 +63,7 @@ describe("ClaudeCodeDispatcher.stream", () => {
   it("yields stdout then a completion event", async () => {
     mockFound();
     runMock.mockResolvedValue(
-      ok({
-        stdout: JSON.stringify({
-          result: "hi there",
-          usage: { input_tokens: 3, output_tokens: 4 },
-        }),
-      }),
+      ok({ stdout: JSON.stringify({ result: "hi there", usage: { input_tokens: 3, output_tokens: 4 } }) }),
     );
     const events = await collect(new ClaudeCodeDispatcher().stream("do it", [], "/tmp"));
     const types = events.map((e) => e.type);
@@ -165,24 +165,26 @@ describe("CursorDispatcher.stream", () => {
   });
 });
 
-describe("GeminiDispatcher.stream", () => {
-  it("yields completion with the parsed response", async () => {
-    mockFound();
-    runMock.mockResolvedValue(
-      ok({
-        stdout: JSON.stringify({
-          response: "gemini says hi",
-          usage: { input_tokens: 1, output_tokens: 2 },
-        }),
-      }),
+describe("AntigravityDispatcher.stream", () => {
+  it("runs agy in print mode and reports its output", async () => {
+    mockFound("/usr/local/bin/agy");
+    runMock.mockResolvedValue(ok({ stdout: "antigravity says hi" }));
+
+    const events = await collect(
+      new AntigravityDispatcher().stream("hi", [], "/tmp/work"),
     );
-    const events = await collect(new GeminiDispatcher().stream("hi", [], ""));
-    const completion = events.find((e) => e.type === "completion");
+
+    const completion = events.find((event) => event.type === "completion");
     expect(completion?.type).toBe("completion");
     if (completion?.type === "completion") {
+      expect(completion.result.service).toBe("antigravity_cli");
       expect(completion.result.success).toBe(true);
-      expect(completion.result.output).toBe("gemini says hi");
+      expect(completion.result.output).toBe("antigravity says hi");
     }
+
+    const args = runMock.mock.calls[0]?.[1] as string[];
+    expect(args).toContain("--print");
+    expect(args).toContain("hi");
   });
 });
 

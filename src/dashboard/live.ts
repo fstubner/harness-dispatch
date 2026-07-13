@@ -3,10 +3,8 @@
  *
  * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
  * by:
- *   - The `harness-router://status` MCP resource (one-shot snapshot, no ANSI
- *     codes unless the caller asks for them).
- *   - `bin.ts dashboard --watch` (live-redraw loop — prints ANSI codes
- *     when the output is a TTY).
+ *   - legacy dashboard tests.
+ *   - the hidden `dashboard --watch` compatibility alias.
  *
  * Keeping the renderer pure (no I/O) makes it unit-testable with a simple
  * snapshot-style assertion.
@@ -119,29 +117,28 @@ export function renderDashboard(state: DashboardState): string {
   );
   out.push("");
 
-  // Group services by cost tier
-  const byTier: Map<string, typeof state.services> = new Map();
+  // Group services by tier
+  const byTier: Map<number, typeof state.services> = new Map();
   for (const svcEntry of state.services) {
-    const tier = svcEntry.config.tier ?? "subscription";
+    const tier = svcEntry.config.tier;
     const bucket = byTier.get(tier);
     if (bucket) bucket.push(svcEntry);
     else byTier.set(tier, [svcEntry]);
   }
 
-  const tierLabels: Record<string, string> = {
-    subscription: "Subscription — flat-rate, zero marginal cost",
-    metered: "Metered — per-token API",
+  const tierLabels: Record<number, string> = {
+    1: "Tier 1 — Frontier",
+    2: "Tier 2 — Strong",
+    3: "Tier 3 — Fast/Local",
   };
-  const tierOrder = ["subscription", "metered"];
 
-  for (const tier of tierOrder.filter((t) => byTier.has(t))) {
-    const label = tierLabels[tier] ?? tier;
+  for (const tier of [...byTier.keys()].sort((a, b) => a - b)) {
+    const label = tierLabels[tier] ?? `Tier ${tier}`;
     out.push(`── ${label} ──────────────────────────────`);
     out.push("");
     for (const svcEntry of byTier.get(tier)!) {
       const { name, config: svc, reachable } = svcEntry;
       out.push(`  ${statusIcon(svc.enabled, reachable, ansi)} ${name.toUpperCase()}`);
-      if (svc.model) out.push(`      model      : ${svc.model}`);
       if (svc.type === "openai_compatible") {
         out.push(`      connection : HTTP API  ${svc.baseUrl ?? "(no base_url)"}`);
       } else {
@@ -179,7 +176,9 @@ export function renderDashboard(state: DashboardState): string {
     out.push("");
   }
 
-  const ready = state.services.filter((s) => s.config.enabled && s.reachable).map((s) => s.name);
+  const ready = state.services
+    .filter((s) => s.config.enabled && s.reachable)
+    .map((s) => s.name);
   out.push(`Ready to route: ${ready.length === 0 ? "none" : ready.join(", ")}`);
 
   return out.join("\n");

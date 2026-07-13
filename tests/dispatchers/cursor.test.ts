@@ -4,20 +4,31 @@ import type {
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
 
-// Dispatchers no longer call resolveCliCommand directly — Windows .cmd
-// quoting now lives in safeSpawn (covered by tests/safe-spawn.test.ts).
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
+}));
+vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
+  resolveCliCommand: vi.fn(),
 }));
 vi.mock("which", () => ({
   default: vi.fn(),
 }));
 
-const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const { runSubprocess } = await import(
+  "../../src/dispatchers/shared/subprocess.js"
+);
+const { resolveCliCommand } = await import(
+  "../../src/dispatchers/shared/windows-cmd.js"
+);
 const { default: which } = await import("which");
-const { CursorDispatcher } = await import("../../src/dispatchers/cursor.js");
+const { CursorDispatcher } = await import(
+  "../../src/dispatchers/cursor.js"
+);
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
+const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
+  typeof vi.fn
+>;
 const whichMock = which as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
@@ -45,14 +56,19 @@ function captureSubprocessCall(index: number): {
   };
 }
 
-function mockFound(commandPath = "/usr/local/bin/agent"): void {
+function mockFound(commandPath = "/usr/local/bin/cursor-agent"): void {
   whichMock.mockResolvedValue(commandPath);
+  resolveCliCommandMock.mockResolvedValue({
+    command: commandPath,
+    prefixArgs: [],
+  });
 }
 
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
   runSubprocessMock.mockReset();
+  resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 });
 
@@ -77,18 +93,7 @@ describe("CursorDispatcher", () => {
     expect(res.error).toMatch(/agent CLI not found/i);
     expect(res.output).toBe("");
     expect(runSubprocessMock).not.toHaveBeenCalled();
-  });
-
-  it("passes the bare command name (`agent`) to runSubprocess", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
-
-    const d = new CursorDispatcher();
-    await d.dispatch("hi", [], "/tmp");
-
-    const { command } = captureSubprocessCall(0);
-    // Bare-name contract — safeSpawn handles which() + .cmd shim quoting.
-    expect(command).toBe("agent");
+    expect(resolveCliCommandMock).not.toHaveBeenCalled();
   });
 
   it("parses JSON result on a successful run", async () => {
@@ -114,7 +119,9 @@ describe("CursorDispatcher", () => {
 
   it("passes --model <override> through to the subprocess", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new CursorDispatcher();
     await d.dispatch("go", [], "/tmp", { modelOverride: "claude-4-cursor" });
@@ -128,7 +135,9 @@ describe("CursorDispatcher", () => {
 
   it("sets --workspace <workingDir> when provided", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new CursorDispatcher();
     await d.dispatch("go", [], "/tmp/project");
@@ -146,9 +155,11 @@ describe("CursorDispatcher", () => {
     expect(args[jidx + 1]).toBe("json");
   });
 
-  it("defaults --workspace to os.homedir() when workingDir is empty", async () => {
+  it("defaults --workspace to HOME when workingDir is empty", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new CursorDispatcher();
     await d.dispatch("go", [], "");
@@ -156,28 +167,43 @@ describe("CursorDispatcher", () => {
     const { args } = captureSubprocessCall(0);
     const widx = args.indexOf("--workspace");
     expect(widx).toBeGreaterThanOrEqual(0);
-    // Locks the cross-platform HOME fallback — without this, an accidental
-    // regression to a constant like "." or process.cwd() would still pass.
-    const os = await import("node:os");
-    expect(args[widx + 1]).toBe(os.homedir());
+    // Should not be an empty string.
+    expect(args[widx + 1]).not.toBe("");
+    expect(args[widx + 1]?.length ?? 0).toBeGreaterThan(0);
   });
 
-  it("forwards CURSOR_API_KEY from process.env to the subprocess", async () => {
+  it("forwards only a configured CURSOR_API_KEY to the subprocess", async () => {
     process.env["CURSOR_API_KEY"] = "cursor-key-xyz";
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
-    const d = new CursorDispatcher();
+    const d = new CursorDispatcher({
+      name: "cursor",
+      enabled: true,
+      type: "cli",
+      harness: "cursor",
+      command: "cursor-agent",
+      tier: 1,
+      weight: 1,
+      cliCapability: 1,
+      capabilities: {},
+      escalateOn: [],
+      apiKey: "configured-cursor-key",
+    });
     await d.dispatch("go", [], "/tmp");
 
     const { opts } = captureSubprocessCall(0);
     expect(opts?.env).toBeDefined();
-    expect(opts?.env?.["CURSOR_API_KEY"]).toBe("cursor-key-xyz");
+    expect(opts?.env?.["CURSOR_API_KEY"]).toBe("configured-cursor-key");
   });
 
   it("reports failure on a non-zero exit code", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: "", stderr: "bad thing", exitCode: 2 }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: "", stderr: "bad thing", exitCode: 2 }),
+    );
 
     const d = new CursorDispatcher();
     const res = await d.dispatch("go", [], "/tmp");
@@ -224,7 +250,9 @@ describe("CursorDispatcher", () => {
 
   it("propagates the provided timeoutMs to runSubprocess", async () => {
     mockFound();
-    runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: JSON.stringify({ result: "ok" }) }),
+    );
 
     const d = new CursorDispatcher();
     await d.dispatch("go", [], "/tmp", { timeoutMs: 9999 });

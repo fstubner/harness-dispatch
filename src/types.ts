@@ -1,41 +1,139 @@
 /**
- * Core runtime types for harness-router.
+ * Core types for harness-router.
  *
- * Cross-cutting types used by dispatchers, the router, the quota tracker,
- * and the MCP surface.
- *
- * **Two-layer architecture (deliberate)**
- *
- * The codebase has two config-related types that are distinct on purpose:
- *
- *   - `Config` (in src/config/types.ts) — the on-disk YAML schema. What
- *     users write, hand-edit, and version-control. Model-keyed:
- *     `models.<key>.subscription[]` / `metered[]` arrays. The wizard
- *     emits this; the parser validates this.
- *
- *   - `RouterConfig` (here) — the runtime view consumed by Router. Flat
- *     services-keyed map produced by the adapter
- *     (src/config/adapter.ts). Synthetic service ids of the form
- *     `${model}::${routeKey}` are derived once at config-load time.
- *
- * Why both? They serve different roles:
- *
- *   - The on-disk shape is for humans (model-first, terse, no derived
- *     fields).
- *   - The runtime shape is for the router (flat lookup, pre-computed
- *     synthetic ids that the quota cache and circuit breakers key on,
- *     pre-expanded mixture-default lists).
- *
- * The translation runs once per config load (or hot-reload) — not per
- * dispatch. The synthetic-id format is centralised in
- * src/config/route-id.ts. Future cleanup could make Router consume
- * `Config` directly and derive route ids on construction; deliberately
- * deferred because the current adapter is small (~130 LOC) and the
- * tradeoff isn't a clear win — the runtime would still need the
- * id-derivation logic, just inlined.
+ * These are the cross-cutting types used by dispatchers, the router, the
+ * quota tracker, and the MCP surface. Downstream modules (R2/R3/R4) import
+ * from here.
  */
 
+export type TaskType = "execute" | "plan" | "review" | "local" | "";
+
 export type ThinkingLevel = "low" | "medium" | "high";
+
+export type SafetyProfile = "read_only" | "workspace_edit" | "full_auto";
+
+export type RoutePolicy = "standard" | "local_only" | "approval_required" | "blocked";
+
+export type BillingProvider =
+  | "anthropic"
+  | "openai"
+  | "cursor"
+  | "google"
+  | "local"
+  | "custom";
+
+export type BillingSurface =
+  | "claude_code"
+  | "claude_agent_sdk"
+  | "anthropic_api"
+  | "codex_cli"
+  | "codex_sdk"
+  | "openai_api"
+  | "cursor_agent_cli"
+  | "antigravity_cli"
+  | "gemini_api"
+  | "vertex_ai"
+  | "openai_compatible"
+  | "local_endpoint"
+  | "custom";
+
+export type AuthSource =
+  | "product_login"
+  | "api_key"
+  | "oauth_session"
+  | "local_network"
+  | "configured_endpoint"
+  | "unknown";
+
+export type BillingKind =
+  | "local_compute"
+  | "included_plan_usage"
+  | "included_plan_then_flexible_credits"
+  | "included_credit_then_optional_overage"
+  | "included_usage_then_on_demand"
+  | "metered_api"
+  | "free_quota"
+  | "unknown";
+
+export type BillingConfidence = "documented" | "inferred" | "unknown" | "unsupported";
+
+export type EndpointMode =
+  | "provider_cloud"
+  | "direct_openai_compatible"
+  | "harness_native_endpoint";
+
+export type EndpointProvider =
+  | "ollama"
+  | "lmstudio"
+  | "openai_compatible"
+  | "anthropic_gateway"
+  | "gemini_proxy"
+  | "custom";
+
+export type WireProtocol =
+  | "openai_chat_completions"
+  | "anthropic_messages"
+  | "gemini_generate_content"
+  | "provider_native"
+  | "unknown";
+
+export type WorkspacePolicy =
+  | "shared"
+  | "shared_locked"
+  | "git_worktree"
+  | "copy";
+
+export type WorkspaceChangeKind = "added" | "modified" | "deleted";
+
+export interface WorkspaceFileChange {
+  path: string;
+  kind: WorkspaceChangeKind;
+}
+
+export interface WorkspaceRun {
+  policy: WorkspacePolicy;
+  originalWorkingDir: string;
+  effectiveWorkingDir: string;
+  isolated: boolean;
+  securityBoundary:
+    | "none"
+    | "project_state"
+    | "project_state_and_process_cwd";
+  workspaceRoot?: string;
+  changedFiles?: WorkspaceFileChange[];
+  diffSummary?: string;
+  cleanupHint?: string;
+  notes?: string[];
+}
+
+export interface RouteBilling {
+  provider: BillingProvider;
+  surface: BillingSurface;
+  authSource: AuthSource;
+  kind: BillingKind;
+  paidUsagePossible: boolean;
+  allowPaidUsage: boolean;
+  allowPaidOverage: boolean;
+  paidUsageRequiresOptIn: boolean | "unknown";
+  confidence: BillingConfidence;
+  notes?: string;
+}
+
+export interface RouteSkip {
+  route: string;
+  code:
+    | "disabled"
+    | "no_dispatcher"
+    | "unavailable"
+    | "circuit_broken"
+    | "paid_blocked"
+    | "unknown_billing"
+    | "route_policy"
+    | "approval_required"
+    | "safety_incompatible"
+    | "workspace_isolation_required";
+  message: string;
+}
 
 export interface DispatchResult {
   output: string;
@@ -47,6 +145,8 @@ export interface DispatchResult {
   rateLimitHeaders?: Record<string, string>;
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
+  skippedRoutes?: RouteSkip[];
+  workspace?: WorkspaceRun;
 }
 
 export interface QuotaInfo {
@@ -58,130 +158,87 @@ export interface QuotaInfo {
   source: "headers" | "api" | "unknown";
 }
 
-/**
- * Recipe for a YAML-defined CLI dispatcher (`type: generic_cli`).
- *
- * Lets users add new AI tools without writing a TypeScript dispatcher: the
- * router treats the CLI as a black box that takes a prompt and writes the
- * agent's response to stdout. The recipe describes how to assemble the
- * argv and (optionally) how to extract structured output.
- */
-export type PromptDelivery = "positional" | "flag" | "stdin";
-
-export interface GenericCliRecipe {
-  argsBeforePrompt?: string[];
-  argsAfterPrompt?: string[];
-  modelFlag?: string;
-  cwdFlag?: string;
-  promptDelivery?: PromptDelivery;
-  promptFlag?: string;
-  argsPerFile?: string[];
-  forwardEnv?: string[];
-  outputJsonPath?: string;
-  tokensJsonPath?: string;
-  outputJsonl?: {
-    textDeltaPath: string;
-    toolNamePath?: string;
-    toolInputPath?: string;
-    thinkingPath?: string;
-    tokensPath?: string;
-  };
-  authCommand?: string;
-}
-
-/**
- * Cost tier for a route. Subscription = zero marginal cost (you've already
- * paid the flat fee, e.g. Claude Pro). Metered = per-token cost (e.g. raw
- * Anthropic API). The router walks subscription before metered for each
- * model in the priority list.
- */
-export type RouteTier = "subscription" | "metered";
-
 export interface ServiceConfig {
   name: string;
   enabled: boolean;
-  type: "cli" | "openai_compatible" | "generic_cli";
+  type: "cli" | "openai_compatible";
   harness?: string;
   command?: string;
   apiKey?: string;
   baseUrl?: string;
-  /**
-   * Canonical model ID this service serves. Used by the router to match
-   * services against the user's `modelPriority` list — the strings here
-   * and in `modelPriority` must agree literally for routing to work.
-   *
-   * Pick whatever convention you want (semantic versions, dates, aliases),
-   * just keep it consistent.
-   */
   model?: string;
-  /**
-   * What to actually pass to the underlying CLI's `--model` flag at dispatch
-   * time. Defaults to `model` when absent. Use this when the canonical name
-   * you want for routing differs from what the CLI accepts.
-   *
-   * Example: route under "claude-opus-4-7" canonically, but Claude Code's
-   * CLI expects the alias "opus":
-   *
-   *   model:     claude-opus-4-7
-   *   cli_model: opus
-   *
-   * Different services can serve the same canonical model with different
-   * CLI names (e.g. claude_code wants "opus", cursor wants
-   * "claude-3-opus-thinking-max"). This field is the join.
-   */
-  cliModel?: string;
-  /**
-   * Cost tier. Defaults to "subscription" when omitted (the common case
-   * for CLI services backed by paid subscriptions).
-   */
-  tier?: RouteTier;
+  tier: number;
+  weight: number;
+  cliCapability: number;
+  leaderboardModel?: string;
   thinkingLevel?: ThinkingLevel;
-  /** Recipe for `type: generic_cli` services. */
-  genericCli?: GenericCliRecipe;
-  /** Maximum output tokens the model can produce in a single dispatch. */
+  escalateModel?: string;
+  escalateOn: TaskType[];
+  capabilities: Partial<Record<"execute" | "plan" | "review", number>>;
+  /**
+   * Maximum output tokens the model can produce in a single dispatch.
+   * Callers (Planners, Workers, Reconcilers) use this to size work so it fits
+   * without mid-call truncation. A value of `undefined` means "unknown /
+   * assume the provider default" — callers that need to chunk conservatively
+   * should treat absence as a low bound.
+   */
   maxOutputTokens?: number;
-  /** Context window in tokens (input + output). */
+  /**
+   * Context window (input + output) in tokens. Used by the
+   * `preferLargeContext` route hint and by planners sizing up prompt payloads.
+   * Advertised by the provider; may be model-specific when `escalateModel` is
+   * in effect — consult the resolved model at dispatch time.
+   */
   maxInputTokens?: number;
+  provider?: BillingProvider;
+  surface?: BillingSurface;
+  authSource?: AuthSource;
+  billingKind?: BillingKind;
+  paidUsagePossible?: boolean;
+  allowPaidUsage?: boolean;
+  allowPaidOverage?: boolean;
+  billingConfidence?: BillingConfidence;
+  billingNotes?: string;
+  safetyProfile?: SafetyProfile;
+  endpointMode?: EndpointMode;
+  endpointProvider?: EndpointProvider;
+  wireProtocol?: WireProtocol;
+  workspacePolicy?: WorkspacePolicy;
 }
 
 export interface RouterConfig {
   services: Record<string, ServiceConfig>;
-  /**
-   * Ordered list of model IDs, highest priority first. The router walks
-   * this list to find a usable route per dispatch. When omitted, every
-   * service's `model` is treated as priority-1 in declaration order.
-   */
-  modelPriority?: readonly string[];
-  /**
-   * Default service whitelist for `code_mixture`. When the agent doesn't
-   * pass `services` or `models` to the tool, the router uses this list to
-   * decide which services to fan out to. Absent (or empty) means "all
-   * available services" (the historical default). Configured via
-   * `harness-router onboard`'s mixture-default step.
-   */
-  mixtureDefault?: readonly string[];
-  geminiApiKey?: string;
   disabled?: readonly string[];
 }
 
 export interface RoutingDecision {
-  /** The picked model ID (e.g. "claude-opus-4.7"). */
-  model: string;
-  /** The dispatcher service name that will deliver it. */
   service: string;
-  /** Cost tier of the picked route. */
-  tier: RouteTier;
-  /** 0..1 — higher means more headroom on this CLI. */
+  tier: number;
   quotaScore: number;
-  /** Human-readable trace ("model=X tier=subscription svc=Y quota=0.83 / 3 candidates"). */
+  qualityScore: number;
+  cliCapability: number;
+  capabilityScore: number;
+  taskType: TaskType;
+  model: string | undefined;
+  elo: number | undefined;
+  finalScore: number;
   reason: string;
+  skippedRoutes?: RouteSkip[];
+  safetyProfile?: SafetyProfile;
+  effectiveSafetyProfile?: SafetyProfile;
+  billing?: RouteBilling;
+  workspacePolicy?: WorkspacePolicy;
 }
 
 export interface RouteHints {
-  /** Force a specific service (bypasses priority walk). */
-  service?: string;
-  /** Bump a specific model to the front of the priority list. */
   model?: string;
+  service?: string;
+  preferLargeContext?: boolean;
+  taskType?: TaskType;
+  harness?: string;
+  safetyProfile?: SafetyProfile;
+  workspacePolicy?: WorkspacePolicy;
+  routePolicy?: RoutePolicy;
 }
 
 export type DispatcherEvent =

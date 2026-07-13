@@ -18,10 +18,8 @@
 
 import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
 
-import { VERSION } from "../version.js";
-
 const TRACER_NAME = "harness-router";
-const TRACER_VERSION = VERSION;
+const TRACER_VERSION = "1.0.0-alpha.0";
 
 export interface SpanAttrs {
   [key: string]: string | number | boolean | undefined;

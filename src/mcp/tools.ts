@@ -1,170 +1,180 @@
 /**
- * Tool registry for the harness-router MCP server.
+ * MCP tool registry for harness-router.
  *
- * v0.3 collapsed the v0.2 four-tool surface to one:
- *   - `code` — main routing tool. Mode "single" walks priority list and
- *     dispatches once; mode "fanout" runs the prompt against multiple
- *     services in parallel (the v0.2 `code_mixture` behaviour).
- *
- * Inspectable status — formerly the v0.2 `dashboard` and
- * `get_quota_status` tools — moved to MCP resources at
- * `harness-router://status` and `harness-router://status.json`. See
- * src/mcp/resources.ts.
- *
- * When the caller sets `_meta.progressToken` on the `code` request, each
- * dispatcher event fires a `notifications/progress` so streaming-aware
- * clients see live output.
+ * The public MCP surface is intentionally small: one `code` tool for both
+ * single-route and fanout routing. Status is exposed as resources so clients
+ * can inspect state without adding more tool choices.
  */
-
-import path from "node:path";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import type { DispatchResult, DispatcherEvent, RouteHints, RoutingDecision } from "../types.js";
+import type {
+  DispatchResult,
+  DispatcherEvent,
+  RoutePolicy,
+  RouteHints,
+  RouteSkip,
+  TaskType,
+  WorkspacePolicy,
+  WorkspaceRun,
+} from "../types.js";
 import { withMcpToolSpan } from "../observability/spans.js";
-import type { RuntimeHolder } from "./config-hot-reload.js";
-import type { ConfigHotReloader } from "./config-hot-reload.js";
+import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
+import { evaluateRoutePolicy } from "../route-policy.js";
+import { getAsyncJob, listAsyncJobs, startAsyncJob } from "../jobs.js";
+import { isIsolatedWorkspacePolicy } from "../workspaces.js";
+import { buildStatus, buildUsage } from "../status.js";
+import { resolveWorkingDir, workingDirWarning } from "../working-dir.js";
 
-// ---------------------------------------------------------------------------
-// Shared zod schemas
-// ---------------------------------------------------------------------------
+const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
+const safetyProfileSchema = z.enum(["read_only", "workspace_edit", "full_auto"]);
+const workspacePolicySchema = z.enum(["shared", "shared_locked", "copy", "git_worktree"]);
+const routePolicySchema = z.enum(["standard", "local_only", "approval_required", "blocked"]);
 
-const MAX_PROMPT_BYTES = 1_000_000; // 1 MB
-const MAX_FILES = 256;
-const MAX_PATH_LEN = 4096;
-
-const routeHintsSchema = z
+const publicHintsSchema = z
   .object({
-    service: z
-      .string()
-      .max(MAX_PATH_LEN)
-      .optional()
-      .describe("Force a specific service (bypasses model priority walk)."),
     model: z
       .string()
-      .max(MAX_PATH_LEN)
       .optional()
       .describe(
-        "Bump a specific model to the front of the priority list. The router still falls through to the rest of the list if this model has no usable routes.",
+        "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
+          "'gpt-5.6-sol'). Matching routes get a scoring boost and the model is passed " +
+          "to the harness as an override. NOT validated — a name that matches nothing " +
+          "is silently ignored. Call the `usage` tool first to see valid route ids and " +
+          "their default models.",
+      ),
+    taskType: taskTypeSchema
+      .optional()
+      .describe(
+        "Kind of work: 'execute' (write/modify code, run commands), 'plan' " +
+          "(architecture/design, no edits), 'review' (critique code, no edits), 'local' " +
+          "(trivial/mechanical — prefers free local endpoints). ALWAYS set this: when " +
+          "omitted, per-task capability weighting and model escalation are disabled and " +
+          "routing quality degrades.",
+      ),
+    preferLargeContext: z
+      .boolean()
+      .optional()
+      .describe("Boost routes with very large context windows (for huge-codebase reads)."),
+    safetyProfile: safetyProfileSchema
+      .optional()
+      .describe(
+        "Maximum permission the routed harness may use: 'read_only' (inspect only — use " +
+          "for review/plan), 'workspace_edit' (default; may edit files in workingDir), " +
+          "'full_auto' (unrestricted shell — only when explicitly needed). Routes that " +
+          "cannot honor the requested profile are skipped.",
+      ),
+    workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
+    routePolicy: routePolicySchema
+      .optional()
+      .describe(
+        "Operational routing policy: 'standard' (default), 'local_only' (never leave the " +
+          "machine), 'approval_required' (BLOCKS non-local routes — it is a restriction, " +
+          "not an approval grant), 'blocked' (dry-run: block everything).",
       ),
   })
-  .describe("Optional routing hints.");
+  .describe("Public routing hints.");
 
-const workingDirSchema = z
-  .string()
-  .max(MAX_PATH_LEN)
-  .refine((p) => p === "" || path.isAbsolute(p), {
-    message: "workingDir must be an absolute path or empty",
-  })
-  .optional();
+const workingDirDescription =
+  "Absolute path to the project the task is about. EFFECTIVELY REQUIRED: when omitted, " +
+  "the task runs in the router server's own working directory — almost never the " +
+  "project you mean. Always pass the caller's project root.";
 
-const filesSchema = z
-  .array(z.string().max(MAX_PATH_LEN))
-  .max(MAX_FILES)
-  .optional()
-  .describe("Absolute file paths to include as context (max 256 entries).");
-
-const promptSchema = z
-  .string()
-  .max(MAX_PROMPT_BYTES)
-  .describe("The coding task or question (max 1 MB).");
-
-/**
- * v0.3 single-tool surface.
- *
- * `mode` discriminates between dispatching once and fanning out:
- *   - "single" (default) → walk priority list, return one result.
- *   - "fanout"           → run prompt against multiple routes in parallel,
- *                          return one result per route (caller synthesises).
- *
- * `models` is only meaningful for `mode: "fanout"`. When omitted, the router
- * uses `mixture_default` from config.yaml; if that's absent too, it fans out
- * to every available route. Each model in the list expands to ALL of its
- * registered routes (every harness on subscription tier, every metered
- * provider) — multi-harness configs naturally produce per-harness
- * comparisons.
- *
- * `hints` is only meaningful for `mode: "single"`. Hints in fanout mode are
- * silently ignored (rather than rejected) so callers don't have to branch
- * based on mode at every call site.
- *
- * (v0.2 had a `services` axis here that exposed the router's internal
- * synthetic ids — `opus::claude_code` etc. — to agents. Dropped in v0.3
- * because the model-keyed config means agents should never need to think
- * in service ids. Use a focused priority list and `models` instead.)
- */
 const codeInputShape = {
-  prompt: promptSchema,
-  files: filesSchema,
-  workingDir: workingDirSchema.describe("Working directory for the CLI process."),
   mode: z
     .enum(["single", "fanout"])
     .optional()
-    .describe('Dispatch mode. "single" (default) routes once; "fanout" runs in parallel.'),
-  hints: routeHintsSchema.optional().describe('Routing hints. Only honoured when mode="single".'),
+    .default("single")
+    .describe(
+      "'single' routes to one best harness and blocks until it finishes — fine for " +
+        "quick (under ~1-2 min) tasks. For anything slower, prefer the `job` tool instead " +
+        "so the MCP call doesn't time out mid-run. 'fanout' runs the prompt on MULTIPLE " +
+        "routes in parallel for independent perspectives — without `models` it hits every " +
+        "eligible route and consumes quota on each; prefer passing an explicit `models` " +
+        "list. Write-capable fanout requires workspacePolicy 'copy' or 'git_worktree'.",
+    ),
+  prompt: z.string().describe("The coding task or question."),
+  files: z.array(z.string()).optional().describe("Absolute file paths to include as context."),
+  workingDir: z.string().optional().describe(workingDirDescription),
+  workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
+  hints: publicHintsSchema.optional(),
   models: z
-    .array(z.string().max(MAX_PATH_LEN))
-    .max(MAX_FILES)
+    .array(z.string())
     .optional()
     .describe(
-      "Fanout-only: list of canonical model keys. Each expands to ALL of its registered " +
-        "routes (every harness on subscription, every metered provider). When omitted, " +
-        "falls back to `mixture_default` from config.yaml, then to all available routes.",
+      "Route ids or model names to fan out to (fanout mode). Get valid ids from the " +
+        "`usage` tool.",
     ),
 } as const;
 
-// ---------------------------------------------------------------------------
-// Response shapes
-// ---------------------------------------------------------------------------
+const jobInputShape = {
+  action: z.enum(["start", "get", "list"]).describe("Async job action."),
+  prompt: z.string().optional().describe("The coding task or question for action=start."),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe("Absolute file paths to snapshot and include as context."),
+  workingDir: z.string().optional().describe(workingDirDescription),
+  workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
+  hints: publicHintsSchema.optional(),
+  service: z
+    .string()
+    .optional()
+    .describe(
+      "Optional explicit route id to run (e.g. 'codex', 'cursor', 'local_inference' — " +
+        "see the `usage` tool for valid ids). Omit to let the router pick.",
+    ),
+  jobId: z.string().optional().describe("Job id for action=get."),
+} as const;
+
+export const TOOL_NAMES = ["code", "job", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
   output: string;
   error?: string;
-  service: string;
+  /** Set when workingDir was omitted and defaulted to the router's own cwd. */
+  warning?: string;
+  route: string;
   model?: string;
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
-  rateLimited?: boolean;
-  retryAfter?: number;
+  skippedRoutes?: RouteSkip[];
+  workspace?: WorkspaceRun;
   routing?: {
-    model: string;
-    tier: "subscription" | "metered";
+    tier: number;
     quotaScore: number;
+    qualityScore: number;
+    cliCapability: number;
+    capabilityScore: number;
+    taskType: TaskType;
+    elo?: number;
+    finalScore: number;
     reason: string;
   };
 }
 
-export interface MixtureItem {
-  service: string;
-  model: string;
-  tier: "subscription" | "metered";
+export interface FanoutItem {
+  route: string;
   success: boolean;
   output: string;
   error?: string;
   durationMs: number;
+  capabilityScore: number;
+  qualityScore: number;
+  elo?: number;
+  workspace?: WorkspaceRun;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+export type CodeResponse =
+  | ({ mode: "single" } & RouteResponse)
+  | { mode: "fanout"; results: FanoutItem[]; skippedRoutes?: RouteSkip[]; warning?: string };
 
-function jsonText(value: unknown): CallToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
-}
-
-function toHints(h: z.infer<typeof routeHintsSchema> | undefined): RouteHints {
-  if (!h) return {};
-  const out: RouteHints = {};
-  if (h.service !== undefined) out.service = h.service;
-  if (h.model !== undefined) out.model = h.model;
-  return out;
-}
-
-async function ensureFreshConfig(reloader: ConfigHotReloader | undefined): Promise<void> {
-  if (reloader) await reloader.maybeReload();
+export interface ToolDeps {
+  holder: RuntimeHolder;
+  reloader?: ConfigHotReloader;
 }
 
 export interface ToolExtra {
@@ -172,12 +182,41 @@ export interface ToolExtra {
   sendNotification?: (notification: ServerNotification) => Promise<void>;
 }
 
+function jsonText(value: unknown): CallToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
+  if (!h) return {};
+  const out: RouteHints = {};
+  if (h.model !== undefined) out.model = h.model;
+  if (h.taskType !== undefined) out.taskType = h.taskType;
+  if (h.preferLargeContext !== undefined) out.preferLargeContext = h.preferLargeContext;
+  if (h.safetyProfile !== undefined) out.safetyProfile = h.safetyProfile;
+  if (h.workspacePolicy !== undefined) out.workspacePolicy = h.workspacePolicy;
+  if (h.routePolicy !== undefined) out.routePolicy = h.routePolicy as RoutePolicy;
+  return out;
+}
+
+function workspacePolicyFromInput(input: {
+  workspacePolicy?: WorkspacePolicy | undefined;
+  hints?: { workspacePolicy?: WorkspacePolicy | undefined } | undefined;
+}): WorkspacePolicy | undefined {
+  return input.workspacePolicy ?? input.hints?.workspacePolicy;
+}
+
+async function ensureFreshConfig(reloader: ConfigHotReloader | undefined): Promise<void> {
+  if (reloader) await reloader.maybeReload();
+}
+
 async function emitProgress(
   extra: ToolExtra | undefined,
   progressToken: string | number | undefined,
   counter: { value: number },
   event: DispatcherEvent,
-  service?: string,
+  route?: string,
 ): Promise<void> {
   if (!extra?.sendNotification || progressToken === undefined) return;
   counter.value += 1;
@@ -187,17 +226,17 @@ async function emitProgress(
       params: {
         progressToken,
         progress: counter.value,
-        message: summarizeEvent(event, service),
-        _meta: { event, service },
+        message: summarizeEvent(event, route),
+        _meta: { event, route },
       },
     });
   } catch {
-    // Best-effort.
+    // Best effort only. A progress delivery failure should not fail the tool.
   }
 }
 
-function summarizeEvent(event: DispatcherEvent, service?: string): string {
-  const prefix = service ? `[${service}] ` : "";
+function summarizeEvent(event: DispatcherEvent, route?: string): string {
+  const prefix = route ? `[${route}] ` : "";
   switch (event.type) {
     case "stdout":
       return `${prefix}stdout: ${truncate(event.chunk, 60)}`;
@@ -218,403 +257,352 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n - 3)}...`;
 }
 
-function shapeRouteResponse(
+function routeResponse(
   result: DispatchResult,
-  decision: RoutingDecision | null,
+  decision: import("../types.js").RoutingDecision | null,
+  workingDirWarningMessage?: string,
 ): RouteResponse {
   const response: RouteResponse = {
     success: result.success,
     output: result.output,
-    service: result.service,
+    route: result.service,
   };
+  if (workingDirWarningMessage !== undefined) response.warning = workingDirWarningMessage;
   if (result.error !== undefined) response.error = result.error;
   if (result.durationMs !== undefined) response.durationMs = result.durationMs;
   if (result.tokensUsed !== undefined) response.tokensUsed = result.tokensUsed;
-  if (result.rateLimited) response.rateLimited = true;
-  if (result.retryAfter !== undefined) response.retryAfter = result.retryAfter;
+  if (result.skippedRoutes !== undefined) response.skippedRoutes = result.skippedRoutes;
+  if (result.workspace !== undefined) response.workspace = result.workspace;
   if (decision) {
-    if (decision.model) response.model = decision.model;
+    if (decision.model !== undefined) response.model = decision.model;
     response.routing = {
-      model: decision.model,
       tier: decision.tier,
       quotaScore: decision.quotaScore,
+      qualityScore: decision.qualityScore,
+      cliCapability: decision.cliCapability,
+      capabilityScore: decision.capabilityScore,
+      taskType: decision.taskType,
+      finalScore: decision.finalScore,
       reason: decision.reason,
     };
+    if (decision.elo !== undefined) response.routing.elo = decision.elo;
+    if (decision.skippedRoutes !== undefined && decision.skippedRoutes.length > 0) {
+      response.skippedRoutes = decision.skippedRoutes;
+    }
   }
   return response;
 }
 
-// ---------------------------------------------------------------------------
-// Tool handlers
-// ---------------------------------------------------------------------------
-
-export interface ToolDeps {
-  holder: RuntimeHolder;
-  reloader?: ConfigHotReloader;
-}
-
-async function runRoutedStreaming(
+async function runSingle(
   deps: ToolDeps,
-  prompt: string,
-  files: string[],
-  workingDir: string,
-  hints: RouteHints,
-  extra: ToolExtra | undefined,
-): Promise<RouteResponse> {
+  input: z.infer<z.ZodObject<typeof codeInputShape>>,
+  extra?: ToolExtra,
+): Promise<CodeResponse> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
   const progressToken = extra?._meta?.progressToken;
+  const hints = toHints(input.hints);
+  const workspacePolicy = workspacePolicyFromInput(input);
+  if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+  const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
+  const { workingDir } = resolvedWorkingDir;
+  const warning = workingDirWarning(resolvedWorkingDir);
+  const files = input.files ?? [];
+
+  if (progressToken === undefined) {
+    const { result, decision } = await state.router.route(input.prompt, files, workingDir, {
+      hints,
+      maxFallbacks: 2,
+    });
+    return { mode: "single", ...routeResponse(result, decision, warning) };
+  }
+
   const counter = { value: 0 };
-
   let finalResult: DispatchResult | null = null;
-  let finalDecision: RoutingDecision | null = null;
-
-  for await (const { event, decision } of state.router.stream(prompt, files, workingDir, {
+  let finalDecision: import("../types.js").RoutingDecision | null = null;
+  for await (const { event, decision } of state.router.stream(input.prompt, files, workingDir, {
     hints,
+    maxFallbacks: 2,
   })) {
     if (decision) finalDecision = decision;
     await emitProgress(extra, progressToken, counter, event, decision?.service);
     if (event.type === "completion") finalResult = event.result;
   }
-
-  const result: DispatchResult = finalResult ?? {
-    output: "",
-    service: "none",
-    success: false,
-    error: "Router stream ended without a completion event",
-  };
-  return shapeRouteResponse(result, finalDecision);
+  const result =
+    finalResult ??
+    ({
+      output: "",
+      service: "none",
+      success: false,
+      error: "Router stream ended without a completion event",
+    } satisfies DispatchResult);
+  return { mode: "single", ...routeResponse(result, finalDecision, warning) };
 }
 
-async function runRoutedBuffered(
+function matchesRequestedModel(
+  routeName: string,
+  svc: { model?: string; leaderboardModel?: string },
+  requested: Set<string>,
+): boolean {
+  if (requested.size === 0) return true;
+  const lower = new Set([...requested].map((s) => s.toLowerCase()));
+  return [routeName, svc.model, svc.leaderboardModel]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .some((v) => lower.has(v.toLowerCase()));
+}
+
+async function runFanout(
   deps: ToolDeps,
-  prompt: string,
-  files: string[],
-  workingDir: string,
-  hints: RouteHints,
-): Promise<RouteResponse> {
+  input: z.infer<z.ZodObject<typeof codeInputShape>>,
+  extra?: ToolExtra,
+): Promise<CodeResponse> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
-  const { result, decision } = await state.router.route(prompt, files, workingDir, { hints });
-  return shapeRouteResponse(result, decision);
+  const hints = toHints(input.hints);
+  const workspacePolicy = workspacePolicyFromInput(input);
+  if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+  const fanoutSafetyProfile = hints.safetyProfile ?? "read_only";
+  if (
+    fanoutSafetyProfile !== "read_only" &&
+    (hints.workspacePolicy === undefined || !isIsolatedWorkspacePolicy(hints.workspacePolicy))
+  ) {
+    return {
+      mode: "fanout",
+      results: [],
+      skippedRoutes: [
+        {
+          route: "fanout",
+          code: "workspace_isolation_required",
+          message:
+            "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; use read_only fanout or run single-route workspace_edit",
+        },
+      ],
+    };
+  }
+  hints.safetyProfile = fanoutSafetyProfile;
+  const taskType: TaskType = hints.taskType ?? "plan";
+  const requested = new Set(input.models ?? []);
+  const progressToken = extra?._meta?.progressToken;
+  const counter = { value: 0 };
+  const skippedRoutes: RouteSkip[] = [];
+
+  const candidates: string[] = [];
+  for (const [routeName, svc] of Object.entries(state.config.services)) {
+    if (!matchesRequestedModel(routeName, svc, requested)) continue;
+    const breaker = state.router.getBreaker(routeName);
+    const dispatcher = state.dispatchers[routeName];
+    const policy = evaluateRoutePolicy(routeName, svc, {
+      ...(dispatcher !== undefined ? { dispatcher } : {}),
+      circuitBroken: Boolean(breaker?.isTripped),
+      ...(hints.safetyProfile !== undefined ? { requestedSafetyProfile: hints.safetyProfile } : {}),
+      ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+    });
+    if (policy.skipped) skippedRoutes.push(policy.skipped);
+    if (policy.blocked) continue;
+    candidates.push(routeName);
+  }
+
+  const prompt = input.prompt;
+  const files = input.files ?? [];
+  const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
+  const { workingDir } = resolvedWorkingDir;
+  const warning = workingDirWarning(resolvedWorkingDir);
+
+  const results = await Promise.all(
+    candidates.map(async (routeName): Promise<FanoutItem> => {
+      const svc = state.config.services[routeName]!;
+      const cap = svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0;
+      const quality = await state.leaderboard.getQualityScore(
+        svc.leaderboardModel,
+        svc.thinkingLevel,
+      );
+      const t0 = Date.now();
+      let result: DispatchResult;
+      if (progressToken !== undefined) {
+        let captured: DispatchResult | null = null;
+        for await (const { event } of state.router.streamTo(routeName, prompt, files, workingDir, {
+          ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
+          ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
+          ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+          ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+        })) {
+          await emitProgress(extra, progressToken, counter, event, routeName);
+          if (event.type === "completion") captured = event.result;
+        }
+        result =
+          captured ??
+          ({
+            output: "",
+            service: routeName,
+            success: false,
+            error: "Stream ended without completion",
+          } satisfies DispatchResult);
+      } else {
+        result = (
+          await state.router.routeTo(routeName, prompt, files, workingDir, {
+            ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
+            ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
+            ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+            ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+          })
+        ).result;
+      }
+
+      const item: FanoutItem = {
+        route: routeName,
+        success: result.success,
+        output: result.output,
+        durationMs: Date.now() - t0,
+        capabilityScore: cap,
+        qualityScore: quality.qualityScore,
+      };
+      if (result.error !== undefined) item.error = result.error;
+      if (result.workspace !== undefined) item.workspace = result.workspace;
+      if (quality.elo !== null) item.elo = quality.elo;
+      return item;
+    }),
+  );
+
+  results.sort((a, b) => {
+    if (a.success !== b.success) return a.success ? -1 : 1;
+    return b.capabilityScore - a.capabilityScore;
+  });
+  const response: {
+    mode: "fanout";
+    results: FanoutItem[];
+    skippedRoutes?: RouteSkip[];
+    warning?: string;
+  } = {
+    mode: "fanout",
+    results,
+  };
+  if (skippedRoutes.length > 0) response.skippedRoutes = skippedRoutes;
+  if (warning !== undefined) response.warning = warning;
+  return response;
 }
 
-export type CodeResult =
-  | { mode: "single"; route: RouteResponse }
-  | { mode: "fanout"; results: MixtureItem[]; error?: string };
-
-/**
- * Unified `code` tool dispatcher. Routes to single-shot or fan-out based on
- * `input.mode`. The default is "single" — fanout is opt-in.
- */
 export async function handleCode(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof codeInputShape>>,
   extra?: ToolExtra,
-): Promise<CodeResult> {
-  const mode = input.mode ?? "single";
-  if (mode === "fanout") {
-    const out = await handleCodeFanout(deps, input, extra);
-    return { mode: "fanout", ...out };
-  }
-  const route = await handleCodeSingle(deps, input, extra);
-  return { mode: "single", route };
-}
-
-async function handleCodeSingle(
-  deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof codeInputShape>>,
-  extra?: ToolExtra,
-): Promise<RouteResponse> {
-  const progressToken = extra?._meta?.progressToken;
-  return withMcpToolSpan({ "tool.name": "code", "code.mode": "single" }, async () => {
-    const hints = toHints(input.hints);
-    const prompt = input.prompt;
-    const files = input.files ?? [];
-    const workingDir = input.workingDir ?? process.cwd();
-    if (progressToken !== undefined) {
-      return runRoutedStreaming(deps, prompt, files, workingDir, hints, extra);
+): Promise<CodeResponse> {
+  return withMcpToolSpan({ "tool.name": "code" }, async () => {
+    if ((input.mode ?? "single") === "fanout") {
+      return runFanout(deps, input, extra);
     }
-    return runRoutedBuffered(deps, prompt, files, workingDir, hints);
+    return runSingle(deps, input, extra);
   });
 }
 
-async function handleCodeFanout(
+async function handleJob(
   deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof codeInputShape>>,
-  extra?: ToolExtra,
-): Promise<{ results: MixtureItem[]; error?: string }> {
-  return withMcpToolSpan({ "tool.name": "code", "code.mode": "fanout" }, async () => {
-    await ensureFreshConfig(deps.reloader);
-    const state = deps.holder.state;
-    const progressToken = extra?._meta?.progressToken;
-    const counter = { value: 0 };
-
-    const modelsAxis = input.models ?? [];
-
-    // Resolve the candidate whitelist. Two precedence levels:
-    //   1. Explicit `models` from the caller — each model expands to ALL of
-    //      its registered routes (every harness on subscription, every
-    //      metered provider).
-    //   2. Wizard-configured `mixtureDefault` from config.yaml — already
-    //      pre-expanded to per-route synthetic ids by the v3→v2 adapter.
-    //   3. Fall through to "every available route" (router-wide default).
-    let whitelist: readonly string[] | null = null;
-    if (modelsAxis.length > 0) {
-      const expanded: string[] = [];
-      const unresolved: string[] = [];
-      for (const model of modelsAxis) {
-        const routes = state.router.servicesForModel(model);
-        const all = [...routes.subscription, ...routes.metered];
-        if (all.length === 0) {
-          unresolved.push(model);
-          continue;
-        }
-        for (const id of all) {
-          if (!expanded.includes(id)) expanded.push(id);
-        }
+  input: z.infer<z.ZodObject<typeof jobInputShape>>,
+): Promise<unknown> {
+  return withMcpToolSpan({ "tool.name": "job" }, async () => {
+    switch (input.action) {
+      case "start": {
+        if (!input.prompt) throw new Error("job action=start requires prompt");
+        const hints = toHints(input.hints);
+        const workspacePolicy = workspacePolicyFromInput(input);
+        if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+        return startAsyncJob(deps, {
+          prompt: input.prompt,
+          files: input.files ?? [],
+          ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
+          hints,
+          ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
+          ...(input.service !== undefined ? { service: input.service } : {}),
+        });
       }
-      if (expanded.length === 0) {
-        return {
-          results: [],
-          error:
-            `None of the requested models has any registered route: ${unresolved.join(", ")}. ` +
-            "Check `harness-router://status` to see which models are configured.",
-        };
-      }
-      whitelist = expanded;
-    } else if (state.config.mixtureDefault && state.config.mixtureDefault.length > 0) {
-      whitelist = state.config.mixtureDefault;
+      case "get":
+        if (!input.jobId) throw new Error("job action=get requires jobId");
+        return getAsyncJob(input.jobId);
+      case "list":
+        return listAsyncJobs();
     }
-    // else: whitelist remains null → all-available fallback.
-
-    const requested = whitelist ? new Set(whitelist) : null;
-
-    const candidates: string[] = [];
-    for (const [name, svc] of Object.entries(state.config.services)) {
-      if (!svc.enabled) continue;
-      if (!(name in state.dispatchers)) continue;
-      if (requested && !requested.has(name)) continue;
-      const breaker = state.router.getBreaker(name);
-      if (breaker && breaker.isTripped) continue;
-      const disp = state.dispatchers[name];
-      if (!disp?.isAvailable()) continue;
-      candidates.push(name);
-    }
-
-    if (candidates.length === 0) {
-      return {
-        results: [],
-        error:
-          "No candidate routes available for code mode=fanout. Check " +
-          "`harness-router://status.json`, or relax the `models` filter.",
-      };
-    }
-
-    const prompt = input.prompt;
-    const files = input.files ?? [];
-    const workingDir = input.workingDir ?? process.cwd();
-
-    const outcomes = await Promise.all(
-      candidates.map(async (svcName): Promise<MixtureItem> => {
-        const svc = state.config.services[svcName]!;
-        const t0 = Date.now();
-        let result: DispatchResult;
-        if (progressToken !== undefined) {
-          let captured: DispatchResult | null = null;
-          for await (const { event } of state.router.streamTo(svcName, prompt, files, workingDir)) {
-            await emitProgress(extra, progressToken, counter, event, svcName);
-            if (event.type === "completion") captured = event.result;
-          }
-          result = captured ?? {
-            output: "",
-            service: svcName,
-            success: false,
-            error: "Stream ended without completion",
-          };
-        } else {
-          const outcome = await state.router.routeTo(svcName, prompt, files, workingDir);
-          result = outcome.result;
-        }
-        const item: MixtureItem = {
-          service: svcName,
-          model: svc.model ?? "",
-          tier: svc.tier ?? "subscription",
-          success: result.success,
-          output: result.output,
-          durationMs: Date.now() - t0,
-        };
-        if (result.error !== undefined) item.error = result.error;
-        return item;
-      }),
-    );
-
-    outcomes.sort((a, b) => {
-      if (a.success !== b.success) return a.success ? -1 : 1;
-      // Tie-break by tier (subscription before metered) then duration.
-      if (a.tier !== b.tier) return a.tier === "subscription" ? -1 : 1;
-      return a.durationMs - b.durationMs;
-    });
-    return { results: outcomes };
   });
 }
 
-export async function handleQuotaStatus(deps: ToolDeps): Promise<Record<string, unknown>> {
+async function handleUsage(deps: ToolDeps) {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
-  const quota = await state.quota.fullStatus();
-  const breakers = state.router.circuitBreakerStatus();
-  const out: Record<string, unknown> = {};
-  const names = new Set([...Object.keys(quota), ...Object.keys(breakers)]);
-  for (const name of names) {
-    out[name] = {
-      ...(quota[name] ?? {}),
-      circuitBreaker: breakers[name] ?? { tripped: false, failures: 0 },
-    };
-  }
-  return out;
+  const status = await buildStatus(
+    state.config,
+    state.dispatchers,
+    state.quota,
+    state.router,
+    state.leaderboard,
+  );
+  return buildUsage(status);
 }
-
-function fmtTokens(n: number | undefined): string {
-  if (n === undefined) return "?";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${Math.round(n / 1000)}k`;
-  return `${n}`;
-}
-
-export async function handleDashboard(deps: ToolDeps): Promise<string> {
-  await ensureFreshConfig(deps.reloader);
-  const state = deps.holder.state;
-  const quota = await state.quota.fullStatus();
-  const breakers = state.router.circuitBreakerStatus();
-
-  const lines: string[] = [];
-  lines.push("harness-router — status dashboard", "");
-
-  const priority = state.config.modelPriority ?? [];
-  if (priority.length > 0) {
-    lines.push(`  model priority: ${priority.join(" → ")}`);
-    lines.push("");
-  }
-
-  const byTier: Map<string, string[]> = new Map();
-  for (const name of Object.keys(state.config.services)) {
-    const svc = state.config.services[name]!;
-    const tier = svc.tier ?? "subscription";
-    const bucket = byTier.get(tier);
-    if (bucket) bucket.push(name);
-    else byTier.set(tier, [name]);
-  }
-
-  const tierLabels: Record<string, string> = {
-    subscription: "Subscription — flat-rate, zero marginal cost",
-    metered: "Metered — per-token API",
-  };
-
-  for (const tier of ["subscription", "metered"].filter((t) => byTier.has(t))) {
-    lines.push(`── ${tierLabels[tier]} ──────────────────────────────`);
-    lines.push("");
-    for (const name of byTier.get(tier)!) {
-      const svc = state.config.services[name]!;
-      const dispatcher = state.dispatchers[name];
-      const reachable = dispatcher?.isAvailable() ?? false;
-      const icon = reachable && svc.enabled ? "✓" : "✗";
-      lines.push(`  [${icon}] ${name.toUpperCase()}`);
-      if (svc.model) lines.push(`      model      : ${svc.model}`);
-      if (svc.type === "openai_compatible") {
-        lines.push(`      connection : HTTP API  ${svc.baseUrl ?? "(no base_url)"}`);
-      } else {
-        lines.push(`      connection : ${svc.command ?? "(no command)"}`);
-      }
-      lines.push(
-        `      limits     : output-cap ${fmtTokens(svc.maxOutputTokens)}, context ${fmtTokens(svc.maxInputTokens)}`,
-      );
-
-      const q = quota[name];
-      if (q && q.remaining !== null && q.limit !== null && q.limit > 0) {
-        const pct = Math.round((q.remaining / q.limit) * 100);
-        const bar = "█".repeat(Math.round(pct / 5)) + "░".repeat(20 - Math.round(pct / 5));
-        lines.push(`      quota      : [${bar}] ${pct}%  (${q.remaining}/${q.limit})`);
-      } else {
-        const pct = q ? Math.round(q.score * 100) : 100;
-        lines.push(`      quota      : ${pct}% assumed available`);
-      }
-      const calls = q?.localCallCount ?? 0;
-      lines.push(`      calls      : ${calls} this session`);
-
-      const b = breakers[name];
-      if (b?.tripped) {
-        const cd = b.cooldownRemainingSec ?? 0;
-        lines.push(`      breaker    : ⚡ OPEN — ${Math.round(cd)}s until reset`);
-      } else {
-        lines.push(`      breaker    : closed  (${b?.failures ?? 0} recent failures)`);
-      }
-      if (!svc.enabled) lines.push("      note       : disabled in config");
-      lines.push("");
-    }
-  }
-
-  const ready = Object.entries(state.config.services)
-    .filter(([name, svc]) => svc.enabled && state.dispatchers[name]?.isAvailable())
-    .map(([name]) => name);
-  lines.push(`Ready to route: ${ready.length === 0 ? "none" : ready.join(", ")}`);
-
-  const decision = await state.router.pickService();
-  if (decision) {
-    lines.push(
-      `Next pick     : ${decision.service} for model=${decision.model} tier=${decision.tier} (quota ${decision.quotaScore.toFixed(2)})`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Registration with McpServer
-// ---------------------------------------------------------------------------
-
-/**
- * v0.3 single-tool surface. Inspectable status (the v0.2 `dashboard` /
- * `get_quota_status` tools) lives as an MCP resource at
- * `harness-router://status` — see {@link registerResources}.
- */
-export const TOOL_NAMES = ["code"] as const;
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
     "code",
     {
-      title: "Run a coding task",
+      title: "Route code task",
       description:
-        'Route a coding task. mode: "single" (default) walks the configured model priority list ' +
-        "(subscription tier first, then metered) and returns one result; " +
-        '"fanout" runs the prompt against multiple services in parallel and returns one result per service ' +
-        "for the caller to synthesise. " +
-        "In single mode use `hints.model` / `hints.service` to override routing; in fanout mode use " +
-        "`models` (canonical model keys) to choose the candidate set.",
+        "Delegate a bounded coding task (implement, fix, review, plan, or investigate — " +
+        "not general Q&A) to the best-fit harness (Claude Code, Codex, Cursor, " +
+        "Antigravity, or a configured endpoint), or fan out to several for independent " +
+        "opinions. BLOCKS until the harness finishes — only use for tasks you expect to " +
+        "finish in under ~1-2 minutes; for anything slower (most real coding work), use " +
+        "the `job` tool instead so the call can't time out mid-run. Always pass " +
+        "`workingDir` (the caller's project root) and `hints.taskType`.",
       inputSchema: codeInputShape,
     },
     async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),
   );
+
+  server.registerTool(
+    "job",
+    {
+      title: "Start or check an async route job",
+      description:
+        "Preferred way to delegate coding work that may take minutes. action=start " +
+        "returns a jobId immediately (the work runs in the background) along with " +
+        "nextPollSeconds/instructions telling you how long to wait. action=get with that " +
+        "jobId returns partialOutput while still running, and the full result once " +
+        "status is 'completed' or 'failed' — nothing is lost if you poll late. " +
+        "action=list shows all known jobs. Always pass `workingDir` (the caller's " +
+        "project root) and `hints.taskType` on start.",
+      inputSchema: jobInputShape,
+    },
+    async (args) => jsonText(await handleJob(deps, args)),
+  );
+
+  server.registerTool(
+    "usage",
+    {
+      title: "Check current usage",
+      description:
+        "Per-route call counts (success/failure), quota remaining, billing kind, and " +
+        "circuit-breaker state for this session. Call this before using an unfamiliar " +
+        "`hints.model`/`service`/`models` value to see valid route ids and their " +
+        "current models — those fields are not validated and silently ignore unknown names.",
+      inputSchema: {},
+    },
+    async () => jsonText(await handleUsage(deps)),
+  );
 }
 
-// ---------------------------------------------------------------------------
-// Test convenience — invoke a tool handler by name without going through MCP.
-// ---------------------------------------------------------------------------
-
-export type InvokeResult = { kind: "json"; data: unknown } | { kind: "text"; data: string };
+export type InvokeResult = { kind: "json"; data: unknown };
 
 export async function invokeTool(
   name: string,
   args: unknown,
   deps: ToolDeps,
 ): Promise<InvokeResult> {
-  switch (name) {
-    case "code": {
-      const parsed = z.object(codeInputShape).parse(args);
-      return { kind: "json", data: await handleCode(deps, parsed) };
-    }
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+  if (name === "code") {
+    const parsed = z.object(codeInputShape).parse(args);
+    return { kind: "json", data: await handleCode(deps, parsed) };
   }
+  if (name === "job") {
+    const parsed = z.object(jobInputShape).parse(args);
+    return { kind: "json", data: await handleJob(deps, parsed) };
+  }
+  if (name === "usage") {
+    return { kind: "json", data: await handleUsage(deps) };
+  }
+  throw new Error(`Unknown tool: ${name}`);
 }

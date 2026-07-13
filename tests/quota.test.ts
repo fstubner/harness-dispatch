@@ -1,21 +1,11 @@
-/**
- * QuotaCache tests, post v0.3 SQLite cutover.
- *
- * v0.2 persisted local counts to a JSON file at `~/.harness-router/quota_state.json`
- * with documented cross-process unsafety. v0.3 persists via {@link QuotaStore}
- * (SQLite WAL); these tests construct caches with `:memory:` stores so they
- * never touch the host's real state DB.
- */
-
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Stub the rate-limit-header parsers — same seam the v0.2 tests used. Their
-// real implementations have a dedicated test file; here we just verify
-// that QuotaCache.recordResult wires their outputs into QuotaState.
+// Mock the rate-limit-header parsers. Agent 1 owns their real implementation;
+// we only need a stable stub here to verify wiring.
 vi.mock("../src/dispatchers/shared/rate-limit-headers.js", () => ({
   parseRemaining: (h: Record<string, string>) => {
     const v = h["x-ratelimit-remaining"];
@@ -27,10 +17,20 @@ vi.mock("../src/dispatchers/shared/rate-limit-headers.js", () => ({
   },
 }));
 
+// Stub the Dispatcher base module (Agent 1 owns it). Only the type shape
+// matters for TS resolution; runtime import just needs to not throw.
+vi.mock("../src/dispatchers/base.js", () => ({}));
+
+// Stub ./types (Agent 1 owns it).
+vi.mock("../src/types.js", () => ({}));
+
 import { QuotaCache, QuotaState } from "../src/quota.js";
-import { QuotaStore } from "../src/state/quota-store.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
-import type { QuotaInfo } from "../src/types.js";
+import type { DispatchResult, QuotaInfo } from "../src/types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 let tmpDir: string;
 
@@ -43,12 +43,12 @@ afterEach(() => {
   try {
     rmSync(tmpDir, { recursive: true, force: true });
   } catch {
-    // Best-effort.
+    // best-effort
   }
 });
 
-function memStore(): QuotaStore {
-  return new QuotaStore({ path: ":memory:", skipMkdir: true });
+function tmpFile(name = "quota_state.json"): string {
+  return path.join(tmpDir, name);
 }
 
 function makeDispatcher(
@@ -109,10 +109,13 @@ describe("QuotaState.score", () => {
 // ---------------------------------------------------------------------------
 
 describe("QuotaCache.recordResult", () => {
-  it("updates state from rateLimitHeaders via parseRemaining / parseLimit", async () => {
-    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { store: memStore() });
+  it("updates state from rateLimitHeaders via parseRemaining / parseLimit", () => {
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: tmpFile() },
+    );
 
-    cache.recordResult("svc", {
+    const result: DispatchResult = {
       output: "",
       service: "svc",
       success: true,
@@ -120,26 +123,37 @@ describe("QuotaCache.recordResult", () => {
         "x-ratelimit-remaining": "42",
         "x-ratelimit-limit": "100",
       },
-    });
+    };
 
-    const status = await cache.fullStatus();
-    expect(status["svc"]).toBeDefined();
-    expect(status["svc"]!.remaining).toBe(42);
-    expect(status["svc"]!.limit).toBe(100);
-    expect(status["svc"]!.source).toBe("headers");
-    expect(status["svc"]!.score).toBeCloseTo(0.42, 8);
+    cache.recordResult("svc", result);
+
+    // Give the async write a tick to complete before we read status.
+    return cache.fullStatus().then((status) => {
+      expect(status["svc"]).toBeDefined();
+      expect(status["svc"]!.remaining).toBe(42);
+      expect(status["svc"]!.limit).toBe(100);
+      expect(status["svc"]!.source).toBe("headers");
+      expect(status["svc"]!.score).toBeCloseTo(0.42, 8);
+    });
   });
 
-  it("does nothing to QuotaState when there are no headers and not rate-limited", async () => {
-    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { store: memStore() });
-    cache.recordResult("svc", { output: "", service: "svc", success: true });
+  it("does nothing when there are no headers and not rate-limited", () => {
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: tmpFile() },
+    );
+    const result: DispatchResult = {
+      output: "",
+      service: "svc",
+      success: true,
+    };
+    cache.recordResult("svc", result);
 
-    const status = await cache.fullStatus();
-    expect(status["svc"]!.remaining).toBeNull();
-    expect(status["svc"]!.limit).toBeNull();
-    expect(status["svc"]!.source).toBe("unknown");
-    // But the call still gets counted in the store.
-    expect(status["svc"]!.localCallCount).toBe(1);
+    return cache.fullStatus().then((status) => {
+      expect(status["svc"]!.remaining).toBeNull();
+      expect(status["svc"]!.limit).toBeNull();
+      expect(status["svc"]!.source).toBe("unknown");
+    });
   });
 });
 
@@ -159,7 +173,7 @@ describe("QuotaCache TTL-based refresh", () => {
     );
     const cache = new QuotaCache(
       { svc: makeDispatcher("svc", checkQuota) },
-      { store: memStore(), ttlMs: 10_000 },
+      { stateFile: tmpFile(), ttlMs: 10_000 }, // 10 seconds
     );
 
     const first = await cache.getQuotaScore("svc");
@@ -171,100 +185,128 @@ describe("QuotaCache TTL-based refresh", () => {
   });
 
   it("returns score 1.0 when dispatcher is unknown", async () => {
-    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { store: memStore() });
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: tmpFile() },
+    );
     const score = await cache.getQuotaScore("nonexistent");
     expect(score).toBe(1.0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Local-counts persistence — now via SQLite, cross-process safe
+// Local-counts persistence
 // ---------------------------------------------------------------------------
 
-describe("QuotaCache local call counts (SQLite-backed)", () => {
-  it("counts every recordResult, success and failure split", async () => {
-    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { store: memStore() });
-    cache.recordResult("svc", { output: "", service: "svc", success: true });
-    cache.recordResult("svc", { output: "", service: "svc", success: true });
-    cache.recordResult("svc", { output: "", service: "svc", success: false });
+describe("QuotaCache local call counts", () => {
+  it("persists local call counts to the state file and reloads them", async () => {
+    const file = tmpFile();
+
+    const cache1 = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    const result: DispatchResult = {
+      output: "",
+      service: "svc",
+      success: true,
+    };
+    cache1.recordResult("svc", result);
+    cache1.recordResult("svc", result);
+    cache1.recordResult("svc", result);
+
+    // Force a synchronous flush — fire-and-forget async write may not have
+    // completed yet.
+    cache1.saveLocalCountsSync();
+
+    // File should exist with the counts.
+    const raw = readFileSync(file, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, { local_calls?: number }>;
+    expect(parsed["svc"]?.local_calls).toBe(3);
+
+    // A fresh cache should load the persisted count and expose it via
+    // fullStatus().localCallCount.
+    const cache2 = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    const status = await cache2.fullStatus();
+    expect(status["svc"]!.localCallCount).toBe(3);
+  });
+
+  it("fullStatus reflects current in-memory counts", async () => {
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc"), other: makeDispatcher("other") },
+      { stateFile: tmpFile() },
+    );
+    const result: DispatchResult = {
+      output: "",
+      service: "svc",
+      success: true,
+    };
+    cache.recordResult("svc", result);
+    cache.recordResult("svc", result);
+    cache.recordResult("other", result);
 
     const status = await cache.fullStatus();
+    expect(status["svc"]!.localCallCount).toBe(2);
+    expect(status["other"]!.localCallCount).toBe(1);
+  });
+
+  it("loads existing state file on construction", async () => {
+    const file = tmpFile();
+    writeFileSync(
+      file,
+      JSON.stringify({ svc: { local_calls: 7 } }, null, 2),
+      "utf-8",
+    );
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    const status = await cache.fullStatus();
+    expect(status["svc"]!.localCallCount).toBe(7);
+  });
+
+  it("tolerates a malformed state file", async () => {
+    const file = tmpFile();
+    writeFileSync(file, "{not valid json", "utf-8");
+    const cache = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    const status = await cache.fullStatus();
+    expect(status["svc"]!.localCallCount).toBe(0);
+  });
+
+  it("tracks success and failure counts separately and persists them", async () => {
+    const file = tmpFile();
+    const cache1 = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    cache1.recordResult("svc", { output: "", service: "svc", success: true });
+    cache1.recordResult("svc", { output: "", service: "svc", success: true });
+    cache1.recordResult("svc", { output: "", service: "svc", success: false });
+    cache1.saveLocalCountsSync();
+
+    const raw = readFileSync(file, "utf-8");
+    const parsed = JSON.parse(raw) as Record<
+      string,
+      { local_calls?: number; local_success?: number; local_failure?: number }
+    >;
+    expect(parsed["svc"]?.local_calls).toBe(3);
+    expect(parsed["svc"]?.local_success).toBe(2);
+    expect(parsed["svc"]?.local_failure).toBe(1);
+
+    const cache2 = new QuotaCache(
+      { svc: makeDispatcher("svc") },
+      { stateFile: file },
+    );
+    const status = await cache2.fullStatus();
     expect(status["svc"]!.localCallCount).toBe(3);
     expect(status["svc"]!.localSuccessCount).toBe(2);
     expect(status["svc"]!.localFailureCount).toBe(1);
-  });
-
-  it("two caches sharing one store accumulate cross-process counts", async () => {
-    // Same store instance used by both caches simulates two processes
-    // opening the same DB file. The store's additive UPSERT means counts
-    // accumulate without races.
-    const store = memStore();
-    const a = new QuotaCache({ svc: makeDispatcher("svc") }, { store });
-    const b = new QuotaCache({ svc: makeDispatcher("svc") }, { store });
-
-    a.recordResult("svc", { output: "", service: "svc", success: true });
-    a.recordResult("svc", { output: "", service: "svc", success: true });
-    b.recordResult("svc", { output: "", service: "svc", success: true });
-
-    // Either cache sees 3 total via fullStatus.
-    expect((await a.fullStatus())["svc"]!.localCallCount).toBe(3);
-    expect((await b.fullStatus())["svc"]!.localCallCount).toBe(3);
-  });
-
-  it("getCounts returns cross-process totals on demand", () => {
-    const store = memStore();
-    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { store });
-    cache.recordResult("svc", { output: "", service: "svc", success: true });
-    cache.recordResult("svc", { output: "", service: "svc", success: false });
-    expect(cache.getCounts("svc")).toEqual({ total: 2, success: 1, failure: 1 });
-    expect(cache.getCounts("unknown")).toEqual({ total: 0, success: 0, failure: 0 });
-  });
-
-  it("imports a legacy v0.2 quota_state.json on first construction (default store)", async () => {
-    const file = path.join(tmpDir, "quota_state.json");
-    writeFileSync(
-      file,
-      JSON.stringify({
-        svc: { local_calls: 5, local_success: 4, local_failure: 1 },
-      }),
-      "utf-8",
-    );
-    // Point the legacy importer at our tmp dir by overriding HOME.
-    const realHome = process.env.HOME;
-    const realUserProfile = process.env.USERPROFILE;
-    process.env.HOME = tmpDir.replace(/\.harness-router.*$/, "");
-    process.env.USERPROFILE = process.env.HOME;
-    // Place the legacy file where importLegacyState() looks for it.
-    const legacyDir = path.join(process.env.HOME, ".harness-router");
-    mkdirSync(legacyDir, { recursive: true });
-    const legacyPath = path.join(legacyDir, "quota_state.json");
-    writeFileSync(
-      legacyPath,
-      JSON.stringify({
-        svc: { local_calls: 5, local_success: 4, local_failure: 1 },
-      }),
-      "utf-8",
-    );
-
-    // Use a custom store so the import flows in but the DB itself is
-    // ephemeral. Note: the legacy import path only runs when the cache
-    // OPENS its own store (no `store:` opt). So this test exercises the
-    // default-store branch by setting HARNESS_ROUTER_STATE_DB.
-    process.env.HARNESS_ROUTER_STATE_DB = path.join(tmpDir, "state.db");
-    try {
-      const cache = new QuotaCache({ svc: makeDispatcher("svc") });
-      const status = await cache.fullStatus();
-      expect(status["svc"]!.localCallCount).toBe(5);
-      expect(status["svc"]!.localSuccessCount).toBe(4);
-      expect(status["svc"]!.localFailureCount).toBe(1);
-      cache.close();
-    } finally {
-      delete process.env.HARNESS_ROUTER_STATE_DB;
-      if (realHome !== undefined) process.env.HOME = realHome;
-      else delete process.env.HOME;
-      if (realUserProfile !== undefined) process.env.USERPROFILE = realUserProfile;
-      else delete process.env.USERPROFILE;
-    }
   });
 });
 
@@ -283,7 +325,7 @@ describe("QuotaCache.getQuotaInfo", () => {
           source: "api",
         })),
       },
-      { store: memStore() },
+      { stateFile: tmpFile() },
     );
     const info = await cache.getQuotaInfo("svc");
     expect(info).not.toBeNull();

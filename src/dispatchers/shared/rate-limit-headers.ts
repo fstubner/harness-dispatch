@@ -25,7 +25,10 @@ const LIMIT_KEYS = [
   "ratelimit-limit",
 ] as const;
 
-const RETRY_AFTER_KEYS = ["retry-after", "x-ratelimit-retry-after"] as const;
+const RETRY_AFTER_KEYS = [
+  "retry-after",
+  "x-ratelimit-retry-after",
+] as const;
 
 const RESET_EPOCH_KEYS = [
   "x-ratelimit-reset",

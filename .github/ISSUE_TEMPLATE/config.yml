@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Security vulnerability
-    url: https://github.com/fstubner/harness-router-mcp/security/advisories/new
-    about: Please use private vulnerability reporting for security issues — see SECURITY.md.
-  - name: Question
-    url: https://github.com/fstubner/harness-router-mcp/discussions
-    about: For usage questions, prefer Discussions so others can find the answer.

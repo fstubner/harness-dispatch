@@ -1,22 +1,16 @@
 {
   "name": "harness-router",
-  "version": "0.3.2",
-  "description": "MCP server that routes coding tasks model-first across your AI subscriptions and APIs. Use Claude Pro, ChatGPT Plus, Cursor, Copilot CLI, opencode, etc. before falling back to metered API.",
+  "version": "0.4.0",
+  "description": "Local harness router for coding agents with MCP and OpenAI-compatible HTTP surfaces.",
   "keywords": [
     "mcp",
-    "model-context-protocol",
-    "harness",
-    "router",
-    "claude-code",
+    "claude",
+    "coding",
+    "ai-agents",
+    "llm",
     "cursor",
     "codex",
-    "gemini",
-    "opencode",
-    "copilot",
-    "github-copilot",
-    "ai-agents",
-    "load-balancing",
-    "circuit-breaker"
+    "gemini"
   ],
   "license": "MIT",
   "author": "Felix Stubner",
@@ -31,72 +25,57 @@
     }
   },
   "bin": {
-    "harness-router": "dist/bin.js"
+    "harness-router": "./dist/bin.js"
   },
   "files": [
     "dist/",
     "data/",
     "config.example.yaml",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test",
     "dev": "tsx src/bin.ts",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:agents": "node scripts/smoke-agents.mjs",
     "test": "vitest run",
-    "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
     "test:parity": "vitest run tests/scoring-parity.test.ts",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" \"scripts/**/*.mjs\" \"*.{json,md,yml}\" \".github/**/*.{yml,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" \"scripts/**/*.mjs\" \"*.{json,md,yml}\" \".github/**/*.{yml,md}\"",
-    "lint": "eslint .",
-    "check": "npm run lint && npm run typecheck && npm run format:check && npm run test",
-    "smoke": "node scripts/mcp-smoke.mjs",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.4.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/auto-instrumentations-node": "^0.75.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
-    "@opentelemetry/sdk-node": "^0.217.0",
-    "better-sqlite3": "^12.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.76.0",
+    "@opentelemetry/core": "^2.7.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/sdk-node": "^0.218.0",
     "js-yaml": "^4.1.0",
-    "smol-toml": "^1.6.1",
     "which": "^5.0.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "@types/which": "^3.0.4",
-    "@vitest/coverage-v8": "^4.1.5",
-    "@vitest/eslint-plugin": "^1.6.16",
-    "eslint": "^10.3.0",
-    "globals": "^17.6.0",
-    "prettier": "^3.8.3",
+    "@vitest/coverage-v8": "^4.1.7",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
-    "typescript-eslint": "^8.59.1",
     "vitest": "^4.1.5"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "overrides": {
-    "uuid": "^14.0.0",
-    "gaxios": "^7.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fstubner/harness-router.git"
+    "url": "https://github.com/fstubner/harness-router"
   },
   "bugs": {
     "url": "https://github.com/fstubner/harness-router/issues"

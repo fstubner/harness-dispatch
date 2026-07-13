@@ -16,7 +16,6 @@
  */
 
 import type { Span } from "@opentelemetry/api";
-
 import { VERSION } from "../version.js";
 
 const SERVICE_NAME_DEFAULT = "harness-router";
@@ -50,10 +49,14 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
   // Lazily import so consumers who never call initObservability don't pay the
   // load cost or pick up auto-instrumentations they didn't ask for.
   const { NodeSDK } = await import("@opentelemetry/sdk-node");
-  const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
+  const { OTLPTraceExporter } = await import(
+    "@opentelemetry/exporter-trace-otlp-http"
+  );
 
   const otlpEndpoint =
-    opts.otlpUrl ?? process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] ?? "http://localhost:4318";
+    opts.otlpUrl ??
+    process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] ??
+    "http://localhost:4318";
 
   const exporter = new OTLPTraceExporter({
     url: `${otlpEndpoint.replace(/\/+$/, "")}/v1/traces`,
@@ -77,32 +80,17 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
   // attributes via env var to stay version-agnostic — that's the supported
   // compat path.
   const existingRes = process.env["OTEL_RESOURCE_ATTRIBUTES"] ?? "";
-  const resourceParts = [`service.name=${serviceName}`, `service.version=${SERVICE_VERSION}`];
+  const resourceParts = [
+    `service.name=${serviceName}`,
+    `service.version=${SERVICE_VERSION}`,
+  ];
   process.env["OTEL_RESOURCE_ATTRIBUTES"] = existingRes
     ? `${existingRes},${resourceParts.join(",")}`
     : resourceParts.join(",");
 
-  // Pin the instrumentations field's type so a future SDK upgrade that
-  // reshapes the constructor's first arg surfaces the mismatch here
-  // rather than silently propagating `never` (the previous `as never`
-  // workaround). The runtime value is whatever auto-instrumentations-node
-  // produces and conforms structurally; only the package-versioned type
-  // sometimes doesn't line up with NodeSDK's expected shape.
-  //
-  // `NonNullable<>` strips the optional wrapper around the constructor's
-  // arg; the inner index pulls the field. With `exactOptionalPropertyTypes`
-  // we have to widen `undefined` away because the SDK's field is non-
-  // optional even though `Partial<NodeSDKConfiguration>` makes the parent
-  // optional — `NonNullable` on the outer doesn't narrow inner properties.
-  type SdkInstrumentations = NonNullable<
-    NonNullable<ConstructorParameters<typeof NodeSDK>[0]>["instrumentations"]
-  >;
-  // TS narrows `instrumentations` to non-undefined after the if/try/catch
-  // (every reachable branch assigns), so no `!` needed. The cast widens
-  // from `unknown[]` to the SDK-versioned tuple shape.
   const sdk = new NodeSDK({
     traceExporter: exporter,
-    instrumentations: instrumentations as SdkInstrumentations,
+    instrumentations: instrumentations as never,
   });
 
   try {
@@ -110,13 +98,8 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
     sdkRef = { shutdown: () => sdk.shutdown() };
     initialized = true;
     return true;
-  } catch (err) {
-    // SDK failed to start — don't crash the host, but surface the reason on
-    // stderr. Otherwise an operator who configured OTEL_EXPORTER_OTLP_ENDPOINT
-    // and sees zero traces has no signal that init silently failed. Stderr
-    // (not stdout) is intentional: stdout is reserved for MCP JSON-RPC.
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[harness-router] OpenTelemetry SDK failed to start: ${msg}\n`);
+  } catch {
+    // SDK failed to start — don't crash the host.
     return false;
   }
 }

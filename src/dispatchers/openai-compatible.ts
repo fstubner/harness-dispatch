@@ -23,11 +23,6 @@ import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig } from "
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { parseRetryAfter } from "./shared/rate-limit-headers.js";
 
-// Path appended to `baseUrl`. The convention (and `config.example.yaml`) is
-// that users supply `/v1` (or equivalent provider prefix) in `base_url`
-// itself — e.g. `https://api.openai.com/v1`, `http://localhost:11434/v1`,
-// `https://openrouter.ai/api/v1`. So this path must NOT include `/v1` or
-// the resulting URL ends up as `…/v1/v1/chat/completions` and 404s.
 const CHAT_PATH = "/chat/completions";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_SYSTEM_PROMPT =
@@ -77,7 +72,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   }
 
   isAvailable(): boolean {
-    return true;
+    return this.baseUrl.length > 0 && this.model.length > 0;
   }
 
   async checkQuota(): Promise<QuotaInfo> {
@@ -85,21 +80,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   }
 
   /**
-   * Buffered one-shot: POST with `stream: false`, parse a single JSON body.
-   *
-   * **Maintenance note**: this method duplicates parts of `stream()`'s body
-   * handling (rate-limit detection, error extraction, usage parsing). The
-   * duplication is preserved deliberately because:
-   *  1. The buffered path uses a single `fetch` + `res.text()` (no SSE
-   *     decoder), which is meaningfully simpler and faster for tests that
-   *     mock `fetch` with a synchronous response.
-   *  2. Routing the buffered path through `stream()` would force every
-   *     test that mocks `fetch` to produce SSE-shaped output.
-   *
-   * If you fix a bug in one path, audit the other for the same fix. The
-   * shared helpers (`parseRetryAfter`, `extractContent`, `extractErrorMessage`)
-   * cover most of the parse logic; the divergence is mostly in the body-read
-   * mechanics.
+   * Buffered one-shot: POST with stream=false, parse a single JSON body.
+   * Kept as a fast-path (no incremental parsing overhead) and to preserve
+   * existing mocked-fetch tests.
    */
   override async dispatch(
     prompt: string,
@@ -109,7 +92,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   ): Promise<DispatchResult> {
     const start = Date.now();
     const fullPrompt = await buildPromptWithFiles(prompt, files);
-    const url = `${this.baseUrl}${CHAT_PATH}`;
+    const url = chatCompletionsUrl(this.baseUrl);
 
     const model = opts.modelOverride ?? this.model;
 
@@ -253,7 +236,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   ): AsyncGenerator<DispatcherEvent> {
     const start = Date.now();
     const fullPrompt = await buildPromptWithFiles(prompt, files);
-    const url = `${this.baseUrl}${CHAT_PATH}`;
+    const url = chatCompletionsUrl(this.baseUrl);
     const model = opts.modelOverride ?? this.model;
 
     const body: Record<string, unknown> = {
@@ -367,69 +350,43 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       return;
     }
 
-    const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
 
-    // Track whether we drained the stream cleanly. If a consumer abandons
-    // iteration mid-stream (calls `.return()` on the outer for-await), the
-    // generator's `finally` runs and we need to cancel the reader so the
-    // HTTP connection is released. Without this, the response body keeps
-    // pulling bytes from the remote until the server closes — a real
-    // connection leak flagged by audit pass A.
-    let streamSettled = false;
     try {
-      try {
-        while (true) {
-          const read: unknown = await reader.read();
-          if (!isStreamRead(read)) {
-            throw new Error("Invalid response stream chunk");
-          }
-          if (read.done) break;
-          buffer += decoder.decode(read.value, { stream: true });
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary >= 0) {
-            const frame = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
-            const evts = this.#parseSseFrame(frame);
-            for (const e of evts.events) {
-              yield e;
-              if (e.type === "stdout") chunks.push(e.chunk);
-            }
-            if (evts.usage) usage = evts.usage;
-            boundary = buffer.indexOf("\n\n");
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const evts = this.#parseSseFrame(frame);
+          for (const e of evts.events) {
+            yield e;
+            if (e.type === "stdout") chunks.push(e.chunk);
           }
+          if (evts.usage) usage = evts.usage;
+          boundary = buffer.indexOf("\n\n");
         }
-        streamSettled = true;
-      } catch (err) {
-        streamSettled = true;
-        clearTimeout(timer);
-        const errMsg = err instanceof Error ? err.message : String(err);
-        yield {
-          type: "completion",
-          result: {
-            output: chunks.join(""),
-            service: this.id,
-            success: false,
-            error: errMsg,
-            durationMs: Date.now() - start,
-            rateLimitHeaders: responseHeaders,
-          },
-        };
-        return;
       }
-    } finally {
-      // Cancel the reader on abandonment (consumer broke out before the
-      // stream finished). If we drained naturally `streamSettled` is true
-      // and cancel is a no-op.
-      if (!streamSettled) {
-        try {
-          await reader.cancel();
-        } catch {
-          /* best-effort */
-        }
-        clearTimeout(timer);
-      }
+    } catch (err) {
+      clearTimeout(timer);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      yield {
+        type: "completion",
+        result: {
+          output: chunks.join(""),
+          service: this.id,
+          success: false,
+          error: errMsg,
+          durationMs: Date.now() - start,
+          rateLimitHeaders: responseHeaders,
+        },
+      };
+      return;
     }
     clearTimeout(timer);
 
@@ -511,6 +468,12 @@ function headersToObject(h: Headers): Record<string, string> {
   return out;
 }
 
+function chatCompletionsUrl(baseUrl: string): string {
+  return baseUrl.endsWith("/v1")
+    ? `${baseUrl}${CHAT_PATH}`
+    : `${baseUrl}/v1${CHAT_PATH}`;
+}
+
 function extractContent(body: ChatCompletionResponse): string | null {
   const choices = body.choices;
   if (!Array.isArray(choices) || choices.length === 0) return null;
@@ -522,23 +485,20 @@ function extractContent(body: ChatCompletionResponse): string | null {
   return typeof content === "string" ? content : null;
 }
 
-function extractErrorMessage(body: ChatCompletionResponse | null, rawBody: string): string {
+function extractErrorMessage(
+  body: ChatCompletionResponse | null,
+  rawBody: string,
+): string {
   if (body?.error) {
     if (typeof body.error.message === "string") return body.error.message;
   }
   return rawBody.slice(0, 200) || "(empty body)";
 }
 
-function isStreamRead(
-  value: unknown,
-): value is { done: true; value?: undefined } | { done: false; value: Uint8Array } {
-  if (!value || typeof value !== "object") return false;
-  const maybe = value as { done?: unknown; value?: unknown };
-  if (maybe.done === true) return true;
-  return maybe.done === false && maybe.value instanceof Uint8Array;
-}
-
-async function buildPromptWithFiles(prompt: string, files: string[]): Promise<string> {
+async function buildPromptWithFiles(
+  prompt: string,
+  files: string[],
+): Promise<string> {
   if (files.length === 0) return prompt;
   const parts: string[] = [prompt];
   const { stat, readFile } = await import("node:fs/promises");

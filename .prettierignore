@@ -1,8 +1,0 @@
-dist/
-node_modules/
-coverage/
-.vitest-cache/
-*.tgz
-data/coding_benchmarks.json
-package-lock.json
-docs/index.html

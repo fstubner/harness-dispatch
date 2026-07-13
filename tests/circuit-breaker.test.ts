@@ -43,7 +43,9 @@ describe("CircuitBreaker", () => {
     expect(status.tripped).toBe(true);
     expect(status.failures).toBe(CIRCUIT_BREAKER_THRESHOLD);
     expect(status.cooldownRemainingSec).toBeGreaterThan(0);
-    expect(status.cooldownRemainingSec).toBeLessThanOrEqual(CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC);
+    expect(status.cooldownRemainingSec).toBeLessThanOrEqual(
+      CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC,
+    );
   });
 
   it("auto-resets when cooldown expires", () => {
@@ -76,11 +78,15 @@ describe("CircuitBreaker", () => {
   it("trip() falls back to default when retryAfter is missing / non-positive", () => {
     const cb = new CircuitBreaker();
     cb.trip();
-    expect(cb.cooldownRemaining()).toBeGreaterThan(CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC - 1);
+    expect(cb.cooldownRemaining()).toBeGreaterThan(
+      CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC - 1,
+    );
 
     const cb2 = new CircuitBreaker();
     cb2.trip(-5);
-    expect(cb2.cooldownRemaining()).toBeGreaterThan(CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC - 1);
+    expect(cb2.cooldownRemaining()).toBeGreaterThan(
+      CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC - 1,
+    );
   });
 
   it("recordFailure(retryAfterSec) uses retryAfter when threshold is crossed", () => {
@@ -113,38 +119,5 @@ describe("CircuitBreaker", () => {
     }
     expect(cb.isTripped).toBe(false);
     expect(cb.status().failures).toBe(CIRCUIT_BREAKER_THRESHOLD - 1);
-  });
-
-  // restoreTripped — used by config hot-reload to preserve in-flight cooldowns
-  // across rebuilds without resetting the clock.
-
-  it("restoreTripped(N) trips with N seconds remaining (not N total starting now)", () => {
-    const cb = new CircuitBreaker();
-    cb.restoreTripped(50);
-    expect(cb.isTripped).toBe(true);
-    expect(cb.cooldownRemaining()).toBeCloseTo(50, 5);
-    advanceSec(30);
-    expect(cb.cooldownRemaining()).toBeCloseTo(20, 5);
-    advanceSec(20);
-    // Auto-reset at the boundary.
-    expect(cb.isTripped).toBe(false);
-  });
-
-  it("restoreTripped(0) does NOT fall back to the default cooldown (regression)", () => {
-    // The previous hot-reload code called `nb.trip(remaining)`. When
-    // remaining rounded to 0 (status() returns 1-decimal precision) the
-    // `trip()` falsy-check fell through to CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC,
-    // re-tripping a near-expired breaker for the full 300 s. restoreTripped
-    // treats <=0 as "already expired" and leaves the breaker reset.
-    const cb = new CircuitBreaker();
-    cb.restoreTripped(0);
-    expect(cb.isTripped).toBe(false);
-    expect(cb.cooldownRemaining()).toBe(0);
-  });
-
-  it("restoreTripped(negative) is treated as expired", () => {
-    const cb = new CircuitBreaker();
-    cb.restoreTripped(-5);
-    expect(cb.isTripped).toBe(false);
   });
 });

@@ -23,9 +23,7 @@
  * working without modification while still exercising the streaming code
  * path in production.
  */
-import { type ChildProcess, type SpawnOptions } from "node:child_process";
-
-import { safeSpawn } from "./safe-spawn.js";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { runSubprocess, type SubprocessResult } from "./subprocess.js";
 
 export interface SubprocessChunk {
@@ -48,6 +46,7 @@ export type SubprocessStreamEvent = SubprocessChunk | SubprocessEnd;
 export interface StreamSubprocessOpts {
   cwd?: string;
   env?: Record<string, string>;
+  stdin?: string;
   timeoutMs?: number;
   maxOutputBytes?: number;
   /**
@@ -60,12 +59,6 @@ export interface StreamSubprocessOpts {
    * `runSubprocess`.
    */
   killGraceMs?: number;
-  /**
-   * Optional input written to the child's stdin and then closed. When set,
-   * spawn switches stdin from `"ignore"` to `"pipe"`. Used by generic_cli
-   * recipes with `promptDelivery: "stdin"`. Treated as UTF-8.
-   */
-  stdinInput?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -84,36 +77,23 @@ export function streamSubprocess(
   args: readonly string[],
   opts: StreamSubprocessOpts = {},
 ): AsyncIterable<SubprocessStreamEvent> {
-  if (isVitestMock(runSubprocess)) {
+  // Test-compatibility: when `runSubprocess` is replaced by a vi.fn() mock
+  // (every dispatcher test does this), delegate to the mock and synthesize
+  // stream events from the buffered result. This keeps existing tests
+  // passing without modification.
+  //
+  // We detect the mock by looking at `runSubprocess.mock` (the vitest fn shape).
+  // In production the function is a regular async function and `.mock` is
+  // undefined — we fall through to the real streaming implementation.
+  const rs = runSubprocess as unknown as {
+    mock?: unknown;
+    _isMockFunction?: boolean;
+  };
+  if (rs._isMockFunction || rs.mock) {
     return adaptBufferedToStream(command, args, opts);
   }
 
   return realStreamSubprocess(command, args, opts);
-}
-
-/**
- * Detect whether `runSubprocess` has been replaced by a vitest mock.
- *
- * Vitest's mock fns expose a `.mock` property (the inspection surface used
- * by `.mock.calls`, `.mock.results`, etc.). This is part of vitest's
- * documented public API — `vi.isMockFunction` checks the same shape. We
- * deliberately do NOT probe `_isMockFunction` (the private flag) — that
- * was the original audit smell.
- *
- * In production the imported `runSubprocess` is a plain async function;
- * `.mock` is `undefined`. In tests that `vi.mock("…/subprocess.js")`, it
- * becomes the mock fn and `.mock` is a non-null object. The branch lets
- * existing tests keep their `vi.mock` pattern without explicit DI setup
- * in every test file.
- *
- * Trade-off: production code retains awareness that vitest exists at the
- * type-shape level. The alternative — a dependency-injection seam with a
- * test-only setter — would require updating 7 test files. The minimal
- * version (probe `.mock` only, no internals) preserves the existing test
- * contract while staying off vitest's private surface.
- */
-function isVitestMock(fn: unknown): boolean {
-  return typeof fn === "function" && "mock" in fn && fn.mock !== undefined;
 }
 
 /**
@@ -130,12 +110,17 @@ function adaptBufferedToStream(
   const deferredOpts: Parameters<typeof runSubprocess>[2] = {};
   if (opts.cwd !== undefined) deferredOpts.cwd = opts.cwd;
   if (opts.env !== undefined) deferredOpts.env = opts.env;
+  if (opts.stdin !== undefined) deferredOpts.stdin = opts.stdin;
   if (opts.timeoutMs !== undefined) deferredOpts.timeoutMs = opts.timeoutMs;
-  if (opts.maxOutputBytes !== undefined) deferredOpts.maxOutputBytes = opts.maxOutputBytes;
-  if (opts.stdinInput !== undefined) deferredOpts.stdinInput = opts.stdinInput;
+  if (opts.maxOutputBytes !== undefined)
+    deferredOpts.maxOutputBytes = opts.maxOutputBytes;
 
   async function* gen(): AsyncGenerator<SubprocessStreamEvent> {
-    const res: SubprocessResult = await runSubprocess(command, args, deferredOpts);
+    const res: SubprocessResult = await runSubprocess(
+      command,
+      args,
+      deferredOpts,
+    );
     if (res.stdout) {
       yield { stream: "stdout", chunk: res.stdout };
     }
@@ -149,11 +134,7 @@ function adaptBufferedToStream(
       durationMs: res.durationMs,
       totalStdoutBytes: Buffer.byteLength(res.stdout, "utf8"),
       totalStderrBytes: Buffer.byteLength(res.stderr, "utf8"),
-      // Propagate the buffered runner's truncation flag when present so
-      // tests that mock `runSubprocess` with `truncated: true` see the
-      // streaming consumer react accordingly. Defaults to false for the
-      // (current) majority of mocks that don't set it.
-      truncated: res.truncated ?? false,
+      truncated: false,
     };
   }
   return gen();
@@ -179,10 +160,7 @@ function realStreamSubprocess(
   const queue: SubprocessStreamEvent[] = [];
   const waiters: Waiter[] = [];
   let done = false;
-  // We always assign Error instances here (or `null` for "no error").
-  // Typed precisely so callers can `Promise.reject` it without
-  // tripping `prefer-promise-reject-errors`.
-  let errored: Error | null = null;
+  let errored: unknown = null;
   let child: ChildProcess | null = null;
 
   let stdoutBytes = 0;
@@ -236,128 +214,88 @@ function realStreamSubprocess(
     }, killGraceMs).unref();
   }
 
-  const stdinMode: "ignore" | "pipe" = opts.stdinInput !== undefined ? "pipe" : "ignore";
   const spawnOpts: SpawnOptions = {
-    stdio: [stdinMode, "pipe", "pipe"],
+    stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     windowsHide: true,
     env: opts.env ? { ...process.env, ...opts.env } : process.env,
   };
   if (opts.cwd !== undefined) spawnOpts.cwd = opts.cwd;
 
-  // Timer is started immediately (covers slow spawn too — safeSpawn does
-  // a `which` lookup which can take a few ms on Windows).
+  try {
+    child = spawn(command, args as readonly string[] as string[], spawnOpts);
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    errored = e;
+    queueMicrotask(finish);
+    return buildIterable();
+  }
+  if (opts.stdin !== undefined) {
+    child.stdin?.end(opts.stdin);
+  }
+
   const timer = setTimeout(() => {
     if (settled) return;
     timedOut = true;
-    if (child) terminateChild("SIGTERM");
-    else {
-      // Spawn never completed within the timeout window. Mark settled so
-      // a late-arriving spawn result is ignored.
-      settled = true;
-      errored = new Error(`Timed out before spawn after ${timeoutMs}ms`);
-      finish();
-    }
+    terminateChild("SIGTERM");
   }, timeoutMs);
   timer.unref();
 
-  // safeSpawn handles Windows .cmd/.bat shims with proper quoting so paths
-  // containing spaces (e.g. `C:\Program Files\foo.cmd`) parse correctly.
-  // It's async (does a `which` lookup); attach listeners once it resolves.
-  void safeSpawn(command, args, spawnOpts).then(
-    (c) => {
-      if (settled) {
-        // Timed out before spawn returned — kill the child immediately.
-        try {
-          c.kill("SIGTERM");
-        } catch {
-          // ignore
-        }
-        return;
+  child.stdout?.on("data", (buf: Buffer) => {
+    if (truncated) return;
+    if (stdoutBytes + buf.length > maxOutputBytes) {
+      const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
+      if (remaining > 0) {
+        push({ stream: "stdout", chunk: buf.subarray(0, remaining).toString("utf8") });
       }
-      child = c;
-      attachListeners(c);
-      // If the recipe asked us to feed the prompt on stdin, write it now and
-      // close so the child sees EOF. Errors here would normally be `EPIPE`
-      // when the child has already exited — swallow them; the close handler
-      // surfaces the real failure.
-      if (opts.stdinInput !== undefined && c.stdin) {
-        try {
-          c.stdin.end(opts.stdinInput, "utf8");
-        } catch {
-          // child already terminated — close handler will report it
-        }
+      stdoutBytes = maxOutputBytes;
+      truncated = true;
+      terminateChild("SIGTERM");
+      return;
+    }
+    stdoutBytes += buf.length;
+    push({ stream: "stdout", chunk: buf.toString("utf8") });
+  });
+
+  child.stderr?.on("data", (buf: Buffer) => {
+    if (truncated) return;
+    if (stderrBytes + buf.length > maxOutputBytes) {
+      const remaining = Math.max(0, maxOutputBytes - stderrBytes);
+      if (remaining > 0) {
+        push({ stream: "stderr", chunk: buf.subarray(0, remaining).toString("utf8") });
       }
-    },
-    (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      errored = err instanceof Error ? err : new Error(String(err));
-      finish();
-    },
-  );
+      stderrBytes = maxOutputBytes;
+      truncated = true;
+      terminateChild("SIGTERM");
+      return;
+    }
+    stderrBytes += buf.length;
+    push({ stream: "stderr", chunk: buf.toString("utf8") });
+  });
 
-  function attachListeners(c: ChildProcess): void {
-    c.stdout?.on("data", (buf: Buffer) => {
-      if (truncated) return;
-      if (stdoutBytes + buf.length > maxOutputBytes) {
-        const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
-        if (remaining > 0) {
-          push({ stream: "stdout", chunk: buf.subarray(0, remaining).toString("utf8") });
-        }
-        stdoutBytes = maxOutputBytes;
-        truncated = true;
-        terminateChild("SIGTERM");
-        return;
-      }
-      stdoutBytes += buf.length;
-      push({ stream: "stdout", chunk: buf.toString("utf8") });
-    });
+  child.on("error", (err) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    errored = err;
+    finish();
+  });
 
-    c.stderr?.on("data", (buf: Buffer) => {
-      if (truncated) return;
-      if (stderrBytes + buf.length > maxOutputBytes) {
-        const remaining = Math.max(0, maxOutputBytes - stderrBytes);
-        if (remaining > 0) {
-          push({ stream: "stderr", chunk: buf.subarray(0, remaining).toString("utf8") });
-        }
-        stderrBytes = maxOutputBytes;
-        truncated = true;
-        terminateChild("SIGTERM");
-        return;
-      }
-      stderrBytes += buf.length;
-      push({ stream: "stderr", chunk: buf.toString("utf8") });
+  child.on("close", (code, signal) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    const exitCode = code ?? (signal ? 128 : -1);
+    push({
+      kind: "end",
+      exitCode,
+      timedOut,
+      durationMs: Date.now() - start,
+      totalStdoutBytes: stdoutBytes,
+      totalStderrBytes: stderrBytes,
+      truncated,
     });
-
-    c.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      // Node's child_process emits `Error` here — but for symmetry with
-      // the other assignment sites and to satisfy
-      // `prefer-promise-reject-errors`, defensively wrap.
-      errored = err instanceof Error ? err : new Error(String(err));
-      finish();
-    });
-
-    c.on("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      const exitCode = code ?? (signal ? 128 : -1);
-      push({
-        kind: "end",
-        exitCode,
-        timedOut,
-        durationMs: Date.now() - start,
-        totalStdoutBytes: stdoutBytes,
-        totalStderrBytes: stderrBytes,
-        truncated,
-      });
-      finish();
-    });
-  }
+    finish();
+  });
 
   function buildIterable(): AsyncIterable<SubprocessStreamEvent> {
     return {
@@ -377,12 +315,6 @@ function realStreamSubprocess(
             });
           },
           return(): Promise<IteratorResult<SubprocessStreamEvent>> {
-            // Clear the timeout watchdog explicitly. The timer is .unref()'d
-            // so it can't keep the process alive, but if the consumer
-            // breaks out before the child exits, the timer would still
-            // fire and call terminateChild a second time. Harmless in
-            // practice but clearer in tests/traces if we just clear it.
-            clearTimeout(timer);
             if (!settled) terminateChild("SIGTERM");
             done = true;
             while (waiters.length > 0) {
@@ -392,14 +324,9 @@ function realStreamSubprocess(
             return Promise.resolve({ value: undefined, done: true });
           },
           throw(err): Promise<IteratorResult<SubprocessStreamEvent>> {
-            clearTimeout(timer);
             if (!settled) terminateChild("SIGTERM");
             done = true;
-            // The iterator-protocol's `throw` argument is `unknown`. Wrap
-            // non-Error values so downstream `instanceof Error` checks
-            // (and `prefer-promise-reject-errors`) hold.
-            const e = err instanceof Error ? err : new Error(String(err));
-            return Promise.reject(e);
+            return Promise.reject(err);
           },
         };
       },

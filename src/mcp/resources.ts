@@ -1,63 +1,68 @@
-/**
- * MCP resources for harness-router.
- *
- * v0.3 cuts the v0.2 `dashboard` and `get_quota_status` tools and exposes
- * the same data as **resources** instead. Rationale: tools are for actions
- * with side effects; resources are for inspectable state. Routing status
- * is the latter — agents shouldn't have to "call a tool" to see what their
- * router is doing.
- *
- * Two resources:
- *   - `harness-router://status`         — multi-line text dashboard
- *   - `harness-router://status.json`    — machine-readable quota + breaker state
- *
- * Both are read-on-demand (no subscriptions) and unauthenticated — they
- * inherit the transport's auth model (loopback by default, bearer token
- * for non-loopback).
- */
-
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { handleDashboard, handleQuotaStatus, type ToolDeps } from "./tools.js";
+import { buildStatus, renderStatusText } from "../status.js";
+import type { ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
 
-export const RESOURCE_URIS = ["harness-router://status", "harness-router://status.json"] as const;
+export interface ResourceDeps {
+  holder: RuntimeHolder;
+  reloader?: ConfigHotReloader;
+}
 
-export function registerResources(server: McpServer, deps: ToolDeps): void {
+async function ensureFreshConfig(reloader: ConfigHotReloader | undefined): Promise<void> {
+  if (reloader) await reloader.maybeReload();
+}
+
+async function currentStatus(deps: ResourceDeps) {
+  await ensureFreshConfig(deps.reloader);
+  const state = deps.holder.state;
+  return buildStatus(
+    state.config,
+    state.dispatchers,
+    state.quota,
+    state.router,
+    state.leaderboard,
+  );
+}
+
+export function registerResources(server: McpServer, deps: ResourceDeps): void {
   server.registerResource(
-    "harness-router-status",
+    "status",
     "harness-router://status",
     {
-      title: "Routing status",
-      description:
-        "Multi-line text dashboard — model priority, per-service reachability, " +
-        "quota, circuit-breaker state, and the router's current pick.",
+      title: "Harness Router Status",
+      description: "Human-readable route availability, quota, and breaker state.",
       mimeType: "text/plain",
     },
-    async (uri): Promise<ReadResourceResult> => {
-      const text = await handleDashboard(deps);
+    async () => {
+      const status = await currentStatus(deps);
       return {
-        contents: [{ uri: uri.href, mimeType: "text/plain", text }],
+        contents: [
+          {
+            uri: "harness-router://status",
+            mimeType: "text/plain",
+            text: renderStatusText(status),
+          },
+        ],
       };
     },
   );
 
   server.registerResource(
-    "harness-router-status-json",
+    "status-json",
     "harness-router://status.json",
     {
-      title: "Routing status (JSON)",
-      description: "Per-service quota + circuit-breaker state in JSON form.",
+      title: "Harness Router Status JSON",
+      description: "Structured route availability, quota, and breaker state.",
       mimeType: "application/json",
     },
-    async (uri): Promise<ReadResourceResult> => {
-      const data = await handleQuotaStatus(deps);
+    async () => {
+      const status = await currentStatus(deps);
       return {
         contents: [
           {
-            uri: uri.href,
+            uri: "harness-router://status.json",
             mimeType: "application/json",
-            text: JSON.stringify(data, null, 2),
+            text: JSON.stringify(status, null, 2),
           },
         ],
       };

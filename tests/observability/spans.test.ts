@@ -23,7 +23,7 @@ type RecordedSpan = {
 const recordedSpans: RecordedSpan[] = [];
 
 class StubSpan {
-  private readonly rec: RecordedSpan;
+  private rec: RecordedSpan;
   constructor(name: string) {
     this.rec = {
       name,
@@ -70,7 +70,12 @@ class StubSpan {
 }
 
 class StubTracer {
-  startActiveSpan<T>(name: string, _opts: unknown, _ctx: unknown, fn?: (span: StubSpan) => T): T;
+  startActiveSpan<T>(
+    name: string,
+    _opts: unknown,
+    _ctx: unknown,
+    fn?: (span: StubSpan) => T,
+  ): T;
   startActiveSpan<T>(name: string, fn: (span: StubSpan) => T): T;
   startActiveSpan<T>(name: string, a: unknown, b?: unknown, c?: unknown): T {
     const fn =
@@ -80,7 +85,9 @@ class StubTracer {
           ? (b as (s: StubSpan) => T)
           : (c as (s: StubSpan) => T);
     const span = new StubSpan(name);
-    return context.with(trace.setSpan(context.active(), span as never), () => fn(span));
+    return context.with(trace.setSpan(context.active(), span as never), () =>
+      fn(span),
+    );
   }
   startSpan(name: string): StubSpan {
     return new StubSpan(name);
@@ -142,7 +149,10 @@ describe("withDispatcherSpan", () => {
 
 describe("withRouterSpan", () => {
   it("emits the router span with the correct name", async () => {
-    await withRouterSpan({ "router.op": "route", task_type: "plan" }, async () => 1);
+    await withRouterSpan(
+      { "router.op": "route", task_type: "plan" },
+      async () => 1,
+    );
     expect(recordedSpans[0]!.name).toBe("harness-router.router.route");
     expect(recordedSpans[0]!.attributes["task_type"]).toBe("plan");
   });
@@ -155,8 +165,8 @@ describe("withRouterSpan", () => {
 
 describe("withMcpToolSpan", () => {
   it("emits an mcp.tool span with the tool.name attribute", async () => {
-    await withMcpToolSpan({ "tool.name": "code_auto" }, async () => 1);
+    await withMcpToolSpan({ "tool.name": "code" }, async () => 1);
     expect(recordedSpans[0]!.name).toBe("harness-router.mcp.tool");
-    expect(recordedSpans[0]!.attributes["tool.name"]).toBe("code_auto");
+    expect(recordedSpans[0]!.attributes["tool.name"]).toBe("code");
   });
 });

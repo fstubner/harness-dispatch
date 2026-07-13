@@ -1,31 +1,48 @@
 /**
- * Model-first router.
+ * Load-balancing router for harness-router.
  *
- * The user declares a *model preference order* and which CLI services can
- * serve each model in two cost tiers (subscription vs metered). To dispatch:
+ * Routing strategy
+ * ----------------
+ * Services are grouped by tier (lower number = higher quality). Selection
+ * prefers the best-scoring candidate in the lowest eligible tier:
  *
- *   1. Walk the model priority list.
- *   2. For the highest-priority model: try every subscription route
- *      (highest quota first). Only when every subscription route is
- *      exhausted, fall through to the metered routes for the same model.
- *   3. When both tiers of the current model are exhausted, drop to the
- *      next model in priority order.
+ *   Tier 1 (frontier)  ->  Tier 2 (strong)  ->  Tier 3 (fast/local)
  *
- * That's the whole algorithm. No quality scoring, no harness multipliers,
- * no per-task-type capability matrix — those numbers were vibes. The
- * algorithm needs only what's measurable: "CLI installed", "breaker closed",
- * "quota score".
+ * Services that are circuit-broken, policy-blocked, unavailable, or already
+ * tried this request are excluded from candidacy. On a failed dispatch
+ * (including rate limits) the router excludes that service and retries with
+ * the next-best candidate, up to `maxFallbacks` extra attempts per request
+ * (default 2, i.e. 3 attempts total — pass maxFallbacks: 0 to let the caller
+ * own retries). A request can therefore fail with untried routes remaining
+ * when the attempt cap is hit before candidates run out.
  *
- * Walking subscription→metered per-model (rather than all-subscriptions
- * globally then all-metered globally) preserves "model preference primary,
- * cost secondary": when the user wants Opus, they'll pay metered for Opus
- * before silently dropping to Sonnet.
+ * Quality scoring
+ * ---------------
+ * Within a tier, services are ranked by a composite score:
  *
- * Wraps the streaming generator in a router span so OTel observers see
- * `harness-router.router.{stream,route}` spans the same way as before.
+ *   final_score = quality_score * cli_capability * capability[task_type]
+ *                 * quota_score * weight
+ *
+ * Adjustments applied during selection (reflected in the reported
+ * finalScore for picked/fallback routes, but not for forced/explicit ones):
+ *  - -0.2 penalty for non-local included-plan routes under the "standard"
+ *    route policy (nonLocalIncludedRoutePenalty), nudging free/local first.
+ *  - +0.5 when hints.model matches the service name or one of its models.
+ *  - +0.3 when prefer_large_context is set and the service's harness is
+ *    antigravity or antigravity_cli.
+ *  - +0.3 when task_type="local" and the service is an openai_compatible
+ *    endpoint on localhost / 127.0.0.1.
+ *
+ * Tier auto-derivation
+ * --------------------
+ * If a service has `leaderboardModel` set in config, its tier is
+ * auto-derived from the Arena ELO score via LeaderboardCache.autoTier().
+ * Explicit `tier` in config is the fallback when ELO is unavailable.
+ *
+ * R3: adds `stream()` / `streamTo()` that emit `DispatcherEvent`s with an
+ * attached `RoutingDecision`. The buffered `route` / `routeTo` methods are
+ * reimplemented on top of the streaming primitives.
  */
-
-import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 
 import type {
   DispatchResult,
@@ -33,24 +50,250 @@ import type {
   RouterConfig,
   RoutingDecision,
   RouteHints,
+  RouteSkip,
+  SafetyProfile,
+  ServiceConfig,
+  TaskType,
 } from "./types.js";
+import path from "node:path";
 import { CircuitBreaker } from "./circuit-breaker.js";
-import type { QuotaCache } from "./quota.js";
+import { QuotaCache } from "./quota.js";
+import { LeaderboardCache } from "./leaderboard.js";
 import type { Dispatcher } from "./dispatchers/base.js";
-
+import { drainDispatcherStream } from "./dispatchers/base.js";
 import { withDispatcherSpan, withRouterSpan } from "./observability/spans.js";
-import type { RouterSpanAttrs } from "./observability/spans.js";
-import { VERSION } from "./version.js";
+import { buildRouteBilling } from "./billing.js";
+import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
+import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "./route-policy.js";
+import {
+  prepareWorkspace,
+  workspacePolicyFor,
+} from "./workspaces.js";
 
 // ---------------------------------------------------------------------------
-// Streaming event shape (unchanged from v1 surface)
+// Helpers
+// ---------------------------------------------------------------------------
+
+const TASK_TYPES_WITH_CAPABILITY: ReadonlySet<TaskType> = new Set([
+  "execute",
+  "plan",
+  "review",
+]);
+
+const workspaceLocks = new Map<string, Promise<void>>();
+
+/**
+ * Options for explicit-service dispatch (routeTo / streamTo).
+ *
+ * `model` is an instruction, not a routing hint: the caller already chose
+ * the service, so the value is passed to the harness as a model override
+ * verbatim (an invalid name fails loudly downstream instead of being
+ * silently dropped). `taskType` feeds capability scoring metadata and
+ * per-task model escalation (escalateOn/escalateModel).
+ */
+export interface ExplicitDispatchOpts {
+  safetyProfile?: SafetyProfile;
+  workspacePolicy?: ServiceConfig["workspacePolicy"];
+  routePolicy?: import("./types.js").RoutePolicy;
+  model?: string;
+  taskType?: TaskType;
+}
+
+function resolveModel(svc: ServiceConfig, taskType: TaskType): string | undefined {
+  if (svc.escalateModel && svc.escalateOn.includes(taskType)) {
+    return svc.escalateModel;
+  }
+  return svc.model;
+}
+
+function sameModel(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function modelMatchesService(name: string, svc: ServiceConfig, model: string | undefined): boolean {
+  if (!model) return false;
+  return (
+    sameModel(name, model) ||
+    sameModel(svc.model, model) ||
+    sameModel(svc.leaderboardModel, model) ||
+    sameModel(svc.escalateModel, model)
+  );
+}
+
+function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
+  if (!TASK_TYPES_WITH_CAPABILITY.has(taskType)) return 1.0;
+  const key = taskType as "execute" | "plan" | "review";
+  return svc.capabilities[key] ?? 1.0;
+}
+
+function workspaceLockKey(workingDir: string): string {
+  const resolved = path.resolve(workingDir || process.cwd());
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+async function acquireWorkspaceLock(workingDir: string): Promise<() => void> {
+  const key = workspaceLockKey(workingDir);
+  const previous = workspaceLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = previous.catch(() => undefined).then(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  workspaceLocks.set(key, current);
+  await previous.catch(() => undefined);
+  return () => {
+    release();
+    if (workspaceLocks.get(key) === current) {
+      workspaceLocks.delete(key);
+    }
+  };
+}
+
+async function withWorkspacePolicy<T>(
+  svc: ServiceConfig,
+  serviceName: string,
+  safetyProfile: SafetyProfile | undefined,
+  requestedPolicy: ServiceConfig["workspacePolicy"] | undefined,
+  workingDir: string,
+  files: string[],
+  fn: (effectiveWorkingDir: string, effectiveFiles: string[]) => Promise<T>,
+): Promise<T> {
+  const policy = workspacePolicyFor(svc, safetyProfile, requestedPolicy);
+  if (policy === "shared_locked") {
+    const release = await acquireWorkspaceLock(workingDir);
+    try {
+      const workspace = await prepareWorkspace({
+        routeName: serviceName,
+        policy,
+        workingDir,
+        files,
+      });
+      const result = await fn(workspace.effectiveWorkingDir, workspace.files);
+      return await workspace.finish(result as DispatchResult) as T;
+    } finally {
+      release();
+    }
+  }
+
+  const shouldLockSnapshot = safetyProfile !== "read_only" && (policy === "copy" || policy === "git_worktree");
+  const release = shouldLockSnapshot ? await acquireWorkspaceLock(workingDir) : undefined;
+  let workspace: Awaited<ReturnType<typeof prepareWorkspace>>;
+  try {
+    workspace = await prepareWorkspace({
+      routeName: serviceName,
+      policy,
+      workingDir,
+      files,
+    });
+  } finally {
+    release?.();
+  }
+  const result = await fn(workspace.effectiveWorkingDir, workspace.files);
+  return await workspace.finish(result as DispatchResult) as T;
+}
+
+async function* streamWithWorkspacePolicy<T>(
+  svc: ServiceConfig,
+  serviceName: string,
+  safetyProfile: SafetyProfile | undefined,
+  requestedPolicy: ServiceConfig["workspacePolicy"] | undefined,
+  workingDir: string,
+  files: string[],
+  makeStream: (effectiveWorkingDir: string, effectiveFiles: string[]) => AsyncIterable<T>,
+): AsyncGenerator<T> {
+  const policy = workspacePolicyFor(svc, safetyProfile, requestedPolicy);
+  if (policy === "shared_locked") {
+    const release = await acquireWorkspaceLock(workingDir);
+    try {
+      const workspace = await prepareWorkspace({
+        routeName: serviceName,
+        policy,
+        workingDir,
+        files,
+      });
+      for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
+        if (
+          typeof event === "object" &&
+          event !== null &&
+          "type" in event &&
+          event.type === "completion"
+        ) {
+          const completion = event as DispatcherEvent;
+          if (completion.type === "completion") {
+            yield {
+              ...completion,
+              result: await workspace.finish(completion.result),
+            } as T;
+            continue;
+          }
+        }
+        yield event;
+      }
+    } finally {
+      release();
+    }
+    return;
+  }
+
+  const shouldLockSnapshot = safetyProfile !== "read_only" && (policy === "copy" || policy === "git_worktree");
+  const release = shouldLockSnapshot ? await acquireWorkspaceLock(workingDir) : undefined;
+  let workspace: Awaited<ReturnType<typeof prepareWorkspace>>;
+  try {
+    workspace = await prepareWorkspace({
+      routeName: serviceName,
+      policy,
+      workingDir,
+      files,
+    });
+  } finally {
+    release?.();
+  }
+  for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
+    if (
+      typeof event === "object" &&
+      event !== null &&
+      "type" in event &&
+      event.type === "completion"
+    ) {
+      const completion = event as DispatcherEvent;
+      if (completion.type === "completion") {
+        yield {
+          ...completion,
+          result: await workspace.finish(completion.result),
+        } as T;
+        continue;
+      }
+    }
+    yield event;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal candidate tuple
+// ---------------------------------------------------------------------------
+
+interface Candidate {
+  score: number;
+  name: string;
+  quotaScore: number;
+  qualityScore: number;
+  elo: number | null;
+  cliCapability: number;
+  capScore: number;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming event shape
 // ---------------------------------------------------------------------------
 
 /**
- * Router streaming events wrap a dispatcher event with the active routing
+ * Router streaming events wrap the dispatcher event with the active routing
  * decision. The decision is emitted on the first event of each dispatch
- * attempt so consumers can show "routing to claude_code" before the first
- * token arrives, and is also attached to every subsequent event in case the
+ * attempt (so consumers can show "routing to claude_code" before the first
+ * token arrives) and is also attached to every subsequent event in case the
  * consumer missed the first.
  */
 export interface RouterStreamEvent {
@@ -59,356 +302,337 @@ export interface RouterStreamEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: derived route table
-// ---------------------------------------------------------------------------
-
-interface ModelRoute {
-  /** Subscription-backed services. Try first, in declared order. */
-  subscription: string[];
-  /** Metered services. Try only after subscription tier exhausted. */
-  metered: string[];
-}
-
-/**
- * Auto-derive `{model -> tiered routes}` from the flat services map plus
- * the user's model_priority. A service contributes to `subscription` /
- * `metered` based on its `tier` field; it appears under every model it can
- * serve (`model` field, treated as the canonical ID).
- *
- * Services without a `model` field are skipped — there's no model to attach
- * them to.
- */
-function deriveModelRoutes(
-  config: RouterConfig,
-  dispatchers: Record<string, Dispatcher>,
-): Record<string, ModelRoute> {
-  const routes: Record<string, ModelRoute> = {};
-  const ensure = (model: string): ModelRoute => {
-    let entry = routes[model];
-    if (!entry) {
-      entry = { subscription: [], metered: [] };
-      routes[model] = entry;
-    }
-    return entry;
-  };
-
-  for (const [name, svc] of Object.entries(config.services)) {
-    if (!svc.enabled) continue;
-    if (!(name in dispatchers)) continue;
-    if (!svc.model) continue;
-    const route = ensure(svc.model);
-    if (svc.tier === "metered") route.metered.push(name);
-    else route.subscription.push(name);
-  }
-  return routes;
-}
-
-// ---------------------------------------------------------------------------
-// Span helper for streaming
-// ---------------------------------------------------------------------------
-
-async function* withRouterStreamSpan<T>(
-  attrs: RouterSpanAttrs,
-  produce: () => AsyncIterable<T>,
-): AsyncGenerator<T> {
-  const tracer = trace.getTracer("harness-router", VERSION);
-  const { "router.op": op, ...rest } = attrs;
-  const span = tracer.startSpan(`harness-router.router.${op}`, {
-    attributes: { ...rest, "router.op": op },
-  });
-  const t0 = Date.now();
-  const ctx = trace.setSpan(context.active(), span);
-  const iter = context.with(ctx, () => produce()[Symbol.asyncIterator]());
-  let innerDone = false;
-  try {
-    while (true) {
-      const r = await context.with(ctx, () => iter.next());
-      if (r.done) {
-        innerDone = true;
-        break;
-      }
-      yield r.value;
-    }
-    span.setStatus({ code: SpanStatusCode.OK });
-  } catch (err) {
-    const e = err instanceof Error ? err : new Error(String(err));
-    span.recordException(e);
-    span.setStatus({ code: SpanStatusCode.ERROR, message: e.message });
-    throw err;
-  } finally {
-    if (!innerDone && iter.return) {
-      try {
-        await context.with(ctx, () => iter.return!());
-      } catch {
-        // best-effort
-      }
-    }
-    span.setAttribute("duration_ms", Date.now() - t0);
-    span.end();
-  }
-}
-
-// Walked in this order within each model. Subscription first.
-const TIER_ORDER: ReadonlyArray<"subscription" | "metered"> = ["subscription", "metered"];
-
-// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-/**
- * Service router: model-first, with subscription/metered tier fallback.
- *
- * One `Router` instance owns its own circuit breakers (one per service),
- * shares the supplied {@link QuotaCache}, and reads the auto-derived route
- * map from `config.services` + `config.modelPriority`. Hot config reload
- * via `ConfigHotReloader` constructs a fresh `Router` and preserves
- * tripped breakers via `restoreTripped()`.
- */
 export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
-  private readonly modelRoutes: Record<string, ModelRoute>;
+  private lastSkippedRoutes: RouteSkip[] = [];
 
   constructor(
     private readonly config: RouterConfig,
     private readonly quota: QuotaCache,
     private readonly dispatchers: Record<string, Dispatcher>,
+    private readonly leaderboard: LeaderboardCache,
   ) {
     for (const name of Object.keys(config.services)) {
       this.breakers.set(name, new CircuitBreaker());
     }
-    this.modelRoutes = deriveModelRoutes(config, dispatchers);
   }
 
   getBreaker(service: string): CircuitBreaker | undefined {
     return this.breakers.get(service);
   }
 
-  /**
-   * Lookup the registered routes for a canonical model. Returns subscription
-   * and metered service lists (declared order). Empty lists for unknown
-   * models. Used by `code_mixture` to resolve the `models` axis to one
-   * service per model — the caller picks the first usable entry (subscription
-   * tier preferred).
-   */
-  servicesForModel(model: string): {
-    subscription: readonly string[];
-    metered: readonly string[];
-  } {
-    const route = this.modelRoutes[model];
-    if (!route) return { subscription: [], metered: [] };
-    return { subscription: route.subscription, metered: route.metered };
+  skippedRoutes(): RouteSkip[] {
+    return this.lastSkippedRoutes.slice();
   }
 
-  circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {
-    const out: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
-    for (const [name, b] of this.breakers) out[name] = b.status();
-    return out;
-  }
-
-  /**
-   * Pure routing decision. Walks the model priority list, returns the best
-   * available (model, service, tier) triple. Returns `null` when every
-   * model has zero usable routes across all tiers.
-   *
-   * `hints.service` (force a specific service) bypasses the priority walk
-   * and returns that service if usable. `hints.model` bumps a specific
-   * model to the front of the priority list.
-   */
-  async pickService(
-    opts: {
-      hints?: RouteHints;
-      exclude?: Set<string>;
-    } = {},
-  ): Promise<RoutingDecision | null> {
-    const exclude = opts.exclude ?? new Set<string>();
+  async pickService(opts: {
+    hints?: RouteHints;
+    prompt?: string;
+    files?: string[];
+    exclude?: Set<string>;
+  } = {}): Promise<RoutingDecision | null> {
     const hints = opts.hints ?? {};
+    const exclude = opts.exclude ?? new Set<string>();
 
-    // Forced service: bypass priority walk.
-    if (hints.service) {
-      const svc = hints.service;
-      if (!this.isUsable(svc, exclude)) return null;
-      const cfg = this.config.services[svc];
-      if (!cfg) return null;
-      const quotaScore = await this.quota.getQuotaScore(svc);
+    const forceService = hints.service;
+    const preferredModel = hints.model;
+    const preferLargeContext = hints.preferLargeContext ?? false;
+    const taskType: TaskType = hints.taskType ?? "";
+    const filterHarness = hints.harness;
+    const requestedSafety = hints.safetyProfile;
+    const requestedWorkspacePolicy = hints.workspacePolicy;
+    const skippedRoutes: RouteSkip[] = [];
+    this.lastSkippedRoutes = skippedRoutes;
+
+    if (forceService) {
+      if (exclude.has(forceService)) return null;
+      const breaker = this.breakers.get(forceService);
+      const dispatcher = this.dispatchers[forceService];
+      const svc = this.config.services[forceService];
+      if (!svc) return null;
+      const policy = evaluateRoutePolicy(forceService, svc, {
+        ...(dispatcher !== undefined ? { dispatcher } : {}),
+        circuitBroken: Boolean(breaker?.isTripped),
+        ...(requestedSafety !== undefined ? { requestedSafetyProfile: requestedSafety } : {}),
+        ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+      });
+      if (policy.skipped) skippedRoutes.push(policy.skipped);
+      if (policy.blocked || dispatcher === undefined) return null;
+
+      const quotaScore = await this.quota.getQuotaScore(forceService);
+      const { qualityScore, elo } = await this.leaderboard.getQualityScore(
+        svc.leaderboardModel,
+        svc.thinkingLevel,
+      );
+      const capScore = capabilityScore(svc, taskType);
+      const finalScore =
+        qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight;
+
+      const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
       return {
-        model: cfg.model ?? "",
-        service: svc,
-        tier: cfg.tier ?? "subscription",
+        service: forceService,
+        tier: svc.tier,
         quotaScore,
+        qualityScore,
+        cliCapability: svc.cliCapability,
+        capabilityScore: capScore,
+        taskType,
+        model: modelMatchesService(forceService, svc, preferredModel)
+          ? preferredModel
+          : resolveModel(svc, taskType),
+        elo: elo ?? undefined,
+        finalScore,
         reason: "forced",
+        skippedRoutes: skippedRoutes.slice(),
+        safetyProfile: requestedSafetyProfile(svc, requestedSafety),
+        effectiveSafetyProfile: effectiveSafety,
+        billing: buildRouteBilling(svc),
+        workspacePolicy: workspacePolicyFor(svc, effectiveSafety, requestedWorkspacePolicy),
       };
     }
 
-    const priority = this.priorityWithOverride(hints.model);
+    const tierCandidates = new Map<number, Candidate[]>();
 
-    for (const model of priority) {
-      const routes = this.modelRoutes[model];
-      if (!routes) continue;
+    for (const [name, svc] of Object.entries(this.config.services)) {
+      if (exclude.has(name)) continue;
+      const breaker = this.breakers.get(name);
+      const dispatcher = this.dispatchers[name];
+      const policy = evaluateRoutePolicy(name, svc, {
+        ...(dispatcher !== undefined ? { dispatcher } : {}),
+        circuitBroken: Boolean(breaker?.isTripped),
+        ...(requestedSafety !== undefined ? { requestedSafetyProfile: requestedSafety } : {}),
+        ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+      });
+      if (policy.skipped) skippedRoutes.push(policy.skipped);
+      if (policy.blocked || dispatcher === undefined) continue;
 
-      for (const tier of TIER_ORDER) {
-        const tierServices = tier === "subscription" ? routes.subscription : routes.metered;
-        const candidates = tierServices.filter((svc) => this.isUsable(svc, exclude));
-        if (candidates.length === 0) continue;
+      const harnessKey = svc.harness ?? name;
+      if (filterHarness && harnessKey !== filterHarness) continue;
 
-        // Score: quota desc, declared order tiebreaker.
-        const scored: Array<{ svc: string; quotaScore: number; rank: number }> = [];
-        for (let i = 0; i < candidates.length; i++) {
-          const svc = candidates[i]!;
-          const quotaScore = await this.quota.getQuotaScore(svc);
-          scored.push({ svc, quotaScore, rank: i });
-        }
-        scored.sort((a, b) => b.quotaScore - a.quotaScore || a.rank - b.rank);
+      const tier = svc.leaderboardModel
+        ? await this.leaderboard.autoTier(svc.leaderboardModel, svc.thinkingLevel, svc.tier)
+        : svc.tier;
 
-        const winner = scored[0]!;
-        return {
-          model,
-          service: winner.svc,
-          tier,
-          quotaScore: winner.quotaScore,
-          reason:
-            `model=${model} tier=${tier} svc=${winner.svc} ` +
-            `quota=${winner.quotaScore.toFixed(2)} (${candidates.length} ` +
-            `candidate${candidates.length === 1 ? "" : "s"})`,
-        };
+      const quotaScore = await this.quota.getQuotaScore(name);
+      const { qualityScore, elo } = await this.leaderboard.getQualityScore(
+        svc.leaderboardModel,
+        svc.thinkingLevel,
+      );
+      const capScore = capabilityScore(svc, taskType);
+
+      const effectiveQuality = qualityScore * svc.cliCapability * capScore;
+      let score = effectiveQuality * quotaScore * svc.weight;
+      if ((hints.routePolicy ?? "standard") === "standard") {
+        score -= nonLocalIncludedRoutePenalty(buildRouteBilling(svc));
       }
+
+      if (modelMatchesService(name, svc, preferredModel)) {
+        score += 0.5;
+      }
+      if (
+        preferLargeContext &&
+        (harnessKey === "antigravity_cli" || harnessKey === "antigravity")
+      ) {
+        score += 0.3;
+      }
+      if (
+        taskType === "local" &&
+        svc.type === "openai_compatible" &&
+        (svc.baseUrl?.includes("localhost") || svc.baseUrl?.includes("127.0.0.1"))
+      ) {
+        score += 0.3;
+      }
+
+      const bucket = tierCandidates.get(tier);
+      const candidate: Candidate = {
+        score,
+        name,
+        quotaScore,
+        qualityScore,
+        elo,
+        cliCapability: svc.cliCapability,
+        capScore,
+      };
+      if (bucket) bucket.push(candidate);
+      else tierCandidates.set(tier, [candidate]);
     }
+
+    if (tierCandidates.size === 0) return null;
+
+    let minConfiguredTier = Infinity;
+    for (const svc of Object.values(this.config.services)) {
+      if (svc.enabled && svc.tier < minConfiguredTier) minConfiguredTier = svc.tier;
+    }
+
+    const sortedTiers = [...tierCandidates.keys()].sort((a, b) => a - b);
+    for (const tier of sortedTiers) {
+      const candidates = tierCandidates.get(tier);
+      if (!candidates || candidates.length === 0) continue;
+
+      candidates.sort((a, b) => b.score - a.score);
+      const best = candidates[0]!;
+      const svc = this.config.services[best.name]!;
+
+      const reason =
+        tier > minConfiguredTier
+          ? `tier ${tier} fallback (all tier ${minConfiguredTier} services exhausted)`
+          : `tier ${tier} best (${candidates.length} available)`;
+
+      const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
+      return {
+        service: best.name,
+        tier,
+        quotaScore: best.quotaScore,
+        qualityScore: best.qualityScore,
+        cliCapability: best.cliCapability,
+        capabilityScore: best.capScore,
+        taskType,
+        model: modelMatchesService(best.name, svc, preferredModel)
+          ? preferredModel
+          : resolveModel(svc, taskType),
+        elo: best.elo ?? undefined,
+        finalScore: best.score,
+        reason,
+        skippedRoutes: skippedRoutes.slice(),
+        safetyProfile: requestedSafetyProfile(svc, requestedSafety),
+        effectiveSafetyProfile: effectiveSafety,
+        billing: buildRouteBilling(svc),
+        workspacePolicy: workspacePolicyFor(svc, effectiveSafety, requestedWorkspacePolicy),
+      };
+    }
+
     return null;
   }
 
   /**
-   * Stream events from the chosen dispatcher with full route fallback.
-   * On rate-limit or hard failure, transparently retries the next route
-   * in the same tier, then the next tier of the same model, then the
-   * next model in priority order.
+   * Stream events from the chosen dispatcher, with the same fallback logic
+   * as `route()`. When a dispatch fails (non-rate-limit), the router picks
+   * another service and yields that service's events — so the caller sees
+   * events from potentially multiple services during fallback.
+   *
+   * The last `completion` or `error` event always reflects the final
+   * outcome (success-with-fallback or all-attempts-failed).
    */
   stream(
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
   ): AsyncIterable<RouterStreamEvent> {
-    return this.streamWithSpan(prompt, files, workingDir, opts);
+    return this.#runStream(prompt, files, workingDir, opts);
   }
 
-  private async *streamWithSpan(
+  async *#runStream(
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints },
-  ): AsyncGenerator<RouterStreamEvent> {
-    const attrs: RouterSpanAttrs = { "router.op": "stream" };
-    yield* withRouterStreamSpan(attrs, () => this.runStream(prompt, files, workingDir, opts));
-  }
-
-  private async *runStream(
-    prompt: string,
-    files: string[],
-    workingDir: string,
-    opts: { hints?: RouteHints },
+    opts: { hints?: RouteHints; maxFallbacks?: number },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
-    const exclude = new Set<string>();
+    const maxFallbacks = opts.maxFallbacks ?? 2;
+    const tried = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
 
-    // No artificial attempt cap — pickService returns null when no routes
-    // remain (combination of `exclude` set, tripped breakers, unavailable
-    // dispatchers). Since `exclude` only grows and breaker state only goes
-    // tripped→tripped within a single dispatch (auto-resets need real time
-    // to elapse), this loop terminates after at most O(services) iterations.
-    while (true) {
-      const decision = await this.pickService({ hints, exclude });
-      if (!decision) {
+    for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
+      const decision = await this.pickService({
+        hints,
+        prompt,
+        files,
+        exclude: tried,
+      });
+
+      if (decision === null) {
         if (lastDecision === null) {
           const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
           for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
-          const services = Object.entries(this.config.services).filter(([, s]) => s.enabled);
-          const reachable = services.filter(([n]) => this.dispatchers[n]?.isAvailable());
-          // Only the *reachable* services' breakers matter for the "all tripped"
-          // check. A non-reachable service whose breaker happens to be closed
-          // shouldn't disqualify the rate-limit branch, and conversely a
-          // reachable service with a closed breaker means the cause isn't
-          // rate-limiting (it's a model-priority mismatch).
-          const reachableTripped = reachable.filter(([n]) => breakerInfo[n]?.tripped);
-          const trippedSummary = reachableTripped
-            .map(([n]) => `${n} (${Math.round(breakerInfo[n]?.cooldownRemainingSec ?? 0)}s)`)
-            .join(", ");
-          const reasonPart =
-            services.length === 0
-              ? "no services configured"
-              : reachable.length === 0
-                ? "no service is installed/reachable on this machine"
-                : reachableTripped.length === reachable.length
-                  ? `every reachable service is rate-limited: ${trippedSummary}`
-                  : "no reachable service has a model matching the priority list";
           const result: DispatchResult = {
             output: "",
             service: "none",
             success: false,
             error:
-              `No available routes — ${reasonPart}. ` +
-              "Run `harness-router doctor` to see what's installed and what's missing.",
+              "No available services — all are disabled, exhausted, or circuit-broken. " +
+              `Breaker state: ${JSON.stringify(breakerInfo)}`,
+            skippedRoutes: this.skippedRoutes(),
           };
           yield { event: { type: "completion", result }, decision: null };
         }
         return;
       }
-      lastDecision = decision;
 
-      const dispatcher = this.dispatchers[decision.service];
-      if (!dispatcher) {
-        exclude.add(decision.service);
-        continue;
+      lastDecision = decision;
+      if (attempt > 0) {
+        decision.reason += ` (fallback #${attempt} — prev failed)`;
       }
 
-      // Use the service's `cliModel` (the CLI-specific name) when set, so
-      // canonical routing names in `modelPriority` can differ from what each
-      // CLI actually accepts via `--model`. Falls back to the canonical name.
-      const cfg = this.config.services[decision.service];
-      const cliModel = cfg?.cliModel ?? decision.model;
-      const dispatchOpts: { modelOverride?: string } = {};
-      if (cliModel) dispatchOpts.modelOverride = cliModel;
+      const dispatcher = this.dispatchers[decision.service]!;
+      const svc = this.config.services[decision.service]!;
+      const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+      if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
+      if (decision.effectiveSafetyProfile !== undefined) {
+        dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+      }
 
       let finalResult: DispatchResult | null = null;
-      for await (const event of dispatcher.stream(prompt, files, workingDir, dispatchOpts)) {
+      for await (const event of streamWithWorkspacePolicy(
+        svc,
+        decision.service,
+        decision.effectiveSafetyProfile,
+        decision.workspacePolicy,
+        workingDir,
+        files,
+        (effectiveWorkingDir, effectiveFiles) =>
+          dispatcher.stream(prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+      )) {
         yield { event, decision };
-        if (event.type === "completion") finalResult = event.result;
+        if (event.type === "completion") {
+          finalResult = event.result;
+        }
       }
       if (finalResult === null) {
+        // Dispatcher misbehaved — synthesize a failure and YIELD it so the
+        // caller always receives a terminal completion event for the attempt,
+        // then record it for breaker/quota accounting.
         finalResult = {
           output: "",
           service: decision.service,
           success: false,
           error: "Dispatcher stream ended without a completion event",
         };
+        yield { event: { type: "completion", result: finalResult }, decision };
       }
       this.handleResult(decision.service, finalResult);
 
       if (finalResult.success) return;
-      exclude.add(decision.service);
-      // Fall through to next route — pickService walks priority/tier chain.
+      // Rate-limited and transient failures alike: the breaker state was
+      // updated by handleResult; exclude this service and fall back to the
+      // next-best candidate rather than aborting the caller's request.
+      tried.add(decision.service);
     }
   }
 
   /**
-   * Stream from a specific service, bypassing the priority walk. Same
-   * signature as `stream()` but always uses the named service.
+   * Stream from a specific service, bypassing tier selection. Same semantics
+   * as `routeTo()` but yields events in real time.
    */
   streamTo(
     service: string,
     prompt: string,
     files: string[],
     workingDir: string,
+    opts: ExplicitDispatchOpts = {},
   ): AsyncIterable<RouterStreamEvent> {
-    return withRouterStreamSpan({ "router.op": "stream" }, () =>
-      this.runStreamTo(service, prompt, files, workingDir),
-    );
+    return this.#runStreamTo(service, prompt, files, workingDir, opts);
   }
 
-  private async *runStreamTo(
+  async *#runStreamTo(
     service: string,
     prompt: string,
     files: string[],
     workingDir: string,
+    opts: ExplicitDispatchOpts,
   ): AsyncGenerator<RouterStreamEvent> {
     if (!(service in this.dispatchers)) {
       yield {
@@ -444,26 +668,73 @@ export class Router {
       return;
     }
 
-    const cfg = this.config.services[service]!;
+    const svc = this.config.services[service]!;
+    const dispatcher = this.dispatchers[service]!;
+    const policy = evaluateRoutePolicy(service, svc, {
+      dispatcher,
+      ...(opts.safetyProfile !== undefined ? { requestedSafetyProfile: opts.safetyProfile } : {}),
+      ...(opts.routePolicy !== undefined ? { routePolicy: opts.routePolicy } : {}),
+    });
+    if (policy.blocked) {
+      const result: DispatchResult = {
+        output: "",
+        service,
+        success: false,
+        error: policy.skipped?.message ?? "Route blocked by policy",
+      };
+      if (policy.skipped) result.skippedRoutes = [policy.skipped];
+      yield {
+        event: {
+          type: "completion",
+          result,
+        },
+        decision: null,
+      };
+      return;
+    }
     const quotaScore = await this.quota.getQuotaScore(service);
+    const { qualityScore, elo } = await this.leaderboard.getQualityScore(
+      svc.leaderboardModel,
+      svc.thinkingLevel,
+    );
+    const taskType: TaskType = opts.taskType ?? "";
+    const capScore = capabilityScore(svc, taskType);
+    const effectiveSafety = effectiveSafetyProfile(svc, opts.safetyProfile);
     const decision: RoutingDecision = {
-      model: cfg.model ?? "",
       service,
-      tier: cfg.tier ?? "subscription",
+      tier: svc.tier,
       quotaScore,
+      qualityScore,
+      cliCapability: svc.cliCapability,
+      capabilityScore: capScore,
+      taskType,
+      model: opts.model ?? resolveModel(svc, taskType),
+      elo: elo ?? undefined,
+      finalScore: qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight,
       reason: "explicit",
+      safetyProfile: requestedSafetyProfile(svc, opts.safetyProfile),
+      effectiveSafetyProfile: effectiveSafety,
+      billing: buildRouteBilling(svc),
+      workspacePolicy: workspacePolicyFor(svc, effectiveSafety, opts.workspacePolicy),
     };
 
-    // Same cli_model fallback as runStream — without this, services with a
-    // distinct cli_model (e.g. canonical "claude-opus-4.7" → CLI alias "opus")
-    // would get the canonical name passed to --model and the CLI would reject it.
-    const cliModel = cfg.cliModel ?? cfg.model;
-    const dispatcher = this.dispatchers[service]!;
-    const dispatchOpts: { modelOverride?: string } = {};
-    if (cliModel) dispatchOpts.modelOverride = cliModel;
+    const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+    if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
+    if (decision.effectiveSafetyProfile !== undefined) {
+      dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+    }
 
     let finalResult: DispatchResult | null = null;
-    for await (const event of dispatcher.stream(prompt, files, workingDir, dispatchOpts)) {
+    for await (const event of streamWithWorkspacePolicy(
+      svc,
+      service,
+      decision.effectiveSafetyProfile,
+      decision.workspacePolicy,
+      workingDir,
+      files,
+      (effectiveWorkingDir, effectiveFiles) =>
+        dispatcher.stream(prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+    )) {
       yield { event, decision };
       if (event.type === "completion") finalResult = event.result;
     }
@@ -480,47 +751,161 @@ export class Router {
   }
 
   /**
-   * Buffered dispatch: drains the streaming generator and returns the
-   * final result + decision. Convenient for callers that don't need
-   * progressive output.
+   * Route a task, with automatic fallback on transient failures.
+   *
+   * R3: reimplemented on top of `stream()`. The per-attempt result is
+   * captured from the `completion` event and drives the fallback loop.
+   *
+   * The old route() also had a quirk: when pickService returned null with
+   * no prior attempts, it yielded an error DispatchResult. On a later
+   * fallback round that returned null it returned the last attempt's
+   * result+decision. The streaming-based reimplementation below preserves
+   * the same externally observable behaviour for existing tests.
    */
   async route(
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
-    return withRouterSpan({ "router.op": "route" }, async (span) => {
-      let lastDecision: RoutingDecision | null = null;
-      let lastResult: DispatchResult | null = null;
-      for await (const ev of this.runStream(prompt, files, workingDir, opts)) {
-        if (ev.decision) lastDecision = ev.decision;
-        if (ev.event.type === "completion") lastResult = ev.event.result;
+    return withRouterSpan(
+      {
+        "router.op": "route",
+        ...(opts.hints?.taskType ? { task_type: opts.hints.taskType } : {}),
+      },
+      async (span) => {
+        const out = await this.#routeImpl(prompt, files, workingDir, opts);
+        if (out.decision) {
+          span.setAttribute("service", out.decision.service);
+          span.setAttribute("tier", out.decision.tier);
+        }
+        span.setAttribute("success", out.result.success);
+        return out;
+      },
+    );
+  }
+
+  async #routeImpl(
+    prompt: string,
+    files: string[],
+    workingDir: string,
+    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+  ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
+    const hints = opts.hints ?? {};
+    const maxFallbacks = opts.maxFallbacks ?? 2;
+    const tried = new Set<string>();
+    let lastResult: DispatchResult | null = null;
+    let lastDecision: RoutingDecision | null = null;
+
+    for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
+      const decision = await this.pickService({
+        hints,
+        prompt,
+        files,
+        exclude: tried,
+      });
+
+      if (decision === null) {
+        if (lastResult !== null) {
+          return { result: lastResult, decision: lastDecision };
+        }
+        const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
+        for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
+        return {
+          result: {
+            output: "",
+            service: "none",
+            success: false,
+            error:
+              "No available services — all are disabled, exhausted, or circuit-broken. " +
+              `Breaker state: ${JSON.stringify(breakerInfo)}`,
+            skippedRoutes: this.skippedRoutes(),
+          } as DispatchResult,
+          decision: null,
+        };
       }
-      const result = lastResult ?? {
-        output: "",
-        service: "none",
-        success: false,
-        error: "Router exhausted all attempts.",
+
+      const dispatcher = this.dispatchers[decision.service]!;
+      const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+      if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
+      if (decision.effectiveSafetyProfile !== undefined) {
+        dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+      }
+      // Prefer the buffered dispatch path when it's available — many R1/R2
+      // tests assert on dispatcher.dispatch being called once; if we always
+      // went through stream() those assertions would break. Dispatchers that
+      // extend BaseDispatcher still ultimately funnel through stream(), but
+      // dispatchers (like OpenAICompatibleDispatcher) that override dispatch
+      // keep their fast-path.
+      const spanAttrs: import("./observability/spans.js").DispatcherSpanAttrs = {
+        "dispatcher.id": decision.service,
       };
-      if (lastDecision) {
-        span.setAttribute("service", lastDecision.service);
-        if (lastDecision.model) span.setAttribute("model", lastDecision.model);
-        span.setAttribute("tier", lastDecision.tier);
+      if (decision.model !== undefined) spanAttrs.model = decision.model;
+      if (decision.taskType) spanAttrs["task_type"] = decision.taskType;
+      const result = await withWorkspacePolicy(
+        this.config.services[decision.service]!,
+        decision.service,
+        decision.effectiveSafetyProfile,
+        decision.workspacePolicy,
+        workingDir,
+        files,
+        (effectiveWorkingDir, effectiveFiles) =>
+          withDispatcherSpan(
+            "dispatch",
+            spanAttrs,
+            async (span) => {
+              const r = await dispatcher.dispatch(
+                prompt,
+                effectiveFiles,
+                effectiveWorkingDir,
+                dispatchOpts,
+              );
+          span.setAttribute("success", r.success);
+          if (r.rateLimited) span.setAttribute("rate_limited", true);
+          if (r.tokensUsed) {
+            span.setAttribute("tokens.input", r.tokensUsed.input);
+            span.setAttribute("tokens.output", r.tokensUsed.output);
+          }
+          return r;
+            },
+          ),
+      );
+      this.handleResult(decision.service, result);
+      lastResult = result;
+      lastDecision = decision;
+
+      if (result.success) {
+        if (attempt > 0) decision.reason += ` (fallback #${attempt} — prev failed)`;
+        return { result, decision };
       }
-      span.setAttribute("success", result.success);
-      return { result, decision: lastDecision };
-    });
+      // Rate-limited and transient failures alike: handleResult already
+      // tripped the breaker; exclude this service and fall back to the
+      // next-best candidate rather than aborting the caller's request.
+      tried.add(decision.service);
+    }
+
+    return {
+      result:
+        lastResult ??
+        ({
+          output: "",
+          service: "none",
+          success: false,
+          error: "Router exhausted all fallback attempts.",
+        } as DispatchResult),
+      decision: lastDecision,
+    };
   }
 
   /**
-   * Buffered dispatch to a specific service. Bypasses priority walk.
+   * Dispatch to a specific service, bypassing tier selection.
    */
   async routeTo(
     service: string,
     prompt: string,
     files: string[],
     workingDir: string,
+    opts: ExplicitDispatchOpts = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     if (!(service in this.dispatchers)) {
       return {
@@ -529,10 +914,11 @@ export class Router {
           service,
           success: false,
           error: `Unknown service: ${service}`,
-        },
+        } as DispatchResult,
         decision: null,
       };
     }
+
     const breaker = this.breakers.get(service);
     if (breaker && breaker.isTripped) {
       const cd = Math.round(breaker.cooldownRemaining() * 10) / 10;
@@ -542,68 +928,80 @@ export class Router {
           service,
           success: false,
           error: `'${service}' is circuit-broken — ${cd}s cooldown remaining`,
-        },
+        } as DispatchResult,
         decision: null,
       };
     }
 
-    const cfg = this.config.services[service]!;
+    const svc = this.config.services[service]!;
+    const dispatcher = this.dispatchers[service]!;
+    const policy = evaluateRoutePolicy(service, svc, {
+      dispatcher,
+      ...(opts.safetyProfile !== undefined ? { requestedSafetyProfile: opts.safetyProfile } : {}),
+      ...(opts.routePolicy !== undefined ? { routePolicy: opts.routePolicy } : {}),
+    });
+    if (policy.blocked) {
+      const result: DispatchResult = {
+        output: "",
+        service,
+        success: false,
+        error: policy.skipped?.message ?? "Route blocked by policy",
+      };
+      if (policy.skipped) result.skippedRoutes = [policy.skipped];
+      return {
+        result,
+        decision: null,
+      };
+    }
     const quotaScore = await this.quota.getQuotaScore(service);
+    const { qualityScore, elo } = await this.leaderboard.getQualityScore(
+      svc.leaderboardModel,
+      svc.thinkingLevel,
+    );
+    const taskType: TaskType = opts.taskType ?? "";
+    const capScore = capabilityScore(svc, taskType);
+    const effectiveSafety = effectiveSafetyProfile(svc, opts.safetyProfile);
     const decision: RoutingDecision = {
-      model: cfg.model ?? "",
       service,
-      tier: cfg.tier ?? "subscription",
+      tier: svc.tier,
       quotaScore,
+      qualityScore,
+      cliCapability: svc.cliCapability,
+      capabilityScore: capScore,
+      taskType,
+      model: opts.model ?? resolveModel(svc, taskType),
+      elo: elo ?? undefined,
+      finalScore: qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight,
       reason: "explicit",
+      safetyProfile: requestedSafetyProfile(svc, opts.safetyProfile),
+      effectiveSafetyProfile: effectiveSafety,
+      billing: buildRouteBilling(svc),
+      workspacePolicy: workspacePolicyFor(svc, effectiveSafety, opts.workspacePolicy),
     };
-    // cli_model fallback — see runStreamTo / runStream for context.
-    const cliModel = cfg.cliModel ?? cfg.model;
-    const dispatchOpts: { modelOverride?: string } = {};
-    if (cliModel) dispatchOpts.modelOverride = cliModel;
-    const result = await withDispatcherSpan(
-      "dispatch",
-      { "dispatcher.id": service, ...(decision.model ? { model: decision.model } : {}) },
-      async (span) => {
-        const r = await this.dispatchers[service]!.dispatch(
+    const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+    if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
+    if (decision.effectiveSafetyProfile !== undefined) {
+      dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+    }
+    const result = await withWorkspacePolicy(
+      svc,
+      service,
+      decision.effectiveSafetyProfile,
+      decision.workspacePolicy,
+      workingDir,
+      files,
+      (effectiveWorkingDir, effectiveFiles) =>
+        this.dispatchers[service]!.dispatch(
           prompt,
-          files,
-          workingDir,
+          effectiveFiles,
+          effectiveWorkingDir,
           dispatchOpts,
-        );
-        span.setAttribute("success", r.success);
-        if (r.rateLimited) span.setAttribute("rate_limited", true);
-        return r;
-      },
+        ),
     );
     this.handleResult(service, result);
     return { result, decision };
   }
 
-  // ------------------------------------------------------------------------
-  // Internals
-  // ------------------------------------------------------------------------
-
-  private priorityWithOverride(override: string | undefined): readonly string[] {
-    const priority: readonly string[] = this.config.modelPriority ?? [];
-    if (!override) return priority;
-    if (!this.modelRoutes[override]) return priority;
-    return [override, ...priority.filter((m) => m !== override)];
-  }
-
-  private isUsable(svc: string, exclude: Set<string>): boolean {
-    if (exclude.has(svc)) return false;
-    const dispatcher = this.dispatchers[svc];
-    if (!dispatcher || !dispatcher.isAvailable()) return false;
-    const breaker = this.breakers.get(svc);
-    if (breaker && breaker.isTripped) return false;
-    return true;
-  }
-
-  /**
-   * Record the outcome of a dispatch: forward to the quota cache and
-   * update the service's circuit breaker (success → reset; rate-limited →
-   * trip; other failure → increment, trip at threshold).
-   */
   private handleResult(service: string, result: DispatchResult): void {
     this.quota.recordResult(service, result);
     const breaker = this.breakers.get(service);
@@ -616,4 +1014,12 @@ export class Router {
       breaker.recordFailure(result.retryAfter);
     }
   }
+
+  circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {
+    const out: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
+    for (const [name, b] of this.breakers) out[name] = b.status();
+    return out;
+  }
 }
+
+export { drainDispatcherStream };

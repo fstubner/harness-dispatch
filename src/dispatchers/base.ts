@@ -2,9 +2,8 @@
  * Dispatcher abstraction.
  *
  * Every backend (Claude Code CLI, Cursor, Codex, Gemini, OpenAI-compatible HTTP)
- * implements this. The router picks one via model priority, tier, quota, and
- * circuit-breaker state; the MCP server awaits `dispatch()` or iterates
- * `stream()`.
+ * implements this. The router picks one via scoring; the MCP server awaits
+ * `dispatch()` or iterates `stream()`.
  *
  * R3 change: `stream()` is now the canonical primitive. `dispatch()` is
  * implemented by consuming the stream and buffering its events — concrete
@@ -13,23 +12,12 @@
  * worth preserving.
  */
 
-import type { DispatchResult, DispatcherEvent, QuotaInfo } from "../types.js";
+import type { DispatchResult, DispatcherEvent, QuotaInfo, SafetyProfile } from "../types.js";
 
 export interface DispatchOpts {
   modelOverride?: string;
   timeoutMs?: number;
-}
-
-/**
- * Optional construction-time inputs for CLI dispatchers.
- *
- * `cliPath` carries the result of `which(command)` performed by the factory.
- * - `string` — CLI is on PATH at the given absolute path; `isAvailable()` returns true.
- * - `null`   — CLI is not on PATH; `isAvailable()` returns false so the router skips it.
- * - undefined (omitted) — back-compat path used by tests; treated as available.
- */
-export interface DispatcherInitOpts {
-  cliPath?: string | null;
+  safetyProfile?: SafetyProfile;
 }
 
 export interface Dispatcher {
@@ -113,11 +101,8 @@ export async function drainDispatcherStream(
       case "error":
         terminalError = event.error;
         break;
-      case "tool_use":
-      case "thinking":
-        // Informational — don't affect the drained result. Listed
-        // explicitly so future DispatcherEvent variants trigger an
-        // exhaustiveness error here rather than silently falling through.
+      // tool_use / thinking are informational; they don't affect the drained result.
+      default:
         break;
     }
   }

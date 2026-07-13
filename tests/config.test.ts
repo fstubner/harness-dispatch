@@ -1,12 +1,8 @@
 /**
- * Top-level config loader tests.
+ * Config loader tests.
  *
- * Schema-validation coverage lives in tests/config/parser.test.ts; this
- * file focuses on what's specific to `loadConfig`'s wrapper behaviour:
- *   - YAML on disk → parse → adapter → RouterConfig
- *   - Missing config throws ConfigMissingError pointing at `onboard`
- *   - Invalid config bubbles up ConfigError
- *   - watchConfig polls mtime and fires onChange
+ * Covers: legacy YAML format, auto-detect + overrides, ${ENV_VAR} interpolation,
+ * and the mtime-based watchConfig poller.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,117 +10,164 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ConfigError, ConfigMissingError, loadConfig, watchConfig } from "../src/config/index.js";
+import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
+
+// ---- fixture files -------------------------------------------------------
 
 async function writeTmpYaml(name: string, text: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-cfg-test-`));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-test-`));
   const p = path.join(dir, name);
   await fs.writeFile(p, text, "utf-8");
   return p;
 }
 
-describe("loadConfig — happy path", () => {
-  it("loads a minimal config and exposes services via the adapter", async () => {
-    const yamlText = `
-priority: [opus]
-models:
-  opus:
-    subscription:
-      harness: claude_code
-      command: claude
-`;
-    const p = await writeTmpYaml("v3.yaml", yamlText);
-    const cfg = await loadConfig(p);
-    // Synthetic service id is `${model}::${routeKey}` — internal handle,
-    // never seen by users.
-    expect(Object.keys(cfg.services)).toContain("opus::claude_code");
-    expect(cfg.services["opus::claude_code"]?.harness).toBe("claude_code");
-    expect(cfg.services["opus::claude_code"]?.tier).toBe("subscription");
-    expect(cfg.modelPriority).toEqual(["opus"]);
-  });
+// Mock which-functions for deterministic auto-detect.
+const noCliFound: WhichFn = async () => null;
+const allCliFound: WhichFn = async (cmd) => `/usr/bin/${cmd}`;
+const onlyClaudeFound: WhichFn = async (cmd) => (cmd === "claude" ? "/usr/bin/claude" : null);
+const onlyAntigravityFound: WhichFn = async (cmd) =>
+  cmd === "agy" ? "/usr/bin/agy" : null;
 
-  it("emits both subscription and metered services when an entry has both", async () => {
+describe("loadConfig — legacy full format", () => {
+  it("passes a YAML with a top-level services: key through verbatim", async () => {
     const yamlText = `
-priority: [opus]
-models:
-  opus:
-    subscription:
-      harness: claude_code
-      command: claude
-    metered:
-      base_url: https://api.anthropic.com/v1
-      api_key: \${ANTHROPIC_API_KEY}
+services:
+  alpha:
+    enabled: true
+    type: cli
+    command: alpha-bin
+    tier: 1
+    weight: 1.5
+    cli_capability: 1.10
+    leaderboard_model: claude-opus-4-6
+    capabilities:
+      execute: 0.9
+      plan: 1.0
+      review: 0.95
+  beta:
+    enabled: false
+    type: openai_compatible
+    base_url: http://localhost:11434/v1
+    model: llama3
+    tier: 3
 `;
-    process.env.ANTHROPIC_API_KEY = "sk-test";
-    try {
-      const p = await writeTmpYaml("both.yaml", yamlText);
-      const cfg = await loadConfig(p);
-      expect(cfg.services["opus::claude_code"]).toBeDefined();
-      expect(cfg.services["opus::api.anthropic.com"]).toBeDefined();
-      expect(cfg.services["opus::api.anthropic.com"]?.apiKey).toBe("sk-test");
-      expect(cfg.services["opus::api.anthropic.com"]?.baseUrl).toBe("https://api.anthropic.com/v1");
-    } finally {
-      delete process.env.ANTHROPIC_API_KEY;
-    }
-  });
-
-  it("multi-harness subscription emits one service per harness", async () => {
-    const yamlText = `
-priority: [opus]
-models:
-  opus:
-    subscription:
-      - harness: claude_code
-        command: claude
-      - harness: cursor
-        command: agent
-      - harness: opencode
-        command: opencode
-`;
-    const p = await writeTmpYaml("multi.yaml", yamlText);
-    const cfg = await loadConfig(p);
-    expect(Object.keys(cfg.services).sort()).toEqual([
-      "opus::claude_code",
-      "opus::cursor",
-      "opus::opencode",
-    ]);
-  });
-
-  it("expands mixture_default model keys to all per-model service ids", async () => {
-    const yamlText = `
-priority: [opus]
-mixture_default: [opus]
-models:
-  opus:
-    subscription:
-      harness: claude_code
-    metered:
-      base_url: https://api.anthropic.com/v1
-`;
-    const p = await writeTmpYaml("mix.yaml", yamlText);
-    const cfg = await loadConfig(p);
-    expect([...(cfg.mixtureDefault ?? [])].sort()).toEqual([
-      "opus::api.anthropic.com",
-      "opus::claude_code",
-    ]);
+    const p = await writeTmpYaml("config.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(Object.keys(cfg.services).sort()).toEqual(["alpha", "beta"]);
+    expect(cfg.services.alpha!.tier).toBe(1);
+    expect(cfg.services.alpha!.weight).toBeCloseTo(1.5, 10);
+    expect(cfg.services.alpha!.cliCapability).toBeCloseTo(1.1, 10);
+    expect(cfg.services.alpha!.leaderboardModel).toBe("claude-opus-4-6");
+    expect(cfg.services.alpha!.capabilities.execute).toBeCloseTo(0.9, 10);
+    expect(cfg.services.beta!.enabled).toBe(false);
+    expect(cfg.services.beta!.type).toBe("openai_compatible");
+    expect(cfg.services.beta!.baseUrl).toBe("http://localhost:11434/v1");
   });
 });
 
-describe("loadConfig — error paths", () => {
-  it("throws ConfigMissingError when the file doesn't exist", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-missing-"));
-    const ghost = path.join(dir, "no-such-file.yaml");
-    await expect(loadConfig(ghost)).rejects.toThrow(ConfigMissingError);
-    await expect(loadConfig(ghost)).rejects.toThrow(/onboard/i);
+describe("loadConfig — auto-detect + overrides", () => {
+  const origEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...origEnv };
   });
 
-  it("throws ConfigError when YAML is missing the `models:` field", async () => {
+  it("returns only services whose CLI is on PATH", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: onlyClaudeFound });
+    expect(Object.keys(cfg.services)).toEqual(["claude_code"]);
+    const svc = cfg.services.claude_code!;
+    expect(svc.harness).toBe("claude_code");
+    expect(svc.command).toBe("claude");
+    expect(svc.cliCapability).toBeCloseTo(1.1, 10);
+    expect(svc.leaderboardModel).toBe("claude-opus-4-6");
+    expect(svc.billingKind).toBeUndefined();
+  });
+
+  it("returns all default services when all CLIs are found", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services).sort()).toEqual([
+      "antigravity_cli",
+      "claude_code",
+      "codex",
+      "cursor",
+    ]);
+  });
+
+  it("merges overrides onto auto-detected defaults", async () => {
     const yamlText = `
-priority: []
+overrides:
+  claude_code:
+    weight: 1.5
+    capabilities:
+      execute: 0.5
 `;
-    const p = await writeTmpYaml("nomodel.yaml", yamlText);
-    await expect(loadConfig(p)).rejects.toThrow(ConfigError);
-    await expect(loadConfig(p)).rejects.toThrow(/models/i);
+    const p = await writeTmpYaml("minimal.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const cc = cfg.services.claude_code!;
+    expect(cc.weight).toBeCloseTo(1.5, 10);
+    expect(cc.capabilities.execute).toBeCloseTo(0.5, 10);
+    // Non-overridden capability stays at default
+    expect(cc.capabilities.plan).toBeCloseTo(1.0, 10);
+  });
+
+  it("honors the disabled list", async () => {
+    const yamlText = `
+disabled: [cursor, codex]
+`;
+    const p = await writeTmpYaml("disabled.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services).sort()).toEqual(["antigravity_cli", "claude_code"]);
+  });
+
+  it("adds endpoints from the endpoints: list", async () => {
+    const yamlText = `
+endpoints:
+  - name: ollama
+    base_url: http://localhost:11434/v1
+    model: llama3
+    tier: 3
+    weight: 0.8
+    workspace_policy: copy
+`;
+    const p = await writeTmpYaml("endpoints.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.ollama).toBeDefined();
+    expect(cfg.services.ollama!.type).toBe("openai_compatible");
+    expect(cfg.services.ollama!.baseUrl).toBe("http://localhost:11434/v1");
+    expect(cfg.services.ollama!.tier).toBe(3);
+    expect(cfg.services.ollama!.weight).toBeCloseTo(0.8, 10);
+    expect(cfg.services.ollama!.workspacePolicy).toBe("copy");
+  });
+
+  it("detects Antigravity CLI from the agy command", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: onlyAntigravityFound });
+    const svc = cfg.services.antigravity_cli!;
+
+    expect(Object.keys(cfg.services)).toEqual(["antigravity_cli"]);
+    expect(svc.command).toBe("agy");
+    expect(svc.harness).toBe("antigravity_cli");
+    expect(svc.surface).toBe("antigravity_cli");
+  });
+
+  it("classifies local OpenAI-compatible endpoints with explicit endpoint metadata", async () => {
+    const yamlText = `
+endpoints:
+  - name: ollama
+    base_url: http://localhost:11434/v1
+    model: qwen2.5-coder
+  - name: lmstudio
+    base_url: http://127.0.0.1:1234/v1
+    model: qwen3-coder
+`;
+    const p = await writeTmpYaml("local-endpoints.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    expect(cfg.services.ollama!.endpointMode).toBe("direct_openai_compatible");
+    expect(cfg.services.ollama!.endpointProvider).toBe("ollama");
+    expect(cfg.services.ollama!.wireProtocol).toBe("openai_chat_completions");
+    expect(cfg.services.ollama!.billingKind).toBe("local_compute");
+    expect(cfg.services.ollama!.paidUsagePossible).toBe(false);
+
+    expect(cfg.services.lmstudio!.endpointProvider).toBe("lmstudio");
   });
 });
 
@@ -134,19 +177,26 @@ describe("loadConfig — ${ENV_VAR} interpolation", () => {
     process.env = { ...origEnv };
   });
 
-  it("replaces ${VAR} placeholders in metered route api_key", async () => {
-    process.env.ANTHROPIC_API_KEY = "test-key-xyz";
+  it("replaces ${CODEX_API_KEY} with the environment value via the *_api_key shorthand", async () => {
+    process.env.CODEX_API_KEY = "test-key-xyz";
     const yamlText = `
-priority: [opus]
-models:
-  opus:
-    metered:
-      base_url: https://api.anthropic.com/v1
-      api_key: \${ANTHROPIC_API_KEY}
+codex_api_key: \${CODEX_API_KEY}
 `;
     const p = await writeTmpYaml("env.yaml", yamlText);
-    const cfg = await loadConfig(p);
-    expect(cfg.services["opus::api.anthropic.com"]?.apiKey).toBe("test-key-xyz");
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(cfg.services.codex!.apiKey).toBe("test-key-xyz");
+  });
+
+  it("interpolates strings inside nested overrides", async () => {
+    process.env.MY_MODEL = "custom-model-1";
+    const yamlText = `
+overrides:
+  claude_code:
+    model: \${MY_MODEL}
+`;
+    const p = await writeTmpYaml("nested.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(cfg.services.claude_code!.model).toBe("custom-model-1");
   });
 });
 
@@ -162,53 +212,49 @@ describe("watchConfig", () => {
     for (const w of watchers) w.stop();
   });
 
-  // A minimal valid config for watchConfig — it only triggers reload on
-  // mtime change, not on content semantics, so this just needs to parse.
-  const okYaml = `priority: [opus]
-models:
-  opus:
-    subscription:
-      harness: claude_code
-`;
-
   it("calls onChange when the file's mtime changes", async () => {
-    const p = await writeTmpYaml("watch.yaml", okYaml);
+    const p = await writeTmpYaml("watch.yaml", "disabled: []\n");
     const events: Array<{ time: number }> = [];
     const w = watchConfig(
       p,
       () => {
         events.push({ time: Date.now() });
       },
-      { intervalMs: 50 },
+      { intervalMs: 50, whichFn: noCliFound },
     );
     watchers.push(w);
 
+    // Wait for initial baseline poll to register current mtime.
     await new Promise((r) => setTimeout(r, 120));
 
+    // Force a visibly newer mtime (some filesystems have 1-second resolution).
     const newMtime = new Date(Date.now() + 2000);
-    await fs.writeFile(p, okYaml + "\n# changed\n", "utf-8");
+    await fs.writeFile(p, "disabled: [cursor]\n", "utf-8");
     await fs.utimes(p, newMtime, newMtime);
 
+    // Give the poller a couple of ticks to notice.
     await new Promise((r) => setTimeout(r, 250));
+
     expect(events.length).toBeGreaterThanOrEqual(1);
   });
 
   it("stops polling after stop() is called", async () => {
-    const p = await writeTmpYaml("stop.yaml", okYaml);
+    const p = await writeTmpYaml("stop.yaml", "disabled: []\n");
     let calls = 0;
     const w = watchConfig(
       p,
       () => {
         calls += 1;
       },
-      { intervalMs: 30 },
+      { intervalMs: 30, whichFn: noCliFound },
     );
     await new Promise((r) => setTimeout(r, 80));
     w.stop();
     const callsAfterStop = calls;
+    // Modify the file — the stopped watcher should not notice.
     await new Promise((r) => setTimeout(r, 30));
     const newMtime = new Date(Date.now() + 2000);
-    await fs.writeFile(p, okYaml + "\n# changed\n", "utf-8");
+    await fs.writeFile(p, "disabled: [cursor]\n", "utf-8");
     await fs.utimes(p, newMtime, newMtime);
     await new Promise((r) => setTimeout(r, 120));
     expect(calls).toBe(callsAfterStop);
