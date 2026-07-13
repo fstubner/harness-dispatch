@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>harness-router - Local Routing for Coding Agents</title>
+    <meta
+      name="description"
+      content="harness-router routes coding work across Claude Code, Codex, Cursor, Gemini CLI, and OpenAI-compatible endpoints with billing-aware safety policy, a small MCP surface, and a local REST API."
+    />
+    <meta property="og:title" content="harness-router" />
+    <meta
+      property="og:description"
+      content="A local harness router for coding agents: MCP, OpenAI-compatible REST, route readiness, billing policy, safety profiles, and Node 24."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#111414" />
+    <style>
+      :root {
+        --bg: #f7f4ec;
+        --ink: #111414;
+        --muted: #52605b;
+        --line: #d8d0c0;
+        --panel: #fffaf0;
+        --green: #1f6f59;
+        --blue: #245f91;
+        --amber: #b96d2c;
+        --max: 1120px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--bg);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .wrap {
+        width: min(var(--max), calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid var(--line);
+        background: rgba(247, 244, 236, 0.94);
+        backdrop-filter: blur(12px);
+      }
+
+      .nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 24px;
+        padding: 18px 0;
+      }
+
+      .brand {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        font-weight: 750;
+        text-decoration: none;
+      }
+
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: var(--ink);
+        color: var(--panel);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.78rem;
+      }
+
+      .links {
+        display: flex;
+        gap: 18px;
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+
+      .links a {
+        text-decoration: none;
+      }
+
+      main {
+        padding-bottom: 72px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(340px, 0.82fr);
+        gap: 48px;
+        align-items: center;
+        min-height: calc(100vh - 72px);
+        padding: 56px 0 72px;
+      }
+
+      .eyebrow {
+        margin: 0 0 18px;
+        color: var(--green);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.82rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin-bottom: 22px;
+        font-size: clamp(3.1rem, 8vw, 7.2rem);
+        line-height: 0.9;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        max-width: 760px;
+        margin-bottom: 14px;
+        font-size: clamp(2rem, 4.5vw, 4rem);
+        line-height: 0.98;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin-bottom: 8px;
+        font-size: 1.08rem;
+      }
+
+      .lead {
+        max-width: 680px;
+        color: var(--muted);
+        font-size: 1.17rem;
+        line-height: 1.6;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: center;
+        padding: 0 18px;
+        border: 1px solid var(--ink);
+        border-radius: 8px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .button.primary {
+        background: var(--ink);
+        color: var(--panel);
+      }
+
+      .terminal {
+        overflow: hidden;
+        border: 1px solid var(--ink);
+        border-radius: 8px;
+        background: #111414;
+        color: #f7f4ec;
+        box-shadow: 12px 12px 0 #ded5c2;
+      }
+
+      .terminal-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        color: #d8d0c0;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.78rem;
+      }
+
+      pre {
+        margin: 0;
+        padding: 22px;
+        overflow-x: auto;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.88rem;
+        line-height: 1.65;
+      }
+
+      .ok {
+        color: #8de0b9;
+      }
+
+      .warn {
+        color: #f1bc73;
+      }
+
+      section {
+        padding: 64px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .intro {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(260px, 0.55fr);
+        gap: 32px;
+        align-items: end;
+        margin-bottom: 26px;
+      }
+
+      .intro p,
+      .card p,
+      .plain p,
+      li {
+        color: var(--muted);
+        line-height: 1.58;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .card {
+        min-height: 170px;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card strong {
+        color: var(--ink);
+      }
+
+      .two {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(360px, 1fr);
+        gap: 22px;
+        align-items: start;
+      }
+
+      .plain {
+        padding: 8px 0;
+      }
+
+      .list {
+        display: grid;
+        gap: 12px;
+        padding-left: 20px;
+      }
+
+      .compare {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      th,
+      td {
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #ede6d6;
+      }
+
+      footer {
+        padding: 30px 0;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+      }
+
+      @media (max-width: 860px) {
+        .hero,
+        .intro,
+        .two {
+          grid-template-columns: 1fr;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .links {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap nav">
+        <a class="brand" href="#top">
+          <span class="mark">HR</span>
+          <span>harness-router</span>
+        </a>
+        <nav class="links" aria-label="Page sections">
+          <a href="#problem">Problem</a>
+          <a href="#configure">Configure</a>
+          <a href="#interfaces">Interfaces</a>
+          <a href="#faq">FAQ</a>
+          <a href="https://github.com/fstubner/harness-router">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="wrap hero">
+        <div>
+          <p class="eyebrow">Local harness routing for coding agents</p>
+          <h1>One router for the coding harnesses you already use.</h1>
+          <p class="lead">
+            harness-router gives agents a single local interface for Claude Code, Codex,
+            Cursor, Gemini CLI, and OpenAI-compatible endpoints. It routes by task fit,
+            route readiness, billing policy, safety profile, workspace policy, and your
+            configured priority.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="#install">Install</a>
+            <a class="button" href="#interfaces">MCP and REST</a>
+          </div>
+        </div>
+
+        <aside class="terminal" aria-label="Status preview">
+          <div class="terminal-top">
+            <span>harness-router status</span>
+            <span>Node 24</span>
+          </div>
+          <pre><code><span class="ok">ok</span> codex / codex
+  billing=included_plan_then_flexible_credits provider=openai auth=product_login
+  paid=possible allow_paid=no safety=workspace_edit tier=1 model=gpt-5.4
+  quota=100% breaker=closed failures=0
+  skipped=paid_blocked: route can incur paid usage and paid usage is not allowed
+
+<span class="ok">ok</span> claude_code / claude_code
+  billing=included_plan_usage provider=anthropic auth=oauth_session
+  paid=no allow_paid=no safety=workspace_edit tier=1 model=claude-opus-4-6
+  quota=100% breaker=closed failures=0
+  workspace=shared_locked
+
+<span class="warn">Ready to route:</span> claude_code
+Next pick: claude_code (tier 1, score 0.91)</code></pre>
+        </aside>
+      </section>
+
+      <section id="problem">
+        <div class="wrap">
+          <div class="intro">
+            <h2>The problem is route choice, not agent hype.</h2>
+            <p>
+              Coding agents are not interchangeable. A bug fix, an architecture review, a
+              long-context inspection, and a local endpoint test have different best routes.
+            </p>
+          </div>
+          <div class="grid">
+            <article class="card">
+              <h3>Billing explicit</h3>
+              <p>Block paid or unknown-paid routes until the config explicitly allows them.</p>
+            </article>
+            <article class="card">
+              <h3>Health aware</h3>
+              <p>Use availability, auth, quota state, and circuit breakers before sending work.</p>
+            </article>
+            <article class="card">
+              <h3>Small surface</h3>
+              <p>Expose a routing tool, an async job wrapper, two status resources, and one OpenAI-compatible REST route.</p>
+            </article>
+            <article class="card">
+              <h3>Endpoint modes</h3>
+              <p>Route directly to OpenAI-compatible local HTTP endpoints, or let supported harnesses use local providers natively.</p>
+            </article>
+            <article class="card">
+              <h3>Workspace control</h3>
+              <p>Use shared, locked, copied, or git-worktree agent workspaces depending on the workflow.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="configure">
+        <div class="wrap two">
+          <div class="plain">
+            <h2>Configure is the product entrypoint.</h2>
+            <p>
+              The setup flow detects harnesses, verifies route readiness, classifies billing,
+              chooses safety and model priority, writes config, and connects the agents you
+              want to use with the router.
+            </p>
+            <ol class="list">
+              <li>Detect Claude Code, Codex, Cursor, Gemini, and configured HTTP/local endpoints.</li>
+              <li>Verify harness availability and auth without spending quota where possible.</li>
+              <li>Choose billing policy, endpoint mode, safety profile, workspace policy, and routed harnesses.</li>
+              <li>Write config and connect MCP agents or print snippets.</li>
+            </ol>
+          </div>
+          <div class="terminal">
+            <div class="terminal-top">
+              <span>setup</span>
+              <span>local only</span>
+            </div>
+            <pre><code>npm install -g harness-router
+harness-router configure
+harness-router doctor
+harness-router doctor --live --allow-paid
+harness-router status --json</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="interfaces">
+        <div class="wrap">
+          <div class="intro">
+            <h2>Two transports, one router core.</h2>
+            <p>
+              MCP is the agent-facing interface. REST exists for generic tools that already
+              speak OpenAI-style chat completions.
+            </p>
+          </div>
+          <div class="grid">
+            <article class="card">
+              <h3>MCP</h3>
+              <p><strong>Tools:</strong> code and job</p>
+              <p><strong>Resources:</strong> harness-router://status and status.json</p>
+            </article>
+            <article class="card">
+              <h3>REST</h3>
+              <p><strong>POST:</strong> /v1/chat/completions</p>
+              <p><strong>GET:</strong> /v1/status</p>
+            </article>
+            <article class="card">
+              <h3>Local endpoints</h3>
+              <p><strong>Direct:</strong> Ollama, LM Studio, vLLM, LiteLLM</p>
+              <p><strong>Native:</strong> Codex with ollama or lmstudio</p>
+            </article>
+            <article class="card">
+              <h3>HTTP MCP</h3>
+              <p><strong>POST:</strong> /mcp</p>
+              <p>Protected by the same bearer token as /v1/*.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="install">
+        <div class="wrap two">
+          <div class="plain">
+            <h2>Install and run.</h2>
+            <p>
+              Node 24 is the target runtime. The default command starts stdio MCP for local
+              agent clients. `serve` starts HTTP MCP and the REST API.
+            </p>
+          </div>
+          <div class="terminal">
+            <div class="terminal-top">
+              <span>commands</span>
+              <span>v0.4.0</span>
+            </div>
+            <pre><code>npm install -g harness-router
+harness-router
+harness-router serve --port 3333
+harness-router auth show</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="compare">
+        <div class="wrap">
+          <div class="intro">
+            <h2>How it differs from agent CLIs and smart routers.</h2>
+            <p>
+              harness-router is deliberately narrow. It does not replace a coding agent and it
+              does not claim benchmarked cost reduction yet.
+            </p>
+          </div>
+          <table class="compare">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>What it does</th>
+                <th>What it does not claim</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Agent CLIs</td>
+                <td>Delegates to Claude Code, Codex, Cursor, Gemini, or HTTP endpoints.</td>
+                <td>It is not a replacement coding agent.</td>
+              </tr>
+              <tr>
+                <td>Smart routers</td>
+                <td>Uses task hints, readiness, billing policy, safety, workspace policy, quota, tiers, and configured priority.</td>
+                <td>It does not advertise unmeasured token savings.</td>
+              </tr>
+              <tr>
+                <td>Agent protocols</td>
+                <td>Exposes MCP and OpenAI-compatible REST locally.</td>
+                <td>A2A and broader orchestration are out of scope for v0.4.0.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="faq">
+        <div class="wrap">
+          <div class="intro">
+            <h2>FAQ</h2>
+            <p>Short answers for release-readiness questions.</p>
+          </div>
+          <div class="grid">
+            <article class="card">
+              <h3>Why stdio MCP?</h3>
+              <p>It is the simplest local agent integration. Use `serve` when HTTP is needed.</p>
+            </article>
+            <article class="card">
+              <h3>Why auth for local HTTP?</h3>
+              <p>The server can dispatch coding work. Bearer auth avoids accidental local exposure.</p>
+            </article>
+            <article class="card">
+              <h3>Why a small MCP surface?</h3>
+              <p>`code` is the routing API. `job` exists only for slow async runs that need inspection later.</p>
+            </article>
+            <article class="card">
+              <h3>Are isolated workspaces sandboxes?</h3>
+              <p>They protect project state and review flow. Host-level containment still belongs to the downstream harness or OS sandbox.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap">harness-router. MIT licensed. Built for local coding harness workflows.</div>
+    </footer>
+  </body>
+</html>
