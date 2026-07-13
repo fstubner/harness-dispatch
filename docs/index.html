@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>harness-router - Local Routing for Coding Agents</title>
+    <title>harness-router — Local Routing for Coding Agents</title>
     <meta
       name="description"
       content="harness-router routes coding work across Claude Code, Codex, Cursor, Antigravity, and OpenAI-compatible endpoints with billing-aware safety policy, a small MCP surface, and a local REST API."
@@ -14,49 +14,96 @@
       content="A local harness router for coding agents: MCP, OpenAI-compatible REST, route readiness, billing policy, safety profiles, and Node 24."
     />
     <meta property="og:type" content="website" />
-    <meta name="theme-color" content="#111414" />
+    <meta name="theme-color" content="#0a0d0c" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
     <style>
       :root {
-        --bg: #f7f4ec;
-        --ink: #111414;
-        --muted: #52605b;
-        --line: #d8d0c0;
-        --panel: #fffaf0;
-        --green: #1f6f59;
-        --blue: #245f91;
-        --amber: #b96d2c;
-        --max: 1120px;
+        --bg: #0a0d0c;
+        --bg-raise: #101514;
+        --panel: #0d1210;
+        --ink: #e6ece7;
+        --muted: #7f8d85;
+        --faint: #55625b;
+        --line: #1f2925;
+        --line-bright: #2c3a34;
+        --green: #46d39a;
+        --green-dim: #1d5c44;
+        --amber: #e5a54f;
+        --red: #e0685a;
+        --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+        --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+        --max: 1180px;
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html {
+        scroll-behavior: smooth;
+      }
+
       body {
         margin: 0;
         color: var(--ink);
-        background: var(--bg);
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
+        background:
+          radial-gradient(1200px 600px at 75% -10%, rgba(70, 211, 154, 0.07), transparent 60%),
+          radial-gradient(900px 500px at -10% 40%, rgba(229, 165, 79, 0.04), transparent 55%),
+          var(--bg);
+        font-family: var(--display);
+        font-optical-sizing: auto;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* fine blueprint grid over everything */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(230, 236, 231, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(230, 236, 231, 0.025) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: radial-gradient(ellipse 90% 70% at 50% 20%, black 30%, transparent 100%);
+      }
+
+      header,
+      main,
+      footer {
+        position: relative;
+        z-index: 1;
       }
 
       a {
         color: inherit;
       }
 
+      ::selection {
+        background: var(--green);
+        color: #06251a;
+      }
+
       .wrap {
-        width: min(var(--max), calc(100% - 40px));
+        width: min(var(--max), calc(100% - 44px));
         margin: 0 auto;
       }
+
+      /* ── header ─────────────────────────────────────────────────────── */
 
       header {
         position: sticky;
         top: 0;
-        z-index: 10;
+        z-index: 20;
         border-bottom: 1px solid var(--line);
-        background: rgba(247, 244, 236, 0.94);
-        backdrop-filter: blur(12px);
+        background: rgba(10, 13, 12, 0.86);
+        backdrop-filter: blur(14px);
       }
 
       .nav {
@@ -64,255 +111,686 @@
         justify-content: space-between;
         align-items: center;
         gap: 24px;
-        padding: 18px 0;
+        padding: 14px 0;
       }
 
       .brand {
         display: flex;
-        gap: 10px;
+        gap: 12px;
         align-items: center;
-        font-weight: 750;
+        font-family: var(--mono);
+        font-size: 0.95rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
         text-decoration: none;
       }
 
       .mark {
-        display: grid;
-        place-items: center;
-        width: 34px;
-        height: 34px;
-        border-radius: 8px;
-        background: var(--ink);
-        color: var(--panel);
-        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        font-size: 0.78rem;
+        position: relative;
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--green);
+        border-radius: 2px;
+      }
+
+      .mark::before,
+      .mark::after {
+        content: "";
+        position: absolute;
+        background: var(--green);
+      }
+
+      /* a route glyph: two nodes and a connecting line */
+      .mark::before {
+        left: 5px;
+        top: 19px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+      }
+
+      .mark::after {
+        left: 8px;
+        top: 8px;
+        width: 15px;
+        height: 1.5px;
+        transform: rotate(-32deg);
+        transform-origin: left center;
+        box-shadow: 14px -1px 0 -0.5px var(--green);
       }
 
       .links {
         display: flex;
-        gap: 18px;
+        gap: 26px;
         color: var(--muted);
-        font-size: 0.94rem;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
 
       .links a {
         text-decoration: none;
+        transition: color 140ms ease;
       }
 
-      main {
-        padding-bottom: 72px;
+      .links a:hover {
+        color: var(--green);
       }
+
+      /* ── hero ───────────────────────────────────────────────────────── */
 
       .hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(340px, 0.82fr);
-        gap: 48px;
-        align-items: center;
-        min-height: calc(100vh - 72px);
-        padding: 56px 0 72px;
+        padding: 84px 0 0;
       }
 
       .eyebrow {
-        margin: 0 0 18px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 0 0 26px;
         color: var(--green);
-        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        font-size: 0.82rem;
-        font-weight: 700;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        font-weight: 500;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.22em;
       }
 
-      h1,
-      h2,
-      h3,
-      p {
-        margin-top: 0;
+      .eyebrow::before {
+        content: "";
+        width: 40px;
+        height: 1px;
+        background: var(--green);
       }
 
       h1 {
-        max-width: 760px;
-        margin-bottom: 22px;
-        font-size: clamp(3.1rem, 8vw, 7.2rem);
-        line-height: 0.9;
-        letter-spacing: 0;
+        margin: 0 0 30px;
+        max-width: 15ch;
+        font-size: clamp(3rem, 8.5vw, 6.8rem);
+        font-weight: 700;
+        font-variation-settings: "opsz" 96;
+        line-height: 0.94;
+        letter-spacing: -0.025em;
       }
 
-      h2 {
-        max-width: 760px;
-        margin-bottom: 14px;
-        font-size: clamp(2rem, 4.5vw, 4rem);
-        line-height: 0.98;
-        letter-spacing: 0;
-      }
-
-      h3 {
-        margin-bottom: 8px;
-        font-size: 1.08rem;
+      h1 em {
+        font-style: normal;
+        color: var(--green);
       }
 
       .lead {
-        max-width: 680px;
+        max-width: 62ch;
+        margin: 0;
         color: var(--muted);
-        font-size: 1.17rem;
-        line-height: 1.6;
+        font-size: 1.14rem;
+        line-height: 1.7;
+        font-weight: 350;
+      }
+
+      .lead strong {
+        color: var(--ink);
+        font-weight: 550;
       }
 
       .actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 28px;
+        gap: 14px;
+        margin-top: 38px;
       }
 
       .button {
         display: inline-flex;
-        min-height: 44px;
+        min-height: 46px;
         align-items: center;
-        justify-content: center;
-        padding: 0 18px;
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        font-weight: 700;
+        gap: 10px;
+        padding: 0 22px;
+        border: 1px solid var(--line-bright);
+        border-radius: 3px;
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        font-weight: 500;
+        letter-spacing: 0.04em;
         text-decoration: none;
+        transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+      }
+
+      .button:hover {
+        border-color: var(--green);
+        color: var(--green);
       }
 
       .button.primary {
-        background: var(--ink);
-        color: var(--panel);
+        background: var(--green);
+        border-color: var(--green);
+        color: #06251a;
       }
 
+      .button.primary:hover {
+        background: #63e0ad;
+        color: #06251a;
+      }
+
+      /* ── departure board ────────────────────────────────────────────── */
+
+      .board {
+        margin-top: 72px;
+        border: 1px solid var(--line-bright);
+        border-radius: 4px;
+        background: var(--panel);
+        overflow: hidden;
+        box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8);
+      }
+
+      .board-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--bg-raise);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--faint);
+      }
+
+      .board-top .live {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--green);
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        animation: pulse 2.2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(70, 211, 154, 0.5); }
+        50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(70, 211, 154, 0); }
+      }
+
+      .board table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--mono);
+        font-size: 0.86rem;
+      }
+
+      .board th {
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+        color: var(--faint);
+        font-size: 0.7rem;
+        font-weight: 500;
+        text-align: left;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+      }
+
+      .board td {
+        padding: 15px 20px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+
+      .board tr:last-child td {
+        border-bottom: none;
+      }
+
+      .board tbody tr {
+        opacity: 0;
+        animation: row-in 480ms ease forwards;
+      }
+
+      .board tbody tr:nth-child(1) { animation-delay: 150ms; }
+      .board tbody tr:nth-child(2) { animation-delay: 300ms; }
+      .board tbody tr:nth-child(3) { animation-delay: 450ms; }
+      .board tbody tr:nth-child(4) { animation-delay: 600ms; }
+      .board tbody tr:nth-child(5) { animation-delay: 750ms; }
+
+      @keyframes row-in {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: none; }
+      }
+
+      .board .route {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .board .dim {
+        color: var(--muted);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.74rem;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+      }
+
+      .status::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .status.routed { color: var(--green); }
+      .status.routed::before { box-shadow: 0 0 10px rgba(70, 211, 154, 0.8); }
+      .status.standby { color: var(--amber); }
+      .status.blocked { color: var(--red); }
+
+      .board-note {
+        padding: 12px 20px;
+        border-top: 1px solid var(--line);
+        background: var(--bg-raise);
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        letter-spacing: 0.02em;
+      }
+
+      .board-note .ok {
+        color: var(--green);
+      }
+
+      /* ── ticker ─────────────────────────────────────────────────────── */
+
+      .ticker {
+        margin-top: 0;
+        padding: 13px 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        overflow: hidden;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--faint);
+        margin-top: 88px;
+      }
+
+      .ticker-track {
+        display: inline-block;
+        animation: scroll 42s linear infinite;
+      }
+
+      .ticker span {
+        margin: 0 28px;
+      }
+
+      .ticker b {
+        color: var(--green);
+        font-weight: 500;
+      }
+
+      @keyframes scroll {
+        from { transform: translateX(0); }
+        to { transform: translateX(-50%); }
+      }
+
+      /* ── sections ───────────────────────────────────────────────────── */
+
+      section {
+        padding: 96px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .sec-label {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        margin-bottom: 22px;
+        font-family: var(--mono);
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        color: var(--faint);
+      }
+
+      .sec-label b {
+        color: var(--green);
+        font-weight: 600;
+      }
+
+      h2 {
+        margin: 0 0 18px;
+        max-width: 24ch;
+        font-size: clamp(1.9rem, 4vw, 3.2rem);
+        font-weight: 650;
+        font-variation-settings: "opsz" 60;
+        line-height: 1.04;
+        letter-spacing: -0.02em;
+      }
+
+      .intro p,
+      .plain p,
+      li {
+        color: var(--muted);
+        line-height: 1.7;
+        font-weight: 350;
+      }
+
+      .intro {
+        max-width: 720px;
+        margin-bottom: 48px;
+      }
+
+      /* policy cards: numbered ledger rows instead of boxes */
+      .ledger {
+        border-top: 1px solid var(--line-bright);
+      }
+
+      .ledger article {
+        display: grid;
+        grid-template-columns: 72px minmax(180px, 0.55fr) 1fr;
+        gap: 24px;
+        align-items: baseline;
+        padding: 26px 0;
+        border-bottom: 1px solid var(--line);
+        transition: background 160ms ease;
+      }
+
+      .ledger article:hover {
+        background: rgba(70, 211, 154, 0.03);
+      }
+
+      .ledger .num {
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--faint);
+      }
+
+      .ledger h3 {
+        margin: 0;
+        font-size: 1.15rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .ledger p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.65;
+        font-weight: 350;
+      }
+
+      /* two-column layouts */
+      .two {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(360px, 1fr);
+        gap: 56px;
+        align-items: start;
+      }
+
+      .list {
+        display: grid;
+        gap: 14px;
+        margin: 24px 0 0;
+        padding-left: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .list li {
+        display: flex;
+        gap: 16px;
+        counter-increment: step;
+      }
+
+      .list li::before {
+        content: counter(step, decimal-leading-zero);
+        flex: 0 0 auto;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--green);
+        padding-top: 3px;
+      }
+
+      /* terminal */
       .terminal {
         overflow: hidden;
-        border: 1px solid var(--ink);
-        border-radius: 8px;
-        background: #111414;
-        color: #f7f4ec;
-        box-shadow: 12px 12px 0 #ded5c2;
+        border: 1px solid var(--line-bright);
+        border-radius: 4px;
+        background: var(--panel);
       }
 
       .terminal-top {
         display: flex;
         justify-content: space-between;
         gap: 16px;
-        padding: 12px 14px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-        color: #d8d0c0;
-        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        font-size: 0.78rem;
+        padding: 11px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--bg-raise);
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
       }
 
       pre {
         margin: 0;
         padding: 22px;
         overflow-x: auto;
-        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-        font-size: 0.88rem;
-        line-height: 1.65;
+        font-family: var(--mono);
+        font-size: 0.86rem;
+        line-height: 1.75;
+        color: var(--ink);
       }
 
-      .ok {
-        color: #8de0b9;
+      pre .c {
+        color: var(--faint);
       }
 
-      .warn {
-        color: #f1bc73;
+      pre .g {
+        color: var(--green);
       }
 
-      section {
-        padding: 64px 0;
-        border-top: 1px solid var(--line);
+      pre .a {
+        color: var(--amber);
       }
 
-      .intro {
-        display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(260px, 0.55fr);
-        gap: 32px;
-        align-items: end;
-        margin-bottom: 26px;
+      .prompt::before {
+        content: "$ ";
+        color: var(--faint);
       }
 
-      .intro p,
-      .card p,
-      .plain p,
-      li {
-        color: var(--muted);
-        line-height: 1.58;
-      }
-
+      /* interface cards: keep, but sharp + top-accent */
       .grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        overflow: hidden;
       }
 
-      .card {
-        min-height: 170px;
-        padding: 20px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
+      .grid .card {
+        padding: 24px 22px 26px;
         background: var(--panel);
+        transition: background 160ms ease;
+      }
+
+      .grid .card:hover {
+        background: var(--bg-raise);
+      }
+
+      .card h3 {
+        margin: 0 0 12px;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--green);
+      }
+
+      .card p {
+        margin: 0 0 6px;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.6;
+        font-weight: 350;
       }
 
       .card strong {
         color: var(--ink);
+        font-weight: 550;
       }
 
-      .two {
-        display: grid;
-        grid-template-columns: minmax(0, 0.8fr) minmax(360px, 1fr);
-        gap: 22px;
-        align-items: start;
+      .card code {
+        font-family: var(--mono);
+        font-size: 0.84em;
+        color: var(--ink);
       }
 
-      .plain {
-        padding: 8px 0;
-      }
-
-      .list {
-        display: grid;
-        gap: 12px;
-        padding-left: 20px;
-      }
-
+      /* compare table */
       .compare {
         width: 100%;
         border-collapse: collapse;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
+        border: 1px solid var(--line-bright);
+        font-size: 0.98rem;
       }
 
-      th,
-      td {
-        padding: 14px 16px;
+      .compare th,
+      .compare td {
+        padding: 18px 20px;
         border-bottom: 1px solid var(--line);
         text-align: left;
         vertical-align: top;
+        line-height: 1.6;
       }
 
-      th {
-        background: #ede6d6;
+      .compare th {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--faint);
+        background: var(--bg-raise);
+      }
+
+      .compare td:first-child {
+        font-family: var(--mono);
+        font-size: 0.84rem;
+        color: var(--green);
+        white-space: nowrap;
+      }
+
+      .compare td {
+        color: var(--muted);
+        font-weight: 350;
+      }
+
+      .compare tr:last-child td {
+        border-bottom: none;
+      }
+
+      /* FAQ */
+      .faq-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 40px 64px;
+      }
+
+      .faq-grid h3 {
+        margin: 0 0 10px;
+        font-size: 1.05rem;
+        font-weight: 600;
+      }
+
+      .faq-grid h3::before {
+        content: "? ";
+        color: var(--green);
+        font-family: var(--mono);
+      }
+
+      .faq-grid p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.65;
+        font-weight: 350;
       }
 
       footer {
-        padding: 30px 0;
-        border-top: 1px solid var(--line);
-        color: var(--muted);
+        padding: 36px 0 44px;
+        color: var(--faint);
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        letter-spacing: 0.04em;
       }
 
-      @media (max-width: 860px) {
-        .hero,
-        .intro,
+      footer .wrap {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      @media (max-width: 900px) {
         .two {
           grid-template-columns: 1fr;
+          gap: 32px;
         }
 
         .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .faq-grid {
           grid-template-columns: 1fr;
+        }
+
+        .ledger article {
+          grid-template-columns: 48px 1fr;
+        }
+
+        .ledger p {
+          grid-column: 2;
         }
 
         .links {
           display: none;
+        }
+
+        .board {
+          overflow-x: auto;
+        }
+
+        section {
+          padding: 64px 0;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .ticker-track,
+        .dot,
+        .board tbody tr {
+          animation: none;
+          opacity: 1;
         }
       }
     </style>
@@ -321,11 +799,11 @@
     <header>
       <div class="wrap nav">
         <a class="brand" href="#top">
-          <span class="mark">HR</span>
+          <span class="mark" aria-hidden="true"></span>
           <span>harness-router</span>
         </a>
         <nav class="links" aria-label="Page sections">
-          <a href="#problem">Problem</a>
+          <a href="#policy">Policy</a>
           <a href="#configure">Configure</a>
           <a href="#interfaces">Interfaces</a>
           <a href="#faq">FAQ</a>
@@ -335,73 +813,140 @@
     </header>
 
     <main id="top">
-      <section class="wrap hero">
-        <div>
-          <p class="eyebrow">Local harness routing for coding agents</p>
-          <h1>One router for the coding harnesses you already use.</h1>
-          <p class="lead">
-            harness-router gives agents a single local interface for Claude Code, Codex,
-            Cursor, Antigravity, and OpenAI-compatible endpoints. It routes by task fit,
-            route readiness, billing policy, safety profile, workspace policy, and your
-            configured priority.
-          </p>
-          <div class="actions">
-            <a class="button primary" href="#install">Install</a>
-            <a class="button" href="#interfaces">MCP and REST</a>
-          </div>
+      <section class="wrap hero" style="border-bottom: none; padding-bottom: 0;">
+        <p class="eyebrow">Local harness routing for coding agents</p>
+        <h1>Dispatch coding work to the <em>right agent</em>, every time.</h1>
+        <p class="lead">
+          harness-router gives your orchestrating agent one local interface to
+          <strong>Claude Code, Codex, Cursor, Antigravity, and OpenAI-compatible
+          endpoints</strong>. Tasks route by task fit, live quota, billing policy,
+          and safety profile — whole tasks to whole agents, through each CLI's
+          official surface. No proxying, no interception.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="#install">npm install -g harness-router</a>
+          <a class="button" href="#interfaces">MCP + REST surface</a>
         </div>
 
-        <aside class="terminal" aria-label="Status preview">
-          <div class="terminal-top">
+        <div class="board" role="img" aria-label="Route status board showing routed, standby, and blocked routes">
+          <div class="board-top">
             <span>harness-router status</span>
-            <span>Node 24</span>
+            <span class="live"><span class="dot"></span>live · localhost</span>
           </div>
-          <pre><code><span class="ok">ok</span> codex / codex
-  billing=included_plan_then_flexible_credits provider=openai auth=product_login
-  paid=possible allow_paid=no safety=workspace_edit tier=1 model=gpt-5.4
-  quota=100% breaker=closed failures=0
-  skipped=paid_blocked: route can incur paid usage and paid usage is not allowed
-
-<span class="ok">ok</span> claude_code / claude_code
-  billing=included_plan_usage provider=anthropic auth=oauth_session
-  paid=no allow_paid=no safety=workspace_edit tier=1 model=claude-opus-4-6
-  quota=100% breaker=closed failures=0
-  workspace=shared_locked
-
-<span class="warn">Ready to route:</span> claude_code
-Next pick: claude_code (tier 1, score 0.91)</code></pre>
-        </aside>
+          <table>
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>Harness</th>
+                <th>Billing</th>
+                <th>Safety</th>
+                <th>Quota</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="route">codex</td>
+                <td class="dim">codex · gpt-5.4</td>
+                <td class="dim">included_plan</td>
+                <td class="dim">workspace_edit</td>
+                <td class="dim">100%</td>
+                <td><span class="status routed">routed</span></td>
+              </tr>
+              <tr>
+                <td class="route">claude_code</td>
+                <td class="dim">claude · opus-4-6</td>
+                <td class="dim">included_plan</td>
+                <td class="dim">workspace_edit</td>
+                <td class="dim">82%</td>
+                <td><span class="status standby">standby</span></td>
+              </tr>
+              <tr>
+                <td class="route">antigravity</td>
+                <td class="dim">agy · gemini-3.1</td>
+                <td class="dim">free_quota</td>
+                <td class="dim">workspace_edit</td>
+                <td class="dim">100%</td>
+                <td><span class="status standby">standby</span></td>
+              </tr>
+              <tr>
+                <td class="route">openai_api</td>
+                <td class="dim">endpoint · api_key</td>
+                <td class="dim">metered_api</td>
+                <td class="dim">read_only</td>
+                <td class="dim">—</td>
+                <td><span class="status blocked">paid_blocked</span></td>
+              </tr>
+              <tr>
+                <td class="route">local_llama</td>
+                <td class="dim">endpoint · local</td>
+                <td class="dim">local_compute</td>
+                <td class="dim">read_only</td>
+                <td class="dim">∞</td>
+                <td><span class="status standby">standby</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="board-note">
+            <span class="ok">next pick:</span> codex (tier 1 · execute 1.00 · score 0.91)
+            &nbsp;·&nbsp; paid routes stay blocked until allow_paid_usage: true
+          </div>
+        </div>
       </section>
 
-      <section id="problem">
+      <div class="ticker" aria-hidden="true">
+        <div class="ticker-track">
+          <span><b>execute</b> → codex full-auto</span>
+          <span><b>plan</b> → claude opus extended thinking</span>
+          <span><b>review</b> → antigravity 1M context</span>
+          <span><b>local</b> → llama.cpp on your hardware</span>
+          <span><b>billing</b> → opt-in per route</span>
+          <span><b>safety</b> → read_only / workspace_edit / full_auto</span>
+          <span><b>execute</b> → codex full-auto</span>
+          <span><b>plan</b> → claude opus extended thinking</span>
+          <span><b>review</b> → antigravity 1M context</span>
+          <span><b>local</b> → llama.cpp on your hardware</span>
+          <span><b>billing</b> → opt-in per route</span>
+          <span><b>safety</b> → read_only / workspace_edit / full_auto</span>
+        </div>
+      </div>
+
+      <section id="policy">
         <div class="wrap">
+          <p class="sec-label"><b>01</b> routing policy</p>
           <div class="intro">
             <h2>The problem is route choice, not agent hype.</h2>
             <p>
               Coding agents are not interchangeable. A bug fix, an architecture review, a
-              long-context inspection, and a local endpoint test have different best routes.
+              long-context inspection, and a local endpoint test have different best routes —
+              and different billing consequences.
             </p>
           </div>
-          <div class="grid">
-            <article class="card">
+          <div class="ledger">
+            <article>
+              <span class="num">/01</span>
               <h3>Billing explicit</h3>
-              <p>Block paid or unknown-paid routes until the config explicitly allows them.</p>
+              <p>Any route that can cost money — metered API, unknown billing, subscription overage — is blocked until the config explicitly allows it.</p>
             </article>
-            <article class="card">
+            <article>
+              <span class="num">/02</span>
               <h3>Health aware</h3>
-              <p>Use availability, auth, quota state, and circuit breakers before sending work.</p>
+              <p>Availability, auth, quota state, and circuit breakers are checked before work is sent anywhere.</p>
             </article>
-            <article class="card">
+            <article>
+              <span class="num">/03</span>
               <h3>Small surface</h3>
-              <p>Expose a routing tool, an async job wrapper, two status resources, and one OpenAI-compatible REST route.</p>
+              <p>A routing tool, an async job wrapper, a usage tool, two status resources, and one OpenAI-compatible REST route. That's the whole API.</p>
             </article>
-            <article class="card">
+            <article>
+              <span class="num">/04</span>
               <h3>Endpoint modes</h3>
               <p>Route directly to OpenAI-compatible local HTTP endpoints, or let supported harnesses use local providers natively.</p>
             </article>
-            <article class="card">
+            <article>
+              <span class="num">/05</span>
               <h3>Workspace control</h3>
-              <p>Use shared, locked, copied, or git-worktree agent workspaces depending on the workflow.</p>
+              <p>Shared, locked, copied, or git-worktree agent workspaces depending on the workflow — delegated agents stay inside the lines.</p>
             </article>
           </div>
         </div>
@@ -410,6 +955,7 @@ Next pick: claude_code (tier 1, score 0.91)</code></pre>
       <section id="configure">
         <div class="wrap two">
           <div class="plain">
+            <p class="sec-label"><b>02</b> setup</p>
             <h2>Configure is the product entrypoint.</h2>
             <p>
               The setup flow detects harnesses, verifies route readiness, classifies billing,
@@ -428,17 +974,22 @@ Next pick: claude_code (tier 1, score 0.91)</code></pre>
               <span>setup</span>
               <span>local only</span>
             </div>
-            <pre><code>npm install -g harness-router
-harness-router configure
-harness-router doctor
-harness-router doctor --live --allow-paid
-harness-router status --json</code></pre>
+            <pre><code><span class="prompt">npm install -g harness-router</span>
+<span class="prompt">harness-router configure</span>
+<span class="c">Detected 4 harness routes.</span>
+<span class="prompt">harness-router doctor --live</span>
+<span class="g">ok</span> node: Node 24
+<span class="g">ok</span> config: 4 configured route(s)
+<span class="g">ok</span> routes: 1 ready route(s)
+<span class="g">ok</span> live-probe: routed one prompt via codex
+<span class="a">note</span> 3 route(s) blocked pending allow_paid_usage</code></pre>
           </div>
         </div>
       </section>
 
       <section id="interfaces">
         <div class="wrap">
+          <p class="sec-label"><b>03</b> surface</p>
           <div class="intro">
             <h2>Two transports, one router core.</h2>
             <p>
@@ -449,13 +1000,13 @@ harness-router status --json</code></pre>
           <div class="grid">
             <article class="card">
               <h3>MCP</h3>
-              <p><strong>Tools:</strong> code, job, and usage</p>
-              <p><strong>Resources:</strong> harness-router://status and status.json</p>
+              <p><strong>Tools:</strong> <code>code</code>, <code>job</code>, <code>usage</code></p>
+              <p><strong>Resources:</strong> <code>harness-router://status</code> + <code>status.json</code></p>
             </article>
             <article class="card">
               <h3>REST</h3>
-              <p><strong>POST:</strong> /v1/chat/completions</p>
-              <p><strong>GET:</strong> /v1/status</p>
+              <p><strong>POST</strong> <code>/v1/chat/completions</code></p>
+              <p><strong>GET</strong> <code>/v1/status</code></p>
             </article>
             <article class="card">
               <h3>Local endpoints</h3>
@@ -464,8 +1015,8 @@ harness-router status --json</code></pre>
             </article>
             <article class="card">
               <h3>HTTP MCP</h3>
-              <p><strong>POST:</strong> /mcp</p>
-              <p>Protected by the same bearer token as /v1/*.</p>
+              <p><strong>POST</strong> <code>/mcp</code></p>
+              <p>Protected by the same bearer token as <code>/v1/*</code>.</p>
             </article>
           </div>
         </div>
@@ -474,10 +1025,11 @@ harness-router status --json</code></pre>
       <section id="install">
         <div class="wrap two">
           <div class="plain">
+            <p class="sec-label"><b>04</b> install</p>
             <h2>Install and run.</h2>
             <p>
               Node 24 is the target runtime. The default command starts stdio MCP for local
-              agent clients. `serve` starts HTTP MCP and the REST API.
+              agent clients. <code>serve</code> starts HTTP MCP and the REST API.
             </p>
           </div>
           <div class="terminal">
@@ -485,16 +1037,17 @@ harness-router status --json</code></pre>
               <span>commands</span>
               <span>v0.4.0</span>
             </div>
-            <pre><code>npm install -g harness-router
-harness-router
-harness-router serve --port 3333
-harness-router auth show</code></pre>
+            <pre><code><span class="prompt">npm install -g harness-router</span>
+<span class="prompt">harness-router</span>
+<span class="prompt">harness-router serve --port 3333</span>
+<span class="prompt">harness-router auth show</span></code></pre>
           </div>
         </div>
       </section>
 
       <section id="compare">
         <div class="wrap">
+          <p class="sec-label"><b>05</b> positioning</p>
           <div class="intro">
             <h2>How it differs from agent CLIs and smart routers.</h2>
             <p>
@@ -512,17 +1065,17 @@ harness-router auth show</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td>Agent CLIs</td>
+                <td>agent CLIs</td>
                 <td>Delegates to Claude Code, Codex, Cursor, Antigravity, or HTTP endpoints.</td>
                 <td>It is not a replacement coding agent.</td>
               </tr>
               <tr>
-                <td>Smart routers</td>
+                <td>smart routers</td>
                 <td>Uses task hints, readiness, billing policy, safety, workspace policy, quota, tiers, and configured priority.</td>
                 <td>It does not advertise unmeasured token savings.</td>
               </tr>
               <tr>
-                <td>Agent protocols</td>
+                <td>agent protocols</td>
                 <td>Exposes MCP and OpenAI-compatible REST locally.</td>
                 <td>A2A and broader orchestration are out of scope for v0.4.0.</td>
               </tr>
@@ -531,26 +1084,26 @@ harness-router auth show</code></pre>
         </div>
       </section>
 
-      <section id="faq">
+      <section id="faq" style="border-bottom: none;">
         <div class="wrap">
+          <p class="sec-label"><b>06</b> faq</p>
           <div class="intro">
-            <h2>FAQ</h2>
-            <p>Short answers for release-readiness questions.</p>
+            <h2>Short answers for release-readiness questions.</h2>
           </div>
-          <div class="grid">
-            <article class="card">
+          <div class="faq-grid">
+            <article>
               <h3>Why stdio MCP?</h3>
-              <p>It is the simplest local agent integration. Use `serve` when HTTP is needed.</p>
+              <p>It is the simplest local agent integration. Use <code>serve</code> when HTTP is needed.</p>
             </article>
-            <article class="card">
+            <article>
               <h3>Why auth for local HTTP?</h3>
               <p>The server can dispatch coding work. Bearer auth avoids accidental local exposure.</p>
             </article>
-            <article class="card">
+            <article>
               <h3>Why a small MCP surface?</h3>
-              <p>`code` is the routing API. `job` exists only for slow async runs that need inspection later.</p>
+              <p><code>code</code> is the routing API. <code>job</code> exists only for slow async runs that need inspection later. <code>usage</code> reports per-route call counts and billing kind.</p>
             </article>
-            <article class="card">
+            <article>
               <h3>Are isolated workspaces sandboxes?</h3>
               <p>They protect project state and review flow. Host-level containment still belongs to the downstream harness or OS sandbox.</p>
             </article>
@@ -560,7 +1113,10 @@ harness-router auth show</code></pre>
     </main>
 
     <footer>
-      <div class="wrap">harness-router. MIT licensed. Built for local coding harness workflows.</div>
+      <div class="wrap">
+        <span>harness-router · MIT licensed</span>
+        <span>no telemetry · runs on localhost · Node ≥ 24</span>
+      </div>
     </footer>
   </body>
 </html>
