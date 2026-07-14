@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -462,6 +462,46 @@ describe("MCP tools — code", () => {
     expect(data?.status.status).toBe("completed");
     expect(data?.result?.result.output).toBe("async A");
     rmSync(startData.jobDir, { recursive: true, force: true });
+  });
+
+  it("prunes job directories older than the retention window before starting a new one", async () => {
+    const jobsDir = process.env.HARNESS_ROUTER_JOBS_DIR!;
+    const staleJobDir = path.join(jobsDir, "job-stale-0000000-aaaaaaaa");
+    mkdirSync(staleJobDir, { recursive: true });
+    const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(staleJobDir, staleTime, staleTime);
+
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
+    );
+
+    vi.stubEnv("HARNESS_ROUTER_JOB_MAX_AGE_MS", String(7 * 24 * 60 * 60 * 1000));
+    try {
+      const started = await invokeTool(
+        "job",
+        { action: "start", prompt: "hi", service: "a" },
+        { holder },
+      );
+      const startData = started.data as { jobId: string; jobDir: string };
+      expect(existsSync(startData.jobDir)).toBe(true);
+
+      // Wait for the background job to finish before the test ends, same as
+      // the neighboring "starts and inspects an async job" test — otherwise
+      // its fire-and-forget runJob() keeps writing after the process moves on.
+      for (let i = 0; i < 100; i += 1) {
+        const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
+        const data = inspected.data as { status: { status: string } };
+        if (data.status.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      rmSync(startData.jobDir, { recursive: true, force: true });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("HARNESS_ROUTER_JOBS_DIR", jobsDir);
+    }
+
+    expect(existsSync(staleJobDir)).toBe(false);
   });
 
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {

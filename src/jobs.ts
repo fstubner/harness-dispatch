@@ -16,6 +16,7 @@ import {
   readFile,
   readdir,
   rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -118,6 +119,49 @@ function jobsRoot(): string {
     process.env.HARNESS_ROUTER_JOBS_DIR ??
     path.join(homedir(), ".harness-router", "jobs")
   );
+}
+
+const DEFAULT_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function jobMaxAgeMs(): number {
+  const raw = process.env.HARNESS_ROUTER_JOB_MAX_AGE_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_JOB_MAX_AGE_MS;
+}
+
+/**
+ * Nothing ever pruned old job directories — status.json/result.json/output
+ * logs and every snapshotted context file accumulated under jobsRoot()
+ * forever. Prune anything with no activity for the retention window
+ * (default 7 days, override via HARNESS_ROUTER_JOB_MAX_AGE_MS) each time a
+ * new job is about to start. Job directory mtime is a reasonable proxy for
+ * "last activity": writeJson's tmp-then-rename touches the job dir on every
+ * status update, so a running (or freshly completed but unpolled) job keeps
+ * bumping it — only genuinely abandoned jobs go stale. Best effort: a prune
+ * failure must never block starting the job that was actually requested.
+ */
+async function pruneStaleJobs(): Promise<void> {
+  const root = jobsRoot();
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const maxAgeMs = jobMaxAgeMs();
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const jobDir = path.join(root, entry.name);
+    try {
+      const info = await stat(jobDir);
+      if (now - info.mtimeMs > maxAgeMs) {
+        await rm(jobDir, { recursive: true, force: true });
+      }
+    } catch {
+      // best effort — a locked/already-gone/permission-denied entry is skipped
+    }
+  }
 }
 
 function timestamp(): string {
@@ -304,6 +348,7 @@ async function runJob(
 }
 
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
+  await pruneStaleJobs();
   const jobId = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const root = jobsRoot();
   const jobDir = path.join(root, jobId);
