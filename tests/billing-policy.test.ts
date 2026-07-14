@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildRouteBilling } from "../src/billing.js";
-import { evaluateRoutePolicy } from "../src/route-policy.js";
+import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
 import type {
   DispatchResult,
   DispatcherEvent,
@@ -123,5 +123,28 @@ describe("route policy", () => {
         requestedSafetyProfile: "full_auto",
       }).blocked,
     ).toBe(false);
+  });
+});
+
+describe("nonLocalIncludedRoutePenalty", () => {
+  it("penalizes genuinely paid/unknown-billing routes MORE than included-plan routes, not less", () => {
+    const local = buildRouteBilling(svc({ name: "local", surface: "local_endpoint" }));
+    const included = buildRouteBilling(
+      svc({ name: "codex", harness: "codex" }), // included_plan_then_flexible_credits
+    );
+    const metered = buildRouteBilling(
+      svc({ name: "raw", type: "openai_compatible", baseUrl: "https://api.openai.com/v1" }),
+    );
+
+    const localPenalty = nonLocalIncludedRoutePenalty(local);
+    const includedPenalty = nonLocalIncludedRoutePenalty(included);
+    const meteredPenalty = nonLocalIncludedRoutePenalty(metered);
+
+    expect(localPenalty).toBe(0);
+    // The actual bug: metered/unknown routes must be penalized at least as
+    // much as included-plan routes — previously they fell through to 0,
+    // tying with local (free) routes and beating included-plan routes.
+    expect(meteredPenalty).toBeGreaterThan(includedPenalty);
+    expect(includedPenalty).toBeGreaterThan(localPenalty);
   });
 });

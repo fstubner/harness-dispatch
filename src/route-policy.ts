@@ -66,10 +66,20 @@ export function evaluateRoutePolicy(
   return { blocked: false };
 }
 
+/**
+ * Scoring penalty applied to nudge route selection toward cheaper options
+ * when scores are otherwise close. Local routes (free, on this machine) pay
+ * nothing. Included-plan/free-quota-but-remote routes pay a small penalty
+ * (prefer local when close). Routes that can incur real per-use cost
+ * (metered API, unknown billing) must pay MORE than that, not less — they
+ * were previously falling through to the same 0 penalty as local routes,
+ * which meant the router could prefer spending real money over using a
+ * subscription you're already paying for or a free local model.
+ */
 export function nonLocalIncludedRoutePenalty(billing: RouteBilling): number {
   if (isLocalRoute(billing)) return 0;
   if (isIncludedOrLocalRoute(billing)) return 0.2;
-  return 0;
+  return 0.4;
 }
 
 function evaluateOperationalRoutePolicy(

@@ -25,8 +25,11 @@
  *
  * Adjustments applied during selection (reflected in the reported
  * finalScore for picked/fallback routes, but not for forced/explicit ones):
- *  - -0.2 penalty for non-local included-plan routes under the "standard"
- *    route policy (nonLocalIncludedRoutePenalty), nudging free/local first.
+ *  - Cost-based penalty under the "standard" route policy
+ *    (nonLocalIncludedRoutePenalty): 0 for local routes, -0.2 for non-local
+ *    included-plan/free-quota routes, -0.4 for routes that can incur real
+ *    per-use cost (metered API, unknown billing) — cheapest/lowest-risk
+ *    wins ties, in that order.
  *  - +0.5 when hints.model matches the service name or one of its models.
  *  - +0.3 when prefer_large_context is set and the service's harness is
  *    antigravity or antigravity_cli.
