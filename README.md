@@ -35,16 +35,27 @@ assuming it is (or isn't) blocked.
 
 ```bash
 npm install -g harness-router
-harness-router configure
+harness-router configure --yes
 harness-router doctor --live
 ```
 
-`doctor` verifies the install end-to-end: binary + config load, harness
+`configure --yes` detects installed harnesses and writes `config.yaml`.
+Without `--yes` it only previews what it would detect and writes nothing —
+useful to check first, but not a substitute for the real run above. `doctor`
+then verifies the install end-to-end: binary + config load, harness
 detection, auth/billing classification, and route readiness. `--live` goes one
 step further and routes a single tiny prompt through the best eligible route so
 you see a real completion before wiring the server into your agent. The live
 probe respects billing policy — it never touches paid or unknown-billing routes
 unless you pass `--allow-paid`.
+
+**Your Claude Code / Codex / Cursor subscriptions are blocked by default** —
+`configure`'s output tells you which routes and why (they can incur overage
+past your plan's included quota, so opting in is a deliberate choice, not
+automatic). To allow one: open `config.yaml`, find the route under
+`overrides:`, and add `allow_paid_usage: true`. There's no CLI flag for this
+on purpose — it's a config-file edit so you have to actually look at what
+you're opting into. See "Configure" below for the full rules.
 
 > This repo publishes as `harness-router` (currently `0.4.0` here vs. an older `0.3.2`
 > on the registry). A separate, older package named `harness-router-mcp` (`0.2.0`) also
