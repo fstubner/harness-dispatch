@@ -16,7 +16,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { rename, unlink, writeFile } from "node:fs/promises";
 
 import type { DispatchResult, QuotaInfo } from "./types.js";
 import type { Dispatcher } from "./dispatchers/base.js";
@@ -110,9 +109,7 @@ export class QuotaCache {
   private localCounts: Record<string, number>;
   private localSuccessCounts: Record<string, number>;
   private localFailureCounts: Record<string, number>;
-  private persistVersion = 0;
   private persistCounter = 0;
-  private persistQueue: Promise<void> = Promise.resolve();
 
   constructor(
     dispatchers: Record<string, Dispatcher>,
@@ -151,7 +148,6 @@ export class QuotaCache {
 
     // CLI commands often exit immediately after a route. Use the synchronous
     // atomic path so local-count persistence cannot leave a temp file behind.
-    this.persistVersion += 1;
     this.saveLocalCountsSync();
 
     if (!result.rateLimitHeaders && !result.rateLimited) {
@@ -279,7 +275,20 @@ export class QuotaCache {
     }
   }
 
-  /** Build the on-disk payload, merging new counts over any existing state. */
+  /**
+   * Build the on-disk payload, merging new counts over any existing state.
+   *
+   * Known limitation: this read-modify-write is not atomic across processes.
+   * Two `harness-router` CLI invocations racing on the same stateFile can
+   * both read the same baseline and each write back only their own count,
+   * silently losing the other's increment. Left as-is deliberately —
+   * localCallCount/localSuccessCount/localFailureCount are purely
+   * informational (surfaced in `status`/`doctor`/`usage` output and the live
+   * dashboard; see status.ts, dashboard/live.ts), never consulted by
+   * QuotaState.score or any routing/billing decision — so an occasional
+   * undercount here doesn't affect what the router actually does, only what
+   * it reports. Not worth cross-process file locking for a display counter.
+   */
   private buildStatePayload(): string {
     let existing: Record<string, Record<string, unknown>> = {};
     try {
@@ -319,22 +328,6 @@ export class QuotaCache {
     return `${this.stateFile}.${process.pid}.${Date.now()}.${this.persistCounter}.tmp`;
   }
 
-  private async writeStatePayloadAtomic(payload: string): Promise<void> {
-    const tmp = this.nextTempStateFile();
-    try {
-      await writeFile(tmp, payload);
-      await rename(tmp, this.stateFile);
-    } catch (err) {
-      try {
-        await unlink(tmp);
-      } catch {
-        // Ignore cleanup failures; the original write error is intentionally
-        // swallowed by the caller because persistence is best-effort.
-      }
-      throw err;
-    }
-  }
-
   private writeStatePayloadAtomicSync(payload: string): void {
     const tmp = this.nextTempStateFile();
     try {
@@ -350,25 +343,12 @@ export class QuotaCache {
     }
   }
 
-  private async saveLocalCounts(version: number): Promise<void> {
-    this.persistQueue = this.persistQueue.then(async () => {
-      if (version < this.persistVersion) {
-        return;
-      }
-      try {
-        const payload = this.buildStatePayload();
-        if (version < this.persistVersion) {
-          return;
-        }
-        await this.writeStatePayloadAtomic(payload);
-      } catch {
-        // Best-effort; the in-memory count remains correct.
-      }
-    });
-    await this.persistQueue;
-  }
-
-  /** Synchronous variant for tests where awaiting the async write is awkward. */
+  /**
+   * Write local counts to disk via a temp-file-then-rename (atomic within
+   * this process — see buildStatePayload's doc comment for the known
+   * cross-process caveat). Synchronous so a CLI invocation that exits
+   * immediately after a route can't leave a temp file behind.
+   */
   saveLocalCountsSync(): void {
     try {
       this.writeStatePayloadAtomicSync(this.buildStatePayload());
