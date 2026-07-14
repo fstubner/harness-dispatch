@@ -73,8 +73,8 @@ describe("loadConfig — auto-detect + overrides", () => {
 
   it("returns only services whose CLI is on PATH", async () => {
     const cfg = await loadConfig(undefined, { whichFn: onlyClaudeFound });
-    expect(Object.keys(cfg.services)).toEqual(["claude_code"]);
-    const svc = cfg.services.claude_code!;
+    expect(Object.keys(cfg.services)).toEqual(["claude_code_cli"]);
+    const svc = cfg.services.claude_code_cli!;
     expect(svc.harness).toBe("claude_code");
     expect(svc.command).toBe("claude");
     expect(svc.cliCapability).toBeCloseTo(1.1, 10);
@@ -86,23 +86,23 @@ describe("loadConfig — auto-detect + overrides", () => {
     const cfg = await loadConfig(undefined, { whichFn: allCliFound });
     expect(Object.keys(cfg.services).sort()).toEqual([
       "antigravity_cli",
-      "claude_code",
-      "codex",
-      "cursor",
+      "claude_code_cli",
+      "codex_cli",
+      "cursor_cli",
     ]);
   });
 
   it("merges overrides onto auto-detected defaults", async () => {
     const yamlText = `
 overrides:
-  claude_code:
+  claude_code_cli:
     weight: 1.5
     capabilities:
       execute: 0.5
 `;
     const p = await writeTmpYaml("minimal.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });
-    const cc = cfg.services.claude_code!;
+    const cc = cfg.services.claude_code_cli!;
     expect(cc.weight).toBeCloseTo(1.5, 10);
     expect(cc.capabilities.execute).toBeCloseTo(0.5, 10);
     // Non-overridden capability stays at default
@@ -111,11 +111,11 @@ overrides:
 
   it("honors the disabled list", async () => {
     const yamlText = `
-disabled: [cursor, codex]
+disabled: [cursor_cli, codex_cli]
 `;
     const p = await writeTmpYaml("disabled.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(Object.keys(cfg.services).sort()).toEqual(["antigravity_cli", "claude_code"]);
+    expect(Object.keys(cfg.services).sort()).toEqual(["antigravity_cli", "claude_code_cli"]);
   });
 
   it("adds endpoints from the endpoints: list", async () => {
@@ -177,26 +177,101 @@ describe("loadConfig — ${ENV_VAR} interpolation", () => {
     process.env = { ...origEnv };
   });
 
-  it("replaces ${CODEX_API_KEY} with the environment value via the *_api_key shorthand", async () => {
+  it("replaces ${CODEX_API_KEY} with the environment value via the *_cli_api_key shorthand", async () => {
     process.env.CODEX_API_KEY = "test-key-xyz";
     const yamlText = `
-codex_api_key: \${CODEX_API_KEY}
+codex_cli_api_key: \${CODEX_API_KEY}
 `;
     const p = await writeTmpYaml("env.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(cfg.services.codex!.apiKey).toBe("test-key-xyz");
+    expect(cfg.services.codex_cli!.apiKey).toBe("test-key-xyz");
   });
 
   it("interpolates strings inside nested overrides", async () => {
     process.env.MY_MODEL = "custom-model-1";
     const yamlText = `
 overrides:
-  claude_code:
+  claude_code_cli:
     model: \${MY_MODEL}
 `;
     const p = await writeTmpYaml("nested.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: allCliFound });
-    expect(cfg.services.claude_code!.model).toBe("custom-model-1");
+    expect(cfg.services.claude_code_cli!.model).toBe("custom-model-1");
+  });
+});
+
+describe("loadConfig — clis: (explicit, endpoints-style CLI declarations)", () => {
+  it("adds a custom-named CLI route decoupled from the auto-detect default name", async () => {
+    const yamlText = `
+clis:
+  - name: codex_sol
+    harness: codex
+    model: gpt-5.6-sol
+    tier: 1
+    weight: 0.9
+`;
+    const p = await writeTmpYaml("clis.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.codex_sol!;
+    expect(svc.harness).toBe("codex");
+    expect(svc.model).toBe("gpt-5.6-sol");
+    expect(svc.command).toBe("codex"); // inherited from CLI_DEFAULTS.codex
+    expect(svc.weight).toBeCloseTo(0.9, 10);
+  });
+
+  it("is not gated on which() — added even when the CLI isn't detected", async () => {
+    const yamlText = `
+clis:
+  - name: codex_sol
+    harness: codex
+`;
+    const p = await writeTmpYaml("clis-nowhich.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.codex_sol).toBeDefined();
+  });
+
+  it("skips entries with an unknown harness", async () => {
+    const yamlText = `
+clis:
+  - name: bogus
+    harness: not_a_real_harness
+`;
+    const p = await writeTmpYaml("clis-bogus.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.bogus).toBeUndefined();
+  });
+
+  it("supports an inline api_key like endpoints do", async () => {
+    const yamlText = `
+clis:
+  - name: codex_metered
+    harness: codex
+    api_key: sk-inline-test
+`;
+    const p = await writeTmpYaml("clis-apikey.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.codex_metered!;
+    expect(svc.apiKey).toBe("sk-inline-test");
+    expect(svc.authSource).toBe("api_key");
+    expect(svc.billingKind).toBe("metered_api");
+  });
+
+  it("can coexist with an auto-detected route of the same harness under a different name", async () => {
+    const yamlText = `
+clis:
+  - name: codex_sol
+    harness: codex
+    model: gpt-5.6-sol
+`;
+    const p = await writeTmpYaml("clis-coexist.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services).sort()).toEqual([
+      "antigravity_cli",
+      "claude_code_cli",
+      "codex_cli",
+      "codex_sol",
+      "cursor_cli",
+    ]);
   });
 });
 

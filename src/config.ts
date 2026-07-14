@@ -124,6 +124,19 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
   },
 };
 
+// Default route id auto-detect assigns for each harness — distinct from the
+// CLI_DEFAULTS key above, which is the harness *type* (selects the
+// dispatcher class via dispatcher-factory.ts's HARNESS_TABLE, and is read by
+// billing.ts/safety.ts/router.ts) and must not change. This mapping only
+// controls what shows up as the service/route name, so it can follow the
+// same `*_cli` convention `endpoints:` uses for `*_api` (e.g. gemini_api).
+const AUTO_DETECT_NAME: Record<string, string> = {
+  claude_code: "claude_code_cli",
+  codex: "codex_cli",
+  cursor: "cursor_cli",
+  antigravity_cli: "antigravity_cli",
+};
+
 // ---------------------------------------------------------------------------
 // Env var interpolation (${VAR_NAME})
 // ---------------------------------------------------------------------------
@@ -478,6 +491,106 @@ interface ApiKeys {
   [service: string]: string;
 }
 
+/**
+ * Build a CLI ServiceConfig from a harness's built-in defaults plus a raw
+ * override object. Shared by auto-detect (`overrides:` keyed by route id)
+ * and explicit `clis:` entries (each entry IS the override, plus `name` and
+ * `harness` picking which defaults to start from).
+ */
+function buildCliServiceConfig(
+  name: string,
+  defaults: CliDefaults,
+  override: Record<string, unknown>,
+  apiKeys: ApiKeys,
+): ServiceConfig {
+  override = { ...override };
+  // Capabilities merge-over-defaults.
+  const caps = { ...defaults.capabilities };
+  if (override.capabilities && typeof override.capabilities === "object") {
+    const oc = override.capabilities as Record<string, unknown>;
+    if (oc.execute !== undefined) caps.execute = num(oc.execute, caps.execute);
+    if (oc.plan !== undefined) caps.plan = num(oc.plan, caps.plan);
+    if (oc.review !== undefined) caps.review = num(oc.review, caps.review);
+    delete override.capabilities;
+  }
+
+  const apiKey = str(override.api_key) ?? (apiKeys[name] ? apiKeys[name] : undefined);
+
+  return {
+    name,
+    enabled: bool(override.enabled, true),
+    type: "cli",
+    harness: str(override.harness) ?? defaults.harness,
+    command: str(override.command) ?? defaults.command,
+    ...(apiKey ? { apiKey } : {}),
+    ...(str(override.model) !== undefined ? { model: str(override.model)! } : {}),
+    ...(str(override.base_url) !== undefined ? { baseUrl: str(override.base_url)! } : {}),
+    weight: num(override.weight, 1.0),
+    tier: int(override.tier, defaults.tier),
+    cliCapability: num(override.cli_capability, defaults.cliCapability),
+    leaderboardModel: str(override.leaderboard_model) ?? defaults.leaderboardModel,
+    ...(() => {
+      const overrideThinking = thinkingFrom(override.thinking_level);
+      if (overrideThinking !== undefined) return { thinkingLevel: overrideThinking };
+      if (defaults.thinkingLevel !== undefined) {
+        return { thinkingLevel: defaults.thinkingLevel };
+      }
+      return {};
+    })(),
+    ...(str(override.escalate_model) !== undefined
+      ? { escalateModel: str(override.escalate_model)! }
+      : {}),
+    escalateOn: escalateOnFrom(override.escalate_on),
+    capabilities: caps,
+    ...(() => {
+      const m = override.max_output_tokens;
+      const v = typeof m === "number" ? m : defaults.maxOutputTokens;
+      return v !== undefined ? { maxOutputTokens: v } : {};
+    })(),
+    ...(() => {
+      const m = override.max_input_tokens;
+      const v = typeof m === "number" ? m : defaults.maxInputTokens;
+      return v !== undefined ? { maxInputTokens: v } : {};
+    })(),
+    provider: providerFrom(override.provider) ?? defaults.provider,
+    surface: surfaceFrom(override.surface) ?? defaults.surface,
+    authSource: authSourceFrom(override.auth_source) ?? (apiKey ? "api_key" : defaults.authSource),
+    ...(() => {
+      const billingKind =
+        billingKindFrom(override.billing_kind) ?? (apiKey ? "metered_api" : defaults.billingKind);
+      return billingKind !== undefined ? { billingKind } : {};
+    })(),
+    ...(() => {
+      const paidUsagePossible =
+        typeof override.paid_usage_possible === "boolean"
+          ? override.paid_usage_possible
+          : apiKey
+            ? true
+            : defaults.paidUsagePossible;
+      return paidUsagePossible !== undefined ? { paidUsagePossible } : {};
+    })(),
+    ...(typeof override.allow_paid_usage === "boolean"
+      ? { allowPaidUsage: override.allow_paid_usage }
+      : {}),
+    ...(typeof override.allow_paid_overage === "boolean"
+      ? { allowPaidOverage: override.allow_paid_overage }
+      : {}),
+    ...(() => {
+      const c = confidenceFrom(override.billing_confidence);
+      return c !== undefined ? { billingConfidence: c } : {};
+    })(),
+    ...(() => {
+      const notes = str(override.billing_notes);
+      return notes !== undefined ? { billingNotes: notes } : {};
+    })(),
+    ...(() => {
+      const safetyProfile = normalizeSafetyProfile(override.safety_profile);
+      return safetyProfile !== undefined ? { safetyProfile } : {};
+    })(),
+    ...endpointFields(override, "cli", str(override.base_url)),
+  };
+}
+
 async function detectServices(
   disabled: string[],
   apiKeys: ApiKeys,
@@ -486,101 +599,41 @@ async function detectServices(
 ): Promise<Record<string, ServiceConfig>> {
   const services: Record<string, ServiceConfig> = {};
   const disabledSet = new Set(disabled);
-  for (const [name, defaults] of Object.entries(CLI_DEFAULTS)) {
+  for (const [harness, defaults] of Object.entries(CLI_DEFAULTS)) {
+    const name = AUTO_DETECT_NAME[harness] ?? harness;
     if (disabledSet.has(name)) continue;
     const found = await whichFn(defaults.command);
     if (!found) continue;
 
-    const override = { ...(overrides[name] ?? {}) };
-    // Capabilities merge-over-defaults.
-    const caps = { ...defaults.capabilities };
-    if (override.capabilities && typeof override.capabilities === "object") {
-      const oc = override.capabilities as Record<string, unknown>;
-      if (oc.execute !== undefined) caps.execute = num(oc.execute, caps.execute);
-      if (oc.plan !== undefined) caps.plan = num(oc.plan, caps.plan);
-      if (oc.review !== undefined) caps.review = num(oc.review, caps.review);
-      delete override.capabilities;
-    }
-
-    const svc: ServiceConfig = {
-      name,
-      enabled: true,
-      type: "cli",
-      harness: str(override.harness) ?? defaults.harness,
-      command: str(override.command) ?? defaults.command,
-      ...(apiKeys[name] ? { apiKey: apiKeys[name] } : {}),
-      ...(str(override.model) !== undefined ? { model: str(override.model)! } : {}),
-      ...(str(override.base_url) !== undefined ? { baseUrl: str(override.base_url)! } : {}),
-      weight: num(override.weight, 1.0),
-      tier: int(override.tier, defaults.tier),
-      cliCapability: num(override.cli_capability, defaults.cliCapability),
-      leaderboardModel: str(override.leaderboard_model) ?? defaults.leaderboardModel,
-      ...(() => {
-        const overrideThinking = thinkingFrom(override.thinking_level);
-        if (overrideThinking !== undefined) return { thinkingLevel: overrideThinking };
-        if (defaults.thinkingLevel !== undefined) {
-          return { thinkingLevel: defaults.thinkingLevel };
-        }
-        return {};
-      })(),
-      ...(str(override.escalate_model) !== undefined
-        ? { escalateModel: str(override.escalate_model)! }
-        : {}),
-      escalateOn: escalateOnFrom(override.escalate_on),
-      capabilities: caps,
-      ...(() => {
-        const m = override.max_output_tokens;
-        const v = typeof m === "number" ? m : defaults.maxOutputTokens;
-        return v !== undefined ? { maxOutputTokens: v } : {};
-      })(),
-      ...(() => {
-        const m = override.max_input_tokens;
-        const v = typeof m === "number" ? m : defaults.maxInputTokens;
-        return v !== undefined ? { maxInputTokens: v } : {};
-      })(),
-      provider: providerFrom(override.provider) ?? defaults.provider,
-      surface: surfaceFrom(override.surface) ?? defaults.surface,
-      authSource:
-        authSourceFrom(override.auth_source) ??
-        (apiKeys[name] ? "api_key" : defaults.authSource),
-      ...(() => {
-        const billingKind =
-          billingKindFrom(override.billing_kind) ??
-          (apiKeys[name] ? "metered_api" : defaults.billingKind);
-        return billingKind !== undefined ? { billingKind } : {};
-      })(),
-      ...(() => {
-        const paidUsagePossible =
-          typeof override.paid_usage_possible === "boolean"
-            ? override.paid_usage_possible
-            : apiKeys[name]
-              ? true
-              : defaults.paidUsagePossible;
-        return paidUsagePossible !== undefined ? { paidUsagePossible } : {};
-      })(),
-      ...(typeof override.allow_paid_usage === "boolean"
-        ? { allowPaidUsage: override.allow_paid_usage }
-        : {}),
-      ...(typeof override.allow_paid_overage === "boolean"
-        ? { allowPaidOverage: override.allow_paid_overage }
-        : {}),
-      ...(() => {
-        const c = confidenceFrom(override.billing_confidence);
-        return c !== undefined ? { billingConfidence: c } : {};
-      })(),
-      ...(() => {
-        const notes = str(override.billing_notes);
-        return notes !== undefined ? { billingNotes: notes } : {};
-      })(),
-      ...(() => {
-        const safetyProfile = normalizeSafetyProfile(override.safety_profile);
-        return safetyProfile !== undefined ? { safetyProfile } : {};
-      })(),
-      ...endpointFields(override, "cli", str(override.base_url)),
-    };
-    services[name] = svc;
+    const override = overrides[name] ?? {};
+    services[name] = buildCliServiceConfig(name, defaults, override, apiKeys);
   }
   return services;
+}
+
+/**
+ * Explicit `clis:` entries — same shape as `endpoints:` but for CLI
+ * harnesses: arbitrary `name`, required `harness` picks which built-in
+ * defaults to start from (claude_code | codex | cursor | antigravity_cli).
+ * Not gated on `which()` — declared explicitly, so it's added to the map
+ * unconditionally and its dispatcher's own isAvailable() reports whether the
+ * binary is actually on PATH (surfaced in status/doctor either way, instead
+ * of silently vanishing like undetected auto-detect entries do).
+ */
+function addClis(
+  services: Record<string, ServiceConfig>,
+  raw: Record<string, unknown>,
+  apiKeys: ApiKeys,
+): void {
+  const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
+  for (const entry of clis) {
+    const name = str(entry.name);
+    const harness = str(entry.harness);
+    if (!name || !harness) continue;
+    const defaults = CLI_DEFAULTS[harness];
+    if (!defaults) continue;
+    services[name] = buildCliServiceConfig(name, defaults, entry, apiKeys);
+  }
 }
 
 function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
@@ -591,8 +644,9 @@ function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
     if (typeof v === "string" && v !== "") apiKeys[k] = v;
   }
 
-  // Shorthand: codex_api_key, cursor_api_key, etc.
-  for (const name of Object.keys(CLI_DEFAULTS)) {
+  // Shorthand: codex_cli_api_key, cursor_cli_api_key, etc. — keyed by the
+  // route id auto-detect assigns (AUTO_DETECT_NAME), not the harness type.
+  for (const name of Object.values(AUTO_DETECT_NAME)) {
     const shorthand = `${name}_api_key`;
     const v = raw[shorthand];
     if (typeof v === "string" && v !== "") apiKeys[name] = v;
@@ -701,6 +755,7 @@ export async function loadConfig(
 
   const apiKeys = collectApiKeys(raw);
   const services = await detectServices(disabled, apiKeys, overrides, whichFn);
+  addClis(services, raw, apiKeys);
   addEndpoints(services, raw);
 
   const cfg: RouterConfig = {
