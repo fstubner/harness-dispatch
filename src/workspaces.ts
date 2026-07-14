@@ -6,6 +6,7 @@ import {
   readdir,
   readFile,
   readlink,
+  rm,
   stat,
   symlink,
 } from "node:fs/promises";
@@ -96,6 +97,85 @@ function gitWorkspaceRootFor(originalWorkingDir: string): string {
     process.env.HARNESS_ROUTER_WORKSPACES_DIR ??
     path.join(os.tmpdir(), "harness-router", "workspaces", safeName(path.basename(originalWorkingDir)))
   );
+}
+
+const DEFAULT_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function workspaceMaxAgeMs(): number {
+  const raw = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WORKSPACE_MAX_AGE_MS;
+}
+
+/**
+ * Every isolated (copy/git_worktree) dispatch leaves its workspace on disk
+ * on purpose — the caller may still want to inspect changedFiles/diffSummary
+ * after the tool call returns, so finish() never deletes anything itself.
+ * Without SOME reclamation, that's unbounded growth (and for git_worktree,
+ * .git/worktrees bloat that can eventually slow or break `git worktree add`
+ * itself). Prune anything past the retention window each time a new one is
+ * about to be created — self-limiting, no separate scheduler needed. Best
+ * effort: a prune failure must never block or fail the actual dispatch.
+ */
+async function pruneStaleCopyWorkspaces(root: string): Promise<void> {
+  const maxAgeMs = workspaceMaxAgeMs();
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(root, entry.name);
+    try {
+      const info = await stat(full);
+      if (now - info.mtimeMs > maxAgeMs) {
+        await rm(full, { recursive: true, force: true });
+      }
+    } catch {
+      // best effort — a locked/already-gone/permission-denied entry is skipped
+    }
+  }
+}
+
+async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<void> {
+  const maxAgeMs = workspaceMaxAgeMs();
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  let removedAny = false;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const workspaceRoot = path.join(root, entry.name);
+    try {
+      const info = await stat(workspaceRoot);
+      if (now - info.mtimeMs <= maxAgeMs) continue;
+      const worktreeRoot = path.join(workspaceRoot, "worktree");
+      try {
+        await git(["worktree", "remove", "--force", worktreeRoot], gitRoot);
+        removedAny = true;
+      } catch {
+        // Worktree already gone/never registered — fall through to the
+        // filesystem cleanup below either way.
+      }
+      await rm(workspaceRoot, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  }
+  if (removedAny) {
+    try {
+      await git(["worktree", "prune"], gitRoot);
+    } catch {
+      // best effort
+    }
+  }
 }
 
 function shouldExclude(relPath: string, direntName: string): boolean {
@@ -236,7 +316,9 @@ async function prepareCopyWorkspace(
   files: string[],
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
-  const workspaceRoot = path.join(workspaceRootFor(originalWorkingDir), workspaceRunId(routeName));
+  const root = workspaceRootFor(originalWorkingDir);
+  await pruneStaleCopyWorkspaces(root);
+  const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   await copyTree(originalWorkingDir, effectiveWorkingDir);
   const before = await fingerprintTree(effectiveWorkingDir);
@@ -282,7 +364,9 @@ async function prepareGitWorktreeWorkspace(
   const originalWorkingDir = resolveDir(workingDir);
   const gitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir);
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
-  const workspaceRoot = path.join(gitWorkspaceRootFor(gitRoot), workspaceRunId(routeName));
+  const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
+  await pruneStaleGitWorktrees(gitRoot, gitWorkspaceRoot);
+  const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   await mkdir(workspaceRoot, { recursive: true });
   await git(["worktree", "add", "--detach", worktreeRoot, "HEAD"], gitRoot);

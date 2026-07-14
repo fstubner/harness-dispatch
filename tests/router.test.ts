@@ -668,6 +668,101 @@ describe("Router.route", () => {
     }
   });
 
+  it("prunes copy workspaces older than the retention window before creating a new one", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-copy-prune-"));
+    await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
+
+    const staleRoot = path.join(root, ".harness-router", "workspaces", "stale-run");
+    await fs.mkdir(staleRoot, { recursive: true });
+    const staleTime = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await fs.utimes(staleRoot, staleTime, staleTime);
+
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const dispatcher = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+
+    const originalEnv = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+    process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    try {
+      const { result } = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+      expect(result.success).toBe(true);
+      // The fresh workspace this same call created must survive pruning —
+      // only the pre-existing stale one should be gone.
+      expect(result.workspace?.workspaceRoot).toBeDefined();
+      await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();
+    } finally {
+      if (originalEnv === undefined) delete process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = originalEnv;
+    }
+
+    await expect(fs.stat(staleRoot)).rejects.toThrow();
+  });
+
+  it("prunes git worktrees older than the retention window before creating a new one", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-worktree-prune-"));
+    await git(root, ["init"]);
+    await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
+    await git(root, ["add", "calc.mjs"]);
+    await git(root, [
+      "-c",
+      "user.name=Harness Router Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "initial",
+    ]);
+
+    // Simulate a leftover worktree from a run older than the retention
+    // window, created the same way prepareGitWorktreeWorkspace does.
+    const staleGitWorkspaceRoot = path.join(
+      os.tmpdir(),
+      "harness-router",
+      "workspaces",
+      path.basename(root).replace(/[^A-Za-z0-9_.-]/g, "_"),
+    );
+    const staleWorkspaceRoot = path.join(staleGitWorkspaceRoot, "stale-run");
+    const staleWorktreeRoot = path.join(staleWorkspaceRoot, "worktree");
+    await fs.mkdir(staleWorkspaceRoot, { recursive: true });
+    await git(root, ["worktree", "add", "--detach", staleWorktreeRoot, "HEAD"]);
+    const staleTime = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await fs.utimes(staleWorkspaceRoot, staleTime, staleTime);
+
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const dispatcher = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+
+    const originalEnv = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+    process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    let worktreeRoot: string | undefined;
+    try {
+      const { result } = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "git_worktree" },
+      });
+      expect(result.success).toBe(true);
+      worktreeRoot = result.workspace?.workspaceRoot
+        ? path.join(result.workspace.workspaceRoot, "worktree")
+        : undefined;
+    } finally {
+      if (originalEnv === undefined) delete process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = originalEnv;
+    }
+
+    // The stale worktree must be gone from both disk and git's own registry.
+    await expect(fs.stat(staleWorktreeRoot)).rejects.toThrow();
+    const { stdout: list } = await execFile("git", ["worktree", "list"], {
+      cwd: root,
+      windowsHide: true,
+    });
+    expect(String(list)).not.toContain("stale-run");
+
+    if (worktreeRoot) {
+      await git(root, ["worktree", "remove", "--force", worktreeRoot]);
+    }
+  });
+
   it("falls back on transient error (non-rate-limited)", async () => {
     const a = makeService({ name: "alpha", tier: 1, leaderboardModel: "model-a" });
     const b = makeService({ name: "beta", tier: 1, leaderboardModel: "model-b" });
