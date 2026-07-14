@@ -40,13 +40,17 @@ const publicHintsSchema = z
       .optional()
       .describe(
         "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
-          "'gpt-5.6-sol'). Matching routes get a scoring boost and the model is passed " +
-          "to the harness as an override. NOT validated — a name that matches nothing " +
-          "is silently ignored, and a name that IS passed through can still fail at " +
-          "dispatch time if the harness doesn't support it. Call the `usage` tool first " +
-          "to see valid route ids, their default models, and a modelHint per route " +
-          "pointing to where that harness's real model catalog is documented (or how " +
-          "to list it) — use it to self-correct after an unfamiliar-model failure.",
+          "'gpt-5.6-sol'). Routes that statically declare this model get a scoring " +
+          "boost; the model is ALWAYS passed to the harness as an override either way, " +
+          "even on a route that doesn't recognize it — NOT validated, so an unfamiliar " +
+          "or misspelled name can still fail at dispatch time if the harness doesn't " +
+          "support it. Check the response's routing.modelHintMatched: true means the " +
+          "picked route actually declares this model; false means it was forwarded " +
+          "blind and you should treat the result with more suspicion (or check why). " +
+          "Call the `usage` tool first to see valid route ids, their default models, " +
+          "and a modelHint per route pointing to where that harness's real model " +
+          "catalog is documented (or how to list it) — use it to pick correctly up " +
+          "front or self-correct after an unfamiliar-model failure.",
       ),
     taskType: taskTypeSchema
       .optional()
@@ -156,6 +160,15 @@ export interface RouteResponse {
     elo?: number;
     finalScore: number;
     reason: string;
+    /**
+     * Set only when hints.model was provided on this call. true if it
+     * matched something the picked route statically declares; false if it
+     * was passed through "blind" because nothing recognized it (still
+     * forwarded to the dispatcher either way — hints.model is unvalidated
+     * by design). Use this to tell "got exactly what I asked for" apart
+     * from "might have a typo" without comparing strings yourself.
+     */
+    modelHintMatched?: boolean;
   };
 }
 
@@ -289,6 +302,9 @@ function routeResponse(
       reason: decision.reason,
     };
     if (decision.elo !== undefined) response.routing.elo = decision.elo;
+    if (decision.modelHintMatched !== undefined) {
+      response.routing.modelHintMatched = decision.modelHintMatched;
+    }
     if (decision.skippedRoutes !== undefined && decision.skippedRoutes.length > 0) {
       response.skippedRoutes = decision.skippedRoutes;
     }

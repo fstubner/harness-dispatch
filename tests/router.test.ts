@@ -251,6 +251,9 @@ describe("Router.pickService", () => {
     // match any statically configured field — the dispatcher never saw it
     // and the caller got no signal their request was ignored.
     expect(decision?.model).toBe("some-unrecognized-model");
+    // Since the router forwarded it "blind," the caller needs a way to tell
+    // that apart from "I got exactly what I asked for."
+    expect(decision?.modelHintMatched).toBe(false);
   });
 
   it("passes a requested model through to the best-scored candidate even if it matches nothing configured", async () => {
@@ -262,6 +265,25 @@ describe("Router.pickService", () => {
     });
     expect(decision?.service).toBe("alpha");
     expect(decision?.model).toBe("some-unrecognized-model");
+    expect(decision?.modelHintMatched).toBe(false);
+  });
+
+  it("marks modelHintMatched true when the requested model matches the picked route", async () => {
+    const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({
+      hints: { taskType: "execute", model: "alpha-default-model" },
+    });
+    expect(decision?.modelHintMatched).toBe(true);
+  });
+
+  it("omits modelHintMatched entirely when no model hint was given", async () => {
+    const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({ hints: { taskType: "execute" } });
+    expect(decision?.modelHintMatched).toBeUndefined();
   });
 
   it("does not let forced service bypass local-only policy", async () => {

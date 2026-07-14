@@ -156,9 +156,28 @@ describe("MCP tools — code", () => {
       { prompt: "hi", hints: { model: "preferred-model", taskType: "plan" } },
       { holder },
     );
-    const data = r.data as { route: string; model?: string };
+    const data = r.data as { route: string; model?: string; routing?: { modelHintMatched?: boolean } };
     expect(data.route).toBe("b");
     expect(data.model).toBe("preferred-model");
+    expect(data.routing?.modelHintMatched).toBe(true);
+  });
+
+  it("surfaces modelHintMatched: false when the requested model matches no configured route", async () => {
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+
+    const r = await invokeTool(
+      "code",
+      { prompt: "hi", hints: { model: "totally-unrecognized-model", taskType: "plan" } },
+      { holder },
+    );
+    const data = r.data as { route: string; model?: string; routing?: { modelHintMatched?: boolean } };
+    expect(data.route).toBe("a");
+    // Forwarded blind, not silently dropped — matches the router.ts fix.
+    expect(data.model).toBe("totally-unrecognized-model");
+    expect(data.routing?.modelHintMatched).toBe(false);
   });
 
   it("surfaces skipped routes in single mode", async () => {

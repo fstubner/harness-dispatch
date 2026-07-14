@@ -391,6 +391,9 @@ export class Router {
         // arbitrary --model values); silently discarding the request instead
         // meant a mismatched hints.model got no error and no explanation.
         model: preferredModel ?? resolveModel(svc, taskType),
+        ...(preferredModel !== undefined
+          ? { modelHintMatched: modelMatchesService(forceService, svc, preferredModel) }
+          : {}),
         elo: elo ?? undefined,
         finalScore,
         reason: "forced",
@@ -501,6 +504,9 @@ export class Router {
         // See the forced-service branch above for why this always prefers
         // the requested model rather than gating on modelMatchesService.
         model: preferredModel ?? resolveModel(svc, taskType),
+        ...(preferredModel !== undefined
+          ? { modelHintMatched: modelMatchesService(best.name, svc, preferredModel) }
+          : {}),
         elo: best.elo ?? undefined,
         finalScore: best.score,
         reason,

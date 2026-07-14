@@ -227,6 +227,18 @@ export interface RoutingDecision {
   capabilityScore: number;
   taskType: TaskType;
   model: string | undefined;
+  /**
+   * Set only when hints.model was provided. true if it matched something
+   * this route statically declares (model/leaderboardModel/escalateModel/
+   * route name) — false if it was passed through to the dispatcher "blind"
+   * because nothing recognized it, which can still work (CLIs often accept
+   * arbitrary --model values) or can fail at dispatch time with the
+   * harness's own rejection. hints.model is unvalidated by design (see the
+   * `code` tool's own description) — this field is how a caller
+   * distinguishes "the router picked exactly what I asked for" from "I
+   * might have a typo" without guessing from `model` alone.
+   */
+  modelHintMatched?: boolean;
   elo: number | undefined;
   finalScore: number;
   reason: string;
