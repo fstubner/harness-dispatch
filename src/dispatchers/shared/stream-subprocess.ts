@@ -23,7 +23,8 @@
  * working without modification while still exercising the streaming code
  * path in production.
  */
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
+import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
 import { runSubprocess, type SubprocessResult } from "./subprocess.js";
 

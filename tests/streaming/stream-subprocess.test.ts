@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vitest";
 import { execFile as execFileCb } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -211,6 +212,40 @@ describe("streamSubprocess", () => {
       rmSync(markerFile, { force: true });
     },
     15_000,
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "does not let an embedded double-quote in an argument break out and inject a command (cmd.exe wrapper)",
+    async () => {
+      // windows-cmd.ts used to hand back { command: "cmd", prefixArgs: ["/c",
+      // path] } for any .cmd/.bat CLI shim, spawned directly via
+      // node:child_process. Empirically confirmed exploitable: a `"` inside
+      // an argument (e.g. inside a prompt or model name) breaks Node's
+      // argv-level quoting and lets a subsequent `&`-chained command
+      // execute for real. This reproduces the exact confirmed payload
+      // against a real .cmd file through the actual streamSubprocess() path
+      // (which now spawns via cross-spawn) and asserts the injected command
+      // never ran.
+      const dir = await mkdtemp(path.join(os.tmpdir(), "hr-cmd-injection-"));
+      const cmdPath = path.join(dir, "echoargs.cmd");
+      const markerFile = path.join(dir, "injected.txt");
+      await writeFile(
+        cmdPath,
+        "@echo off\r\necho ARG1=%1\r\necho ARG2=%2\r\necho ARG3=%3\r\n",
+        "utf8",
+      );
+
+      const payload = `a" & echo INJECTED > ${markerFile} & echo "b`;
+      for await (const _evt of streamSubprocess(cmdPath, [payload], {
+        timeoutMs: 5_000,
+      })) {
+        // drain
+      }
+
+      expect(existsSync(markerFile)).toBe(false);
+      await rm(dir, { recursive: true, force: true });
+    },
+    10_000,
   );
 });
 

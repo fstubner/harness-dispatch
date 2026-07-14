@@ -8,7 +8,8 @@
  * - UTF-8 decoding with replacement on invalid sequences
  */
 
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
+import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
 
 export interface SubprocessResult {

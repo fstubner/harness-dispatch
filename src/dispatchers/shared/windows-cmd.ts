@@ -3,15 +3,32 @@
  *
  * On Windows, CLI tools installed via npm/scoop/winget are typically `.cmd` or
  * `.bat` wrappers. Node's `spawn` cannot execute those directly without a
- * shell — attempting to do so throws ENOENT or silently fails on some systems.
- * The fix is to invoke them through `cmd /c <resolved path>`.
+ * shell — attempting to do so throws ENOENT.
  *
- * On non-Windows (or when the binary resolves to a native executable), we just
- * return the resolved absolute path with no prefix args.
+ * This used to hand back `{ command: "cmd", prefixArgs: ["/c", path] }` and
+ * let dispatchers spawn that directly via node:child_process. That's exactly
+ * the shape of a real Windows command-injection bug: Node's spawn() only
+ * safely escapes cmd.exe metacharacters in an argument when IT decides
+ * cmd.exe indirection is needed (i.e. when the target path itself ends in
+ * .bat/.cmd) — manually pre-constructing the "cmd /c <path>" invocation
+ * ourselves bypasses that. Confirmed empirically on Node 24.14.1: an
+ * argument containing a literal `"` character breaks out of the quoting and
+ * lets a subsequent `&`-chained command execute for real. `%ENV_VAR%`
+ * sequences also got expanded regardless (a separate info-leak/argument-
+ * splitting bug, since the CLI's own model/prompt text is never meant to be
+ * shell-interpreted at all).
  *
- * NOTE: spaces in the resolved path are fine because `spawn` passes `args` as
- * a list. On current Windows Node/cmd.exe, `cmd /c <resolved path>` with the
- * resolved path as one argv element handles npm wrappers under Program Files.
+ * Fix: resolveCliCommand no longer constructs the cmd.exe wrapper itself.
+ * For the one case worth the extra step — npm's own generated .cmd shim,
+ * which just re-invokes `node <script>.js` — we skip cmd.exe entirely by
+ * spawning node directly on the underlying script (faster, and immune to
+ * shell metacharacters since there's no shell in the loop at all). For every
+ * other .cmd/.bat shape (pnpm, yarn, scoop, hand-rolled), we hand the
+ * resolved path straight to cross-spawn (see subprocess.ts/
+ * stream-subprocess.ts), which is a widely-used, purpose-built library for
+ * exactly this problem — it detects the .bat/.cmd target itself and applies
+ * correct, tested escaping, verified against the same injection payload
+ * above (no command execution, no %VAR% expansion).
  */
 
 import path from "node:path";
@@ -73,12 +90,13 @@ export async function resolveCliCommand(bin: string): Promise<ResolvedCommand> {
 
   const windowsResolved = await resolveWindowsCandidate(bin, resolved);
   const ext = path.extname(windowsResolved).toLowerCase();
-  if (ext === ".cmd" || ext === ".bat") {
-    if (ext === ".cmd") {
-      const npmShim = await resolveNpmCmdShim(windowsResolved);
-      if (npmShim) return npmShim;
-    }
-    return { command: "cmd", prefixArgs: ["/c", windowsResolved] };
+  if (ext === ".cmd") {
+    const npmShim = await resolveNpmCmdShim(windowsResolved);
+    if (npmShim) return npmShim;
   }
+  // Any other .cmd/.bat shape (pnpm, yarn, scoop, hand-rolled) — or a native
+  // .exe — is handed straight to cross-spawn as prefixArgs: []. It detects
+  // .bat/.cmd targets itself and applies correct escaping; native binaries
+  // pass through unchanged, same as before.
   return { command: windowsResolved, prefixArgs: [] };
 }

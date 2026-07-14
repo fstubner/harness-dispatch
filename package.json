@@ -60,11 +60,13 @@
     "@opentelemetry/core": "^2.7.1",
     "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
     "@opentelemetry/sdk-node": "^0.218.0",
+    "cross-spawn": "^7.0.6",
     "js-yaml": "^4.1.0",
     "which": "^5.0.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
     "@types/which": "^3.0.4",

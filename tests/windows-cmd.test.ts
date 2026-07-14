@@ -54,14 +54,22 @@ describe("resolveCliCommand — Windows", () => {
     setPlatform("win32");
   });
 
-  it("wraps .cmd wrappers with `cmd /c`", async () => {
+  it("resolves a plain .cmd wrapper to its path with no prefix, for cross-spawn to handle safely", async () => {
+    // Used to return { command: "cmd", prefixArgs: ["/c", path] } and let
+    // dispatchers spawn that directly — Node's spawn() only safely escapes
+    // cmd.exe metacharacters when IT decides the shell indirection is
+    // needed, so manually pre-building the "cmd /c" invocation bypassed
+    // that (confirmed exploitable: a `"` in an argument broke out of the
+    // quoting and let a chained `&` command execute). cross-spawn (the
+    // actual spawn() used downstream) detects .bat/.cmd targets itself and
+    // escapes correctly, so this just needs to hand back the resolved path.
     mockedWhich.mockResolvedValueOnce(
       "C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd",
     );
     const result = await resolveCliCommand("claude");
     expect(result).toEqual({
-      command: "cmd",
-      prefixArgs: ["/c", "C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd"],
+      command: "C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd",
+      prefixArgs: [],
     });
   });
 
@@ -101,33 +109,31 @@ describe("resolveCliCommand — Windows", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("wraps .bat wrappers with `cmd /c`", async () => {
+  it("resolves a plain .bat wrapper to its path with no prefix, for cross-spawn to handle safely", async () => {
     mockedWhich.mockResolvedValueOnce("C:\\Tools\\gemini.bat");
     const result = await resolveCliCommand("gemini");
     expect(result).toEqual({
-      command: "cmd",
-      prefixArgs: ["/c", "C:\\Tools\\gemini.bat"],
+      command: "C:\\Tools\\gemini.bat",
+      prefixArgs: [],
     });
   });
 
   it("is case-insensitive on the extension (.CMD / .BAT)", async () => {
     mockedWhich.mockResolvedValueOnce("C:\\Tools\\x.CMD");
     const result = await resolveCliCommand("x");
-    expect(result.command).toBe("cmd");
-    expect(result.prefixArgs[0]).toBe("/c");
+    expect(result.command).toBe("C:\\Tools\\x.CMD");
+    expect(result.prefixArgs).toEqual([]);
   });
 
-  it("handles paths containing spaces correctly (arg is passed through as a single element)", async () => {
+  it("handles paths containing spaces correctly (path is passed through as a single element)", async () => {
     mockedWhich.mockResolvedValueOnce(
       "C:\\Program Files\\My Tools\\codex.cmd",
     );
     const result = await resolveCliCommand("codex");
     expect(result).toEqual({
-      command: "cmd",
-      prefixArgs: ["/c", "C:\\Program Files\\My Tools\\codex.cmd"],
+      command: "C:\\Program Files\\My Tools\\codex.cmd",
+      prefixArgs: [],
     });
-    // critical: the path with spaces must be a single argv element, not split
-    expect(result.prefixArgs).toHaveLength(2);
   });
 
   it("skips WindowsApps .exe aliases because Node may not be allowed to spawn them directly", async () => {
@@ -140,8 +146,8 @@ describe("resolveCliCommand — Windows", () => {
       ]);
     const result = await resolveCliCommand("codex");
     expect(result).toEqual({
-      command: "cmd",
-      prefixArgs: ["/c", "C:\\Fake Node\\codex.cmd"],
+      command: "C:\\Fake Node\\codex.cmd",
+      prefixArgs: [],
     });
   });
 
@@ -169,8 +175,8 @@ describe("resolveCliCommand — Windows", () => {
       ]);
     const result = await resolveCliCommand("gemini");
     expect(result).toEqual({
-      command: "cmd",
-      prefixArgs: ["/c", "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd"],
+      command: "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd",
+      prefixArgs: [],
     });
   });
 
