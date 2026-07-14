@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRouteBilling } from "../src/billing.js";
+import { billingIsBlocked, buildRouteBilling } from "../src/billing.js";
 import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
 import type {
   DispatchResult,
@@ -91,6 +91,14 @@ describe("billing classification", () => {
         }),
       ).kind,
     ).toBe("unknown");
+  });
+
+  it("classifies Antigravity as free_quota and runs it by default with no opt-in", () => {
+    const route = svc({ name: "antigravity_cli", harness: "antigravity_cli" });
+    const billing = buildRouteBilling(route);
+    expect(billing.kind).toBe("free_quota");
+    expect(billing.paidUsagePossible).toBe(false);
+    expect(billingIsBlocked(billing)).toBe(false);
   });
 });
 

@@ -750,7 +750,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
             </div>
             <div class="faq-item">
               <h3>Is it production-ready?</h3>
-              <p>259 tests, smoke tests, cross-platform CI on Windows/macOS/Linux. Small, stable API surface.</p>
+              <p>The parts that matter most are tested against real behavior, not just mocks: billing-policy gating (a route that can incur cost stays blocked until you opt in — verified for every billing kind), workspace isolation (copy/git_worktree dispatches actually run away from your source tree), and subprocess handling (timeouts, cancellation, and process-tree cleanup tested against real spawned processes, not simulated). Cross-platform CI on Windows/macOS/Linux, small and stable API surface.</p>
             </div>
           </div>
         </div>
