@@ -315,4 +315,38 @@ describe("HTTP server", () => {
       await client.close();
     }
   });
+
+  it("serves a second concurrent MCP session instead of hanging", async () => {
+    // Regression test: Server.connect() throws if called twice on the same
+    // instance, so the HTTP transport must build a fresh McpServer per
+    // session. A prior version guarded connect() with `if (!connected)`,
+    // which silently left every session after the first wired to nothing —
+    // requests through it would hang forever rather than error.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const makeClient = () =>
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${handle.port}/mcp`), {
+        requestInit: { headers: { authorization: "Bearer secret" } },
+      });
+
+    const clientA = new Client({ name: "http-test-a", version: "test" }, { capabilities: {} });
+    const clientB = new Client({ name: "http-test-b", version: "test" }, { capabilities: {} });
+    await clientA.connect(makeClient());
+    await clientB.connect(makeClient());
+    try {
+      const [toolsA, toolsB] = await Promise.all([
+        clientA.listTools(),
+        clientB.listTools(),
+      ]);
+      expect(toolsA.tools.map((tool) => tool.name)).toEqual(["code", "job", "usage"]);
+      expect(toolsB.tools.map((tool) => tool.name)).toEqual(["code", "job", "usage"]);
+    } finally {
+      await clientA.close();
+      await clientB.close();
+    }
+  });
 });

@@ -48,6 +48,28 @@ export interface BuiltMcp {
   reloader: ConfigHotReloader;
 }
 
+/**
+ * Build a fresh `McpServer` with all tools/resources registered against
+ * existing runtime state. The SDK's Protocol.connect() throws if called
+ * twice on the same Server instance ("use a separate Protocol instance per
+ * connection") — so any transport that needs its own connect() call (e.g.
+ * one StreamableHTTPServerTransport per HTTP MCP session) needs its own
+ * McpServer instance too. holder/reloader are cheap to share; the McpServer
+ * wrapper is not.
+ */
+export function buildMcpServerInstance(
+  holder: RuntimeHolder,
+  reloader: ConfigHotReloader,
+): McpServer {
+  const server = new McpServer(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
+  registerTools(server, { holder, reloader });
+  registerResources(server, { holder, reloader });
+  return server;
+}
+
 /** Bootstrap runtime state + build an `McpServer` with all tools registered. */
 export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltMcp> {
   // Initialize OpenTelemetry once. Idempotent; no-op when OTEL_SDK_DISABLED=true.
@@ -59,12 +81,7 @@ export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltM
   const holder = new RuntimeHolder(state);
   const reloader = new ConfigHotReloader(holder, opts.configPath);
 
-  const server = new McpServer(
-    { name: SERVER_NAME, version: SERVER_VERSION },
-    { instructions: SERVER_INSTRUCTIONS },
-  );
-  registerTools(server, { holder, reloader });
-  registerResources(server, { holder, reloader });
+  const server = buildMcpServerInstance(holder, reloader);
   return { server, holder, reloader };
 }
 

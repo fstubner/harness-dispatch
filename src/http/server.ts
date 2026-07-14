@@ -5,7 +5,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { ensureHttpToken, isAuthorized } from "../auth.js";
-import { buildMcpServer, type BuildMcpOptions, type McpHandle } from "../mcp/server.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  buildMcpServer,
+  buildMcpServerInstance,
+  type BuildMcpOptions,
+  type McpHandle,
+} from "../mcp/server.js";
 import { buildStatus, buildUsage } from "../status.js";
 import type { RouteHints, RouteSkip, WorkspacePolicy } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
@@ -218,14 +224,18 @@ function writeSse(res: ServerResponse, payload: unknown): void {
 }
 
 export async function startHttpServer(opts: StartHttpOptions = {}): Promise<HttpServerHandle> {
-  const { server, holder, reloader } = await buildMcpServer(opts);
+  // buildMcpServer's own `server` is only used for the stdio (one transport,
+  // one session, ever) case. HTTP MCP needs a fresh McpServer per session —
+  // Protocol.connect() throws if called twice on the same instance — so
+  // reuse just the shared runtime state (holder/reloader) here.
+  const { holder, reloader } = await buildMcpServer(opts);
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 0;
   const mcpRoute = opts.mcpRoute ?? "/mcp";
   const token = opts.token === undefined ? await ensureHttpToken() : opts.token;
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
-  let connected = false;
+  const sessionServers = new Set<McpServer>();
 
   const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (isAuthorized(req.headers.authorization, token)) return true;
@@ -510,19 +520,27 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         if (sessionId && transports.has(sessionId)) {
           transport = transports.get(sessionId)!;
         } else {
+          const sessionServer = buildMcpServerInstance(holder, reloader);
+          sessionServers.add(sessionServer);
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sid: string) => {
               transports.set(sid, transport);
             },
           });
+          // Bookkeeping only — do NOT call sessionServer.close() here.
+          // McpServer.close() -> Protocol.close() -> transport.close() again,
+          // and transport.close() calls this same onclose handler, so doing
+          // so recurses infinitely. The SDK's connect() already wraps
+          // whatever onclose was set before it ran with its own internal
+          // Protocol cleanup, so closing the transport (whether client-
+          // initiated or via our shutdown path below) is sufficient on its
+          // own to tear down sessionServer's Protocol-side state too.
           transport.onclose = () => {
             if (transport.sessionId) transports.delete(transport.sessionId);
+            sessionServers.delete(sessionServer);
           };
-          if (!connected) {
-            await server.connect(transport as unknown as Transport);
-            connected = true;
-          }
+          await sessionServer.connect(transport as unknown as Transport);
         }
         await transport.handleRequest(req, res);
         return;
@@ -557,8 +575,15 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         }
       }
       transports.clear();
+      for (const sessionServer of sessionServers) {
+        try {
+          await sessionServer.close();
+        } catch {
+          // best effort
+        }
+      }
+      sessionServers.clear();
       await new Promise<void>((resolve) => http.close(() => resolve()));
-      await server.close();
     },
   };
 }
