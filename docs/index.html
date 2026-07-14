@@ -592,10 +592,10 @@
 
         <div class="hero-foot">
           <p class="lead">
-            harness-router gives your orchestrating agent one local interface to
+            harness-router is a local MCP server that puts
             <strong>Claude Code, Codex, Cursor, Antigravity</strong>, and any OpenAI-compatible
-            endpoint. Whole tasks route to whole agents — through each CLI's official
-            surface — by task fit, live quota, billing policy, and safety profile.
+            endpoint behind one interface. It picks the agent for the job and runs the task
+            through that agent's own CLI. Not a proxy. Not a wrapper around raw model calls.
           </p>
           <div class="cta-row">
             <a class="btn primary" href="#install">Install →</a>
@@ -609,13 +609,13 @@
           <div class="section-head">
             <div>
               <span class="label">01 — How it works</span>
-              <h2>The problem is route choice, not agent hype.</h2>
+              <h2>Not every task wants the same agent.</h2>
             </div>
             <p>
-              Codex excels at test-driven execution. Claude does its best work in planning
-              and architecture. Cursor brings editor-aware context. harness-router picks the
-              agent for the task, then delegates through that agent's own CLI — no proxying
-              of the underlying model calls.
+              Codex is good at grinding through execution with its own test loop. Claude
+              tends to plan and architect better. Cursor has editor-aware context built in.
+              harness-router matches the task to whichever fits, then hands off to that
+              agent's own CLI. No proxy in between.
             </p>
           </div>
           <div class="stats">
@@ -645,8 +645,8 @@
             <span class="label">02 — Setup</span>
             <h2>Configure is the entrypoint.</h2>
             <p style="color: var(--muted); line-height: 1.75; margin-bottom: 0;">
-              One flow detects installed harnesses, verifies auth and route readiness,
-              classifies billing, and writes config.
+              One command finds what's installed, checks it actually works, and writes
+              the config for you.
             </p>
             <ol class="steps">
               <li>Detect Claude Code, Codex, Cursor, Antigravity, and configured endpoints.</li>
@@ -681,7 +681,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
       <section id="surface">
         <div class="wrap">
           <span class="label">03 — Surface</span>
-          <h2 style="margin-bottom: 40px;">Two transports, one router core.</h2>
+          <h2 style="margin-bottom: 40px;">MCP for agents. REST for everything else.</h2>
           <div class="iface-grid">
             <div class="card">
               <h3>MCP</h3>
@@ -742,7 +742,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
             </div>
             <div class="faq-item">
               <h3>Why require opt-in for paid routes?</h3>
-              <p>Any route that can incur cost — metered API, unknown billing, subscription overage — is blocked until you set <code>allow_paid_usage: true</code> on it, deliberately.</p>
+              <p>Any route that can cost money — metered API, unknown billing, subscription overage — stays blocked until you set <code>allow_paid_usage: true</code> on it. No accidental bills.</p>
             </div>
             <div class="faq-item">
               <h3>How is this different from a model proxy?</h3>
