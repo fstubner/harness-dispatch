@@ -234,27 +234,38 @@
       }
 
       .term-bar span.dot {
-        width: 9px;
-        height: 9px;
+        width: 10px;
+        height: 10px;
         border-radius: 50%;
-        background: #45443a;
+      }
+
+      .term-bar span.dot:nth-child(1) {
+        background: #7a4038;
+      }
+
+      .term-bar span.dot:nth-child(2) {
+        background: #7a6a38;
+      }
+
+      .term-bar span.dot:nth-child(3) {
+        background: #3f5c3a;
       }
 
       .term-bar .title {
-        margin-left: 6px;
+        margin-left: 8px;
         color: #8a8a78;
         font-size: 0.72rem;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.02em;
       }
 
       .term pre {
         margin: 0;
-        padding: 22px 22px 26px;
+        padding: 24px 26px 28px;
         color: #d9d8c9;
-        font-size: 0.82rem;
-        line-height: 1.85;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
+        font-size: 0.83rem;
+        line-height: 1.95;
+        white-space: pre;
+        overflow-x: auto;
       }
 
       .term .prompt {
@@ -675,15 +686,15 @@
             <span class="title">zsh — harness-router</span>
           </div>
           <pre><span class="prompt">$</span> <span class="cmd">harness-router doctor --live</span>
-harness-router doctor
 
-<span class="ok">ok</span> node: Node 24.14.1
-<span class="ok">ok</span> config: 4 configured route(s)
-<span class="ok">ok</span> routes: 1 ready route(s)
-<span class="ok">ok</span> billing-policy: 3 route(s) intentionally blocked by paid/unknown billing policy
-<span class="ok">ok</span> safety-policy: 1 route(s) require full_auto safety and are skipped unless requested
-<span class="ok">ok</span> live-probe: routed through codex
-<span class="dim">next pick: codex — tier 1, execute 1.00, score 0.91</span>
+<span class="ok">ok</span>  node        Node 24.14.1
+<span class="ok">ok</span>  config      4 configured route(s)
+<span class="ok">ok</span>  routes      1 ready route(s)
+<span class="ok">ok</span>  billing     3 route(s) blocked pending opt-in
+<span class="ok">ok</span>  safety      1 route(s) require full_auto
+<span class="ok">ok</span>  live-probe  routed through codex
+
+<span class="dim">next pick  codex · tier 1 · score 0.91</span>
 <span class="prompt">$</span> <span class="cursor"></span></pre>
         </div>
       </div>
