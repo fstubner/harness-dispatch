@@ -84,8 +84,10 @@ services:
     model: claude-opus-4-6           # extended thinking enabled via --effort high
     tier: 1
     # Subscription plans can incur overage past included quota, so this route
-    # classifies as paid-usage-possible and is blocked until you opt in:
-    allow_paid_usage: true
+    # classifies as paid-usage-possible and is blocked (paid_blocked) by
+    # default. Only add `allow_paid_usage: true` once you've confirmed with
+    # the provider what happens when you hit the included quota — some plans
+    # bill automatically, some just stop working. Don't opt in blind.
     # api_key: ${ANTHROPIC_API_KEY}  # API billing; omit for Claude product login
     leaderboard_model: "claude-opus-4-6"   # Arena Code ELO ~1504 (April 2026)
     cli_capability: 1.10             # Claude Code scaffold: strong file ops + bash
@@ -106,7 +108,6 @@ services:
     command: claude
     model: claude-sonnet-4-6
     tier: 1
-    allow_paid_usage: true           # see claude_code_opus note
     # api_key: ${ANTHROPIC_API_KEY}
     leaderboard_model: "claude-sonnet-4-6"  # Arena Code ELO ~1310 (April 2026)
     cli_capability: 1.10
@@ -127,7 +128,6 @@ services:
     command: codex
     model: gpt-5.4
     tier: 1
-    allow_paid_usage: true           # see claude_code_opus note
     # api_key: ${OPENAI_API_KEY}  # API billing; omit for Codex product login
     leaderboard_model: "gpt-5.4"    # Arena Code ELO ~1480 (April 2026)
     # Codex --full-auto: code execution, test-runner, multi-step self-correction.
@@ -170,7 +170,6 @@ services:
     command: cursor-agent
     model: claude-sonnet-4-6         # passed via --model flag
     tier: 1
-    allow_paid_usage: true           # see claude_code_opus note
     leaderboard_model: "claude-sonnet-4-6"
     cli_capability: 1.05             # editor-aware context + codebase index
     weight: 1.0
@@ -189,7 +188,6 @@ services:
     enabled: false
     harness: cursor
     command: cursor-agent
-    allow_paid_usage: true           # see claude_code_opus note
     model: claude-opus-4-6-thinking-max
     tier: 1
     leaderboard_model: "claude-opus-4-6"
@@ -209,7 +207,6 @@ services:
     enabled: false
     harness: cursor
     command: cursor-agent
-    allow_paid_usage: true           # see claude_code_opus note
     model: gpt-5.4-max               # Cursor model string from --list-models
     tier: 1
     leaderboard_model: "gpt-5.4"
@@ -228,7 +225,6 @@ services:
     enabled: false
     harness: cursor
     command: cursor-agent
-    allow_paid_usage: true           # see claude_code_opus note
     model: gemini-2.5-pro-medium
     tier: 2
     leaderboard_model: "gemini-2.5-pro"
