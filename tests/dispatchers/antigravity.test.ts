@@ -143,6 +143,34 @@ describe("AntigravityDispatcher", () => {
     expect(args[args.length - 1]).toBe("hello");
   });
 
+  it("streams stdout events live instead of buffering until the process exits", async () => {
+    mockFound();
+    const order: string[] = [];
+    streamSubprocessMock.mockImplementation(async function* () {
+      order.push("mock:stdout1");
+      yield { stream: "stdout", chunk: "first " };
+      order.push("mock:stdout2");
+      yield { stream: "stdout", chunk: "second" };
+      order.push("mock:exit");
+      yield exit();
+    });
+
+    const dispatcher = new AntigravityDispatcher(baseSvc());
+    for await (const event of dispatcher.stream("hello", [], "/repo")) {
+      order.push(`consumer-saw:${(event as { type: string }).type}`);
+    }
+
+    // Buffered (the bug): every mock: entry, then every consumer-saw: entry
+    // — the consumer never sees anything until the subprocess has already
+    // fully exited. Streamed (fixed): each mock: yield is immediately
+    // followed by its matching consumer-saw: entry, interleaved.
+    const firstConsumerIndex = order.findIndex((e) => e.startsWith("consumer-saw"));
+    const lastMockIndex = order.reduce((acc, e, i) => (e.startsWith("mock:") ? i : acc), -1);
+    expect(firstConsumerIndex).toBeLessThan(lastMockIndex);
+    expect(order[0]).toBe("mock:stdout1");
+    expect(order[1]).toBe("consumer-saw:stdout");
+  });
+
   it("maps safety profiles to agy v1.1 flags", async () => {
     mockFound();
     const dispatcher = new AntigravityDispatcher(baseSvc());

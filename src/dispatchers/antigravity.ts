@@ -141,13 +141,20 @@ export class AntigravityDispatcher extends BaseDispatcher {
     const subOpts: Parameters<typeof streamSubprocess>[2] = { timeoutMs };
     if (workingDir) subOpts.cwd = workingDir;
 
-    const events: DispatcherEvent[] = [];
     const stdoutBuf: string[] = [];
     const stderrBuf: string[] = [];
     let exitCode = -1;
     let durationMs = 0;
     let timedOut = false;
 
+    // Yield stdout/stderr chunks live as they arrive — matching every other
+    // CLI dispatcher (claude-code.ts, codex.ts, cursor.ts) and the
+    // "stream() is the canonical primitive" contract in base.ts. This used
+    // to buffer everything into a local array and only yield it after the
+    // subprocess had fully exited, which meant callers relying on live
+    // progress (or early cancellation via the generator's .return() to kill
+    // a runaway process) got nothing until the whole run finished, and held
+    // the complete output in memory before handing any of it off.
     for await (const event of streamSubprocess(
       resolved.command,
       args,
@@ -156,10 +163,10 @@ export class AntigravityDispatcher extends BaseDispatcher {
       if ("stream" in event) {
         if (event.stream === "stdout") {
           stdoutBuf.push(event.chunk);
-          events.push({ type: "stdout", chunk: event.chunk });
+          yield { type: "stdout", chunk: event.chunk };
         } else {
           stderrBuf.push(event.chunk);
-          events.push({ type: "stderr", chunk: event.chunk });
+          yield { type: "stderr", chunk: event.chunk };
         }
       } else {
         exitCode = event.exitCode;
@@ -167,8 +174,6 @@ export class AntigravityDispatcher extends BaseDispatcher {
         timedOut = event.timedOut;
       }
     }
-
-    for (const event of events) yield event;
 
     const stdout = stdoutBuf.join("");
     const stderr = stderrBuf.join("");
