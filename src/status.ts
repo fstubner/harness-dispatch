@@ -20,25 +20,34 @@ import { workspacePolicyFor } from "./workspaces.js";
 
 /**
  * Where to find the authoritative, current model catalog for a CLI harness.
- * hints.model routing is unvalidated (a name that matches nothing is
- * silently ignored, or gets passed straight to the harness and fails at
- * dispatch time) — these are pointers for a caller to self-correct, not a
- * guarantee this server has verified the catalog live. Only claim what's
- * actually confirmed; where it isn't, say so and point at the CLI itself.
+ * hints.model routing is unvalidated by this server — a mismatched or
+ * unsupported name is passed straight to the harness and fails at dispatch
+ * time with that harness's real error (see router.ts: the router no longer
+ * silently discards a requested model just because it doesn't match a
+ * statically configured one). These are public-documentation pointers so a
+ * caller can pick a real model up front or self-correct after a failure,
+ * verified reachable and current as of 2026-07-14 — not a guarantee that a
+ * specific local CLI install supports everything listed there yet.
  */
 const CLI_MODEL_DISCOVERY_HINT: Record<string, string> = {
   claude_code:
-    "Anthropic model family only. No confirmed --list-models flag — use a current " +
-    "Claude model id (e.g. claude-opus-4-6, claude-sonnet-4-6) or run `claude --help`.",
+    "Anthropic model family only. Current model ids: " +
+    "https://platform.claude.com/docs/en/docs/about-claude/models/overview " +
+    "(e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may lag " +
+    "behind what's newly listed there.",
   codex:
-    "OpenAI/Codex model family only. No confirmed --list-models flag — use a current " +
-    "GPT/Codex model id or run `codex --help`.",
+    "OpenAI/Codex model family only. Current model ids: " +
+    "https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol, gpt-5.6-terra) " +
+    "— the installed codex CLI may lag behind what's newly listed there.",
   cursor:
-    "Wide multi-vendor catalog. Run `cursor-agent --list-models` for the live list " +
-    "actually available on this machine before guessing.",
+    "Wide multi-vendor catalog. Current model ids and pricing across providers: " +
+    "https://cursor.com/docs/models — or run `cursor-agent --list-models` for what's " +
+    "actually available on this install.",
   antigravity_cli:
-    "Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Exact --model " +
-    "support isn't independently verified here — check the agy CLI's own docs/--help.",
+    "Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's portion " +
+    "is documented at https://ai.google.dev/gemini-api/docs/models; the rest of " +
+    "Antigravity's catalog and exact --model support aren't independently verified " +
+    "here — check the agy CLI's own docs.",
 };
 
 function modelDiscoveryHint(route: {

@@ -95,10 +95,10 @@ describe("buildUsage", () => {
     expect(usage.routes[0]!.modelHint).toContain("cursor-agent --list-models");
   });
 
-  it("includes a modelHint for claude_code that doesn't claim a --list-models flag", () => {
+  it("includes a modelHint for claude_code pointing at Anthropic's public model docs", () => {
     const status = makeStatus([makeRoute({ id: "claude_code_cli", harness: "claude_code" })], []);
     const usage = buildUsage(status);
-    expect(usage.routes[0]!.modelHint).toContain("No confirmed --list-models flag");
+    expect(usage.routes[0]!.modelHint).toContain("platform.claude.com/docs");
   });
 
   it("includes a modelHint pointing at GET {baseUrl}/models for openai_compatible routes", () => {

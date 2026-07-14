@@ -239,6 +239,31 @@ describe("Router.pickService", () => {
     expect(decision?.reason).toBe("forced");
   });
 
+  it("passes a requested model through to a forced service even if it matches nothing configured", async () => {
+    const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({
+      hints: { service: "alpha", model: "some-unrecognized-model" },
+    });
+    expect(decision?.service).toBe("alpha");
+    // Previously silently discarded in favor of svc.model when it didn't
+    // match any statically configured field — the dispatcher never saw it
+    // and the caller got no signal their request was ignored.
+    expect(decision?.model).toBe("some-unrecognized-model");
+  });
+
+  it("passes a requested model through to the best-scored candidate even if it matches nothing configured", async () => {
+    const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({
+      hints: { taskType: "execute", model: "some-unrecognized-model" },
+    });
+    expect(decision?.service).toBe("alpha");
+    expect(decision?.model).toBe("some-unrecognized-model");
+  });
+
   it("does not let forced service bypass local-only policy", async () => {
     const cloud = makeService({
       name: "cloud",

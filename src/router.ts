@@ -380,9 +380,14 @@ export class Router {
         cliCapability: svc.cliCapability,
         capabilityScore: capScore,
         taskType,
-        model: modelMatchesService(forceService, svc, preferredModel)
-          ? preferredModel
-          : resolveModel(svc, taskType),
+        // Always pass through a requested model, even if it doesn't match
+        // anything this route statically declares — modelMatchesService only
+        // affects scoring (which route gets picked), not whether the
+        // caller's request reaches the dispatcher. A route the router
+        // "doesn't recognize" a model for may still support it (CLIs accept
+        // arbitrary --model values); silently discarding the request instead
+        // meant a mismatched hints.model got no error and no explanation.
+        model: preferredModel ?? resolveModel(svc, taskType),
         elo: elo ?? undefined,
         finalScore,
         reason: "forced",
@@ -490,9 +495,9 @@ export class Router {
         cliCapability: best.cliCapability,
         capabilityScore: best.capScore,
         taskType,
-        model: modelMatchesService(best.name, svc, preferredModel)
-          ? preferredModel
-          : resolveModel(svc, taskType),
+        // See the forced-service branch above for why this always prefers
+        // the requested model rather than gating on modelMatchesService.
+        model: preferredModel ?? resolveModel(svc, taskType),
         elo: best.elo ?? undefined,
         finalScore: best.score,
         reason,
