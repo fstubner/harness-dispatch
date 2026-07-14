@@ -446,6 +446,29 @@ describe("MCP tools — code", () => {
     expect(data.results[0]!.route).toBe("b");
   });
 
+  it("ignores hints.model entirely in fanout mode — only top-level models: narrows candidates", async () => {
+    const holder = buildHolder(
+      {
+        a: makeService("a", { leaderboardModel: "a-model" }),
+        b: makeService("b", { leaderboardModel: "b-model" }),
+      },
+      {
+        a: new FakeDispatcher("a"),
+        b: new FakeDispatcher("b"),
+      },
+    );
+
+    // hints.model targets route "b" specifically, but no top-level `models`
+    // is given — fanout must still hit every eligible route, not just "b".
+    const r = await invokeTool(
+      "code",
+      { mode: "fanout", prompt: "hi", hints: { model: "b-model" } },
+      { holder },
+    );
+    const data = r.data as { results: Array<{ route: string }> };
+    expect(data.results.map((item) => item.route).sort()).toEqual(["a", "b"]);
+  });
+
   it("starts and inspects an async job", async () => {
     const holder = buildHolder(
       {

@@ -50,7 +50,9 @@ const publicHintsSchema = z
           "Call the `usage` tool first to see valid route ids, their default models, " +
           "and a modelHint per route pointing to where that harness's real model " +
           "catalog is documented (or how to list it) — use it to pick correctly up " +
-          "front or self-correct after an unfamiliar-model failure.",
+          "front or self-correct after an unfamiliar-model failure. In fanout mode " +
+          "this field is ignored entirely — use `models` (top-level, not under " +
+          "hints) to select fanout candidates instead.",
       ),
     taskType: taskTypeSchema
       .optional()
@@ -111,7 +113,10 @@ const codeInputShape = {
     .array(z.string())
     .optional()
     .describe(
-      "Route ids or model names to fan out to (fanout mode). Get valid ids from the " +
+      "Route ids or model names to fan out to (fanout mode only). This is the ONLY " +
+        "field that narrows which routes fanout hits — `hints.model` is ignored " +
+        "entirely in fanout mode (not used for selection, not forwarded to any " +
+        "dispatch); it only does anything in single mode. Get valid ids from the " +
         "`usage` tool.",
     ),
 } as const;
