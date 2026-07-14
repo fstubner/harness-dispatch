@@ -14,6 +14,47 @@ import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy } from "./route-policy.js";
 import { workspacePolicyFor } from "./workspaces.js";
 
+// ---------------------------------------------------------------------------
+// Model discovery hints
+// ---------------------------------------------------------------------------
+
+/**
+ * Where to find the authoritative, current model catalog for a CLI harness.
+ * hints.model routing is unvalidated (a name that matches nothing is
+ * silently ignored, or gets passed straight to the harness and fails at
+ * dispatch time) — these are pointers for a caller to self-correct, not a
+ * guarantee this server has verified the catalog live. Only claim what's
+ * actually confirmed; where it isn't, say so and point at the CLI itself.
+ */
+const CLI_MODEL_DISCOVERY_HINT: Record<string, string> = {
+  claude_code:
+    "Anthropic model family only. No confirmed --list-models flag — use a current " +
+    "Claude model id (e.g. claude-opus-4-6, claude-sonnet-4-6) or run `claude --help`.",
+  codex:
+    "OpenAI/Codex model family only. No confirmed --list-models flag — use a current " +
+    "GPT/Codex model id or run `codex --help`.",
+  cursor:
+    "Wide multi-vendor catalog. Run `cursor-agent --list-models` for the live list " +
+    "actually available on this machine before guessing.",
+  antigravity_cli:
+    "Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Exact --model " +
+    "support isn't independently verified here — check the agy CLI's own docs/--help.",
+};
+
+function modelDiscoveryHint(route: {
+  type: ServiceConfig["type"];
+  harness?: string;
+  baseUrl?: string;
+}): string | undefined {
+  if (route.type === "cli" && route.harness) {
+    return CLI_MODEL_DISCOVERY_HINT[route.harness];
+  }
+  if (route.type === "openai_compatible" && route.baseUrl) {
+    return `Standard OpenAI-compatible catalog: GET ${route.baseUrl.replace(/\/+$/, "")}/models`;
+  }
+  return undefined;
+}
+
 export interface RouteStatus {
   id: string;
   harness: string;
@@ -184,6 +225,7 @@ export interface RouteUsage {
   ready: boolean;
   tier: number;
   model?: string;
+  modelHint?: string;
   billingKind: RouteBilling["kind"];
   paidUsagePossible: boolean;
   callCount: number;
@@ -225,6 +267,8 @@ export function buildUsage(status: HarnessRouterStatus): HarnessRouterUsage {
         breakerFailures: route.breaker.failures,
       };
       if (route.model !== undefined) usage.model = route.model;
+      const hint = modelDiscoveryHint(route);
+      if (hint !== undefined) usage.modelHint = hint;
       if (typeof route.quota.remaining === "number") usage.quotaRemaining = route.quota.remaining;
       if (typeof route.quota.limit === "number") usage.quotaLimit = route.quota.limit;
       if (route.quota.resetAt !== undefined) usage.quotaResetAt = route.quota.resetAt;
@@ -246,6 +290,7 @@ export function renderUsageText(usage: HarnessRouterUsage): string {
         `success=${route.successCount} failed=${route.failureCount} quota=${quota} ` +
         `billing=${route.billingKind} breaker=${route.breakerTripped ? "open" : "closed"}`,
     );
+    if (route.modelHint) lines.push(`  models: ${route.modelHint}`);
   }
   return lines.join("\n");
 }

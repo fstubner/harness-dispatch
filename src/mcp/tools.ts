@@ -42,8 +42,11 @@ const publicHintsSchema = z
         "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
           "'gpt-5.6-sol'). Matching routes get a scoring boost and the model is passed " +
           "to the harness as an override. NOT validated — a name that matches nothing " +
-          "is silently ignored. Call the `usage` tool first to see valid route ids and " +
-          "their default models.",
+          "is silently ignored, and a name that IS passed through can still fail at " +
+          "dispatch time if the harness doesn't support it. Call the `usage` tool first " +
+          "to see valid route ids, their default models, and a modelHint per route " +
+          "pointing to where that harness's real model catalog is documented (or how " +
+          "to list it) — use it to self-correct after an unfamiliar-model failure.",
       ),
     taskType: taskTypeSchema
       .optional()
@@ -579,7 +582,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Per-route call counts (success/failure), quota remaining, billing kind, and " +
         "circuit-breaker state for this session. Call this before using an unfamiliar " +
         "`hints.model`/`service`/`models` value to see valid route ids and their " +
-        "current models — those fields are not validated and silently ignore unknown names.",
+        "current models — those fields are not validated and silently ignore unknown names. " +
+        "Each route also includes modelHint: a pointer to where that harness's real model " +
+        "catalog is documented, or a command/endpoint to list it live (e.g. run " +
+        "`cursor-agent --list-models`, or GET {baseUrl}/models for OpenAI-compatible " +
+        "endpoints) — use it to pick a real model up front or self-correct after a " +
+        "dispatch failure caused by an unsupported model name.",
       inputSchema: {},
     },
     async () => jsonText(await handleUsage(deps)),

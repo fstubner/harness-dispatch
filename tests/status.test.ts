@@ -88,6 +88,36 @@ describe("buildUsage", () => {
       ready: false,
     });
   });
+
+  it("includes a modelHint pointing at cursor's live --list-models", () => {
+    const status = makeStatus([makeRoute({ id: "cursor_cli", harness: "cursor" })], []);
+    const usage = buildUsage(status);
+    expect(usage.routes[0]!.modelHint).toContain("cursor-agent --list-models");
+  });
+
+  it("includes a modelHint for claude_code that doesn't claim a --list-models flag", () => {
+    const status = makeStatus([makeRoute({ id: "claude_code_cli", harness: "claude_code" })], []);
+    const usage = buildUsage(status);
+    expect(usage.routes[0]!.modelHint).toContain("No confirmed --list-models flag");
+  });
+
+  it("includes a modelHint pointing at GET {baseUrl}/models for openai_compatible routes", () => {
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "groq_api",
+          harness: "groq_api",
+          type: "openai_compatible",
+          baseUrl: "https://api.groq.com/openai/v1",
+        }),
+      ],
+      [],
+    );
+    const usage = buildUsage(status);
+    expect(usage.routes[0]!.modelHint).toBe(
+      "Standard OpenAI-compatible catalog: GET https://api.groq.com/openai/v1/models",
+    );
+  });
 });
 
 describe("renderUsageText", () => {
@@ -108,5 +138,14 @@ describe("renderUsageText", () => {
     expect(text).toContain("success=4");
     expect(text).toContain("failed=1");
     expect(text).toContain("breaker=closed");
+  });
+
+  it("includes a models: line with the discovery hint when present", () => {
+    const status = makeStatus(
+      [makeRoute({ id: "cursor_cli", harness: "cursor" })],
+      ["cursor_cli"],
+    );
+    const text = renderUsageText(buildUsage(status));
+    expect(text).toContain("models: Wide multi-vendor catalog");
   });
 });
