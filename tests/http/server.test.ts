@@ -125,6 +125,25 @@ describe("HTTP server", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects an oversized request body with 413 instead of buffering it all into memory", async () => {
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const oversized = "x".repeat(10 * 1024 * 1024 + 1);
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ model: "local", messages: [{ role: "user", content: oversized }] }),
+    });
+    expect(res.status).toBe(413);
+  }, 20000);
+
   it("serves REST status and non-streaming chat completions", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);

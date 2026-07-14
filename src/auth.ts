@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +44,23 @@ export async function rotateHttpToken(): Promise<string> {
   return token;
 }
 
+/**
+ * Constant-time string compare. `value === expected` short-circuits on the
+ * first mismatching byte — a textbook timing side channel for guessing a
+ * bearer token one byte at a time. When lengths differ we still run
+ * timingSafeEqual (against a same-length dummy) rather than returning early,
+ * so a length mismatch alone doesn't leak timing info either.
+ */
+function safeEqual(value: string, expected: string): boolean {
+  const valueBuf = Buffer.from(value, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  if (valueBuf.length !== expectedBuf.length) {
+    timingSafeEqual(valueBuf, valueBuf);
+    return false;
+  }
+  return timingSafeEqual(valueBuf, expectedBuf);
+}
+
 export function isAuthorized(
   authorizationHeader: string | string[] | undefined,
   token: string | null,
@@ -52,7 +69,8 @@ export function isAuthorized(
   const value = Array.isArray(authorizationHeader)
     ? authorizationHeader[0]
     : authorizationHeader;
-  return value === `Bearer ${token}`;
+  if (value === undefined) return false;
+  return safeEqual(value, `Bearer ${token}`);
 }
 
 export function maskToken(token: string): string {

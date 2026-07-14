@@ -67,10 +67,30 @@ function sendText(res: ServerResponse, statusCode: number, body: string): void {
   res.end(body);
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+// Local-only server, but still worth bounding: an unbounded body read lets
+// any authorized (or, if --host is opened beyond loopback, network-adjacent)
+// caller exhaust process memory with one oversized POST.
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+
+class PayloadTooLargeError extends Error {}
+
+async function readJson(
+  req: IncomingMessage,
+  maxBytes: number = MAX_REQUEST_BODY_BYTES,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.length;
+    if (total > maxBytes) {
+      // Don't destroy() the socket here — that races with the 413 response
+      // write and the client sees a connection reset instead of a clean
+      // status code. Just stop buffering (the memory-exhaustion risk this
+      // guards against) and let the normal response path write the 413.
+      throw new PayloadTooLargeError(`request body exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(buf);
   }
   const text = Buffer.concat(chunks).toString("utf-8");
   return text.trim() ? JSON.parse(text) : {};
@@ -549,7 +569,11 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
       sendText(res, 404, "not found");
     } catch (err) {
       if (!res.headersSent) {
-        sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        if (err instanceof PayloadTooLargeError) {
+          sendJson(res, 413, { error: err.message });
+        } else {
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        }
       } else {
         res.end();
       }
