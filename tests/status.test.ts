@@ -19,7 +19,6 @@ function makeRoute(overrides: Partial<RouteStatus> = {}): RouteStatus {
       kind: "included_plan_then_flexible_credits",
       paidUsagePossible: true,
       allowPaidUsage: false,
-      allowPaidOverage: false,
       paidUsageRequiresOptIn: true,
       confidence: "documented",
     },

@@ -399,7 +399,6 @@ function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
     out.paidUsagePossible = raw.paid_usage_possible;
   }
   if (typeof raw.allow_paid_usage === "boolean") out.allowPaidUsage = raw.allow_paid_usage;
-  if (typeof raw.allow_paid_overage === "boolean") out.allowPaidOverage = raw.allow_paid_overage;
   const notes = str(raw.billing_notes);
   if (notes !== undefined) out.billingNotes = notes;
   if (safetyProfile !== undefined) out.safetyProfile = safetyProfile;
@@ -571,9 +570,6 @@ function buildCliServiceConfig(
     })(),
     ...(typeof override.allow_paid_usage === "boolean"
       ? { allowPaidUsage: override.allow_paid_usage }
-      : {}),
-    ...(typeof override.allow_paid_overage === "boolean"
-      ? { allowPaidOverage: override.allow_paid_overage }
       : {}),
     ...(() => {
       const c = confidenceFrom(override.billing_confidence);

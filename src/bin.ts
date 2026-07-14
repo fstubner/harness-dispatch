@@ -97,7 +97,6 @@ function serviceToYaml(svc: ServiceConfig): Record<string, unknown> {
     billing_kind: svc.billingKind ?? billing.kind,
     paid_usage_possible: svc.paidUsagePossible ?? billing.paidUsagePossible,
     allow_paid_usage: svc.allowPaidUsage ?? false,
-    allow_paid_overage: svc.allowPaidOverage ?? false,
     billing_confidence: svc.billingConfidence ?? billing.confidence,
     billing_notes: svc.billingNotes ?? billing.notes,
     safety_profile: svc.safetyProfile ?? requestedSafetyProfile(svc),
@@ -268,7 +267,6 @@ async function cmdDoctor(
   if (opts.allowPaid) {
     for (const svc of Object.values(runtime.config.services)) {
       svc.allowPaidUsage = true;
-      svc.allowPaidOverage = true;
     }
   }
   const status = await buildStatus(

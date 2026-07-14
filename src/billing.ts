@@ -173,7 +173,6 @@ export function buildRouteBilling(
     kind,
     paidUsagePossible,
     allowPaidUsage: svc.allowPaidUsage ?? false,
-    allowPaidOverage: svc.allowPaidOverage ?? false,
     paidUsageRequiresOptIn: paidUsagePossible ? true : false,
     confidence,
   };

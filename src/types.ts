@@ -113,7 +113,6 @@ export interface RouteBilling {
   kind: BillingKind;
   paidUsagePossible: boolean;
   allowPaidUsage: boolean;
-  allowPaidOverage: boolean;
   paidUsageRequiresOptIn: boolean | "unknown";
   confidence: BillingConfidence;
   notes?: string;
@@ -196,7 +195,6 @@ export interface ServiceConfig {
   billingKind?: BillingKind;
   paidUsagePossible?: boolean;
   allowPaidUsage?: boolean;
-  allowPaidOverage?: boolean;
   billingConfidence?: BillingConfidence;
   billingNotes?: string;
   safetyProfile?: SafetyProfile;
