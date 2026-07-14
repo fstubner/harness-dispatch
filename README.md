@@ -9,6 +9,15 @@ and safety policy, and exposes a small MCP surface plus an OpenAI-compatible HTT
 (There is no Gemini CLI dispatcher — Google discontinued that CLI's backend in mid-2026;
 Antigravity CLI is its replacement.)
 
+**What this does on your machine**, stated plainly before you install it: it spawns the
+CLI subprocesses above with your prompts, which can read and write files under the
+`workingDir` you pass it (this is the point — it's a coding agent router) and, depending
+on the workspace/safety policy in effect, run shell commands via those CLIs. Running
+`serve` additionally binds a local HTTP port (loopback by default, bearer-token gated —
+see [HTTP Surface](#http-surface) before pointing `--host` anywhere else). Nothing here
+is unusual for a coding-agent tool, but it's worth having in one place rather than
+inferred from separate sections.
+
 It is not marketed as a generic cost optimizer. The current product promise is
 billing-aware, safety-aware routing for coding work, with these actual rules:
 
@@ -174,6 +183,12 @@ Endpoints:
 
 HTTP uses the bearer token from `harness-router auth show`. The same token protects
 MCP-over-HTTP and `/v1/*`.
+
+`--host <host>` overrides the default `127.0.0.1` bind address if you need to reach the
+server from another machine. Only pass a non-loopback host if you actually mean to —
+this exposes a bearer-token-gated server, and everything the dispatched harness can do
+(spawn CLIs, read/write files in `workingDir`), to your network. `serve` prints a
+warning to stderr when it detects this so it isn't silent.
 
 Example:
 
