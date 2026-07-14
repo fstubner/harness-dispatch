@@ -135,6 +135,38 @@ describe("CLI parser", () => {
     expect(Array.isArray(parsed.skippedRoutes)).toBe(true);
   });
 
+  it("loads ./config.yaml by default when --config is omitted", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const config = await writeConfig();
+    const dir = path.dirname(config);
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const result = await capture(() => main(["status", "--json"]));
+      expect(result.code).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        routes: Array<{ id: string }>;
+      };
+      expect(parsed.routes[0]!.id).toBe("local");
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
+  it("still refuses to overwrite an existing ./config.yaml on bare configure --yes", async () => {
+    const config = await writeConfig();
+    const dir = path.dirname(config);
+    const originalCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const result = await capture(() => main(["configure", "--yes"]));
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("already exists");
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("maps hidden dashboard and list-services aliases to status", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();

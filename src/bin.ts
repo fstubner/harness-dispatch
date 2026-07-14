@@ -124,6 +124,7 @@ function configToYaml(config: RouterConfig): string {
 
 async function cmdConfigure(
   configPath: string | undefined,
+  explicitConfigPath: string | undefined,
   opts: { print: boolean; yes: boolean },
 ): Promise<number> {
   const config = await loadConfig(configPath);
@@ -167,7 +168,7 @@ async function cmdConfigure(
     return 0;
   }
 
-  if (existsSync(target) && configPath === undefined) {
+  if (existsSync(target) && explicitConfigPath === undefined) {
     process.stderr.write(
       "configure: config.yaml already exists. Pass --config <path> or --print to avoid overwriting it.\n",
     );
@@ -477,7 +478,10 @@ export async function main(argv: string[]): Promise<number> {
   await initObservability();
 
   const [command, ...rest] = positionals;
-  const configPath = values.config as string | undefined;
+  const explicitConfigPath = values.config as string | undefined;
+  // If the caller didn't pass --config, fall back to ./config.yaml when it
+  // exists, rather than silently ignoring it and running pure auto-detect.
+  const configPath = explicitConfigPath ?? (existsSync("config.yaml") ? "config.yaml" : undefined);
 
   if (command === undefined) {
     const handle = await startMcpServer(configPath === undefined ? {} : { configPath });
@@ -498,7 +502,7 @@ export async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "configure":
-      return cmdConfigure(configPath, {
+      return cmdConfigure(configPath, explicitConfigPath, {
         print: Boolean(values.print),
         yes: Boolean(values.yes),
       });
