@@ -9,6 +9,7 @@
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { killTree } from "./kill-tree.js";
 
 export interface SubprocessResult {
   stdout: string;
@@ -73,7 +74,7 @@ export function runSubprocess(
         if (remaining > 0) stdoutChunks.push(chunk.subarray(0, remaining));
         stdoutBytes = maxOutputBytes;
         truncated = true;
-        child.kill("SIGTERM");
+        killTree(child, "SIGTERM");
         return;
       }
       stdoutChunks.push(chunk);
@@ -87,7 +88,7 @@ export function runSubprocess(
         if (remaining > 0) stderrChunks.push(chunk.subarray(0, remaining));
         stderrBytes = maxOutputBytes;
         truncated = true;
-        child.kill("SIGTERM");
+        killTree(child, "SIGTERM");
         return;
       }
       stderrChunks.push(chunk);
@@ -99,16 +100,10 @@ export function runSubprocess(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killTree(child, "SIGTERM");
       // Force-kill if the child ignores SIGTERM.
       setTimeout(() => {
-        if (!settled) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // already dead
-          }
-        }
+        if (!settled) killTree(child, "SIGKILL");
       }, KILL_GRACE_MS).unref();
     }, timeoutMs);
     timer.unref();

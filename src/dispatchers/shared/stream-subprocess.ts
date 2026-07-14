@@ -24,6 +24,7 @@
  * path in production.
  */
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { killTree } from "./kill-tree.js";
 import { runSubprocess, type SubprocessResult } from "./subprocess.js";
 
 export interface SubprocessChunk {
@@ -198,19 +199,9 @@ function realStreamSubprocess(
 
   function terminateChild(sig: NodeJS.Signals): void {
     if (!child) return;
-    try {
-      child.kill(sig);
-    } catch {
-      // already dead
-    }
+    killTree(child, sig);
     setTimeout(() => {
-      if (!settled && child) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // already dead
-        }
-      }
+      if (!settled && child) killTree(child, "SIGKILL");
     }, killGraceMs).unref();
   }
 

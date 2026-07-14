@@ -7,9 +7,16 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { execFile as execFileCb } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { streamSubprocess, drainSubprocessStream } from "../../src/dispatchers/shared/stream-subprocess.js";
 
 const NODE = process.execPath;
+const execFileAsync = promisify(execFileCb);
 
 describe("streamSubprocess", () => {
   it("yields stdout chunks in order and emits a terminal end event", async () => {
@@ -157,6 +164,54 @@ describe("streamSubprocess", () => {
     const last = chunkTimestamps[chunkTimestamps.length - 1]!;
     expect(last - first).toBeGreaterThan(100);
   }, 10_000);
+
+  it.skipIf(process.platform !== "win32")(
+    "kills the grandchild process when the direct child is a cmd.exe wrapper",
+    async () => {
+      // Reproduces exactly what windows-cmd.ts's `cmd /c <path>` fallback
+      // does: cmd.exe is the DIRECT child, and it spawns the real long-running
+      // process as ITS OWN child (a grandchild of this test process).
+      // child.kill() only ever signalled the direct child (cmd.exe); on
+      // timeout the real process was left running indefinitely.
+      const markerFile = path.join(
+        os.tmpdir(),
+        `hr-grandchild-pid-${randomUUID()}.txt`,
+      );
+      const grandchildScript =
+        `require('fs').writeFileSync(${JSON.stringify(markerFile)}, String(process.pid));` +
+        `setInterval(() => {}, 10_000);`;
+
+      for await (const _evt of streamSubprocess(
+        "cmd",
+        ["/c", NODE, "-e", grandchildScript],
+        { timeoutMs: 800 },
+      )) {
+        // drain
+      }
+
+      let grandchildPid: number | undefined;
+      for (let i = 0; i < 40; i += 1) {
+        if (existsSync(markerFile)) {
+          grandchildPid = Number(readFileSync(markerFile, "utf8"));
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(grandchildPid).toBeDefined();
+
+      // taskkill runs async (fire-and-forget) — give it a moment to land.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      const { stdout } = await execFileAsync("tasklist", [
+        "/FI",
+        `PID eq ${grandchildPid}`,
+      ]);
+      expect(stdout).not.toContain(String(grandchildPid));
+
+      rmSync(markerFile, { force: true });
+    },
+    15_000,
+  );
 });
 
 describe("drainSubprocessStream", () => {
