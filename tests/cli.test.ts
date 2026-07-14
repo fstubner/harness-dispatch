@@ -167,6 +167,37 @@ describe("CLI parser", () => {
     }
   });
 
+  it("surfaces configWarnings for an unrecognized overrides: key in doctor and configure", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-cli-warn-"));
+    const configPath = path.join(dir, "config.yaml");
+    // Shorthand auto-detect format with a pre-rename override key — nothing
+    // is auto-detected on a bare test machine, but the warning fires purely
+    // from parsing overrides:, independent of which()/route detection.
+    await fs.writeFile(configPath, "overrides:\n  cursor:\n    weight: 5\n", "utf-8");
+
+    const doctorResult = await capture(() =>
+      main(["doctor", "--json", "--config", configPath]),
+    );
+    // doctor correctly reports failure (exit 1) when config has an
+    // unrecognized entry — that's a real misconfiguration, not something to
+    // silently pass like the intentional billing/safety skip checks.
+    expect(doctorResult.code).toBe(1);
+    const doctorParsed = JSON.parse(doctorResult.stdout) as {
+      checks: Array<{ name: string; ok: boolean; detail: string }>;
+    };
+    const warningCheck = doctorParsed.checks.find((c) => c.name === "config-warnings");
+    expect(warningCheck?.ok).toBe(false);
+    expect(warningCheck?.detail).toContain("overrides.cursor");
+
+    const configureResult = await capture(() =>
+      main(["configure", "--config", configPath]),
+    );
+    expect(configureResult.code).toBe(0);
+    expect(configureResult.stdout).toContain("Ignored config entries");
+    expect(configureResult.stdout).toContain("overrides.cursor");
+  });
+
   it("maps hidden dashboard and list-services aliases to status", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();

@@ -624,14 +624,26 @@ function addClis(
   services: Record<string, ServiceConfig>,
   raw: Record<string, unknown>,
   apiKeys: ApiKeys,
+  warnings: string[],
 ): void {
   const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
-  for (const entry of clis) {
+  for (const [index, entry] of clis.entries()) {
     const name = str(entry.name);
     const harness = str(entry.harness);
-    if (!name || !harness) continue;
+    if (!name || !harness) {
+      warnings.push(
+        `clis[${index}]: missing required "name" and/or "harness" — entry ignored.`,
+      );
+      continue;
+    }
     const defaults = CLI_DEFAULTS[harness];
-    if (!defaults) continue;
+    if (!defaults) {
+      warnings.push(
+        `clis[${index}] "${name}": unrecognized harness "${harness}" (expected one of: ` +
+          `${Object.keys(CLI_DEFAULTS).join(", ")}) — entry ignored.`,
+      );
+      continue;
+    }
     services[name] = buildCliServiceConfig(name, defaults, entry, apiKeys);
   }
 }
@@ -753,14 +765,35 @@ export async function loadConfig(
     : [];
   const overrides = (raw.overrides ?? {}) as Record<string, Record<string, unknown>>;
 
+  const warnings: string[] = [];
+  const knownAutoDetectNames = new Set(Object.values(AUTO_DETECT_NAME));
+  for (const name of disabled) {
+    if (!knownAutoDetectNames.has(name)) {
+      warnings.push(
+        `disabled: "${name}" doesn't match any auto-detected route (expected one of: ` +
+          `${[...knownAutoDetectNames].join(", ")}) — ignored. If this is left over from ` +
+          `before a route rename, the route it used to refer to is no longer disabled.`,
+      );
+    }
+  }
+  for (const name of Object.keys(overrides)) {
+    if (!knownAutoDetectNames.has(name)) {
+      warnings.push(
+        `overrides.${name}: doesn't match any auto-detected route (expected one of: ` +
+          `${[...knownAutoDetectNames].join(", ")}) — ignored, none of these settings were applied.`,
+      );
+    }
+  }
+
   const apiKeys = collectApiKeys(raw);
   const services = await detectServices(disabled, apiKeys, overrides, whichFn);
-  addClis(services, raw, apiKeys);
+  addClis(services, raw, apiKeys, warnings);
   addEndpoints(services, raw);
 
   const cfg: RouterConfig = {
     services,
     disabled,
+    ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;
 }

@@ -209,6 +209,15 @@ export interface ServiceConfig {
 export interface RouterConfig {
   services: Record<string, ServiceConfig>;
   disabled?: readonly string[];
+  /**
+   * Config entries that were silently ignored rather than failing to load —
+   * a disabled:/overrides: name that doesn't match any auto-detected route
+   * (e.g. left over from before the claude_code -> claude_code_cli-style
+   * rename), or a clis: entry with a missing/unrecognized harness or name.
+   * Surfaced by `doctor`/`configure` so a stale or typo'd config doesn't go
+   * unnoticed forever.
+   */
+  configWarnings?: readonly string[];
 }
 
 export interface RoutingDecision {

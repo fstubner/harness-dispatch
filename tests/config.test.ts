@@ -118,6 +118,33 @@ disabled: [cursor_cli, codex_cli]
     expect(Object.keys(cfg.services).sort()).toEqual(["antigravity_cli", "claude_code_cli"]);
   });
 
+  it("warns instead of silently ignoring a pre-rename disabled: name", async () => {
+    const yamlText = `
+disabled: [cursor]
+`;
+    const p = await writeTmpYaml("disabled-old-name.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    // "cursor" doesn't match cursor_cli, so the route is NOT disabled — this
+    // documents the (surprising, hence the warning) actual behavior.
+    expect(Object.keys(cfg.services)).toContain("cursor_cli");
+    expect(cfg.configWarnings).toBeDefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("cursor");
+  });
+
+  it("warns instead of silently ignoring a pre-rename overrides: key", async () => {
+    const yamlText = `
+overrides:
+  cursor:
+    weight: 5
+`;
+    const p = await writeTmpYaml("overrides-old-name.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    // The override was never applied — cursor_cli keeps its normal weight.
+    expect(cfg.services.cursor_cli!.weight).not.toBe(5);
+    expect(cfg.configWarnings).toBeDefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("overrides.cursor");
+  });
+
   it("adds endpoints from the endpoints: list", async () => {
     const yamlText = `
 endpoints:
@@ -230,7 +257,7 @@ clis:
     expect(cfg.services.codex_sol).toBeDefined();
   });
 
-  it("skips entries with an unknown harness", async () => {
+  it("skips entries with an unknown harness and records why in configWarnings", async () => {
     const yamlText = `
 clis:
   - name: bogus
@@ -239,6 +266,19 @@ clis:
     const p = await writeTmpYaml("clis-bogus.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(cfg.services.bogus).toBeUndefined();
+    expect(cfg.configWarnings).toBeDefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("not_a_real_harness");
+  });
+
+  it("records a warning for a clis: entry missing name/harness", async () => {
+    const yamlText = `
+clis:
+  - model: gpt-5.6-sol
+`;
+    const p = await writeTmpYaml("clis-missing.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.configWarnings).toBeDefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("missing required");
   });
 
   it("supports an inline api_key like endpoints do", async () => {

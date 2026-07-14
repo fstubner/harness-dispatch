@@ -157,6 +157,15 @@ async function cmdConfigure(
     );
   }
 
+  if (config.configWarnings && config.configWarnings.length > 0) {
+    process.stdout.write(
+      `\nIgnored config entries (${config.configWarnings.length}) — these had no effect:\n`,
+    );
+    for (const warning of config.configWarnings) {
+      process.stdout.write(`- ${warning}\n`);
+    }
+  }
+
   const target = configPath ?? "config.yaml";
   if (!opts.yes) {
     process.stdout.write(
@@ -280,6 +289,14 @@ async function cmdDoctor(
       name: "config",
       ok: Object.keys(runtime.config.services).length > 0,
       detail: `${Object.keys(runtime.config.services).length} configured route(s)`,
+    },
+    {
+      name: "config-warnings",
+      ok: (runtime.config.configWarnings?.length ?? 0) === 0,
+      detail:
+        runtime.config.configWarnings && runtime.config.configWarnings.length > 0
+          ? runtime.config.configWarnings.join(" | ")
+          : "no unrecognized config entries",
     },
     {
       name: "routes",
