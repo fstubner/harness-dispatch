@@ -215,9 +215,9 @@
         border-color: var(--accent);
       }
 
-      /* ── hero terminal panel ── */
+      /* ── hero terminal ── */
 
-      .panel {
+      .term {
         border-radius: 6px;
         overflow: hidden;
         background: var(--panel);
@@ -225,7 +225,7 @@
         box-shadow: 0 40px 80px -40px rgba(20, 20, 15, 0.5);
       }
 
-      .panel-bar {
+      .term-bar {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -233,84 +233,70 @@
         border-bottom: 1px solid var(--panel-line);
       }
 
-      .panel-bar span.dot {
+      .term-bar span.dot {
         width: 9px;
         height: 9px;
         border-radius: 50%;
         background: #45443a;
       }
 
-      .panel-bar .title {
+      .term-bar .title {
         margin-left: 6px;
         color: #8a8a78;
         font-size: 0.72rem;
         letter-spacing: 0.04em;
       }
 
-      .panel-body {
-        padding: 20px 20px 22px;
+      .term pre {
+        margin: 0;
+        padding: 22px 22px 26px;
         color: #d9d8c9;
         font-size: 0.82rem;
-        line-height: 1.9;
+        line-height: 1.85;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
-      .panel-body .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 9px 0;
-        border-bottom: 1px solid #23231a;
+      .term .prompt {
+        color: #8a8a78;
       }
 
-      .panel-body .row:last-of-type {
-        border-bottom: none;
-      }
-
-      .panel-body .route {
+      .term .cmd {
         color: #f2f1e6;
-        font-weight: 500;
       }
 
-      .panel-body .detail {
-        color: #7d7c6c;
-        font-size: 0.78rem;
-      }
-
-      .tag {
-        font-size: 0.7rem;
-        font-weight: 600;
-        letter-spacing: 0.03em;
-        padding: 2px 8px;
-        border-radius: 3px;
-        white-space: nowrap;
-      }
-
-      .tag.routed {
-        background: rgba(63, 122, 83, 0.22);
+      .term .ok {
         color: #7fd39a;
       }
 
-      .tag.standby {
-        background: rgba(217, 216, 201, 0.1);
-        color: #9c9b89;
-      }
-
-      .tag.blocked {
-        background: rgba(184, 65, 15, 0.2);
+      .term .note {
         color: #e08a5f;
       }
 
-      .panel-foot {
-        padding: 12px 20px;
-        border-top: 1px solid var(--panel-line);
-        background: #0f0f0a;
+      .term .dim {
         color: #6f6e5e;
-        font-size: 0.74rem;
       }
 
-      .panel-foot b {
-        color: #a5d9b8;
-        font-weight: 500;
+      .term .cursor {
+        display: inline-block;
+        width: 7px;
+        height: 15px;
+        margin-left: 2px;
+        background: #d9d8c9;
+        vertical-align: text-bottom;
+        animation: blink 1.1s steps(1) infinite;
+      }
+
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .term .cursor {
+          animation: none;
+        }
       }
 
       /* ── sections ── */
@@ -683,44 +669,22 @@
           </div>
         </div>
 
-        <div class="panel" aria-hidden="true">
-          <div class="panel-bar">
+        <div class="term" aria-hidden="true">
+          <div class="term-bar">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <span class="title">harness-router status</span>
+            <span class="title">zsh — harness-router</span>
           </div>
-          <div class="panel-body">
-            <div class="row">
-              <div>
-                <div class="route">codex</div>
-                <div class="detail">gpt-5.4 · included_plan · 100% quota</div>
-              </div>
-              <span class="tag routed">routed</span>
-            </div>
-            <div class="row">
-              <div>
-                <div class="route">claude_code</div>
-                <div class="detail">opus-4-6 · included_plan · 82% quota</div>
-              </div>
-              <span class="tag standby">standby</span>
-            </div>
-            <div class="row">
-              <div>
-                <div class="route">antigravity</div>
-                <div class="detail">gemini-3.1 · free_quota</div>
-              </div>
-              <span class="tag standby">standby</span>
-            </div>
-            <div class="row">
-              <div>
-                <div class="route">openai_api</div>
-                <div class="detail">metered_api · read_only</div>
-              </div>
-              <span class="tag blocked">paid_blocked</span>
-            </div>
-          </div>
-          <div class="panel-foot">
-            <b>next pick:</b> codex — tier 1, execute 1.00, score 0.91
-          </div>
+          <pre><span class="prompt">$</span> <span class="cmd">harness-router doctor --live</span>
+harness-router doctor
+
+<span class="ok">ok</span> node: Node 24.14.1
+<span class="ok">ok</span> config: 4 configured route(s)
+<span class="ok">ok</span> routes: 1 ready route(s)
+<span class="ok">ok</span> billing-policy: 3 route(s) intentionally blocked by paid/unknown billing policy
+<span class="ok">ok</span> safety-policy: 1 route(s) require full_auto safety and are skipped unless requested
+<span class="ok">ok</span> live-probe: routed through codex
+<span class="dim">next pick: codex — tier 1, execute 1.00, score 0.91</span>
+<span class="prompt">$</span> <span class="cursor"></span></pre>
         </div>
       </div>
 
