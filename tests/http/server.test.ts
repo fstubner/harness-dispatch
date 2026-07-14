@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startHttpServer, type HttpServerHandle } from "../../src/http/server.js";
 
@@ -123,6 +123,42 @@ describe("HTTP server", () => {
 
     const res = await fetch(`http://127.0.0.1:${handle.port}/v1/status`);
     expect(res.status).toBe(401);
+  });
+
+  it("does not warn when binding to loopback (default)", async () => {
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      handles.push(handle);
+      const warned = stderr.mock.calls.some((call) => String(call[0]).includes("WARNING"));
+      expect(warned).toBe(false);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("warns on stderr when --host binds beyond loopback", async () => {
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const handle = await startHttpServer({
+        configPath: config,
+        token: "secret",
+        host: "0.0.0.0",
+      });
+      handles.push(handle);
+      const warning = stderr.mock.calls.map((call) => String(call[0])).find((s) => s.includes("WARNING"));
+      expect(warning).toBeDefined();
+      expect(warning).toContain("0.0.0.0");
+      expect(warning).toContain("network");
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it("rejects an oversized request body with 413 instead of buffering it all into memory", async () => {

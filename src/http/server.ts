@@ -67,6 +67,12 @@ function sendText(res: ServerResponse, statusCode: number, body: string): void {
   res.end(body);
 }
 
+function isLoopbackHost(host: string): boolean {
+  // "::" (IPv6 unspecified, equivalent to 0.0.0.0) is deliberately NOT
+  // included — it means "bind all interfaces," the opposite of loopback.
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 // Local-only server, but still worth bounding: an unbounded body read lets
 // any authorized (or, if --host is opened beyond loopback, network-adjacent)
 // caller exhaust process memory with one oversized POST.
@@ -585,6 +591,16 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   });
   const addr = http.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : port;
+
+  if (!isLoopbackHost(host)) {
+    process.stderr.write(
+      `WARNING: harness-router is binding to ${host}, not loopback. This exposes ` +
+        `a bearer-token-gated server — and everything the dispatched harness can ` +
+        `do (spawn CLIs, read/write files in workingDir) — to your network, not ` +
+        `just this machine. Only do this if you specifically intend to reach it ` +
+        `from another host.\n`,
+    );
+  }
 
   return {
     port: actualPort,
