@@ -569,10 +569,16 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Delegate a bounded coding task (implement, fix, review, plan, or investigate — " +
         "not general Q&A) to the best-fit harness (Claude Code, Codex, Cursor, " +
         "Antigravity, or a configured endpoint), or fan out to several for independent " +
-        "opinions. BLOCKS until the harness finishes — only use for tasks you expect to " +
-        "finish in under ~1-2 minutes; for anything slower (most real coding work), use " +
-        "the `job` tool instead so the call can't time out mid-run. Always pass " +
-        "`workingDir` (the caller's project root) and `hints.taskType`.",
+        "opinions. BLOCKS until the harness finishes, with NO early bail-out — if the " +
+        "task runs long you get a timeout and no partial result, not a graceful signal. " +
+        "Safe for a scope you can actually bound: a single-file fix, a quick review, a " +
+        "narrow question. Risky for anything that could spiral once the harness starts " +
+        "working (multi-file refactors, open-ended investigation, a prompt whose true " +
+        "scope you're not sure of) — prefer `job` for those, since it can't time out. " +
+        "When in doubt, use `job`; the cost is a poll loop, not a lost result. Every " +
+        "`code` response includes `durationMs` — use it to calibrate whether similar " +
+        "tasks belong on `code` or `job` next time. Always pass `workingDir` (the " +
+        "caller's project root) and `hints.taskType`.",
       inputSchema: codeInputShape,
     },
     async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),
