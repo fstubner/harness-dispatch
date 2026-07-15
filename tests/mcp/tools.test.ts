@@ -19,6 +19,7 @@ import type {
 
 class FakeDispatcher implements Dispatcher {
   readonly id: string;
+  lastOpts: { modelOverride?: string; timeoutMs?: number } | undefined;
   constructor(
     id: string,
     private readonly response: DispatchResult = {
@@ -33,7 +34,13 @@ class FakeDispatcher implements Dispatcher {
   async dispatch(): Promise<DispatchResult> {
     return this.response;
   }
-  async *stream(): AsyncIterable<DispatcherEvent> {
+  async *stream(
+    _prompt?: string,
+    _files?: string[],
+    _workingDir?: string,
+    opts?: { modelOverride?: string; timeoutMs?: number },
+  ): AsyncIterable<DispatcherEvent> {
+    this.lastOpts = opts;
     yield { type: "stdout", chunk: this.response.output };
     yield { type: "completion", result: this.response };
   }
@@ -504,6 +511,54 @@ describe("MCP tools — code", () => {
     expect(data?.status.status).toBe("completed");
     expect(data?.result?.result.output).toBe("async A");
     rmSync(startData.jobDir, { recursive: true, force: true });
+  });
+
+  it("gives a background job a 60-minute dispatch timeout by default, not the dispatcher's short one", async () => {
+    const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: dispatcher },
+    );
+
+    const started = await invokeTool(
+      "job",
+      { action: "start", prompt: "hi", service: "a" },
+      { holder },
+    );
+    const startData = started.data as { jobId: string; jobDir: string };
+    for (let i = 0; i < 100; i += 1) {
+      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
+      const data = inspected.data as { status: { status: string } };
+      if (data.status.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    rmSync(startData.jobDir, { recursive: true, force: true });
+
+    expect(dispatcher.lastOpts?.timeoutMs).toBe(60 * 60 * 1000);
+  });
+
+  it("lets hints.timeoutMs on job start override the 60-minute background default", async () => {
+    const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: dispatcher },
+    );
+
+    const started = await invokeTool(
+      "job",
+      { action: "start", prompt: "hi", service: "a", hints: { timeoutMs: 5_400_000 } },
+      { holder },
+    );
+    const startData = started.data as { jobId: string; jobDir: string };
+    for (let i = 0; i < 100; i += 1) {
+      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
+      const data = inspected.data as { status: { status: string } };
+      if (data.status.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    rmSync(startData.jobDir, { recursive: true, force: true });
+
+    expect(dispatcher.lastOpts?.timeoutMs).toBe(5_400_000);
   });
 
   it("prunes job directories older than the retention window before starting a new one", async () => {

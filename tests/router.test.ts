@@ -140,7 +140,7 @@ function makeConfig(services: ServiceConfig[]): RouterConfig {
 
 class StubDispatcher implements Dispatcher {
   readonly id: string;
-  calls: Array<{ prompt: string; model?: string }> = [];
+  calls: Array<{ prompt: string; model?: string; timeoutMs?: number }> = [];
   private nextResult: DispatchResult;
   private available = true;
 
@@ -166,10 +166,11 @@ class StubDispatcher implements Dispatcher {
     prompt: string,
     _files: string[],
     _workingDir: string,
-    opts?: { modelOverride?: string },
+    opts?: { modelOverride?: string; timeoutMs?: number },
   ): Promise<DispatchResult> {
-    const call: { prompt: string; model?: string } = { prompt };
+    const call: { prompt: string; model?: string; timeoutMs?: number } = { prompt };
     if (opts?.modelOverride !== undefined) call.model = opts.modelOverride;
+    if (opts?.timeoutMs !== undefined) call.timeoutMs = opts.timeoutMs;
     this.calls.push(call);
     return this.nextResult;
   }
@@ -872,6 +873,38 @@ describe("Router.route", () => {
     expect(result.service).toBe("none");
     expect(decision).toBeNull();
   });
+
+  it("passes a per-call hints.timeoutMs through to the dispatcher", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.route("hi", [], "/tmp", { hints: { timeoutMs: 1_800_000 } });
+    expect(alphaD.calls[0]?.timeoutMs).toBe(1_800_000);
+  });
+
+  it("falls back to the service's configured timeoutMs when no hint is given", async () => {
+    const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.route("hi", [], "/tmp");
+    expect(alphaD.calls[0]?.timeoutMs).toBe(900_000);
+  });
+
+  it("prefers a per-call timeoutMs hint over the service's configured default", async () => {
+    const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.route("hi", [], "/tmp", { hints: { timeoutMs: 1_800_000 } });
+    expect(alphaD.calls[0]?.timeoutMs).toBe(1_800_000);
+  });
+
+  it("leaves timeoutMs unset when neither a hint nor config override is given", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.route("hi", [], "/tmp");
+    expect(alphaD.calls[0]?.timeoutMs).toBeUndefined();
+  });
 });
 
 describe("Router.routeTo", () => {
@@ -902,5 +935,21 @@ describe("Router.routeTo", () => {
     const { decision } = await router.routeTo("alpha", "hi", [], "/tmp");
     expect(decision?.reason).toBe("explicit");
     expect(decision?.service).toBe("alpha");
+  });
+
+  it("passes an explicit opts.timeoutMs through to the dispatcher", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.routeTo("alpha", "hi", [], "/tmp", { timeoutMs: 1_200_000 });
+    expect(alphaD.calls[0]?.timeoutMs).toBe(1_200_000);
+  });
+
+  it("falls back to the service's configured timeoutMs on routeTo when no opt is given", async () => {
+    const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.routeTo("alpha", "hi", [], "/tmp");
+    expect(alphaD.calls[0]?.timeoutMs).toBe(900_000);
   });
 });

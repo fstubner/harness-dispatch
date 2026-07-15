@@ -40,6 +40,7 @@ services:
     weight: 1.5
     cli_capability: 1.10
     leaderboard_model: claude-opus-4-6
+    timeout_ms: 1800000
     capabilities:
       execute: 0.9
       plan: 1.0
@@ -58,6 +59,7 @@ services:
     expect(cfg.services.alpha!.weight).toBeCloseTo(1.5, 10);
     expect(cfg.services.alpha!.cliCapability).toBeCloseTo(1.1, 10);
     expect(cfg.services.alpha!.leaderboardModel).toBe("claude-opus-4-6");
+    expect(cfg.services.alpha!.timeoutMs).toBe(1_800_000);
     expect(cfg.services.alpha!.capabilities.execute).toBeCloseTo(0.9, 10);
     expect(cfg.services.beta!.enabled).toBe(false);
     expect(cfg.services.beta!.type).toBe("openai_compatible");
@@ -97,6 +99,7 @@ describe("loadConfig — auto-detect + overrides", () => {
 overrides:
   claude_code_cli:
     weight: 1.5
+    timeout_ms: 1200000
     capabilities:
       execute: 0.5
 `;
@@ -104,9 +107,13 @@ overrides:
     const cfg = await loadConfig(p, { whichFn: allCliFound });
     const cc = cfg.services.claude_code_cli!;
     expect(cc.weight).toBeCloseTo(1.5, 10);
+    expect(cc.timeoutMs).toBe(1_200_000);
     expect(cc.capabilities.execute).toBeCloseTo(0.5, 10);
     // Non-overridden capability stays at default
     expect(cc.capabilities.plan).toBeCloseTo(1.0, 10);
+    // A route with no override has no timeoutMs — the dispatcher's own
+    // hard-coded default applies.
+    expect(cfg.services.codex_cli!.timeoutMs).toBeUndefined();
   });
 
   it("honors the disabled list", async () => {
@@ -154,6 +161,7 @@ endpoints:
     tier: 3
     weight: 0.8
     workspace_policy: copy
+    timeout_ms: 300000
 `;
     const p = await writeTmpYaml("endpoints.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
@@ -163,6 +171,7 @@ endpoints:
     expect(cfg.services.ollama!.tier).toBe(3);
     expect(cfg.services.ollama!.weight).toBeCloseTo(0.8, 10);
     expect(cfg.services.ollama!.workspacePolicy).toBe("copy");
+    expect(cfg.services.ollama!.timeoutMs).toBe(300_000);
   });
 
   it("detects Antigravity CLI from the agy command", async () => {

@@ -83,6 +83,21 @@ const publicHintsSchema = z
           "machine), 'approval_required' (BLOCKS non-local routes — it is a restriction, " +
           "not an approval grant), 'blocked' (dry-run: block everything).",
       ),
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Override the dispatch timeout for this call (milliseconds). `code` uses each " +
+          "route's short hard-coded default (10 minutes for CLI harnesses, 2 minutes for " +
+          "openai_compatible endpoints) since it blocks the MCP call either way; `job` " +
+          "already defaults to a generous 60-minute ceiling in the background. Past " +
+          "that default, the result is DISCARDED, not truncated — set this explicitly " +
+          "for a task you expect to run longer than the applicable default. On `job` " +
+          "this only changes when the harness itself gives up, not how long you should " +
+          "wait to poll.",
+      ),
   })
   .describe("Public routing hints.");
 
@@ -218,6 +233,7 @@ function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
   if (h.safetyProfile !== undefined) out.safetyProfile = h.safetyProfile;
   if (h.workspacePolicy !== undefined) out.workspacePolicy = h.workspacePolicy;
   if (h.routePolicy !== undefined) out.routePolicy = h.routePolicy as RoutePolicy;
+  if (h.timeoutMs !== undefined) out.timeoutMs = h.timeoutMs;
   return out;
 }
 
@@ -449,6 +465,7 @@ async function runFanout(
           ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
           ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
           ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+          ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
         })) {
           await emitProgress(extra, progressToken, counter, event, routeName);
           if (event.type === "completion") captured = event.result;
@@ -468,6 +485,7 @@ async function runFanout(
             ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
             ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
             ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+            ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
           })
         ).result;
       }
@@ -574,11 +592,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Safe for a scope you can actually bound: a single-file fix, a quick review, a " +
         "narrow question. Risky for anything that could spiral once the harness starts " +
         "working (multi-file refactors, open-ended investigation, a prompt whose true " +
-        "scope you're not sure of) — prefer `job` for those, since it can't time out. " +
-        "When in doubt, use `job`; the cost is a poll loop, not a lost result. Every " +
-        "`code` response includes `durationMs` — use it to calibrate whether similar " +
-        "tasks belong on `code` or `job` next time. Always pass `workingDir` (the " +
-        "caller's project root) and `hints.taskType`.",
+        "scope you're not sure of) — prefer `job` for those, since it removes the MCP " +
+        "client's own timeout (the underlying dispatch still has a ceiling — see " +
+        "hints.timeoutMs below). When in doubt, use `job`; the cost is a poll loop, not " +
+        "a lost result. Every `code` response includes `durationMs` — use it to " +
+        "calibrate whether similar tasks belong on `code` or `job` next time. Always " +
+        "pass `workingDir` (the caller's project root) and `hints.taskType`.",
       inputSchema: codeInputShape,
     },
     async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),
@@ -593,9 +612,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "returns a jobId immediately (the work runs in the background) along with " +
         "nextPollSeconds/instructions telling you how long to wait. action=get with that " +
         "jobId returns partialOutput while still running, and the full result once " +
-        "status is 'completed' or 'failed' — nothing is lost if you poll late. " +
-        "action=list shows all known jobs. Always pass `workingDir` (the caller's " +
-        "project root) and `hints.taskType` on start.",
+        "status is 'completed' or 'failed' — nothing is lost if you poll late. Background " +
+        "dispatches default to a generous 60-minute ceiling (vs. the short per-dispatch " +
+        "default `code` uses) meant only to catch a genuinely hung process, not to cap a " +
+        "slow-but-healthy run — pass `hints.timeoutMs` on start to raise it further for " +
+        "something you expect to run past an hour. action=list shows all known jobs. " +
+        "Always pass `workingDir` (the caller's project root) and `hints.taskType` on " +
+        "start.",
       inputSchema: jobInputShape,
     },
     async (args) => jsonText(await handleJob(deps, args)),

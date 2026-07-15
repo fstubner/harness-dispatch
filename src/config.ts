@@ -469,6 +469,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
         : {}),
       ...billingFields(svc),
       ...endpointFields(svc, type, str(svc.base_url)),
+      ...(typeof svc.timeout_ms === "number" ? { timeoutMs: svc.timeout_ms } : {}),
     };
     services[name] = svcConfig;
   }
@@ -584,6 +585,7 @@ function buildCliServiceConfig(
       return safetyProfile !== undefined ? { safetyProfile } : {};
     })(),
     ...endpointFields(override, "cli", str(override.base_url)),
+    ...(typeof override.timeout_ms === "number" ? { timeoutMs: override.timeout_ms } : {}),
   };
 }
 
@@ -707,6 +709,7 @@ function addEndpoints(
           ep.billing_confidence ?? (inferEndpointProvider(baseUrl) === "custom" ? undefined : "documented"),
       }),
       ...endpointFields(ep, "openai_compatible", baseUrl),
+      ...(typeof ep.timeout_ms === "number" ? { timeoutMs: ep.timeout_ms } : {}),
     };
     services[name] = svc;
   }

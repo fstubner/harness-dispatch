@@ -100,6 +100,16 @@ export interface ExplicitDispatchOpts {
   routePolicy?: import("./types.js").RoutePolicy;
   model?: string;
   taskType?: TaskType;
+  timeoutMs?: number;
+  /**
+   * Fallback timeout when neither `timeoutMs` (explicit per-call override)
+   * nor the service's own `timeoutMs` config is set — below both in
+   * precedence, so it never silently overrides a real value. Used by `job`
+   * to give background dispatches a generous ceiling without a caller
+   * having to know to ask for one; `code` (which blocks the MCP call) does
+   * not set this and keeps the dispatcher's own short default.
+   */
+  defaultTimeoutMs?: number;
 }
 
 function resolveModel(svc: ServiceConfig, taskType: TaskType): string | undefined {
@@ -534,7 +544,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number } = {},
   ): AsyncIterable<RouterStreamEvent> {
     return this.#runStream(prompt, files, workingDir, opts);
   }
@@ -543,7 +553,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number },
+    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
     const maxFallbacks = opts.maxFallbacks ?? 2;
@@ -583,11 +593,17 @@ export class Router {
 
       const dispatcher = this.dispatchers[decision.service]!;
       const svc = this.config.services[decision.service]!;
-      const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+      const dispatchOpts: {
+        modelOverride?: string;
+        safetyProfile?: import("./types.js").SafetyProfile;
+        timeoutMs?: number;
+      } = {};
       if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
       if (decision.effectiveSafetyProfile !== undefined) {
         dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
       }
+      const effectiveTimeoutMs = hints.timeoutMs ?? svc.timeoutMs ?? opts.defaultTimeoutMs;
+      if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
 
       let finalResult: DispatchResult | null = null;
       for await (const event of streamWithWorkspacePolicy(
@@ -732,11 +748,17 @@ export class Router {
       workspacePolicy: workspacePolicyFor(svc, effectiveSafety, opts.workspacePolicy),
     };
 
-    const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+    const dispatchOpts: {
+      modelOverride?: string;
+      safetyProfile?: import("./types.js").SafetyProfile;
+      timeoutMs?: number;
+    } = {};
     if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
     if (decision.effectiveSafetyProfile !== undefined) {
       dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
     }
+    const effectiveTimeoutMs = opts.timeoutMs ?? svc.timeoutMs ?? opts.defaultTimeoutMs;
+    if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
 
     let finalResult: DispatchResult | null = null;
     for await (const event of streamWithWorkspacePolicy(
@@ -840,10 +862,19 @@ export class Router {
       }
 
       const dispatcher = this.dispatchers[decision.service]!;
-      const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+      const dispatchOpts: {
+        modelOverride?: string;
+        safetyProfile?: import("./types.js").SafetyProfile;
+        timeoutMs?: number;
+      } = {};
       if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
       if (decision.effectiveSafetyProfile !== undefined) {
         dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+      }
+      {
+        const effectiveTimeoutMs =
+          hints.timeoutMs ?? this.config.services[decision.service]!.timeoutMs;
+        if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
       }
       // Prefer the buffered dispatch path when it's available — many R1/R2
       // tests assert on dispatcher.dispatch being called once; if we always
@@ -992,10 +1023,18 @@ export class Router {
       billing: buildRouteBilling(svc),
       workspacePolicy: workspacePolicyFor(svc, effectiveSafety, opts.workspacePolicy),
     };
-    const dispatchOpts: { modelOverride?: string; safetyProfile?: import("./types.js").SafetyProfile } = {};
+    const dispatchOpts: {
+      modelOverride?: string;
+      safetyProfile?: import("./types.js").SafetyProfile;
+      timeoutMs?: number;
+    } = {};
     if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
     if (decision.effectiveSafetyProfile !== undefined) {
       dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
+    }
+    {
+      const effectiveTimeoutMs = opts.timeoutMs ?? svc.timeoutMs;
+      if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
     }
     const result = await withWorkspacePolicy(
       svc,

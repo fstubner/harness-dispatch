@@ -38,6 +38,19 @@ const MAX_JSON_ERROR_CHARS = 4000;
 /** Suggested delay before an agent polls `job action=get` again. */
 const SUGGESTED_POLL_SECONDS = 300;
 
+/**
+ * Fallback dispatch timeout for jobs. Dispatchers hard-code a short default
+ * (10 min for CLI harnesses, 2 min for openai_compatible) meant to catch a
+ * genuinely hung process — waiting on stdin that'll never come, a stalled
+ * network call — not to cap a slow-but-healthy run. That default made sense
+ * as-is for `code`, which blocks an MCP call anyway, but `job` runs in the
+ * background and is polled, so nothing about it requires killing a process
+ * that's still making progress after 10 minutes. Below both an explicit
+ * `hints.timeoutMs` and the route's own configured `timeoutMs` in
+ * precedence, so this only fills the gap when nobody set either.
+ */
+const JOB_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
+
 function boundedError(error: string | undefined): string | undefined {
   if (error === undefined) return undefined;
   if (error.length <= MAX_JSON_ERROR_CHARS) return error;
@@ -275,10 +288,13 @@ async function runJob(
             : {}),
           ...(hints.model !== undefined ? { model: hints.model } : {}),
           ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+          ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
+          defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
         })
       : state.router.stream(input.prompt, files, workingDir, {
           hints,
           maxFallbacks: 2,
+          defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
         });
 
     let finalResult: DispatchResult | null = null;

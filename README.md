@@ -123,6 +123,17 @@ They are not part of the public v0.4.0 vocabulary.
 in the router server's own process directory instead of your project, and the response
 carries a `warning` field saying so.
 
+**`code` and `job` use different dispatch-timeout defaults.** `code` blocks the MCP
+call regardless, so it uses each route's short built-in default (10 minutes for CLI
+harnesses, 2 minutes for `openai_compatible` endpoints). `job` runs in the background
+and is polled, so nothing requires killing a healthy process that quickly — it defaults
+to a generous 60-minute ceiling instead, meant only to catch a genuinely hung process
+(stuck waiting on input, a stalled network call), not to cap normal work. Either way,
+past the applicable default the result is discarded, not truncated. Raise it further
+per call with `hints.timeoutMs` (milliseconds), or set a permanent per-route default
+with `timeout_ms:` in that service's config entry — precedence is `hints.timeoutMs` >
+the service's `timeout_ms` > the mode's default.
+
 `code` accepts:
 
 ```json
@@ -251,6 +262,7 @@ services:
     tier: 3
     weight: 0.75
     cli_capability: 1.0
+    timeout_ms: 900000  # optional; overrides the dispatcher's default (10 min for CLIs)
     capabilities:
       execute: 0.8
       plan: 0.7

@@ -202,6 +202,16 @@ export interface ServiceConfig {
   endpointProvider?: EndpointProvider;
   wireProtocol?: WireProtocol;
   workspacePolicy?: WorkspacePolicy;
+  /**
+   * Per-service dispatch timeout override in milliseconds. Every dispatcher
+   * hard-codes its own default (10 minutes for CLI harnesses, 2 minutes for
+   * openai_compatible) with no way to raise it — a long-running review or
+   * audit routed to a CLI harness gets killed and its result discarded at
+   * exactly the default, regardless of how the caller invoked the task
+   * (`code` or `job`). Set this to raise (or lower) the ceiling for a
+   * specific route; a per-call `hints.timeoutMs` takes precedence over this.
+   */
+  timeoutMs?: number;
 }
 
 export interface RouterConfig {
@@ -258,6 +268,8 @@ export interface RouteHints {
   safetyProfile?: SafetyProfile;
   workspacePolicy?: WorkspacePolicy;
   routePolicy?: RoutePolicy;
+  /** Per-call dispatch timeout override in milliseconds. See ServiceConfig.timeoutMs. */
+  timeoutMs?: number;
 }
 
 export type DispatcherEvent =
