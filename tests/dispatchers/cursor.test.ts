@@ -90,7 +90,7 @@ describe("CursorDispatcher", () => {
 
     expect(res.success).toBe(false);
     expect(res.service).toBe("cursor");
-    expect(res.error).toMatch(/agent CLI not found/i);
+    expect(res.error).toMatch(/'cursor-agent' not found on PATH/i);
     expect(res.output).toBe("");
     expect(runSubprocessMock).not.toHaveBeenCalled();
     expect(resolveCliCommandMock).not.toHaveBeenCalled();

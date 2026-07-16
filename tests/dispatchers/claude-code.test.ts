@@ -83,7 +83,7 @@ describe("ClaudeCodeDispatcher", () => {
 
     expect(res.success).toBe(false);
     expect(res.service).toBe("claude_code");
-    expect(res.error).toMatch(/claude CLI not found/i);
+    expect(res.error).toMatch(/'claude' not found on PATH/i);
     expect(res.output).toBe("");
     expect(runSubprocessMock).not.toHaveBeenCalled();
     expect(resolveCliCommandMock).not.toHaveBeenCalled();
@@ -201,5 +201,39 @@ describe("ClaudeCodeDispatcher", () => {
     const d = new ClaudeCodeDispatcher();
     expect(d.id).toBe("claude_code");
     expect(d.isAvailable()).toBe(true);
+  });
+
+  it("a config-level protocol: override replaces the built-in default entirely", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "plain text reply" }));
+
+    const d = new ClaudeCodeDispatcher({
+      name: "claude_code",
+      enabled: true,
+      type: "cli",
+      harness: "claude_code",
+      command: "claude",
+      tier: 1,
+      weight: 1,
+      cliCapability: 1,
+      capabilities: {},
+      escalateOn: [],
+      protocol: {
+        promptInput: { mode: "positional" },
+        outputMode: "text",
+        successRequiresOutput: false,
+      },
+    } as unknown as ConstructorParameters<typeof ClaudeCodeDispatcher>[0]);
+
+    const res = await d.dispatch("do thing", [], "/tmp");
+    expect(res.success).toBe(true);
+    expect(res.output).toBe("plain text reply");
+
+    const { args } = captureSubprocessCall(0);
+    // The overriding protocol has no -p flag or --output-format json — proof
+    // the built-in default wasn't silently used underneath the override.
+    expect(args).not.toContain("-p");
+    expect(args).not.toContain("--output-format");
+    expect(args[args.length - 1]).toBe("do thing");
   });
 });

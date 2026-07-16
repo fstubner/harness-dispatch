@@ -90,7 +90,7 @@ describe("CodexDispatcher", () => {
 
     expect(res.success).toBe(false);
     expect(res.service).toBe("codex");
-    expect(res.error).toMatch(/codex CLI not found/i);
+    expect(res.error).toMatch(/'codex' not found on PATH/i);
     expect(runSubprocessMock).not.toHaveBeenCalled();
   });
 

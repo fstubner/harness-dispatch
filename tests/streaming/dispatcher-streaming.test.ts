@@ -86,7 +86,7 @@ describe("ClaudeCodeDispatcher.stream", () => {
     expect(evt.type).toBe("completion");
     if (evt.type === "completion") {
       expect(evt.result.success).toBe(false);
-      expect(evt.result.error).toMatch(/claude CLI not found/);
+      expect(evt.result.error).toMatch(/'claude' not found on PATH/);
     }
   });
 });

@@ -18,22 +18,14 @@ see [HTTP Surface](#http-surface) before pointing `--host` anywhere else). Nothi
 is unusual for a coding-agent tool, but it's worth having in one place rather than
 inferred from separate sections.
 
-It is not marketed as a generic cost optimizer. The current product promise is
-billing-aware, safety-aware routing for coding work, with these actual rules:
-
-- Any route where paid usage is possible is blocked with `paid_blocked` until you
-  set `allow_paid_usage: true` on that route. This covers metered API routes (e.g.
-  a raw `api.openai.com` key), routes with unknown billing, and included-plan
-  routes whose billing kind allows overage (e.g. the default Codex, Claude Code,
-  and Cursor classifications).
-- With `allow_paid_usage: true`, the route may be auto-selected like any other —
-  the opt-in is per route, so you can allow overage on Codex while keeping a raw
-  API endpoint blocked.
-- Routes that cannot incur paid usage (`local_compute`, `free_quota`,
-  `included_plan_usage`) run by default with no opt-in required.
-
-Check a route's `billing.kind` / `billing.paidUsagePossible` in `status --json` before
-assuming it is (or isn't) blocked.
+**A configured harness runs automatically** — nothing extra to switch on. If that
+harness's account has paid/overage billing enabled on the *provider's* side (Cursor's
+on-demand billing, Claude's usage credits, Codex's flexible credits, a raw metered API
+key, etc.), harness-router will use it too — it does not detect or prevent provider-side
+billing state. It only blocks a route by default when there's no provider-side backstop
+at all (a raw metered API key, or unknown billing), until you set `allow_paid_usage: true`
+on it. See [Adding a harness](#adding-a-harness) for the config, and `status --json` /
+`status`'s `note:` lines for a given route's billing classification.
 
 ## Requirements
 
@@ -58,13 +50,9 @@ you see a real completion before wiring the server into your agent. The live
 probe respects billing policy — it never touches paid or unknown-billing routes
 unless you pass `--allow-paid`.
 
-**Your Claude Code / Codex / Cursor subscriptions are blocked by default** —
-`configure`'s output tells you which routes and why (they can incur overage
-past your plan's included quota, so opting in is a deliberate choice, not
-automatic). To allow one: open `config.yaml`, find the route under
-`overrides:`, and add `allow_paid_usage: true`. There's no CLI flag for this
-on purpose — it's a config-file edit so you have to actually look at what
-you're opting into. See "Configure" below for the full rules.
+Your Claude Code / Codex / Cursor subscriptions run by default, no opt-in needed
+— `configure`'s output tells you if anything's blocked and why. See
+[Adding a harness](#adding-a-harness) below for the config and the paid-usage note.
 
 > This repo publishes as `harness-router` (currently `0.4.0` here vs. an older `0.3.2`
 > on the registry). A separate, older package named `harness-router-mcp` (`0.2.0`) also
@@ -87,6 +75,108 @@ The `plugin/` directory packages the MCP server plus a delegation skill and
 `/plugin marketplace add <repo path or URL>` then
 `/plugin install harness-router@harness-router`. Codex:
 `node plugin/scripts/install-codex.mjs`.
+
+## Adding a harness
+
+`config.yaml` is entirely optional. With none at all, harness-router auto-detects
+whichever of `claude`, `codex`, `agy` (Antigravity), and `cursor-agent` are on your
+PATH and routes across them with built-in defaults — that's the whole default config:
+
+```yaml
+# config.yaml can be empty, or not exist at all.
+```
+
+Adding a harness that isn't auto-detected — a second Codex route pinned to a specific
+model, or a local/hosted OpenAI-compatible endpoint — is a few lines:
+
+```yaml
+clis:
+  - name: codex_sol
+    harness: codex        # picks the dispatcher: claude_code | codex | cursor | antigravity_cli | generic
+    model: gpt-5.6-sol
+    tier: 1
+
+endpoints:
+  - name: ollama
+    base_url: http://localhost:11434/v1
+    model: qwen2.5-coder
+    tier: 3
+```
+
+See `config.example.yaml` for the full field reference (capability weights, tiers,
+escalation, workspace policy, and more).
+
+**A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
+either.** `harness: generic` takes a `protocol:` block instead of reusing one of the
+4 built-in dispatchers' hardcoded flag/output conventions:
+
+```yaml
+clis:
+  - name: my_custom_cli
+    harness: generic
+    command: my-cli           # the binary, resolved on PATH like any other
+    tier: 3
+    protocol:
+      prompt_input: { mode: flag, flag: "-p" }   # or {mode: positional} / {mode: stdin}
+      working_dir: { flag: "--cd" }              # omit to rely on process cwd alone
+      model_flag: "--model"                      # omit if the CLI has no model override
+      extra_args: ["--json"]                     # always appended
+      safety_args:                                # extra args per requested safety profile
+        read_only: ["--mode", "plan"]
+        workspace_edit: ["--mode", "accept-edits"]
+        full_auto: ["--dangerously-skip-permissions"]
+      output_mode: json_field    # text | json_field | jsonl_stream
+      output_fields: [result, output, text]   # checked in order; dotted paths work ("message.content")
+```
+
+The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
+either — each ships a default `protocol:` (in `builtin-protocols.ts`) covering that
+CLI's real flags, including Codex's mid-run tool_use/thinking/usage streaming events
+via `event_rules` (see below), through the exact same `GenericCliDispatcher`
+interpreter every route runs on. Put a `protocol:` block under `overrides.claude_code_cli`
+(or any built-in route) in config.yaml and it replaces the default entirely — nothing
+about the 4 built-ins is more hardcoded than a route you add yourself.
+
+For a CLI whose events don't fit `text`/`json_field`'s single-parse-at-exit model —
+mid-run tool_use/thinking surfacing, token-usage aggregation across lines — use
+`output_mode: jsonl_stream` with `event_rules`:
+
+```yaml
+      output_mode: jsonl_stream
+      event_rules:
+        - when: { type: "message" }             # every listed field must match this line
+          emit: text
+          text_field: message.content            # dotted paths work
+        - when: { "item.type": "tool_use" }
+          emit: tool_use
+          name_field: item.name
+          input_field: item.input
+        - when: { type: "thinking" }
+          emit: thinking
+          chunk_field: item.text
+        - when: {}                                # omit `when` (or leave it empty) to match every line
+          emit: usage
+          input_token_fields: [usage.input_tokens, usage.prompt_tokens]   # first present wins
+          output_token_fields: [usage.output_tokens, usage.completion_tokens]
+```
+
+Other fields worth knowing: `file_dirs_flag` repeats a flag once per unique file
+directory (Antigravity's `--add-dir`); `api_key_env_var` injects `api_key` under a
+named env var for the child process (and clears it if ambient but unconfigured, so a
+stray key never leaks into a subscription-auth call); `success_requires_output: false`
+switches from the default strict contract (exit 0 AND a non-empty parsed field) to the
+lenient one Claude Code/Codex/Antigravity use (exit 0 alone, falling back to raw
+stdout/stderr text when parsing yields nothing). Billing for a `generic` route defaults
+to `unknown` (blocked until you classify it — there's no way to know an arbitrary CLI's
+real billing model) — set `billing_kind:` / `paid_usage_possible:` explicitly once you
+know it.
+
+**A harness runs as soon as it's configured — no separate "enable" step.** If that
+harness's account has paid/overage billing enabled on the *provider's* side, harness-
+router will use it too; it does not detect or prevent provider-side billing state
+(there's no API for that on any of Claude/Codex/Cursor). It only blocks a route by
+default when there's no provider-side backstop at all — a raw metered API key, or
+unknown billing — until you set `allow_paid_usage: true` on it.
 
 ## CLI
 

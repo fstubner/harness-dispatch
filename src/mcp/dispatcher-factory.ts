@@ -64,6 +64,10 @@ const HARNESS_TABLE: Record<string, { path: string; exportName: string }> = {
     path: "../dispatchers/antigravity.js",
     exportName: "AntigravityDispatcher",
   },
+  generic: {
+    path: "../dispatchers/generic-cli.js",
+    exportName: "GenericCliDispatcher",
+  },
 };
 
 /** Build one dispatcher from a service config. Returns undefined on failure. */

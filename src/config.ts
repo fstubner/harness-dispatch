@@ -26,9 +26,12 @@ import type {
   BillingKind,
   BillingProvider,
   BillingSurface,
+  CliEventRule,
+  CliProtocolConfig,
   EndpointMode,
   EndpointProvider,
   RouterConfig,
+  SafetyProfile,
   ServiceConfig,
   TaskType,
   ThinkingLevel,
@@ -87,7 +90,12 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
     surface: "codex_cli",
     authSource: "product_login",
     billingKind: "included_plan_then_flexible_credits",
-    paidUsagePossible: true,
+    // Not blocked by default: OpenAI hard-stops at the plan's included
+    // usage unless the user has separately opted into flexible-credit
+    // overage on their own account (see inferredPaidUsagePossible in
+    // billing.ts for the researched basis). Set to `true` here (or
+    // paid_usage_possible: true in config) if that's been enabled.
+    paidUsagePossible: false,
   },
   cursor: {
     command: "cursor-agent",
@@ -102,7 +110,10 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
     surface: "cursor_agent_cli",
     authSource: "product_login",
     billingKind: "included_usage_then_on_demand",
-    paidUsagePossible: true,
+    // Not blocked by default: same reasoning as codex above — Cursor
+    // hard-stops at the plan's included pool unless on-demand billing has
+    // been separately enabled in Settings -> Billing -> Spending.
+    paidUsagePossible: false,
   },
   antigravity_cli: {
     command: "agy",
@@ -121,6 +132,28 @@ const CLI_DEFAULTS: Record<string, CliDefaults> = {
     authSource: "product_login",
     billingKind: "free_quota",
     paidUsagePossible: false,
+  },
+  // Not auto-detected (empty command never matches `which`) — only reachable
+  // via an explicit `clis:` entry with `harness: generic`, `command:`, and
+  // `protocol:` all set. Billing defaults to the same safe-conservative
+  // treatment as an unrecognized custom endpoint: unknown/blocked until the
+  // operator classifies it, since there's no way to know a made-up CLI's
+  // real billing model.
+  generic: {
+    command: "",
+    harness: "generic",
+    // No sensible universal default — arbitrary CLI, arbitrary model. Empty
+    // is falsy, so leaderboard/quality scoring gracefully treats it as "no
+    // model" (generic default score) unless the clis: entry sets its own.
+    leaderboardModel: "",
+    cliCapability: 1.0,
+    tier: 3,
+    capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
+    provider: "custom",
+    surface: "custom",
+    authSource: "unknown",
+    billingKind: "unknown",
+    paidUsagePossible: true,
   },
 };
 
@@ -427,6 +460,155 @@ function escalateOnFrom(raw: unknown): TaskType[] {
   return out.length > 0 ? out : ["plan", "review"];
 }
 
+const SAFETY_PROFILES: readonly SafetyProfile[] = ["read_only", "workspace_edit", "full_auto"];
+
+function stringArrayFrom(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw.filter((v): v is string => typeof v === "string");
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Parse `protocol:` for a `harness: generic` clis: entry (see
+ * CliProtocolConfig in types.ts). Returns undefined — with a warning — for
+ * anything malformed, so a broken block degrades to "route unusable"
+ * (isAvailable() checks for a missing protocol) rather than a half-built
+ * dispatcher silently doing the wrong thing.
+ */
+function protocolFrom(raw: unknown, routeLabel: string, warnings: string[]): CliProtocolConfig | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+
+  const promptRaw = (r.prompt_input ?? {}) as Record<string, unknown>;
+  let promptInput: CliProtocolConfig["promptInput"];
+  if (promptRaw.mode === "positional") {
+    promptInput = { mode: "positional" };
+  } else if (promptRaw.mode === "stdin") {
+    const sentinelArg = str(promptRaw.sentinel_arg);
+    promptInput = sentinelArg !== undefined ? { mode: "stdin", sentinelArg } : { mode: "stdin" };
+  } else if (promptRaw.mode === "flag" && typeof promptRaw.flag === "string" && promptRaw.flag) {
+    const position = promptRaw.position === "late" ? "late" : undefined;
+    promptInput = position ? { mode: "flag", flag: promptRaw.flag, position } : { mode: "flag", flag: promptRaw.flag };
+  } else {
+    warnings.push(
+      `${routeLabel}: protocol.prompt_input must be {mode: flag, flag: "..."}, ` +
+        `{mode: positional}, or {mode: stdin} — entry ignored.`,
+    );
+    return undefined;
+  }
+
+  const outputMode = r.output_mode;
+  if (outputMode !== "text" && outputMode !== "json_field" && outputMode !== "jsonl_stream") {
+    warnings.push(
+      `${routeLabel}: protocol.output_mode must be one of text | json_field | jsonl_stream — entry ignored.`,
+    );
+    return undefined;
+  }
+
+  const protocol: CliProtocolConfig = { promptInput, outputMode };
+
+  const workingDirRaw = r.working_dir;
+  if (workingDirRaw !== undefined && workingDirRaw !== null) {
+    const wd = workingDirRaw as Record<string, unknown>;
+    if (typeof wd.flag === "string" && wd.flag) {
+      protocol.workingDir = { flag: wd.flag };
+      const extraArgsWhenSet = stringArrayFrom(wd.extra_args_when_set);
+      if (extraArgsWhenSet !== undefined) protocol.workingDir.extraArgsWhenSet = extraArgsWhenSet;
+    } else {
+      warnings.push(`${routeLabel}: protocol.working_dir set but missing a "flag" string — ignored.`);
+    }
+  }
+  const leadingArgs = stringArrayFrom(r.leading_args);
+  if (leadingArgs !== undefined) protocol.leadingArgs = leadingArgs;
+  const modelFlag = str(r.model_flag);
+  if (modelFlag !== undefined) protocol.modelFlag = modelFlag;
+  const extraArgs = stringArrayFrom(r.extra_args);
+  if (extraArgs !== undefined) protocol.extraArgs = extraArgs;
+  const outputFields = stringArrayFrom(r.output_fields);
+  if (outputFields !== undefined) protocol.outputFields = outputFields;
+  const usageFieldsRaw = r.usage_fields;
+  if (usageFieldsRaw !== null && typeof usageFieldsRaw === "object") {
+    const uf = usageFieldsRaw as Record<string, unknown>;
+    const inputFields = stringArrayFrom(uf.input_fields);
+    const outputTokenFields = stringArrayFrom(uf.output_fields);
+    if (inputFields !== undefined && outputTokenFields !== undefined) {
+      protocol.usageFields = { inputFields, outputFields: outputTokenFields };
+    }
+  }
+  const fileDirsFlag = str(r.file_dirs_flag);
+  if (fileDirsFlag !== undefined) protocol.fileDirsFlag = fileDirsFlag;
+  const fileListHeader = str(r.file_list_header);
+  if (fileListHeader !== undefined) protocol.fileListHeader = fileListHeader;
+  const fileListBullet = typeof r.file_list_bullet === "string" ? r.file_list_bullet : undefined;
+  if (fileListBullet !== undefined) protocol.fileListBullet = fileListBullet;
+  const apiKeyEnvVar = str(r.api_key_env_var);
+  if (apiKeyEnvVar !== undefined) protocol.apiKeyEnvVar = apiKeyEnvVar;
+
+  const safetyRaw = r.safety_args;
+  if (safetyRaw !== null && typeof safetyRaw === "object") {
+    const safetyArgs: Partial<Record<SafetyProfile, string[]>> = {};
+    for (const profile of SAFETY_PROFILES) {
+      const args = stringArrayFrom((safetyRaw as Record<string, unknown>)[profile]);
+      if (args !== undefined) safetyArgs[profile] = args;
+    }
+    if (Object.keys(safetyArgs).length > 0) protocol.safetyArgs = safetyArgs;
+  }
+
+  const eventRulesRaw = r.event_rules;
+  if (Array.isArray(eventRulesRaw)) {
+    const eventRules: CliEventRule[] = [];
+    for (const [i, ruleRaw] of eventRulesRaw.entries()) {
+      const rule = eventRuleFrom(ruleRaw, `${routeLabel}: protocol.event_rules[${i}]`, warnings);
+      if (rule) eventRules.push(rule);
+    }
+    if (eventRules.length > 0) protocol.eventRules = eventRules;
+  }
+  if (typeof r.success_requires_output === "boolean") {
+    protocol.successRequiresOutput = r.success_requires_output;
+  }
+
+  return protocol;
+}
+
+function eventRuleFrom(raw: unknown, label: string, warnings: string[]): CliEventRule | undefined {
+  if (raw === null || typeof raw !== "object") {
+    warnings.push(`${label}: must be an object — ignored.`);
+    return undefined;
+  }
+  const r = raw as Record<string, unknown>;
+  // "when" is optional — omitted or {} means "matches every line" (e.g. a
+  // usage rule that should fire regardless of event type, matching Codex's
+  // original unconditional `if (event.usage) {...}` check).
+  const whenRaw = r.when ?? {};
+  if (whenRaw === null || typeof whenRaw !== "object" || Array.isArray(whenRaw)) {
+    warnings.push(`${label}: "when" must be a {field: value} map — ignored.`);
+    return undefined;
+  }
+  const when: Record<string, string> = {};
+  for (const [k, v] of Object.entries(whenRaw as Record<string, unknown>)) {
+    if (typeof v === "string") when[k] = v;
+  }
+  const emit = r.emit;
+  if (emit !== "text" && emit !== "tool_use" && emit !== "thinking" && emit !== "usage") {
+    warnings.push(`${label}: "emit" must be one of text | tool_use | thinking | usage — ignored.`);
+    return undefined;
+  }
+  const rule: CliEventRule = { when, emit };
+  const textField = str(r.text_field);
+  if (textField !== undefined) rule.textField = textField;
+  const nameField = str(r.name_field);
+  if (nameField !== undefined) rule.nameField = nameField;
+  const inputField = str(r.input_field);
+  if (inputField !== undefined) rule.inputField = inputField;
+  const chunkField = str(r.chunk_field);
+  if (chunkField !== undefined) rule.chunkField = chunkField;
+  const inputTokenFields = stringArrayFrom(r.input_token_fields);
+  if (inputTokenFields !== undefined) rule.inputTokenFields = inputTokenFields;
+  const outputTokenFields = stringArrayFrom(r.output_token_fields);
+  if (outputTokenFields !== undefined) rule.outputTokenFields = outputTokenFields;
+  return rule;
+}
+
 // ---------------------------------------------------------------------------
 // Legacy full-format parser (YAML with top-level `services:` key)
 // ---------------------------------------------------------------------------
@@ -434,6 +616,7 @@ function escalateOnFrom(raw: unknown): TaskType[] {
 function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
   const rawServices = (raw.services ?? {}) as Record<string, Record<string, unknown>>;
+  const warnings: string[] = [];
 
   for (const [name, svc] of Object.entries(rawServices)) {
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
@@ -470,6 +653,10 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       ...billingFields(svc),
       ...endpointFields(svc, type, str(svc.base_url)),
       ...(typeof svc.timeout_ms === "number" ? { timeoutMs: svc.timeout_ms } : {}),
+      ...(() => {
+        const protocol = protocolFrom(svc.protocol, `services "${name}"`, warnings);
+        return protocol !== undefined ? { protocol } : {};
+      })(),
     };
     services[name] = svcConfig;
   }
@@ -479,6 +666,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     ...(Array.isArray(raw.disabled)
       ? { disabled: (raw.disabled as string[]).slice() }
       : {}),
+    ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;
 }
@@ -502,6 +690,7 @@ function buildCliServiceConfig(
   defaults: CliDefaults,
   override: Record<string, unknown>,
   apiKeys: ApiKeys,
+  warnings: string[] = [],
 ): ServiceConfig {
   override = { ...override };
   // Capabilities merge-over-defaults.
@@ -586,6 +775,10 @@ function buildCliServiceConfig(
     })(),
     ...endpointFields(override, "cli", str(override.base_url)),
     ...(typeof override.timeout_ms === "number" ? { timeoutMs: override.timeout_ms } : {}),
+    ...(() => {
+      const protocol = protocolFrom(override.protocol, `clis "${name}"`, warnings);
+      return protocol !== undefined ? { protocol } : {};
+    })(),
   };
 }
 
@@ -598,6 +791,9 @@ async function detectServices(
   const services: Record<string, ServiceConfig> = {};
   const disabledSet = new Set(disabled);
   for (const [harness, defaults] of Object.entries(CLI_DEFAULTS)) {
+    // "generic" has no installable binary of its own — it exists only for
+    // explicit clis: entries (addClis), never auto-detection.
+    if (harness === "generic") continue;
     const name = AUTO_DETECT_NAME[harness] ?? harness;
     if (disabledSet.has(name)) continue;
     const found = await whichFn(defaults.command);
@@ -642,7 +838,28 @@ function addClis(
       );
       continue;
     }
-    services[name] = buildCliServiceConfig(name, defaults, entry, apiKeys);
+    if (harness === "generic") {
+      if (!str(entry.command)) {
+        warnings.push(
+          `clis[${index}] "${name}": harness: generic requires an explicit "command" — entry ignored.`,
+        );
+        continue;
+      }
+      if (entry.protocol === undefined || entry.protocol === null) {
+        warnings.push(
+          `clis[${index}] "${name}": harness: generic requires a "protocol" block — entry ignored. ` +
+            "See README.md#adding-a-harness.",
+        );
+        continue;
+      }
+      // Validate now (protocolFrom pushes its own specific warning on
+      // failure) so a malformed protocol block skips the whole entry,
+      // instead of silently landing a route with no `.protocol` at all.
+      if (protocolFrom(entry.protocol, `clis[${index}] "${name}"`, warnings) === undefined) {
+        continue;
+      }
+    }
+    services[name] = buildCliServiceConfig(name, defaults, entry, apiKeys, warnings);
   }
 }
 

@@ -157,6 +157,120 @@ export interface QuotaInfo {
   source: "headers" | "api" | "unknown";
 }
 
+/**
+ * One line-matching rule for `outputMode: "jsonl_stream"` (see below). A
+ * parsed JSON line is tested against `when` (every listed dotted field path
+ * must equal the given string); on match, `emit` says what to do with it.
+ * Rules are checked in order per line; a line can match more than one rule
+ * (e.g. a line can carry both a text field and a usage field).
+ */
+export interface CliEventRule {
+  /** Dotted field path -> exact string it must equal, e.g. {"type": "thinking"}. */
+  when: Record<string, string>;
+  emit: "text" | "tool_use" | "thinking" | "usage";
+  /** For emit: "text" — dotted path to the text; becomes the run's output-so-far. */
+  textField?: string;
+  /** For emit: "tool_use". */
+  nameField?: string;
+  inputField?: string;
+  /** For emit: "thinking". */
+  chunkField?: string;
+  /** For emit: "usage" — dotted paths, checked in order, first present wins. */
+  inputTokenFields?: string[];
+  outputTokenFields?: string[];
+}
+
+/**
+ * Config-driven CLI invocation template — lets a subprocess-based CLI
+ * harness be added or redefined with zero bespoke TypeScript, the same way
+ * `endpoints:` already does for HTTP-based ones. Covers everything that
+ * turned out to be genuinely templatable across the 4 built-in harnesses:
+ * prompt input style, working-dir flag, model flag, per-safety-profile args,
+ * API-key env injection, per-file directory flags, and (via `eventRules`) the
+ * same tool_use/thinking/usage streaming-event semantics Codex's dispatcher
+ * hand-wrote — expressed declaratively instead of imperatively.
+ */
+export interface CliProtocolConfig {
+  /** How the prompt reaches the CLI. */
+  promptInput:
+    // position "early" (default) places the flag right after leadingArgs
+    // (e.g. `claude -p "<prompt>" --output-format json ...`); "late" places
+    // it where "positional" mode's prompt goes, after everything else (e.g.
+    // `agy --model x --mode accept-edits --print "<prompt>"`).
+    | { mode: "flag"; flag: string; position?: "early" | "late" }
+    | { mode: "positional" } // appended as the last bare argument
+    | { mode: "stdin"; sentinelArg?: string }; // written to stdin; sentinelArg (e.g. "-") appended last if given
+  /**
+   * Omit to rely on the subprocess's cwd only (no explicit flag, e.g. Claude
+   * Code). `extraArgsWhenSet` appends more static args only when workingDir
+   * is actually non-empty (e.g. Codex's `--skip-git-repo-check`).
+   */
+  workingDir?: { flag: string; extraArgsWhenSet?: string[] };
+  /**
+   * Args placed first, right after the CLI itself — for a leading subcommand
+   * like Codex's `exec` (as opposed to `extraArgs`, appended among the flags;
+   * splitting the two only matters when a CLI needs `<bin> <subcommand>
+   * [flags...]` shape rather than `<bin> [flags...]`).
+   */
+  leadingArgs?: string[];
+  /**
+   * Flag repeated once per unique file directory (e.g. Antigravity's
+   * `--add-dir <dir>`) — computed the same way for every harness: unique
+   * parent directories of absolute `files` entries, excluding workingDir
+   * itself. Omit if the CLI has no such concept.
+   */
+  fileDirsFlag?: string;
+  /** Header/bullet used when appending a file list to the prompt text (all 4 built-ins do this, with slightly different wording). Omit fileListHeader to skip the append entirely. */
+  fileListHeader?: string;
+  fileListBullet?: string;
+  /** Omit if the CLI has no model-override flag. Falls back to the route's static `model:` when no per-call override is given, same as the 4 built-ins. */
+  modelFlag?: string;
+  /** Static args always appended, e.g. ["--output-format", "json"] or ["--trust"]. */
+  extraArgs?: string[];
+  /** Extra args appended per requested safety profile, e.g. permission-mode flags. */
+  safetyArgs?: Partial<Record<SafetyProfile, string[]>>;
+  /**
+   * Env var to set to the route's configured `api_key` when present (e.g.
+   * "CURSOR_API_KEY", "OPENAI_API_KEY"). If unset in config AND the var is
+   * already present in the parent environment, it's explicitly cleared for
+   * the child — matches the built-ins' "never leak an ambient key into a
+   * subscription-auth call" behavior.
+   */
+  apiKeyEnvVar?: string;
+  /**
+   * How to turn stdout into a DispatchResult.
+   * - "text": raw stdout is the output, verbatim.
+   * - "json_field": parse stdout as one JSON object once the process exits;
+   *   `outputFields` (in priority order, dotted paths supported) picks which
+   *   field holds the answer.
+   * - "jsonl_stream": each stdout line is parsed as JSON as it arrives.
+   *   Without `eventRules`, falls back to concatenating `outputFields` from
+   *   every line (a poor-man's approximation). WITH `eventRules`, matches
+   *   Codex's real mid-run tool_use/thinking event surfacing and usage
+   *   aggregation, declaratively.
+   */
+  outputMode: "text" | "json_field" | "jsonl_stream";
+  /** Candidate field names to check, in priority order, for json_field/jsonl_stream (dotted paths supported). */
+  outputFields?: string[];
+  /**
+   * Token-usage extraction for "text"/"json_field" modes (jsonl_stream uses
+   * eventRules' emit: "usage" instead). Applies to the single parsed JSON
+   * blob; both fields must resolve to a number for tokensUsed to be set.
+   */
+  usageFields?: { inputFields: string[]; outputFields: string[] };
+  /** jsonl_stream only — see CliEventRule. */
+  eventRules?: CliEventRule[];
+  /**
+   * Default true (matches most CLIs, and Cursor specifically): success
+   * requires BOTH exitCode === 0 AND a non-empty parsed output — an exit-0
+   * run with nothing parseable is treated as a failure. Set false to match
+   * Claude Code / Codex / Antigravity's more lenient contract: success is
+   * exitCode === 0 alone, and the output falls back to raw stdout/stderr
+   * text when the configured parsing yields nothing.
+   */
+  successRequiresOutput?: boolean;
+}
+
 export interface ServiceConfig {
   name: string;
   enabled: boolean;
@@ -202,6 +316,8 @@ export interface ServiceConfig {
   endpointProvider?: EndpointProvider;
   wireProtocol?: WireProtocol;
   workspacePolicy?: WorkspacePolicy;
+  /** Required when `harness: "generic"` — see CliProtocolConfig. Ignored otherwise. */
+  protocol?: CliProtocolConfig;
   /**
    * Per-service dispatch timeout override in milliseconds. Every dispatcher
    * hard-codes its own default (10 minutes for CLI harnesses, 2 minutes for

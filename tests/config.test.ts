@@ -65,6 +65,27 @@ services:
     expect(cfg.services.beta!.type).toBe("openai_compatible");
     expect(cfg.services.beta!.baseUrl).toBe("http://localhost:11434/v1");
   });
+
+  it("parses protocol: on a legacy-format harness: generic service (not just clis: entries)", async () => {
+    const yamlText = `
+services:
+  my_cli:
+    enabled: true
+    type: cli
+    harness: generic
+    command: my-cli
+    tier: 1
+    protocol:
+      prompt_input: { mode: positional }
+      output_mode: text
+`;
+    const p = await writeTmpYaml("legacy-generic.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli!.protocol).toEqual({
+      promptInput: { mode: "positional" },
+      outputMode: "text",
+    });
+  });
 });
 
 describe("loadConfig — auto-detect + overrides", () => {
@@ -321,6 +342,141 @@ clis:
       "codex_sol",
       "cursor_cli",
     ]);
+  });
+});
+
+describe("loadConfig — clis: harness: generic (config-driven CLI protocol)", () => {
+  it("is never auto-detected, even when every CLI is found", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: allCliFound });
+    expect(cfg.services.generic).toBeUndefined();
+    expect(Object.keys(cfg.services)).not.toContain("generic");
+  });
+
+  it("parses a full protocol block into the route's ServiceConfig", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    tier: 3
+    protocol:
+      prompt_input: { mode: flag, flag: "-p" }
+      working_dir: { flag: "--cd" }
+      model_flag: "--model"
+      extra_args: ["--json"]
+      output_mode: json_field
+      output_fields: ["result", "output"]
+      safety_args:
+        read_only: ["--mode", "plan"]
+        full_auto: ["--dangerous"]
+`;
+    const p = await writeTmpYaml("clis-generic.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    expect(svc.harness).toBe("generic");
+    expect(svc.command).toBe("my-cli");
+    expect(svc.protocol).toEqual({
+      promptInput: { mode: "flag", flag: "-p" },
+      workingDir: { flag: "--cd" },
+      modelFlag: "--model",
+      extraArgs: ["--json"],
+      outputMode: "json_field",
+      outputFields: ["result", "output"],
+      safetyArgs: { read_only: ["--mode", "plan"], full_auto: ["--dangerous"] },
+    });
+  });
+
+  it("skips a generic entry missing command, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    protocol:
+      prompt_input: { mode: positional }
+      output_mode: text
+`;
+    const p = await writeTmpYaml("clis-generic-nocommand.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("requires an explicit \"command\"");
+  });
+
+  it("skips a generic entry missing protocol, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+`;
+    const p = await writeTmpYaml("clis-generic-noprotocol.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("requires a \"protocol\" block");
+  });
+
+  it("skips a generic entry with an invalid prompt_input, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      prompt_input: { mode: carrier_pigeon }
+      output_mode: text
+`;
+    const p = await writeTmpYaml("clis-generic-badprompt.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("protocol.prompt_input");
+  });
+
+  it("skips a generic entry with an invalid output_mode, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      prompt_input: { mode: positional }
+      output_mode: carrier_pigeon
+`;
+    const p = await writeTmpYaml("clis-generic-badoutput.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("protocol.output_mode");
+  });
+
+  it("defaults billing to unknown/blocked — no way to know an arbitrary CLI's real billing model", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      prompt_input: { mode: positional }
+      output_mode: text
+`;
+    const p = await writeTmpYaml("clis-generic-billing.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    expect(svc.billingKind).toBe("unknown");
+    expect(svc.paidUsagePossible).toBe(true);
+  });
+
+  it("minimal protocol (positional prompt, text output, no working_dir/model_flag) parses with those fields absent", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      prompt_input: { mode: stdin }
+      output_mode: text
+`;
+    const p = await writeTmpYaml("clis-generic-minimal.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    expect(svc.protocol).toEqual({ promptInput: { mode: "stdin" }, outputMode: "text" });
   });
 });
 

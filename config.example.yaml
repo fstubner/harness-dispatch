@@ -55,7 +55,12 @@
 # Product-login CLIs do not need an api_key field. Adding api_key changes the
 # auth and billing classification for that route.
 #
-# Paid or unknown-paid routes are blocked until allow_paid_usage: true is set.
+# Only metered-API-key routes and routes with unknown billing are blocked by
+# default (allow_paid_usage: true to opt in). Included-plan routes with
+# possible overage (Claude Code, Codex, Cursor product logins) run with NO
+# opt-in required — their providers hard-stop at your included usage unless
+# you've separately enabled overage on the provider's own account settings,
+# in which case override with paid_usage_possible: true on that route.
 # Default safety_profile is workspace_edit. Cursor print mode has write and shell
 # capability, so Cursor routes are skipped under workspace_edit unless you set
 # safety_profile: full_auto for that route or request full_auto per call.
@@ -83,11 +88,10 @@ services:
     command: claude
     model: claude-opus-4-6           # extended thinking enabled via --effort high
     tier: 1
-    # Subscription plans can incur overage past included quota, so this route
-    # classifies as paid-usage-possible and is blocked (paid_blocked) by
-    # default. Only add `allow_paid_usage: true` once you've confirmed with
-    # the provider what happens when you hit the included quota — some plans
-    # bill automatically, some just stop working. Don't opt in blind.
+    # Runs by default, no opt-in required: Anthropic hard-stops at your plan's
+    # included quota unless you've separately enabled "usage credits" overage
+    # on your own account (Settings -> Usage) — in that case, override with
+    # paid_usage_possible: true.
     # api_key: ${ANTHROPIC_API_KEY}  # API billing; omit for Claude product login
     leaderboard_model: "claude-opus-4-6"   # Arena Code ELO ~1504 (April 2026)
     cli_capability: 1.10             # Claude Code scaffold: strong file ops + bash
@@ -371,6 +375,43 @@ services:
   #   weight: 0.9
   #   tier: 1
   #   thinking_level: high
+
+# ── Adding a wholly new CLI harness (harness: generic) ────────────────────────
+#
+# claude_code | codex | cursor | antigravity_cli each have a hardcoded dispatcher
+# (exact CLI flags + output parsing) — the 4 built-in harnesses. A 5th/6th/Nth
+# subprocess-based CLI needs no new TypeScript: `harness: generic` under `clis:`
+# takes a `protocol:` block describing its invocation instead. Only reachable via
+# an explicit clis: entry (never auto-detected) and requires both `command:` and
+# `protocol:` — missing either skips the entry with a configWarnings entry.
+#
+# clis:
+#   - name: my_custom_cli
+#     harness: generic
+#     command: my-cli               # binary, resolved on PATH like any other
+#     tier: 3
+#     protocol:
+#       prompt_input: { mode: flag, flag: "-p" }   # or {mode: positional} / {mode: stdin}
+#       working_dir: { flag: "--cd" }              # omit to rely on process cwd alone
+#       model_flag: "--model"                      # omit if the CLI has no model override
+#       extra_args: ["--json"]                     # always appended
+#       safety_args:                                # extra args per requested safety profile
+#         read_only: ["--mode", "plan"]
+#         workspace_edit: ["--mode", "accept-edits"]
+#         full_auto: ["--dangerously-skip-permissions"]
+#       output_mode: json_field    # text | json_field | jsonl_stream
+#       output_fields: [result, output, text]   # checked in order; dotted paths work
+#
+# What's genuinely templatable across CLIs (prompt input, working-dir flag, model
+# flag, per-safety-profile args) is covered above. What isn't: each CLI's real
+# streaming-event vocabulary (tool_use, thinking, etc.) — only the 4 built-in
+# dispatchers have that. jsonl_stream is a best-effort approximation (concatenate
+# a named field from each JSON line), not genuine feature parity — prefer text or
+# json_field if the CLI supports a non-streaming output mode at all.
+#
+# Billing defaults to unknown/blocked (allow_paid_usage: true to opt in) — there's
+# no way to know an arbitrary CLI's real billing model. Set billing_kind: and
+# paid_usage_possible: explicitly once you know it, same as any other route.
 
 # How long (seconds) to cache proactive quota check results.
 quota_cache_ttl: 300

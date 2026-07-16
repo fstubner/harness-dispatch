@@ -48,6 +48,11 @@ const SUGGESTED_POLL_SECONDS = 300;
  * that's still making progress after 10 minutes. Below both an explicit
  * `hints.timeoutMs` and the route's own configured `timeoutMs` in
  * precedence, so this only fills the gap when nobody set either.
+ *
+ * Router.stream() treats this specific value as a budget for the WHOLE call
+ * (including router fallback retries), not a per-attempt allowance — without
+ * that, a job that falls back twice (the router's default maxFallbacks: 2)
+ * could burn up to 3x this value before failing conclusively.
  */
 const JOB_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 
