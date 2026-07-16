@@ -347,6 +347,7 @@ export function renderStatusText(status: HarnessRouterStatus): string {
       );
     }
     if (route.workspacePolicy) lines.push(`  workspace=${route.workspacePolicy}`);
+    if (route.billing.notes) lines.push(`  note: ${route.billing.notes}`);
     if (route.skipped) lines.push(`  skipped=${route.skipped.code}: ${route.skipped.message}`);
     lines.push("");
   }

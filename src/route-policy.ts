@@ -46,10 +46,22 @@ export function evaluateRoutePolicy(
     !isIncludedOrLocalRoute(billing) &&
     !billing.allowPaidUsage
   ) {
-    return skip(route, "unknown_billing", "billing source is unknown and paid usage is not allowed");
+    return skip(
+      route,
+      "unknown_billing",
+      "billing source is unknown and paid usage is not allowed — this is a config-level " +
+        `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
+        `to '${route}' in config.yaml to enable it`,
+    );
   }
   if (billingIsBlocked(billing)) {
-    return skip(route, "paid_blocked", "route can incur paid usage and paid usage is not allowed");
+    return skip(
+      route,
+      "paid_blocked",
+      "route can incur paid usage and paid usage is not allowed — this is a config-level " +
+        `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
+        `to '${route}' in config.yaml (or run \`harness-router configure --allow-paid\`) to enable it`,
+    );
   }
 
   if (!safetyProfileCompatible(svc, opts.requestedSafetyProfile)) {
@@ -88,15 +100,33 @@ function evaluateOperationalRoutePolicy(
   routePolicy: RoutePolicy | undefined,
 ): RoutePolicyResult {
   if (routePolicy === "blocked") {
-    return skip(route, "route_policy", "route policy blocks execution");
+    return skip(
+      route,
+      "route_policy",
+      "excluded by the CALLER's own hints.routePolicy='blocked' on this request (dry-run) " +
+        "— not a config restriction or a router safety judgment about this route or its " +
+        "content; drop or change that hint to allow it",
+    );
   }
 
   if (routePolicy === "local_only" && !isLocalRoute(billing)) {
-    return skip(route, "route_policy", "route policy allows local routes only");
+    return skip(
+      route,
+      "route_policy",
+      "excluded by the CALLER's own hints.routePolicy='local_only' on this request " +
+        "— not a config restriction or a router safety judgment about this route or its " +
+        "content; drop or change that hint to allow non-local routes",
+    );
   }
 
   if (routePolicy === "approval_required" && !isLocalRoute(billing)) {
-    return skip(route, "approval_required", "non-local route requires explicit approval");
+    return skip(
+      route,
+      "approval_required",
+      "excluded by the CALLER's own hints.routePolicy='approval_required' on this request " +
+        "— not a config restriction or a router safety judgment about this route or its " +
+        "content; drop or change that hint to allow non-local routes",
+    );
   }
 
   return { blocked: false };

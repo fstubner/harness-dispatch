@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { buildUsage, renderUsageText, type HarnessRouterStatus, type RouteStatus } from "../src/status.js";
+import {
+  buildUsage,
+  renderStatusText,
+  renderUsageText,
+  type HarnessRouterStatus,
+  type RouteStatus,
+} from "../src/status.js";
 
 function makeRoute(overrides: Partial<RouteStatus> = {}): RouteStatus {
   return {
@@ -146,5 +152,38 @@ describe("renderUsageText", () => {
     );
     const text = renderUsageText(buildUsage(status));
     expect(text).toContain("models: Wide multi-vendor catalog");
+  });
+});
+
+describe("renderStatusText", () => {
+  it("surfaces billing.notes as a note: line so a warning isn't --json-only", () => {
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "cursor_cli",
+          harness: "cursor",
+          billing: {
+            provider: "cursor",
+            surface: "cursor_agent_cli",
+            authSource: "product_login",
+            kind: "included_usage_then_on_demand",
+            paidUsagePossible: true,
+            allowPaidUsage: true,
+            paidUsageRequiresOptIn: true,
+            confidence: "documented",
+            notes: "Safe only because on-demand/overage billing is currently OFF.",
+          },
+        }),
+      ],
+      ["cursor_cli"],
+    );
+    const text = renderStatusText(status);
+    expect(text).toContain("note: Safe only because on-demand/overage billing is currently OFF.");
+  });
+
+  it("omits the note: line when billing.notes is unset", () => {
+    const status = makeStatus([makeRoute({ id: "codex" })], ["codex"]);
+    const text = renderStatusText(status);
+    expect(text).not.toContain("note:");
   });
 });
