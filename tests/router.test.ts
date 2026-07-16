@@ -184,6 +184,45 @@ class StubDispatcher implements Dispatcher {
   }
 }
 
+/** Like StubDispatcher, but implements stream() for router.stream()/#runStream tests. */
+class StreamStubDispatcher implements Dispatcher {
+  readonly id: string;
+  lastOpts: { modelOverride?: string; timeoutMs?: number } | undefined;
+  private nextResult: DispatchResult;
+
+  constructor(id: string, result?: Partial<DispatchResult>) {
+    this.id = id;
+    this.nextResult = {
+      output: `ok from ${id}`,
+      service: id,
+      success: true,
+      ...(result ?? {}),
+    } as DispatchResult;
+  }
+
+  async dispatch(): Promise<DispatchResult> {
+    throw new Error("not used in stream tests");
+  }
+
+  async *stream(
+    _prompt: string,
+    _files: string[],
+    _workingDir: string,
+    opts?: { modelOverride?: string; timeoutMs?: number },
+  ): AsyncIterable<import("../src/types.js").DispatcherEvent> {
+    this.lastOpts = opts;
+    yield { type: "completion", result: this.nextResult };
+  }
+
+  async checkQuota(): Promise<never> {
+    throw new Error("not implemented for tests");
+  }
+
+  isAvailable(): boolean {
+    return true;
+  }
+}
+
 // ---- Tests ---------------------------------------------------------------
 
 describe("Router.pickService", () => {
@@ -904,6 +943,88 @@ describe("Router.route", () => {
     const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
     await router.route("hi", [], "/tmp");
     expect(alphaD.calls[0]?.timeoutMs).toBeUndefined();
+  });
+});
+
+describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
+  let quota: QuotaCache;
+  let leaderboard: LeaderboardCache;
+
+  beforeEach(() => {
+    quota = new QuotaCache();
+    leaderboard = new LeaderboardCache();
+  });
+
+  it("gives the first attempt the full default when nothing has elapsed yet", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StreamStubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+
+    const dateSpy = vi.spyOn(Date, "now").mockReturnValue(0);
+    for await (const _ of router.stream("hi", [], "/tmp", { defaultTimeoutMs: 3_600_000 })) {
+      // drain
+    }
+    dateSpy.mockRestore();
+
+    expect(alphaD.lastOpts?.timeoutMs).toBe(3_600_000);
+  });
+
+  it("shrinks a fallback attempt's timeout to whatever budget remains, and stops once it's gone", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const b = makeService({ name: "beta", tier: 1 });
+    const c = makeService({ name: "gamma", tier: 1 });
+    const alphaD = new StreamStubDispatcher("alpha", { success: false, error: "boom" });
+    const betaD = new StreamStubDispatcher("beta", { success: false, error: "boom" });
+    const gammaD = new StreamStubDispatcher("gamma", { success: false, error: "boom" });
+    const router = new Router(
+      makeConfig([a, b, c]),
+      quota,
+      { alpha: alphaD, beta: betaD, gamma: gammaD },
+      leaderboard,
+    );
+
+    // callStart=0; attempt 0 (alpha) sees the full budget; by the time
+    // attempt 1 (beta) starts, 3,599,900ms have "elapsed" so only 100ms of
+    // budget remains; by attempt 2 the budget is already spent.
+    const dateSpy = vi.spyOn(Date, "now");
+    dateSpy.mockReturnValueOnce(0); // callStart
+    dateSpy.mockReturnValueOnce(0); // attempt 0 remaining calc
+    dateSpy.mockReturnValueOnce(3_599_900); // attempt 1 remaining calc
+    dateSpy.mockReturnValue(3_600_100); // attempt 2 remaining calc (budget exhausted)
+
+    for await (const _ of router.stream("hi", [], "/tmp", {
+      maxFallbacks: 2,
+      defaultTimeoutMs: 3_600_000,
+    })) {
+      // drain
+    }
+    dateSpy.mockRestore();
+
+    expect(alphaD.lastOpts?.timeoutMs).toBe(3_600_000);
+    expect(betaD.lastOpts?.timeoutMs).toBe(100);
+    // gamma is never dispatched — the budget was exhausted before attempt 2 started.
+    expect(gammaD.lastOpts).toBeUndefined();
+  });
+
+  it("does NOT cap an explicit hints.timeoutMs by the elapsed background budget", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const b = makeService({ name: "beta", tier: 1 });
+    const alphaD = new StreamStubDispatcher("alpha", { success: false, error: "boom" });
+    const betaD = new StreamStubDispatcher("beta", { success: true });
+    const router = new Router(makeConfig([a, b]), quota, { alpha: alphaD, beta: betaD }, leaderboard);
+
+    const dateSpy = vi.spyOn(Date, "now").mockReturnValue(3_600_000_000); // way past any default
+    for await (const _ of router.stream("hi", [], "/tmp", {
+      hints: { timeoutMs: 1_800_000 },
+      defaultTimeoutMs: 3_600_000,
+    })) {
+      // drain
+    }
+    dateSpy.mockRestore();
+
+    // Explicit hint is a deliberate per-attempt choice — not budgeted.
+    expect(alphaD.lastOpts?.timeoutMs).toBe(1_800_000);
+    expect(betaD.lastOpts?.timeoutMs).toBe(1_800_000);
   });
 });
 

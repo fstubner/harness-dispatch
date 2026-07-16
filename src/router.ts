@@ -559,6 +559,14 @@ export class Router {
     const maxFallbacks = opts.maxFallbacks ?? 2;
     const tried = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
+    // `defaultTimeoutMs` (currently only `job`'s background ceiling) is a
+    // budget for the WHOLE call, not a per-attempt allowance — without this,
+    // 3 fallback attempts (default + 2 retries) each getting the full
+    // default would let one `job` call run 3x its stated ceiling before
+    // failing conclusively. An explicit `hints.timeoutMs` or a route's own
+    // configured `timeoutMs` is a deliberate per-attempt choice and is NOT
+    // budgeted this way.
+    const callStart = Date.now();
 
     for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
       const decision = await this.pickService({
@@ -602,7 +610,17 @@ export class Router {
       if (decision.effectiveSafetyProfile !== undefined) {
         dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
       }
-      const effectiveTimeoutMs = hints.timeoutMs ?? svc.timeoutMs ?? opts.defaultTimeoutMs;
+      let effectiveTimeoutMs = hints.timeoutMs ?? svc.timeoutMs;
+      if (effectiveTimeoutMs === undefined && opts.defaultTimeoutMs !== undefined) {
+        const remaining = opts.defaultTimeoutMs - (Date.now() - callStart);
+        if (remaining <= 0 && attempt > 0) {
+          // Whole-call budget already spent on earlier attempts — the
+          // previous attempt's completion event was already yielded, so
+          // stop retrying instead of starting another full-length attempt.
+          return;
+        }
+        effectiveTimeoutMs = Math.max(remaining, 1);
+      }
       if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
 
       let finalResult: DispatchResult | null = null;
