@@ -124,15 +124,38 @@ function inferredConfidence(
   return "documented";
 }
 
+/**
+ * Whether a route can incur a REAL charge with no further action from the
+ * user, by default — i.e. whether harness-router should block it until
+ * explicitly allowed.
+ *
+ * "included_X_then_optional_Y" kinds (Codex flexible credits, Claude usage
+ * credits, Cursor on-demand) are NOT blocked by default: researched across
+ * Anthropic, OpenAI, and Cursor (2026-07), all three hard-stop at the
+ * included cap by default — continuing past it requires the user to have
+ * ALREADY completed a separate, deliberate opt-in on the PROVIDER's own
+ * side (enabling usage credits/flexible pricing/on-demand billing, usually
+ * with its own payment method and spend limit). harness-router blocking
+ * these by default would just be re-gating something the provider already
+ * gates, and asking every user to prove a negative ("I haven't opted into
+ * my provider's overage") for a state that's off by default anyway.
+ *
+ * A user who HAS enabled provider-side overage can still restore the block
+ * by setting `paid_usage_possible: true` explicitly in that route's config
+ * — the override in buildRouteBilling() takes precedence over this
+ * function. Only kinds with no such provider-side backstop — metered_api
+ * (raw API keys bill from the first token, no included pool at all) and
+ * unknown (no data to reason about) — are blocked by default here.
+ */
 function inferredPaidUsagePossible(kind: BillingKind): boolean {
   switch (kind) {
     case "local_compute":
     case "included_plan_usage":
     case "free_quota":
-      return false;
     case "included_plan_then_flexible_credits":
     case "included_credit_then_optional_overage":
     case "included_usage_then_on_demand":
+      return false;
     case "metered_api":
     case "unknown":
       return true;
