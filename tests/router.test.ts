@@ -429,7 +429,7 @@ describe("Router.pickService", () => {
     expect(decision?.tier).toBe(2);
   });
 
-  it("applies +0.3 prefer_large_context boost to antigravity harnesses", async () => {
+  it("applies the prefer_large_context boost by declared max_input_tokens, not harness name", async () => {
     const nonAntigravity = makeService({
       name: "alpha",
       harness: "claude_code",
@@ -439,6 +439,7 @@ describe("Router.pickService", () => {
       name: "antigravity_cli",
       harness: "antigravity_cli",
       tier: 2,
+      maxInputTokens: 2_000_000, // >=2M declared context -> full +0.3 boost
     });
     const dispatchers: Record<string, Dispatcher> = {
       alpha: new StubDispatcher("alpha"),
@@ -612,7 +613,7 @@ describe("Router.route", () => {
   });
 
   it("runs copy-isolated workspace_edit dispatches away from the source workspace", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-copy-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-copy-"));
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
     await fs.mkdir(path.join(root, "node_modules"), { recursive: true });
     await fs.writeFile(path.join(root, "node_modules", "ignored.txt"), "heavy\n", "utf8");
@@ -666,7 +667,7 @@ describe("Router.route", () => {
   });
 
   it("runs git_worktree-isolated workspace_edit dispatches in a detached worktree", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-worktree-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-worktree-"));
     await git(root, ["init"]);
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
     await git(root, ["add", "calc.mjs"]);
@@ -731,10 +732,10 @@ describe("Router.route", () => {
   });
 
   it("prunes copy workspaces older than the retention window before creating a new one", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-copy-prune-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-copy-prune-"));
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
 
-    const staleRoot = path.join(root, ".harness-router", "workspaces", "stale-run");
+    const staleRoot = path.join(root, ".harness-dispatch", "workspaces", "stale-run");
     await fs.mkdir(staleRoot, { recursive: true });
     const staleTime = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await fs.utimes(staleRoot, staleTime, staleTime);
@@ -743,8 +744,8 @@ describe("Router.route", () => {
     const dispatcher = new StubDispatcher("alpha");
     const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
 
-    const originalEnv = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
-    process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
     try {
       const { result } = await router.route("noop", [], root, {
         hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
@@ -755,15 +756,15 @@ describe("Router.route", () => {
       expect(result.workspace?.workspaceRoot).toBeDefined();
       await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();
     } finally {
-      if (originalEnv === undefined) delete process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
-      else process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
     }
 
     await expect(fs.stat(staleRoot)).rejects.toThrow();
   });
 
   it("prunes git worktrees older than the retention window before creating a new one", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-worktree-prune-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-worktree-prune-"));
     await git(root, ["init"]);
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
     await git(root, ["add", "calc.mjs"]);
@@ -781,7 +782,7 @@ describe("Router.route", () => {
     // window, created the same way prepareGitWorktreeWorkspace does.
     const staleGitWorkspaceRoot = path.join(
       os.tmpdir(),
-      "harness-router",
+      "harness-dispatch",
       "workspaces",
       path.basename(root).replace(/[^A-Za-z0-9_.-]/g, "_"),
     );
@@ -796,8 +797,8 @@ describe("Router.route", () => {
     const dispatcher = new StubDispatcher("alpha");
     const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
 
-    const originalEnv = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
-    process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
     let worktreeRoot: string | undefined;
     try {
       const { result } = await router.route("noop", [], root, {
@@ -808,8 +809,8 @@ describe("Router.route", () => {
         ? path.join(result.workspace.workspaceRoot, "worktree")
         : undefined;
     } finally {
-      if (originalEnv === undefined) delete process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
-      else process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
     }
 
     // The stale worktree must be gone from both disk and git's own registry.

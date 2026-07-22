@@ -1,5 +1,5 @@
 /**
- * Quota management for harness-router.
+ * Quota management for harness-dispatch.
  *
  * Ported from `coding_agent.quota`. Two-layer approach:
  *   1. Reactive — quota state is updated from every dispatch response
@@ -11,11 +11,14 @@
 
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 
 import type { DispatchResult, QuotaInfo } from "./types.js";
 import type { Dispatcher } from "./dispatchers/base.js";
@@ -26,6 +29,20 @@ import {
 
 export const DEFAULT_QUOTA_TTL_MS = 300_000; // 5 minutes
 export const PROACTIVE_CHECK_TIMEOUT_MS = 15_000;
+
+/**
+ * Default quota state location — same HARNESS_DISPATCH_STATE_DIR-override,
+ * else ~/.harness-dispatch/<subdir> pattern as jobs.ts/dispatch-log.ts. A
+ * bare "quota_state.json" (the old default) resolves relative to
+ * process.cwd(): running the router from different directories splits
+ * state across stray files, and — worse — the test suite writes real
+ * counts into whatever cwd the tests happen to run from (this repo's own
+ * root, in dev) since nothing points it elsewhere by default.
+ */
+function defaultStateFile(): string {
+  const dir = process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  return path.join(dir, "quota_state.json");
+}
 
 function monotonicSec(): number {
   return performance.now() / 1000;
@@ -117,7 +134,7 @@ export class QuotaCache {
   ) {
     this.dispatchers = dispatchers;
     this.ttlMs = opts.ttlMs ?? DEFAULT_QUOTA_TTL_MS;
-    this.stateFile = opts.stateFile ?? "quota_state.json";
+    this.stateFile = opts.stateFile ?? defaultStateFile();
 
     for (const name of Object.keys(dispatchers)) {
       this.states[name] = new QuotaState(name);
@@ -279,7 +296,7 @@ export class QuotaCache {
    * Build the on-disk payload, merging new counts over any existing state.
    *
    * Known limitation: this read-modify-write is not atomic across processes.
-   * Two `harness-router` CLI invocations racing on the same stateFile can
+   * Two `harness-dispatch` CLI invocations racing on the same stateFile can
    * both read the same baseline and each write back only their own count,
    * silently losing the other's increment. Left as-is deliberately —
    * localCallCount/localSuccessCount/localFailureCount are purely
@@ -331,6 +348,7 @@ export class QuotaCache {
   private writeStatePayloadAtomicSync(payload: string): void {
     const tmp = this.nextTempStateFile();
     try {
+      mkdirSync(path.dirname(this.stateFile), { recursive: true });
       writeFileSync(tmp, payload);
       renameSync(tmp, this.stateFile);
     } catch (err) {

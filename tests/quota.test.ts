@@ -334,3 +334,45 @@ describe("QuotaCache.getQuotaInfo", () => {
     expect(info?.source).toBe("api");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Default stateFile resolution (no explicit override)
+// ---------------------------------------------------------------------------
+
+describe("QuotaCache default stateFile", () => {
+  const origState = process.env["HARNESS_DISPATCH_STATE_DIR"];
+  let sandboxDir: string;
+
+  beforeEach(() => {
+    sandboxDir = mkdtempSync(path.join(os.tmpdir(), "hr-quota-default-"));
+    process.env["HARNESS_DISPATCH_STATE_DIR"] = sandboxDir;
+  });
+
+  afterEach(() => {
+    if (origState === undefined) delete process.env["HARNESS_DISPATCH_STATE_DIR"];
+    else process.env["HARNESS_DISPATCH_STATE_DIR"] = origState;
+    rmSync(sandboxDir, { recursive: true, force: true });
+  });
+
+  it("is absolute under HARNESS_DISPATCH_STATE_DIR, not process.cwd()-relative", async () => {
+    const cache = new QuotaCache({
+      svc: makeDispatcher("svc"),
+    });
+    cache.recordResult("svc", { service: "svc", success: true, output: "" });
+    cache.saveLocalCountsSync();
+
+    const expected = path.join(sandboxDir, "quota_state.json");
+    expect(readFileSync(expected, "utf-8")).toContain('"svc"');
+  });
+
+  it("creates the state directory if it doesn't exist yet", async () => {
+    const nested = path.join(sandboxDir, "not-created-yet");
+    process.env["HARNESS_DISPATCH_STATE_DIR"] = nested;
+    const cache = new QuotaCache({
+      svc: makeDispatcher("svc"),
+    });
+    cache.recordResult("svc", { service: "svc", success: true, output: "" });
+    expect(() => cache.saveLocalCountsSync()).not.toThrow();
+    expect(readFileSync(path.join(nested, "quota_state.json"), "utf-8")).toContain('"svc"');
+  });
+});

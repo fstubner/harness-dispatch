@@ -1,5 +1,5 @@
 /**
- * Load-balancing router for harness-router.
+ * Load-balancing router for harness-dispatch.
  *
  * Routing strategy
  * ----------------
@@ -31,8 +31,9 @@
  *    per-use cost (metered API, unknown billing) — cheapest/lowest-risk
  *    wins ties, in that order.
  *  - +0.5 when hints.model matches the service name or one of its models.
- *  - +0.3 when prefer_large_context is set and the service's harness is
- *    antigravity or antigravity_cli.
+ *  - Under prefer_large_context, +0.3 for routes declaring >=2M
+ *    max_input_tokens and +0.15 for >=1M — declared context size, not
+ *    harness name.
  *  - +0.3 when task_type="local" and the service is an openai_compatible
  *    endpoint on localhost / 127.0.0.1.
  *
@@ -66,6 +67,7 @@ import type { Dispatcher } from "./dispatchers/base.js";
 import { drainDispatcherStream } from "./dispatchers/base.js";
 import { withDispatcherSpan, withRouterSpan } from "./observability/spans.js";
 import { buildRouteBilling } from "./billing.js";
+import { logDispatch } from "./dispatch-log.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "./route-policy.js";
 import {
@@ -453,11 +455,14 @@ export class Router {
       if (modelMatchesService(name, svc, preferredModel)) {
         score += 0.5;
       }
-      if (
-        preferLargeContext &&
-        (harnessKey === "antigravity_cli" || harnessKey === "antigravity")
-      ) {
-        score += 0.3;
+      if (preferLargeContext) {
+        // Boost by DECLARED context size (max_input_tokens in the route's
+        // config), not by harness name — a 2M-context route (e.g.
+        // Antigravity's default) gets the full boost, 1M-context routes get
+        // half, and any user-added large-context harness benefits equally.
+        const maxIn = svc.maxInputTokens ?? 0;
+        if (maxIn >= 2_000_000) score += 0.3;
+        else if (maxIn >= 1_000_000) score += 0.15;
       }
       if (
         taskType === "local" &&
@@ -651,7 +656,7 @@ export class Router {
         };
         yield { event: { type: "completion", result: finalResult }, decision };
       }
-      this.handleResult(decision.service, finalResult);
+      this.handleResult(decision.service, finalResult, decision);
 
       if (finalResult.success) return;
       // Rate-limited and transient failures alike: the breaker state was
@@ -801,7 +806,7 @@ export class Router {
       };
       yield { event: { type: "completion", result: finalResult }, decision };
     }
-    this.handleResult(service, finalResult);
+    this.handleResult(service, finalResult, decision);
   }
 
   /**
@@ -933,7 +938,7 @@ export class Router {
             },
           ),
       );
-      this.handleResult(decision.service, result);
+      this.handleResult(decision.service, result, decision);
       lastResult = result;
       lastDecision = decision;
 
@@ -1069,11 +1074,16 @@ export class Router {
           dispatchOpts,
         ),
     );
-    this.handleResult(service, result);
+    this.handleResult(service, result, decision);
     return { result, decision };
   }
 
-  private handleResult(service: string, result: DispatchResult): void {
+  private handleResult(
+    service: string,
+    result: DispatchResult,
+    decision?: RoutingDecision | null,
+  ): void {
+    logDispatch(service, result, decision);
     this.quota.recordResult(service, result);
     const breaker = this.breakers.get(service);
     if (!breaker) return;
