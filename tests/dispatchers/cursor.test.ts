@@ -3,6 +3,14 @@ import type {
   SubprocessResult,
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
+import type { ServiceConfig } from "../../src/types.js";
+import { PROTOCOL_PRESETS } from "../../src/config.js";
+
+const CURSOR_PROTOCOL = PROTOCOL_PRESETS.cursor!;
+
+// There is no CursorDispatcher class — Cursor is GenericCliDispatcher
+// parameterized by the cursor preset (see the shipped config.default.yaml),
+// including its workingDir.fallback: "home" behavior for an empty workingDir.
 
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
@@ -21,8 +29,8 @@ const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
 const { default: which } = await import("which");
-const { CursorDispatcher } = await import(
-  "../../src/dispatchers/cursor.js"
+const { GenericCliDispatcher } = await import(
+  "../../src/dispatchers/generic-cli.js"
 );
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
@@ -64,6 +72,23 @@ function mockFound(commandPath = "/usr/local/bin/cursor-agent"): void {
   });
 }
 
+function cursor(overrides: Partial<ServiceConfig> = {}) {
+  return new GenericCliDispatcher({
+    name: "cursor",
+    enabled: true,
+    type: "cli",
+    harness: "cursor",
+    command: "cursor-agent",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    capabilities: {},
+    escalateOn: [],
+    protocol: CURSOR_PROTOCOL,
+    ...overrides,
+  } as ServiceConfig);
+}
+
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
@@ -81,10 +106,10 @@ afterEach(() => {
   }
 });
 
-describe("CursorDispatcher", () => {
+describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
     whichMock.mockResolvedValue(null);
-    const d = new CursorDispatcher();
+    const d = cursor();
 
     const res = await d.dispatch("hi", [], "");
 
@@ -107,7 +132,7 @@ describe("CursorDispatcher", () => {
       }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     const res = await d.dispatch("do thing", [], "/tmp/work");
 
     expect(res.success).toBe(true);
@@ -123,7 +148,7 @@ describe("CursorDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     await d.dispatch("go", [], "/tmp", { modelOverride: "claude-4-cursor" });
 
     expect(runSubprocessMock).toHaveBeenCalledTimes(1);
@@ -139,7 +164,7 @@ describe("CursorDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     await d.dispatch("go", [], "/tmp/project");
 
     const { args } = captureSubprocessCall(0);
@@ -161,7 +186,7 @@ describe("CursorDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     await d.dispatch("go", [], "");
 
     const { args } = captureSubprocessCall(0);
@@ -179,19 +204,7 @@ describe("CursorDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new CursorDispatcher({
-      name: "cursor",
-      enabled: true,
-      type: "cli",
-      harness: "cursor",
-      command: "cursor-agent",
-      tier: 1,
-      weight: 1,
-      cliCapability: 1,
-      capabilities: {},
-      escalateOn: [],
-      apiKey: "configured-cursor-key",
-    });
+    const d = cursor({ apiKey: "configured-cursor-key" });
     await d.dispatch("go", [], "/tmp");
 
     const { opts } = captureSubprocessCall(0);
@@ -205,7 +218,7 @@ describe("CursorDispatcher", () => {
       ok({ stdout: "", stderr: "bad thing", exitCode: 2 }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     const res = await d.dispatch("go", [], "/tmp");
 
     expect(res.success).toBe(false);
@@ -222,7 +235,7 @@ describe("CursorDispatcher", () => {
       }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     const res = await d.dispatch("go", [], "/tmp");
 
     expect(res.success).toBe(false);
@@ -241,7 +254,7 @@ describe("CursorDispatcher", () => {
       }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     const res = await d.dispatch("go", [], "/tmp", { timeoutMs: 100 });
 
     expect(res.success).toBe(false);
@@ -254,22 +267,22 @@ describe("CursorDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new CursorDispatcher();
+    const d = cursor();
     await d.dispatch("go", [], "/tmp", { timeoutMs: 9999 });
 
     const { opts } = captureSubprocessCall(0);
     expect(opts?.timeoutMs).toBe(9999);
   });
 
-  it("reports 'unknown' quota in R1", async () => {
-    const d = new CursorDispatcher();
+  it("reports 'unknown' quota", async () => {
+    const d = cursor();
     const q = await d.checkQuota();
     expect(q.service).toBe("cursor");
     expect(q.source).toBe("unknown");
   });
 
   it("has a stable id and reports itself as available", () => {
-    const d = new CursorDispatcher();
+    const d = cursor();
     expect(d.id).toBe("cursor");
     expect(d.isAvailable()).toBe(true);
   });

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServiceConfig } from "../../src/types.js";
+import { PROTOCOL_PRESETS } from "../../src/config.js";
+
+const ANTIGRAVITY_PROTOCOL = PROTOCOL_PRESETS.antigravity_cli!;
+
+// There is no AntigravityDispatcher class — Antigravity is
+// GenericCliDispatcher parameterized by the antigravity_cli preset (see
+// the shipped config.default.yaml).
 
 vi.mock("../../src/dispatchers/shared/stream-subprocess.js", () => ({
   streamSubprocess: vi.fn(),
@@ -24,8 +31,8 @@ const { commandAvailable } = await import(
   "../../src/dispatchers/shared/which-available.js"
 );
 const { default: which } = await import("which");
-const { AntigravityDispatcher } = await import(
-  "../../src/dispatchers/antigravity.js"
+const { GenericCliDispatcher } = await import(
+  "../../src/dispatchers/generic-cli.js"
 );
 
 const streamSubprocessMock = streamSubprocess as unknown as ReturnType<
@@ -72,17 +79,20 @@ function baseSvc(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
     name: "antigravity_cli",
     enabled: true,
     type: "cli",
+    harness: "antigravity_cli",
+    command: "agy",
     tier: 1,
     weight: 1,
     cliCapability: 1,
     escalateOn: [],
     capabilities: {},
+    protocol: ANTIGRAVITY_PROTOCOL,
     ...overrides,
   } as ServiceConfig;
 }
 
 async function runToCompletion(
-  dispatcher: InstanceType<typeof AntigravityDispatcher>,
+  dispatcher: InstanceType<typeof GenericCliDispatcher>,
   prompt: string,
   files: string[] = [],
   workingDir = "/repo",
@@ -117,10 +127,10 @@ beforeEach(() => {
   whichMock.mockReset();
 });
 
-describe("AntigravityDispatcher", () => {
+describe("Antigravity (GenericCliDispatcher + ANTIGRAVITY_PROTOCOL)", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
     whichMock.mockResolvedValue(null);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     const result = await runToCompletion(dispatcher, "hello");
     expect(result.success).toBe(false);
     expect(result.error).toContain("not found");
@@ -134,7 +144,7 @@ describe("AntigravityDispatcher", () => {
       { stream: "stdout", chunk: "OK\n" },
       exit(),
     ]);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     const result = await runToCompletion(dispatcher, "hello");
     expect(result.success).toBe(true);
     expect(result.output).toBe("AGY OK");
@@ -155,7 +165,7 @@ describe("AntigravityDispatcher", () => {
       yield exit();
     });
 
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     for await (const event of dispatcher.stream("hello", [], "/repo")) {
       order.push(`consumer-saw:${(event as { type: string }).type}`);
     }
@@ -173,7 +183,7 @@ describe("AntigravityDispatcher", () => {
 
   it("maps safety profiles to agy v1.1 flags", async () => {
     mockFound();
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
 
     mockStream([exit()]);
     await runToCompletion(dispatcher, "x", [], "/repo", {
@@ -197,7 +207,7 @@ describe("AntigravityDispatcher", () => {
 
   it("passes --model from override, falling back to configured model", async () => {
     mockFound();
-    const dispatcher = new AntigravityDispatcher(
+    const dispatcher = new GenericCliDispatcher(
       baseSvc({ model: "gemini-3.1-pro" } as Partial<ServiceConfig>),
     );
 
@@ -217,7 +227,7 @@ describe("AntigravityDispatcher", () => {
   it("appends file context to the prompt and adds external dirs via --add-dir", async () => {
     mockFound();
     mockStream([exit()]);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     await runToCompletion(
       dispatcher,
       "review this",
@@ -225,7 +235,14 @@ describe("AntigravityDispatcher", () => {
       "/repo",
     );
     const args = capturedArgs();
-    expect(args[args.indexOf("--add-dir") + 1]).toBe("/elsewhere/lib");
+    // {{working_dir}} and {{file_dirs}} both map to --add-dir for agy: the
+    // workingDir itself plus each external file's directory get context.
+    const addDirs = args.reduce<string[]>((acc, a, i) => {
+      if (a === "--add-dir") acc.push(args[i + 1]!);
+      return acc;
+    }, []);
+    expect(addDirs).toContain("/repo");
+    expect(addDirs).toContain("/elsewhere/lib");
     expect(args[args.length - 1]).toContain("Files to work with:");
     expect(args[args.length - 1]).toContain("/elsewhere/lib/a.ts");
   });
@@ -236,7 +253,7 @@ describe("AntigravityDispatcher", () => {
       { stream: "stderr", chunk: "429 quota exceeded, retry_after: 42" },
       exit({ exitCode: 1 }),
     ]);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     const result = await runToCompletion(dispatcher, "x");
     expect(result.success).toBe(false);
     expect(result.rateLimited).toBe(true);
@@ -246,7 +263,7 @@ describe("AntigravityDispatcher", () => {
   it("returns a timed-out DispatchResult when the subprocess times out", async () => {
     mockFound();
     mockStream([exit({ exitCode: -1, timedOut: true, durationMs: 600_000 })]);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     const result = await runToCompletion(dispatcher, "x");
     expect(result.success).toBe(false);
     expect(result.error).toContain("Timed out");
@@ -254,7 +271,7 @@ describe("AntigravityDispatcher", () => {
 
   it("has a stable id and delegates availability to commandAvailable", () => {
     commandAvailableMock.mockReturnValue(true);
-    const dispatcher = new AntigravityDispatcher(baseSvc());
+    const dispatcher = new GenericCliDispatcher(baseSvc());
     expect(dispatcher.id).toBe("antigravity_cli");
     expect(dispatcher.isAvailable()).toBe(true);
     expect(commandAvailableMock).toHaveBeenCalledWith("agy");

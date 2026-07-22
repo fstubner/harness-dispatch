@@ -1,5 +1,5 @@
 /**
- * Config-driven CLI dispatcher for harness-router.
+ * Config-driven CLI dispatcher for harness-dispatch.
  *
  * Every part of the invocation comes from `svc.protocol` (CliProtocolConfig,
  * see types.ts) — this dispatcher has no hardcoded knowledge of any specific
@@ -12,6 +12,7 @@
  * redefinition of an existing one) needs zero new TypeScript.
  */
 
+import os from "node:os";
 import path from "node:path";
 import which from "which";
 import type {
@@ -97,6 +98,38 @@ function buildFullPrompt(protocol: CliProtocolConfig, prompt: string, files: str
   return `${prompt}\n\n${protocol.fileListHeader}\n${fileList}`;
 }
 
+/** Expand one `protocol.args` token into zero or more literal argv tokens — see CliProtocolConfig's doc comment for the token reference. */
+function expandToken(
+  token: string,
+  protocol: CliProtocolConfig,
+  prompt: string,
+  files: string[],
+  workingDir: string,
+  effectiveModel: string | undefined,
+  safetyProfile: SafetyProfile,
+  nativeArgs: string[],
+): string[] {
+  switch (token) {
+    case "{{prompt}}":
+      return protocol.stdin ? [] : [prompt];
+    case "{{model}}":
+      return protocol.model && effectiveModel ? [protocol.model.flag, effectiveModel] : [];
+    case "{{safety}}":
+      return protocol.safety?.[safetyProfile] ? [...protocol.safety[safetyProfile]] : [];
+    case "{{working_dir}}":
+      return protocol.workingDir && workingDir
+        ? [protocol.workingDir.flag, workingDir, ...(protocol.workingDir.extraArgsWhenSet ?? [])]
+        : [];
+    case "{{file_dirs}}":
+      if (!protocol.fileDirs) return [];
+      return includedDirectories(files, workingDir).flatMap((dir) => [protocol.fileDirs!.flag, dir]);
+    case "{{native_args}}":
+      return nativeArgs;
+    default:
+      return [token];
+  }
+}
+
 function buildArgs(
   protocol: CliProtocolConfig,
   prefixArgs: string[],
@@ -104,38 +137,13 @@ function buildArgs(
   files: string[],
   workingDir: string,
   effectiveModel: string | undefined,
+  nativeArgs: string[],
   opts: DispatchOpts,
 ): string[] {
-  const args: string[] = [...prefixArgs];
-
-  if (protocol.leadingArgs) args.push(...protocol.leadingArgs);
-  if (protocol.promptInput.mode === "flag" && (protocol.promptInput.position ?? "early") === "early") {
-    args.push(protocol.promptInput.flag, prompt);
-  }
-  if (protocol.workingDir && workingDir) {
-    args.push(protocol.workingDir.flag, workingDir);
-    if (protocol.workingDir.extraArgsWhenSet) args.push(...protocol.workingDir.extraArgsWhenSet);
-  }
-  if (protocol.fileDirsFlag) {
-    for (const dir of includedDirectories(files, workingDir)) {
-      args.push(protocol.fileDirsFlag, dir);
-    }
-  }
-  if (protocol.extraArgs) args.push(...protocol.extraArgs);
   const safetyProfile: SafetyProfile = opts.safetyProfile ?? "workspace_edit";
-  const safetyArgs = protocol.safetyArgs?.[safetyProfile];
-  if (safetyArgs) args.push(...safetyArgs);
-  if (protocol.modelFlag && effectiveModel) {
-    args.push(protocol.modelFlag, effectiveModel);
-  }
-  if (protocol.promptInput.mode === "flag" && protocol.promptInput.position === "late") {
-    args.push(protocol.promptInput.flag, prompt);
-  }
-  if (protocol.promptInput.mode === "positional") {
-    args.push(prompt);
-  }
-  if (protocol.promptInput.mode === "stdin" && protocol.promptInput.sentinelArg) {
-    args.push(protocol.promptInput.sentinelArg);
+  const args: string[] = [...prefixArgs];
+  for (const token of protocol.args) {
+    args.push(...expandToken(token, protocol, prompt, files, workingDir, effectiveModel, safetyProfile, nativeArgs));
   }
   return args;
 }
@@ -218,6 +226,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
   private readonly protocol: CliProtocolConfig | undefined;
   private readonly apiKey: string | undefined;
   private readonly configuredModel: string | undefined;
+  private readonly endpointMode: ServiceConfig["endpointMode"];
+  private readonly endpointProvider: ServiceConfig["endpointProvider"];
 
   constructor(svc?: ServiceConfig) {
     super();
@@ -226,6 +236,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
     this.protocol = svc?.protocol;
     this.apiKey = svc?.apiKey;
     this.configuredModel = svc?.model;
+    this.endpointMode = svc?.endpointMode;
+    this.endpointProvider = svc?.endpointProvider;
   }
 
   isAvailable(): boolean {
@@ -280,11 +292,26 @@ export class GenericCliDispatcher extends BaseDispatcher {
       return;
     }
 
+    const effectiveWorkingDir =
+      !workingDir && protocol.workingDir?.fallback === "home" ? os.homedir() : workingDir;
     const fullPrompt = buildFullPrompt(protocol, prompt, files);
     const effectiveModel = opts.modelOverride ?? this.configuredModel;
+    const nativeArgs =
+      this.endpointMode === "harness_native_endpoint" && this.endpointProvider
+        ? (protocol.endpointNativeArgs?.[this.endpointProvider] ?? [])
+        : [];
 
     const resolved = await resolveCliCommand(this.command);
-    const args = buildArgs(protocol, resolved.prefixArgs, fullPrompt, files, workingDir, effectiveModel, opts);
+    const args = buildArgs(
+      protocol,
+      resolved.prefixArgs,
+      fullPrompt,
+      files,
+      effectiveWorkingDir,
+      effectiveModel,
+      nativeArgs,
+      opts,
+    );
 
     const extraEnv: Record<string, string> = {};
     if (protocol.apiKeyEnvVar) {
@@ -297,8 +324,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const subOpts: Parameters<typeof streamSubprocess>[2] = { timeoutMs };
-    if (workingDir) subOpts.cwd = workingDir;
-    if (protocol.promptInput.mode === "stdin") subOpts.stdin = fullPrompt;
+    if (effectiveWorkingDir) subOpts.cwd = effectiveWorkingDir;
+    if (protocol.stdin) subOpts.stdin = fullPrompt;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
 
     const stdoutBuf: string[] = [];
@@ -307,8 +334,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let durationMs = 0;
     let timedOut = false;
 
-    const eventDriven = protocol.outputMode === "jsonl_stream" && protocol.eventRules;
-    const acc = eventDriven ? new JsonlAccumulator(protocol.eventRules!) : undefined;
+    const eventDriven = protocol.output.mode === "jsonl_stream" && protocol.output.eventRules;
+    const acc = eventDriven ? new JsonlAccumulator(protocol.output.eventRules!) : undefined;
     let lineBuffer = "";
 
     for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
@@ -368,8 +395,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
       parsedOutput = acc.sawAnyJson ? acc.lastText.trim() || undefined : undefined;
       if (acc.sawUsage) tokensUsed = { input: acc.inputTokens, output: acc.outputTokens };
     } else {
-      const fields = protocol.outputFields ?? ["result", "output", "text", "response"];
-      switch (protocol.outputMode) {
+      const fields = protocol.output.fields ?? ["result", "output", "text", "response"];
+      switch (protocol.output.mode) {
         case "text":
           parsedOutput = stdout.trim() || undefined;
           break;
@@ -384,9 +411,9 @@ export class GenericCliDispatcher extends BaseDispatcher {
             parsedOutput = stderrJson !== undefined ? extractField(stderrJson, fields) : undefined;
             usageSource = stderrJson ?? stdoutJson;
           }
-          if (usageSource !== undefined && protocol.usageFields) {
-            const inTok = firstNumberAt(usageSource, protocol.usageFields.inputFields);
-            const outTok = firstNumberAt(usageSource, protocol.usageFields.outputFields);
+          if (usageSource !== undefined && protocol.output.usage) {
+            const inTok = firstNumberAt(usageSource, protocol.output.usage.input);
+            const outTok = firstNumberAt(usageSource, protocol.output.usage.output);
             if (inTok || outTok) tokensUsed = { input: inTok, output: outTok };
           }
           break;

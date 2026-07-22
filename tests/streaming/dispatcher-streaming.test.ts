@@ -1,7 +1,12 @@
 /**
  * Dispatcher streaming tests — mock `runSubprocess` (which the streaming
  * subprocess helper delegates to in test mode) and assert the events
- * emitted by each CLI dispatcher's `stream()` method.
+ * emitted by GenericCliDispatcher's `stream()` method, parameterized by
+ * each built-in harness's protocol (see the shipped config.default.yaml). There
+ * is no per-harness dispatcher class — every CLI route runs through the same
+ * `stream()` implementation, so this exercises that shared streaming
+ * contract (stdout events before completion) against each harness's real
+ * flags/output shape.
  *
  * The adapter in `stream-subprocess.ts` detects the vi.fn() mock on
  * runSubprocess and synthesises a stream from its buffered result.
@@ -9,7 +14,13 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
-import type { DispatcherEvent } from "../../src/types.js";
+import type { DispatcherEvent, ServiceConfig } from "../../src/types.js";
+import { PROTOCOL_PRESETS } from "../../src/config.js";
+
+const ANTIGRAVITY_PROTOCOL = PROTOCOL_PRESETS.antigravity_cli!;
+const CLAUDE_CODE_PROTOCOL = PROTOCOL_PRESETS.claude_code!;
+const CODEX_PROTOCOL = PROTOCOL_PRESETS.codex!;
+const CURSOR_PROTOCOL = PROTOCOL_PRESETS.cursor!;
 
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
@@ -22,10 +33,7 @@ vi.mock("which", () => ({ default: vi.fn() }));
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
 const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
-const { ClaudeCodeDispatcher } = await import("../../src/dispatchers/claude-code.js");
-const { CodexDispatcher } = await import("../../src/dispatchers/codex.js");
-const { CursorDispatcher } = await import("../../src/dispatchers/cursor.js");
-const { AntigravityDispatcher } = await import("../../src/dispatchers/antigravity.js");
+const { GenericCliDispatcher } = await import("../../src/dispatchers/generic-cli.js");
 
 const runMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveMock = resolveCliCommand as unknown as ReturnType<typeof vi.fn>;
@@ -53,19 +61,35 @@ async function collect(iter: AsyncIterable<DispatcherEvent>): Promise<Dispatcher
   return out;
 }
 
+function makeSvc(overrides: Partial<ServiceConfig>): ServiceConfig {
+  return {
+    enabled: true,
+    type: "cli",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    capabilities: {},
+    escalateOn: [],
+    ...overrides,
+  } as ServiceConfig;
+}
+
 beforeEach(() => {
   runMock.mockReset();
   resolveMock.mockReset();
   whichMock.mockReset();
 });
 
-describe("ClaudeCodeDispatcher.stream", () => {
+describe("Claude Code .stream()", () => {
   it("yields stdout then a completion event", async () => {
     mockFound();
     runMock.mockResolvedValue(
       ok({ stdout: JSON.stringify({ result: "hi there", usage: { input_tokens: 3, output_tokens: 4 } }) }),
     );
-    const events = await collect(new ClaudeCodeDispatcher().stream("do it", [], "/tmp"));
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "claude_code", command: "claude", protocol: CLAUDE_CODE_PROTOCOL }),
+    );
+    const events = await collect(d.stream("do it", [], "/tmp"));
     const types = events.map((e) => e.type);
     expect(types[0]).toBe("stdout");
     expect(types[types.length - 1]).toBe("completion");
@@ -80,7 +104,10 @@ describe("ClaudeCodeDispatcher.stream", () => {
 
   it("yields a failure completion when the CLI is not installed", async () => {
     whichMock.mockResolvedValue(null);
-    const events = await collect(new ClaudeCodeDispatcher().stream("hi", [], ""));
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "claude_code", command: "claude", protocol: CLAUDE_CODE_PROTOCOL }),
+    );
+    const events = await collect(d.stream("hi", [], ""));
     expect(events).toHaveLength(1);
     const evt = events[0]!;
     expect(evt.type).toBe("completion");
@@ -91,7 +118,7 @@ describe("ClaudeCodeDispatcher.stream", () => {
   });
 });
 
-describe("CodexDispatcher.stream", () => {
+describe("Codex .stream()", () => {
   it("emits stdout chunks and a completion with summed usage", async () => {
     mockFound();
     const jsonl =
@@ -104,7 +131,8 @@ describe("CodexDispatcher.stream", () => {
       }) +
       "\n";
     runMock.mockResolvedValue(ok({ stdout: jsonl }));
-    const events = await collect(new CodexDispatcher().stream("go", [], ""));
+    const d = new GenericCliDispatcher(makeSvc({ name: "codex", command: "codex", protocol: CODEX_PROTOCOL }));
+    const events = await collect(d.stream("go", [], ""));
     const completion = events.find((e) => e.type === "completion");
     expect(completion).toBeDefined();
     if (completion?.type === "completion") {
@@ -116,7 +144,8 @@ describe("CodexDispatcher.stream", () => {
   it("emits a completion with error for non-zero exit", async () => {
     mockFound();
     runMock.mockResolvedValue(ok({ stdout: "", stderr: "boom", exitCode: 2 }));
-    const events = await collect(new CodexDispatcher().stream("go", [], ""));
+    const d = new GenericCliDispatcher(makeSvc({ name: "codex", command: "codex", protocol: CODEX_PROTOCOL }));
+    const events = await collect(d.stream("go", [], ""));
     const completion = events.find((e) => e.type === "completion");
     expect(completion?.type).toBe("completion");
     if (completion?.type === "completion") {
@@ -126,7 +155,7 @@ describe("CodexDispatcher.stream", () => {
   });
 });
 
-describe("CursorDispatcher.stream", () => {
+describe("Cursor .stream()", () => {
   it("yields stdout then a completion with the parsed result", async () => {
     mockFound();
     runMock.mockResolvedValue(
@@ -137,7 +166,10 @@ describe("CursorDispatcher.stream", () => {
         }),
       }),
     );
-    const events = await collect(new CursorDispatcher().stream("write tests", [], "/tmp/work"));
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "cursor", command: "cursor-agent", protocol: CURSOR_PROTOCOL }),
+    );
+    const events = await collect(d.stream("write tests", [], "/tmp/work"));
     const completion = events.find((e) => e.type === "completion");
     expect(completion?.type).toBe("completion");
     if (completion?.type === "completion") {
@@ -155,7 +187,10 @@ describe("CursorDispatcher.stream", () => {
         stderr: "Error: 429 rate limit exceeded",
       }),
     );
-    const events = await collect(new CursorDispatcher().stream("go", [], "/tmp/work"));
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "cursor", command: "cursor-agent", protocol: CURSOR_PROTOCOL }),
+    );
+    const events = await collect(d.stream("go", [], "/tmp/work"));
     const completion = events.find((e) => e.type === "completion");
     expect(completion?.type).toBe("completion");
     if (completion?.type === "completion") {
@@ -165,14 +200,15 @@ describe("CursorDispatcher.stream", () => {
   });
 });
 
-describe("AntigravityDispatcher.stream", () => {
+describe("Antigravity .stream()", () => {
   it("runs agy in print mode and reports its output", async () => {
     mockFound("/usr/local/bin/agy");
     runMock.mockResolvedValue(ok({ stdout: "antigravity says hi" }));
 
-    const events = await collect(
-      new AntigravityDispatcher().stream("hi", [], "/tmp/work"),
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "antigravity_cli", command: "agy", protocol: ANTIGRAVITY_PROTOCOL }),
     );
+    const events = await collect(d.stream("hi", [], "/tmp/work"));
 
     const completion = events.find((event) => event.type === "completion");
     expect(completion?.type).toBe("completion");
@@ -192,7 +228,10 @@ describe("dispatch() still drains the stream correctly", () => {
   it("claude_code dispatch works through BaseDispatcher default", async () => {
     mockFound();
     runMock.mockResolvedValue(ok({ stdout: JSON.stringify({ result: "ok" }) }));
-    const res = await new ClaudeCodeDispatcher().dispatch("go", [], "");
+    const d = new GenericCliDispatcher(
+      makeSvc({ name: "claude_code", command: "claude", protocol: CLAUDE_CODE_PROTOCOL }),
+    );
+    const res = await d.dispatch("go", [], "");
     expect(res.success).toBe(true);
     expect(res.output).toBe("ok");
   });

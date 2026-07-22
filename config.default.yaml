@@ -1,0 +1,370 @@
+# harness-dispatch configuration — shipped defaults
+#
+# This is the config harness-dispatch ships with — not a separate "defaults
+# registry" in some other format, just an ordinary config.yaml shape. A
+# DIFFERENT file from your own config.yaml on purpose: this one is tracked
+# and updated by the package itself, yours is gitignored/untouched by
+# updates and may hold secrets/local overrides — keeping them separate means
+# neither ever clobbers the other. The entries below are both the built-in
+# defaults and the worked examples of the pattern. With no config.yaml of
+# your own, the router uses this file directly, filtered by which CLIs are
+# actually installed. To customize, copy this file to config.yaml in your
+# own project and edit — or run `harness-dispatch configure` to generate a
+# starting point instead. Same schema, same parser, no special cases either
+# way. Add a new entry and it's a route; delete one and it's gone.
+#
+# Route selection scores each entry by task fit:
+#   capabilities[task_type] x leaderboard ELO x cli_capability x quota x weight
+# Billing safety: routes that can cost money (metered api_key, unknown billing)
+# stay blocked until you set allow_paid_usage: true on them. Product-login CLIs
+# (Claude Code, Codex, Cursor) run by default — their providers hard-stop at
+# your plan's included usage.
+#
+# ${ENV_VAR} anywhere in a string value is replaced from the environment.
+
+clis:
+  # ── Claude Code ─────────────────────────────────────────────────────────────
+  # Best for plan + review (extended thinking). Subscription auth via the CLI's
+  # own login; add api_key: ${ANTHROPIC_API_KEY} only for API billing.
+  - name: claude_code_cli
+    harness: claude_code
+    command: claude
+    model_hint: >-
+      Anthropic model family only. Current model ids:
+      https://platform.claude.com/docs/en/docs/about-claude/models/overview
+      (e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may
+      lag behind what's newly listed there.
+    leaderboard_model: claude-opus-4-6
+    cli_capability: 1.1
+    tier: 1
+    capabilities: { execute: 0.95, plan: 1.0, review: 1.0 }
+    max_output_tokens: 64000
+    max_input_tokens: 1000000 # Opus + Sonnet 1M context
+    provider: anthropic
+    surface: claude_agent_sdk
+    auth_source: oauth_session
+    # protocol: is the full invocation template — args is a literal command
+    # line; {{tokens}} are substituted at dispatch time (see the reference at
+    # the bottom of this file).
+    protocol:
+      args: ["-p", "{{prompt}}", "--output-format", "json", "{{safety}}", "{{model}}"]
+      model: { flag: "--model" }
+      safety:
+        read_only: ["--allowedTools", "Read", "--permission-mode", "plan"]
+        workspace_edit: ["--allowedTools", "Read,Edit,Write", "--permission-mode", "acceptEdits"]
+        full_auto: ["--allowedTools", "Bash,Read,Edit,Write", "--permission-mode", "acceptEdits"]
+      # Claude Code reads ANTHROPIC_API_KEY itself to switch from
+      # subscription/OAuth session auth to API-key billing — without this,
+      # setting api_key: on the route reclassified billing to metered_api
+      # (blocking it) while the CLI kept silently using subscription auth.
+      api_key_env_var: ANTHROPIC_API_KEY
+      file_list_header: "Files to work with:"
+      file_list_bullet: "  "
+      output:
+        mode: json_field
+        fields: [result, response, text]
+        usage: { input: [usage.input_tokens], output: [usage.output_tokens] }
+      success_requires_output: false
+
+  # ── Codex ───────────────────────────────────────────────────────────────────
+  # Best for execute — full-auto drives code + tests in a loop. Streams NDJSON
+  # events mid-run; event_rules below surface tool_use/thinking/usage live.
+  - name: codex_cli
+    harness: codex
+    command: codex
+    model_hint: >-
+      OpenAI/Codex model family only. Current model ids:
+      https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol,
+      gpt-5.6-terra) — the installed codex CLI may lag behind what's newly
+      listed there.
+    leaderboard_model: gpt-5.4
+    cli_capability: 1.08
+    tier: 1
+    capabilities: { execute: 1.0, plan: 0.83, review: 0.82 }
+    max_output_tokens: 128000
+    max_input_tokens: 400000
+    provider: openai
+    surface: codex_cli
+    auth_source: product_login
+    billing_kind: included_plan_then_flexible_credits
+    # OpenAI hard-stops at the plan's included usage unless you enabled
+    # flexible-credit overage on your account — set true here if you did.
+    paid_usage_possible: false
+    protocol:
+      # "exec" is Codex's required subcommand; trailing "-" = read prompt from
+      # stdin (stdin: true below).
+      args: ["exec", "{{native_args}}", "{{safety}}", "{{model}}", "{{working_dir}}", "--json", "-"]
+      stdin: true
+      working_dir: { flag: "--cd", extra_args_when_set: ["--skip-git-repo-check"] }
+      model: { flag: "--model" }
+      safety:
+        read_only: ["--sandbox", "read-only"]
+        workspace_edit: ["--sandbox", "workspace-write"]
+        full_auto: ["--full-auto"]
+      api_key_env_var: OPENAI_API_KEY
+      file_list_header: "Files to work with:"
+      file_list_bullet: "  "
+      output:
+        mode: jsonl_stream
+        event_rules:
+          - when: { type: "item.completed", "item.type": "agent_message" }
+            emit: text
+            text_field: item.text
+          - when: { type: "message" }
+            emit: text
+            text_field: message.content
+          - when: { "item.type": "tool_use" }
+            emit: tool_use
+            name_field: item.name
+            input_field: item.input
+          - when: { type: "thinking" }
+            emit: thinking
+            chunk_field: item.text
+          - when: {} # unconditional — fires on every line carrying usage
+            emit: usage
+            input_token_fields: [usage.input_tokens, usage.prompt_tokens]
+            output_token_fields: [usage.output_tokens, usage.completion_tokens]
+      success_requires_output: false
+      # Used only when a route runs endpoint_mode: harness_native_endpoint
+      # against a matching endpoint_provider (see codex_ollama example below).
+      endpoint_native_args:
+        ollama: ["--oss", "--local-provider", "ollama"]
+        lmstudio: ["--oss", "--local-provider", "lmstudio"]
+
+  # ── Cursor ──────────────────────────────────────────────────────────────────
+  # Best for execute with editor-aware codebase indexing. Note: Cursor print
+  # mode has write+shell capability, so these routes run under full_auto —
+  # they're skipped for read_only/workspace_edit requests.
+  - name: cursor_cli
+    harness: cursor
+    command: cursor-agent
+    model_hint: >-
+      Wide multi-vendor catalog. Current model ids and pricing:
+      https://cursor.com/docs/models — or run `cursor-agent --list-models`
+      for what's actually available on this install.
+    leaderboard_model: claude-sonnet-4-6
+    cli_capability: 1.05
+    tier: 1
+    capabilities: { execute: 1.0, plan: 0.82, review: 0.9 }
+    max_output_tokens: 64000
+    max_input_tokens: 1000000
+    provider: cursor
+    surface: cursor_agent_cli
+    auth_source: product_login
+    billing_kind: included_usage_then_on_demand
+    # Cursor hard-stops at the plan's included pool unless on-demand billing is
+    # enabled in Settings -> Billing -> Spending — set true here if you did.
+    paid_usage_possible: false
+    # Capability floor: cursor-agent print mode always has write+shell
+    # capability, so this route only serves requests that allow full_auto —
+    # it is skipped (safety_incompatible) for read_only/workspace_edit calls.
+    # Override here if a future cursor-agent grows restricted modes.
+    effective_safety: full_auto
+    protocol:
+      # -p is Cursor's boolean "print mode" flag; the prompt itself is the
+      # trailing positional {{prompt}}.
+      args: ["-p", "--trust", "{{working_dir}}", "--output-format", "json", "{{model}}", "{{prompt}}"]
+      # cursor-agent needs SOME --workspace value even with no workingDir —
+      # fall back to the user's home directory.
+      working_dir: { flag: "--workspace", fallback: home }
+      model: { flag: "--model" }
+      api_key_env_var: CURSOR_API_KEY
+      file_list_header: "Focus on these files:"
+      file_list_bullet: "  - "
+      output:
+        mode: json_field
+        fields: [result, output, text]
+        usage: { input: [usage.input_tokens, usage.prompt_tokens], output: [usage.output_tokens, usage.completion_tokens] }
+      # success_requires_output omitted -> strict: exit 0 with no parseable
+      # output still counts as failure.
+
+  # ── Antigravity ─────────────────────────────────────────────────────────────
+  # Google's successor to Gemini CLI (shut down 2026-06-18). Best for plan +
+  # review — 1M+ context holds whole codebases; free_quota billing. Model
+  # selection lives in the agy CLI's own config, not per route.
+  - name: antigravity_cli
+    harness: antigravity_cli
+    command: agy
+    model_hint: >-
+      Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's
+      portion: https://ai.google.dev/gemini-api/docs/models; check the agy
+      CLI's own docs for the rest.
+    leaderboard_model: gemini-3.1-pro-preview # closest benchmarked model, for scoring
+    cli_capability: 1.0
+    tier: 1
+    capabilities: { execute: 0.87, plan: 0.97, review: 0.95 }
+    max_output_tokens: 65536
+    max_input_tokens: 2000000
+    provider: google
+    surface: antigravity_cli
+    auth_source: product_login
+    billing_kind: free_quota
+    paid_usage_possible: false
+    protocol:
+      args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--print", "{{prompt}}"]
+      # --print is headless: agy cannot prompt for per-tool permissions, so
+      # every profile needs auto-approval or tools are silently auto-denied
+      # ("a tool required the read_file permission that headless mode cannot
+      # prompt for"). read_only stays safe via --mode plan --sandbox (blocks
+      # writes/shell); the skip-permissions flag just lets reads proceed.
+      working_dir: { flag: "--add-dir" }
+      file_dirs: { flag: "--add-dir" }
+      model: { flag: "--model" }
+      safety:
+        read_only: ["--mode", "plan", "--sandbox", "--dangerously-skip-permissions"]
+        workspace_edit: ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+        full_auto: ["--dangerously-skip-permissions"]
+      file_list_header: "Files to work with:"
+      file_list_bullet: "  "
+      output:
+        mode: text
+      success_requires_output: false
+
+  # ── More routes from the same harnesses ─────────────────────────────────────
+  # A route is (harness, model) — declare as many as you want. `harness:` picks
+  # up everything from the matching entry above (including protocol), so a
+  # variant is a few lines:
+  #
+  # - name: codex_sol
+  #   harness: codex
+  #   model: gpt-5.6-sol
+  #   tier: 1
+  #   weight: 0.9
+  #
+  # - name: codex_ollama          # Codex harness driving a local Ollama model
+  #   harness: codex
+  #   model: qwen3-coder:latest
+  #   endpoint_mode: harness_native_endpoint
+  #   endpoint_provider: ollama
+  #   billing_kind: local_compute
+  #   tier: 3
+
+  # ── A wholly new CLI harness ────────────────────────────────────────────────
+  # harness: generic + your own protocol: block — no code changes. protocol.args
+  # is written the way you'd type the command line; reserved {{tokens}}:
+  #
+  #   {{prompt}}       the prompt text (omitted from args if stdin: true)
+  #   {{model}}        [model.flag, value] if a model is set, else nothing
+  #   {{safety}}       safety[requested profile], zero or more tokens
+  #   {{working_dir}}  [working_dir.flag, dir, ...extra_args_when_set] if set
+  #   {{file_dirs}}    [file_dirs.flag, dir] per unique file directory
+  #   {{native_args}}  endpoint_native_args[endpoint_provider] under
+  #                    endpoint_mode: harness_native_endpoint
+  #
+  # Everything else in args passes through literally. You can also reuse an
+  # entry above by name (protocol: cursor) or extend one (protocol: { extends:
+  # codex, model: { flag: "--llm-model" } }) — safety merges per-profile.
+  # See README.md#adding-a-harness for the full reference.
+  #
+  # - name: my_cli
+  #   harness: generic
+  #   command: my-cli
+  #   tier: 3
+  #   protocol:
+  #     args: ["-p", "{{prompt}}", "{{model}}", "--json"]
+  #     model: { flag: "--model" }
+  #     output: { mode: json_field, fields: [result] }
+
+endpoints:
+  # OpenAI-compatible HTTP endpoints — local or hosted. Same idea: an entry is
+  # a route. Endpoints are structurally read_only (no agent loop or file
+  # access), so they serve plan/review calls, never execute.
+  #
+  # - name: ollama
+  #   base_url: http://localhost:11434/v1
+  #   model: llama3.2
+  #   billing_kind: local_compute
+  #   tier: 3
+  #
+  # - name: lmstudio
+  #   base_url: http://localhost:1234/v1
+  #   model: mistral-7b-instruct
+  #   api_key: lm-studio
+  #   billing_kind: local_compute
+  #   tier: 3
+  #
+  # - name: gemini_api           # AI Studio direct (free tier)
+  #   base_url: https://generativelanguage.googleapis.com/v1beta/openai
+  #   model: gemini-2.5-flash
+  #   api_key: ${GEMINI_API_KEY}
+  #   billing_kind: free_quota
+  #   tier: 3
+  #
+  # - name: openrouter           # metered — blocked until you opt in
+  #   base_url: https://openrouter.ai/api/v1
+  #   model: openai/gpt-5.4
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   allow_paid_usage: true
+  #   tier: 1
+  #
+  # - name: nvidia_nim           # NVIDIA-hosted models (build.nvidia.com)
+  #   base_url: https://integrate.api.nvidia.com/v1
+  #   model: qwen/qwen3-coder-480b-a35b-instruct   # any model id from build.nvidia.com
+  #   api_key: ${NVIDIA_API_KEY}
+  #   allow_paid_usage: true     # metered API key -> blocked until you opt in
+  #   tier: 2
+  #   # Optional, both surfaced to calling agents via the `usage` tool. `usage`
+  #   # with listModels: nvidia_nim returns this models: list VERBATIM, no
+  #   # network call — declaring it overrides live discovery, e.g. to pin
+  #   # specific ids or because the endpoint's live /models is noisy/untrusted.
+  #   # Omit models: and listModels instead does a live GET {base_url}/models
+  #   # (key stays server-side either way). model_hint points humans/agents at
+  #   # the full catalog for picking new ids to add here.
+  #   models: [qwen/qwen3-coder-480b-a35b-instruct]
+  #   model_hint: "Full catalog: https://build.nvidia.com/models"
+  #
+  # - name: anthropic_api        # Claude via the direct Anthropic API
+  #   base_url: https://api.anthropic.com/v1
+  #   model: claude-opus-4-6
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   wire_protocol: anthropic_messages   # see below — different from the default
+  #   allow_paid_usage: true     # metered API key -> blocked until you opt in
+  #   max_output_tokens: 8192    # required by the Messages API; defaults to 8192 if omitted
+  #   tier: 1
+  #
+  # wire_protocol picks which request/response shape this endpoint speaks:
+  #
+  #   openai_chat_completions (default)  POST {base_url}/chat/completions,
+  #     Authorization: Bearer <api_key>, OpenAI's messages[]/choices[] shape.
+  #     Covers Ollama, LM Studio, OpenRouter, NVIDIA NIM, Gemini's OpenAI-
+  #     compatible endpoint, and most other hosted/local model servers.
+  #
+  #   anthropic_messages   POST {base_url}/messages, x-api-key + anthropic-
+  #     version headers (NOT Bearer), system prompt at the top level (not a
+  #     messages[] entry), max_tokens required, content: [{type,text}] +
+  #     usage: {input_tokens,output_tokens} response shape. Use this for
+  #     Anthropic's own API or any third-party host that mirrors its
+  #     Messages API. thinking_level isn't translated to Anthropic's
+  #     extended-thinking parameter yet.
+  #
+  # - name: claude_compatible_host   # a third party serving the Anthropic shape
+  #   base_url: https://your-host.example.com/v1
+  #   model: claude-opus-4-6
+  #   api_key: ${CLAUDE_COMPATIBLE_API_KEY}
+  #   wire_protocol: anthropic_messages
+  #   allow_paid_usage: true
+  #   tier: 2
+
+# ── Global settings ───────────────────────────────────────────────────────────
+
+# OpenTelemetry traces — OFF by default. Purely local operator observability:
+# only useful if you run an OTLP collector (Jaeger, Tempo, ...) on
+# localhost:4318 (or point OTEL_EXPORTER_OTLP_ENDPOINT elsewhere). Nothing is
+# ever sent anywhere unless you enable this AND run a collector.
+# telemetry:
+#   enabled: true
+
+# How long job artifacts (~/.harness-dispatch/jobs: manifests, stdout/stderr
+# logs, workspace snapshots) are kept before being pruned. Default: 7 days.
+# The dispatch log (~/.harness-dispatch/logs/dispatches.jsonl) is size-capped
+# at ~5MB with one rotation instead of time-based.
+# retention:
+#   jobs_days: 7
+
+# Per-route knobs worth knowing (all optional, all shown in the entries above
+# or README.md): enabled, weight, timeout_ms, safety_profile, effective_safety,
+# workspace_policy (shared | shared_locked | copy | git_worktree),
+# thinking_level, escalate_on, allow_paid_usage, billing_kind,
+# paid_usage_possible.
+#
+# disabled: [route_name, ...] hides an entry without deleting it.

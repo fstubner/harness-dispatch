@@ -74,7 +74,7 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("rewrites npm .cmd shims to node plus the real CLI JavaScript entrypoint", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-cmd-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cmd-"));
     const cmdPath = path.join(root, "gemini.cmd");
     const scriptPath = path.join(
       root,

@@ -89,20 +89,16 @@ describe("GenericCliDispatcher", () => {
 
   it("errors when the configured binary isn't found on PATH", async () => {
     whichMock.mockResolvedValue(null);
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     const res = await d.dispatch("hi", [], "/tmp");
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/not found on PATH/);
   });
 
-  it("appends the prompt via a flag when promptInput.mode is 'flag'", async () => {
+  it("substitutes {{prompt}} wherever it's placed in args", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "the answer" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "flag", flag: "-p" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }));
     await d.dispatch("do the thing", [], "/tmp");
     const { args } = captureSubprocessCall(0);
     const idx = args.indexOf("-p");
@@ -110,23 +106,19 @@ describe("GenericCliDispatcher", () => {
     expect(args[idx + 1]).toBe("do the thing");
   });
 
-  it("appends the prompt positionally when promptInput.mode is 'positional'", async () => {
+  it("appends the prompt positionally when {{prompt}} is the last token", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     await d.dispatch("go", [], "/tmp");
     const { args } = captureSubprocessCall(0);
     expect(args[args.length - 1]).toBe("go");
   });
 
-  it("writes the prompt to stdin and omits it from args when promptInput.mode is 'stdin'", async () => {
+  it("writes the prompt to stdin and omits {{prompt}} from args when stdin: true", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "stdin" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "text" } }));
     await d.dispatch("secret prompt", [], "/tmp");
     const { args, opts } = captureSubprocessCall(0);
     expect(args).not.toContain("secret prompt");
@@ -138,9 +130,9 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc({
-        promptInput: { mode: "positional" },
+        args: ["{{prompt}}", "{{working_dir}}"],
         workingDir: { flag: "--cd" },
-        outputMode: "text",
+        output: { mode: "text" },
       }),
     );
     await d.dispatch("go", [], "/tmp/project");
@@ -154,20 +146,18 @@ describe("GenericCliDispatcher", () => {
   it("relies on subprocess cwd alone (no flag) when workingDir isn't configured", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     await d.dispatch("go", [], "/tmp/project");
     const { args, opts } = captureSubprocessCall(0);
     expect(args).not.toContain("/tmp/project");
     expect(opts?.cwd).toBe("/tmp/project");
   });
 
-  it("passes the model flag only when both modelFlag is configured and a model override is given", async () => {
+  it("passes the model flag only when both model.flag is configured and a model override is given", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, modelFlag: "--model", outputMode: "text" }),
+      svc({ args: ["{{prompt}}", "{{model}}"], model: { flag: "--model" }, output: { mode: "text" } }),
     );
     await d.dispatch("go", [], "/tmp", { modelOverride: "some-model" });
     const { args } = captureSubprocessCall(0);
@@ -181,9 +171,9 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc({
-        promptInput: { mode: "positional" },
-        outputMode: "text",
-        safetyArgs: {
+        args: ["{{prompt}}", "{{safety}}"],
+        output: { mode: "text" },
+        safety: {
           read_only: ["--mode", "plan"],
           full_auto: ["--dangerous"],
         },
@@ -196,38 +186,35 @@ describe("GenericCliDispatcher", () => {
     expect(args).not.toContain("--dangerous");
   });
 
-  it("always appends extraArgs", async () => {
+  it("always includes literal args from the template", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text", extraArgs: ["--trust"] }),
+      svc({ args: ["{{prompt}}", "--trust"], output: { mode: "text" } }),
     );
     await d.dispatch("go", [], "/tmp");
     const { args } = captureSubprocessCall(0);
     expect(args).toContain("--trust");
   });
 
-  it("outputMode 'text' uses raw trimmed stdout as the output", async () => {
+  it("output mode 'text' uses raw trimmed stdout as the output", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "  plain text answer  \n" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     const res = await d.dispatch("go", [], "/tmp");
     expect(res.success).toBe(true);
     expect(res.output).toBe("plain text answer");
   });
 
-  it("outputMode 'json_field' extracts the first matching field, in priority order", async () => {
+  it("output mode 'json_field' extracts the first matching field, in priority order", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: JSON.stringify({ output: "from output field", text: "from text field" }) }),
     );
     const d = new GenericCliDispatcher(
       svc({
-        promptInput: { mode: "positional" },
-        outputMode: "json_field",
-        outputFields: ["result", "output", "text"],
+        args: ["{{prompt}}"],
+        output: { mode: "json_field", fields: ["result", "output", "text"] },
       }),
     );
     const res = await d.dispatch("go", [], "/tmp");
@@ -235,22 +222,18 @@ describe("GenericCliDispatcher", () => {
     expect(res.output).toBe("from output field");
   });
 
-  it("outputMode 'json_field' supports dotted paths for nested fields", async () => {
+  it("output mode 'json_field' supports dotted paths for nested fields", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ message: { content: "nested answer" } }) }));
     const d = new GenericCliDispatcher(
-      svc({
-        promptInput: { mode: "positional" },
-        outputMode: "json_field",
-        outputFields: ["message.content"],
-      }),
+      svc({ args: ["{{prompt}}"], output: { mode: "json_field", fields: ["message.content"] } }),
     );
     const res = await d.dispatch("go", [], "/tmp");
     expect(res.success).toBe(true);
     expect(res.output).toBe("nested answer");
   });
 
-  it("outputMode 'jsonl_stream' concatenates the field from each JSON line", async () => {
+  it("output mode 'jsonl_stream' concatenates the field from each JSON line", async () => {
     mockFound();
     const lines = [
       JSON.stringify({ text: "Hello, " }),
@@ -259,7 +242,7 @@ describe("GenericCliDispatcher", () => {
     ].join("\n");
     runSubprocessMock.mockResolvedValue(ok({ stdout: lines }));
     const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "jsonl_stream", outputFields: ["text"] }),
+      svc({ args: ["{{prompt}}"], output: { mode: "jsonl_stream", fields: ["text"] } }),
     );
     const res = await d.dispatch("go", [], "/tmp");
     expect(res.success).toBe(true);
@@ -269,9 +252,7 @@ describe("GenericCliDispatcher", () => {
   it("reports failure on a non-zero exit code", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "", stderr: "bad thing", exitCode: 2 }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     const res = await d.dispatch("go", [], "/tmp");
     expect(res.success).toBe(false);
     expect(res.error).toBe("bad thing");
@@ -282,9 +263,7 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(
       ok({ stdout: "", stderr: "Error: 429 Too Many Requests — retry-after: 12", exitCode: 1 }),
     );
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     const res = await d.dispatch("go", [], "/tmp");
     expect(res.success).toBe(false);
     expect(res.rateLimited).toBe(true);
@@ -294,9 +273,7 @@ describe("GenericCliDispatcher", () => {
   it("returns a timed-out DispatchResult when the subprocess times out", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "", stderr: "", exitCode: 124, timedOut: true }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     const res = await d.dispatch("go", [], "/tmp", { timeoutMs: 100 });
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/timed out/i);
@@ -305,18 +282,14 @@ describe("GenericCliDispatcher", () => {
   it("propagates the provided timeoutMs to runSubprocess", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     await d.dispatch("go", [], "/tmp", { timeoutMs: 9999 });
     const { opts } = captureSubprocessCall(0);
     expect(opts?.timeoutMs).toBe(9999);
   });
 
   it("uses the route's configured name as its dispatcher id", () => {
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
     expect(d.id).toBe("my_cli");
   });
 
@@ -336,7 +309,7 @@ describe("GenericCliDispatcher", () => {
     expect(missingProtocol.isAvailable()).toBe(false);
 
     const missingCommand = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, outputMode: "text" }, { command: "" }),
+      svc({ args: ["{{prompt}}"], output: { mode: "text" } }, { command: "" }),
     );
     expect(missingCommand.isAvailable()).toBe(false);
   });
@@ -346,7 +319,7 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc(
-        { promptInput: { mode: "positional" }, modelFlag: "--model", outputMode: "text" },
+        { args: ["{{prompt}}", "{{model}}"], model: { flag: "--model" }, output: { mode: "text" } },
         { model: "configured-default" },
       ),
     );
@@ -361,7 +334,7 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc(
-        { promptInput: { mode: "positional" }, modelFlag: "--model", outputMode: "text" },
+        { args: ["{{prompt}}", "{{model}}"], model: { flag: "--model" }, output: { mode: "text" } },
         { model: "configured-default" },
       ),
     );
@@ -376,9 +349,9 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc({
-        promptInput: { mode: "positional" },
+        args: ["{{prompt}}", "{{working_dir}}"],
         workingDir: { flag: "--cd", extraArgsWhenSet: ["--skip-git-repo-check"] },
-        outputMode: "text",
+        output: { mode: "text" },
       }),
     );
     await d.dispatch("go", [], "/tmp/project");
@@ -391,11 +364,15 @@ describe("GenericCliDispatcher", () => {
     expect(argsNoWd).not.toContain("--skip-git-repo-check");
   });
 
-  it("repeats fileDirsFlag once per unique absolute file directory, excluding workingDir", async () => {
+  it("repeats fileDirs.flag once per unique absolute file directory, excluding workingDir", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, fileDirsFlag: "--add-dir", outputMode: "text" }),
+      svc({
+        args: ["{{prompt}}", "{{file_dirs}}"],
+        fileDirs: { flag: "--add-dir" },
+        output: { mode: "text" },
+      }),
     );
     await d.dispatch(
       "go",
@@ -415,10 +392,10 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc({
-        promptInput: { mode: "flag", flag: "-p" },
+        args: ["-p", "{{prompt}}"],
         fileListHeader: "Focus on these files:",
         fileListBullet: "  - ",
-        outputMode: "text",
+        output: { mode: "text" },
       }),
     );
     await d.dispatch("do it", ["/repo/a.ts"], "/repo");
@@ -430,9 +407,7 @@ describe("GenericCliDispatcher", () => {
   it("omits the file list entirely when fileListHeader isn't configured", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
-    const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "flag", flag: "-p" }, outputMode: "text" }),
-    );
+    const d = new GenericCliDispatcher(svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }));
     await d.dispatch("do it", ["/repo/a.ts"], "/repo");
     const { args } = captureSubprocessCall(0);
     const idx = args.indexOf("-p");
@@ -444,7 +419,7 @@ describe("GenericCliDispatcher", () => {
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc(
-        { promptInput: { mode: "positional" }, apiKeyEnvVar: "MY_CLI_API_KEY", outputMode: "text" },
+        { args: ["{{prompt}}"], apiKeyEnvVar: "MY_CLI_API_KEY", output: { mode: "text" } },
         { apiKey: "configured-key" },
       ),
     );
@@ -458,14 +433,14 @@ describe("GenericCliDispatcher", () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
-      svc({ promptInput: { mode: "positional" }, apiKeyEnvVar: "MY_CLI_API_KEY", outputMode: "text" }),
+      svc({ args: ["{{prompt}}"], apiKeyEnvVar: "MY_CLI_API_KEY", output: { mode: "text" } }),
     );
     await d.dispatch("go", [], "/tmp");
     const { opts } = captureSubprocessCall(0);
     expect(opts?.env?.["MY_CLI_API_KEY"]).toBe("");
   });
 
-  describe("outputMode 'jsonl_stream' with eventRules — Codex-parity event semantics", () => {
+  describe("output mode 'jsonl_stream' with eventRules — Codex-parity event semantics", () => {
     const codexLikeRules = [
       {
         when: { type: "item.completed", "item.type": "agent_message" },
@@ -493,7 +468,7 @@ describe("GenericCliDispatcher", () => {
       const lines = [JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "final answer" } })];
       runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n" }));
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "stdin" }, outputMode: "jsonl_stream", eventRules: codexLikeRules }),
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
       );
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.success).toBe(true);
@@ -509,7 +484,7 @@ describe("GenericCliDispatcher", () => {
       ];
       runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n" }));
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "stdin" }, outputMode: "jsonl_stream", eventRules: codexLikeRules }),
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
       );
 
       const events: Array<{ type: string }> = [];
@@ -529,7 +504,7 @@ describe("GenericCliDispatcher", () => {
       ];
       runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n" }));
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "stdin" }, outputMode: "jsonl_stream", eventRules: codexLikeRules }),
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
       );
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.tokensUsed).toEqual({ input: 13, output: 7 });
@@ -542,7 +517,7 @@ describe("GenericCliDispatcher", () => {
         ok({ stdout: "not json at all", stderr: stderrLines.join("\n") }),
       );
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "stdin" }, outputMode: "jsonl_stream", eventRules: codexLikeRules }),
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
       );
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.output).toBe("from stderr");
@@ -555,9 +530,8 @@ describe("GenericCliDispatcher", () => {
       runSubprocessMock.mockResolvedValue(ok({ stdout: "not valid json at all" }));
       const d = new GenericCliDispatcher(
         svc({
-          promptInput: { mode: "positional" },
-          outputMode: "json_field",
-          outputFields: ["result"],
+          args: ["{{prompt}}"],
+          output: { mode: "json_field", fields: ["result"] },
           successRequiresOutput: false,
         }),
       );
@@ -570,7 +544,7 @@ describe("GenericCliDispatcher", () => {
       mockFound();
       runSubprocessMock.mockResolvedValue(ok({ stdout: "", stderr: "boom", exitCode: 1 }));
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "positional" }, outputMode: "text", successRequiresOutput: false }),
+        svc({ args: ["{{prompt}}"], output: { mode: "text" }, successRequiresOutput: false }),
       );
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.success).toBe(false);
@@ -581,7 +555,7 @@ describe("GenericCliDispatcher", () => {
       mockFound();
       runSubprocessMock.mockResolvedValue(ok({ stdout: "not valid json at all" }));
       const d = new GenericCliDispatcher(
-        svc({ promptInput: { mode: "positional" }, outputMode: "json_field", outputFields: ["result"] }),
+        svc({ args: ["{{prompt}}"], output: { mode: "json_field", fields: ["result"] } }),
       );
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.success).toBe(false);

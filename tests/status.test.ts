@@ -4,7 +4,7 @@ import {
   buildUsage,
   renderStatusText,
   renderUsageText,
-  type HarnessRouterStatus,
+  type HarnessDispatchStatus,
   type RouteStatus,
 } from "../src/status.js";
 
@@ -36,9 +36,9 @@ function makeRoute(overrides: Partial<RouteStatus> = {}): RouteStatus {
   } as RouteStatus;
 }
 
-function makeStatus(routes: RouteStatus[], ready: string[]): HarnessRouterStatus {
+function makeStatus(routes: RouteStatus[], ready: string[]): HarnessDispatchStatus {
   return {
-    name: "harness-router",
+    name: "harness-dispatch",
     generatedAt: "2026-07-10T00:00:00.000Z",
     routes,
     ready,
@@ -94,16 +94,37 @@ describe("buildUsage", () => {
     });
   });
 
-  it("includes a modelHint pointing at cursor's live --list-models", () => {
-    const status = makeStatus([makeRoute({ id: "cursor_cli", harness: "cursor" })], []);
+  it("surfaces the route's config-declared model_hint (no hardcoded per-harness table)", () => {
+    // Hints are declared data: the shipped config's cursor entry sets
+    // model_hint mentioning cursor-agent --list-models; a user-added harness
+    // declares its own the same way.
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "cursor_cli",
+          harness: "cursor",
+          modelHint: "run cursor-agent --list-models for this install's catalog",
+        }),
+      ],
+      [],
+    );
     const usage = buildUsage(status);
     expect(usage.routes[0]!.modelHint).toContain("cursor-agent --list-models");
   });
 
-  it("includes a modelHint for claude_code pointing at Anthropic's public model docs", () => {
-    const status = makeStatus([makeRoute({ id: "claude_code_cli", harness: "claude_code" })], []);
+  it("surfaces operator-declared models: lists to callers", () => {
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "nvidia_nim",
+          harness: "nvidia_nim",
+          models: ["qwen/qwen3-coder-480b-a35b-instruct"],
+        }),
+      ],
+      [],
+    );
     const usage = buildUsage(status);
-    expect(usage.routes[0]!.modelHint).toContain("platform.claude.com/docs");
+    expect(usage.routes[0]!.models).toEqual(["qwen/qwen3-coder-480b-a35b-instruct"]);
   });
 
   it("includes a modelHint pointing at GET {baseUrl}/models for openai_compatible routes", () => {
@@ -145,9 +166,15 @@ describe("renderUsageText", () => {
     expect(text).toContain("breaker=closed");
   });
 
-  it("includes a models: line with the discovery hint when present", () => {
+  it("includes a models: line with the declared discovery hint when present", () => {
     const status = makeStatus(
-      [makeRoute({ id: "cursor_cli", harness: "cursor" })],
+      [
+        makeRoute({
+          id: "cursor_cli",
+          harness: "cursor",
+          modelHint: "Wide multi-vendor catalog: https://cursor.com/docs/models",
+        }),
+      ],
       ["cursor_cli"],
     );
     const text = renderUsageText(buildUsage(status));

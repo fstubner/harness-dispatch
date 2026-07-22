@@ -253,7 +253,9 @@ const FIXTURES: Fixture[] = [
   //    -> antigravity wins
   // ------------------------------------------------------------------------
   {
-    name: "preferLargeContext boosts antigravity by 0.3",
+    // The boost keys off DECLARED max_input_tokens (>=2M -> +0.3), not the
+    // harness name — antigravity wins here because its entry declares 2M.
+    name: "preferLargeContext boosts declared 2M-context routes by 0.3",
     services: [
       svc({
         name: "non_antigravity",
@@ -266,6 +268,7 @@ const FIXTURES: Fixture[] = [
         tier: 2,
         harness: "antigravity_cli",
         leaderboardModel: "model-g",
+        maxInputTokens: 2_000_000,
       }),
     ],
     hints: { preferLargeContext: true },

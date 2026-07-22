@@ -1,5 +1,5 @@
 /**
- * Core types for harness-router.
+ * Core types for harness-dispatch.
  *
  * These are the cross-cutting types used by dispatchers, the router, the
  * quota tracker, and the MCP surface. Downstream modules (R2/R3/R4) import
@@ -158,7 +158,7 @@ export interface QuotaInfo {
 }
 
 /**
- * One line-matching rule for `outputMode: "jsonl_stream"` (see below). A
+ * One line-matching rule for `output.mode: "jsonl_stream"` (see below). A
  * parsed JSON line is tested against `when` (every listed dotted field path
  * must equal the given string); on match, `emit` says what to do with it.
  * Rules are checked in order per line; a line can match more than one rule
@@ -183,52 +183,48 @@ export interface CliEventRule {
 /**
  * Config-driven CLI invocation template — lets a subprocess-based CLI
  * harness be added or redefined with zero bespoke TypeScript, the same way
- * `endpoints:` already does for HTTP-based ones. Covers everything that
- * turned out to be genuinely templatable across the 4 built-in harnesses:
- * prompt input style, working-dir flag, model flag, per-safety-profile args,
- * API-key env injection, per-file directory flags, and (via `eventRules`) the
- * same tool_use/thinking/usage streaming-event semantics Codex's dispatcher
- * hand-wrote — expressed declaratively instead of imperatively.
+ * `endpoints:` already does for HTTP-based ones.
+ *
+ * `args` is a literal command-line argument list, written the same way
+ * you'd type it by hand. A handful of reserved `{{name}}` tokens are
+ * substituted (or expanded to zero or more real tokens) at dispatch time;
+ * everything else passes through verbatim:
+ *
+ *   {{prompt}}       the prompt text (one token) — omitted if `stdin: true`
+ *   {{model}}        [model.flag, value] if a model is set, else nothing
+ *   {{safety}}       safety[requested profile] (zero or more tokens)
+ *   {{working_dir}}  [workingDir.flag, dir, ...extraArgsWhenSet] if set, else nothing
+ *   {{file_dirs}}    [fileDirs.flag, dir] repeated once per included file's directory
+ *   {{native_args}}  endpointNativeArgs[endpoint_provider], only when this route
+ *                    is dispatched as endpoint_mode: harness_native_endpoint
+ *
+ * e.g. Claude Code's real invocation is just:
+ *   args: ["-p", "{{prompt}}", "--output-format", "json", "{{safety}}", "{{model}}"]
  */
 export interface CliProtocolConfig {
-  /** How the prompt reaches the CLI. */
-  promptInput:
-    // position "early" (default) places the flag right after leadingArgs
-    // (e.g. `claude -p "<prompt>" --output-format json ...`); "late" places
-    // it where "positional" mode's prompt goes, after everything else (e.g.
-    // `agy --model x --mode accept-edits --print "<prompt>"`).
-    | { mode: "flag"; flag: string; position?: "early" | "late" }
-    | { mode: "positional" } // appended as the last bare argument
-    | { mode: "stdin"; sentinelArg?: string }; // written to stdin; sentinelArg (e.g. "-") appended last if given
+  args: string[];
+  /** Write the prompt to the child's stdin instead of substituting {{prompt}} into args. */
+  stdin?: boolean;
+  /** Omit if the CLI has no model-override flag. Falls back to the route's static `model:` when no per-call override is given. */
+  model?: { flag: string };
   /**
    * Omit to rely on the subprocess's cwd only (no explicit flag, e.g. Claude
    * Code). `extraArgsWhenSet` appends more static args only when workingDir
    * is actually non-empty (e.g. Codex's `--skip-git-repo-check`).
+   * `fallback: "home"` substitutes the user's home directory when the
+   * caller passes an empty workingDir and this CLI has no "just use the
+   * current directory" default of its own (e.g. Cursor).
    */
-  workingDir?: { flag: string; extraArgsWhenSet?: string[] };
-  /**
-   * Args placed first, right after the CLI itself — for a leading subcommand
-   * like Codex's `exec` (as opposed to `extraArgs`, appended among the flags;
-   * splitting the two only matters when a CLI needs `<bin> <subcommand>
-   * [flags...]` shape rather than `<bin> [flags...]`).
-   */
-  leadingArgs?: string[];
+  workingDir?: { flag: string; extraArgsWhenSet?: string[]; fallback?: "home" };
   /**
    * Flag repeated once per unique file directory (e.g. Antigravity's
    * `--add-dir <dir>`) — computed the same way for every harness: unique
    * parent directories of absolute `files` entries, excluding workingDir
    * itself. Omit if the CLI has no such concept.
    */
-  fileDirsFlag?: string;
-  /** Header/bullet used when appending a file list to the prompt text (all 4 built-ins do this, with slightly different wording). Omit fileListHeader to skip the append entirely. */
-  fileListHeader?: string;
-  fileListBullet?: string;
-  /** Omit if the CLI has no model-override flag. Falls back to the route's static `model:` when no per-call override is given, same as the 4 built-ins. */
-  modelFlag?: string;
-  /** Static args always appended, e.g. ["--output-format", "json"] or ["--trust"]. */
-  extraArgs?: string[];
-  /** Extra args appended per requested safety profile, e.g. permission-mode flags. */
-  safetyArgs?: Partial<Record<SafetyProfile, string[]>>;
+  fileDirs?: { flag: string };
+  /** Args appended per requested safety profile (permission-mode flags etc.), via {{safety}}. */
+  safety?: Partial<Record<SafetyProfile, string[]>>;
   /**
    * Env var to set to the route's configured `api_key` when present (e.g.
    * "CURSOR_API_KEY", "OPENAI_API_KEY"). If unset in config AND the var is
@@ -237,29 +233,33 @@ export interface CliProtocolConfig {
    * subscription-auth call" behavior.
    */
   apiKeyEnvVar?: string;
-  /**
-   * How to turn stdout into a DispatchResult.
-   * - "text": raw stdout is the output, verbatim.
-   * - "json_field": parse stdout as one JSON object once the process exits;
-   *   `outputFields` (in priority order, dotted paths supported) picks which
-   *   field holds the answer.
-   * - "jsonl_stream": each stdout line is parsed as JSON as it arrives.
-   *   Without `eventRules`, falls back to concatenating `outputFields` from
-   *   every line (a poor-man's approximation). WITH `eventRules`, matches
-   *   Codex's real mid-run tool_use/thinking event surfacing and usage
-   *   aggregation, declaratively.
-   */
-  outputMode: "text" | "json_field" | "jsonl_stream";
-  /** Candidate field names to check, in priority order, for json_field/jsonl_stream (dotted paths supported). */
-  outputFields?: string[];
-  /**
-   * Token-usage extraction for "text"/"json_field" modes (jsonl_stream uses
-   * eventRules' emit: "usage" instead). Applies to the single parsed JSON
-   * blob; both fields must resolve to a number for tokensUsed to be set.
-   */
-  usageFields?: { inputFields: string[]; outputFields: string[] };
-  /** jsonl_stream only — see CliEventRule. */
-  eventRules?: CliEventRule[];
+  /** Header/bullet used when appending a file list to the prompt text. Omit fileListHeader to skip the append entirely. */
+  fileListHeader?: string;
+  fileListBullet?: string;
+  /** How to turn stdout into a DispatchResult. */
+  output: {
+    /**
+     * - "text": raw stdout is the output, verbatim.
+     * - "json_field": parse stdout as one JSON object once the process
+     *   exits; `fields` (in priority order, dotted paths supported) picks
+     *   which field holds the answer.
+     * - "jsonl_stream": each stdout line is parsed as JSON as it arrives.
+     *   Without `eventRules`, falls back to concatenating `fields` from
+     *   every line (a poor-man's approximation). WITH `eventRules`,
+     *   supports real mid-run tool_use/thinking event surfacing and usage
+     *   aggregation, declaratively (see CliEventRule).
+     */
+    mode: "text" | "json_field" | "jsonl_stream";
+    /** Candidate field names to check, in priority order, for json_field/jsonl_stream (dotted paths supported). */
+    fields?: string[];
+    /**
+     * Token-usage extraction for "text"/"json_field" modes (jsonl_stream
+     * uses eventRules' emit: "usage" instead).
+     */
+    usage?: { input: string[]; output: string[] };
+    /** jsonl_stream only — see CliEventRule. */
+    eventRules?: CliEventRule[];
+  };
   /**
    * Default true (matches most CLIs, and Cursor specifically): success
    * requires BOTH exitCode === 0 AND a non-empty parsed output — an exit-0
@@ -269,6 +269,13 @@ export interface CliProtocolConfig {
    * text when the configured parsing yields nothing.
    */
   successRequiresOutput?: boolean;
+  /**
+   * Extra args to prepend when this route is configured with
+   * `endpoint_mode: harness_native_endpoint` against a matching
+   * `endpoint_provider` (e.g. Codex's `--oss --local-provider ollama`) —
+   * config-dependent, not a fixed property of any particular harness.
+   */
+  endpointNativeArgs?: Partial<Record<EndpointProvider, string[]>>;
 }
 
 export interface ServiceConfig {
@@ -312,6 +319,30 @@ export interface ServiceConfig {
   billingConfidence?: BillingConfidence;
   billingNotes?: string;
   safetyProfile?: SafetyProfile;
+  /**
+   * The safety level this route ACTUALLY runs at regardless of what's
+   * requested — a capability floor, not a preference. E.g. Cursor's print
+   * mode always has write+shell capability, so its shipped entry declares
+   * `effective_safety: full_auto` and the route is skipped for stricter
+   * requests. Declared in config (shipped or user), not hardcoded per
+   * harness anywhere in code.
+   */
+  effectiveSafety?: SafetyProfile;
+  /**
+   * Operator-declared known-good model ids for this route (`models:` in
+   * config) — surfaced verbatim in status/usage so a calling agent can pick
+   * one without guessing. Optional and advisory: hints.model is still
+   * forwarded even if it's not in this list.
+   */
+  models?: string[];
+  /**
+   * Free-text pointer to where this route's REAL model catalog lives
+   * (`model_hint:` in config) — a docs URL, a CLI command like
+   * `cursor-agent --list-models`, or "GET {base_url}/models". Surfaced in
+   * status/usage; declared per entry in the shipped config, not hardcoded
+   * per harness in code.
+   */
+  modelHint?: string;
   endpointMode?: EndpointMode;
   endpointProvider?: EndpointProvider;
   wireProtocol?: WireProtocol;
@@ -333,6 +364,14 @@ export interface ServiceConfig {
 export interface RouterConfig {
   services: Record<string, ServiceConfig>;
   disabled?: readonly string[];
+  /**
+   * OpenTelemetry traces. OFF by default — purely operator-facing local
+   * observability (OTLP to localhost unless redirected); enable only if you
+   * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.
+   */
+  telemetry?: { enabled: boolean };
+  /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
+  retention?: { jobsDays?: number };
   /**
    * Config entries that were silently ignored rather than failing to load —
    * a disabled:/overrides: name that doesn't match any auto-detected route

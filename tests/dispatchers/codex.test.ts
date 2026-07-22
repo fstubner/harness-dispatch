@@ -3,6 +3,14 @@ import type {
   SubprocessResult,
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
+import type { ServiceConfig } from "../../src/types.js";
+import { PROTOCOL_PRESETS } from "../../src/config.js";
+
+const CODEX_PROTOCOL = PROTOCOL_PRESETS.codex!;
+
+// There is no CodexDispatcher class — Codex is GenericCliDispatcher
+// parameterized by the codex preset (see the shipped config.default.yaml),
+// including its real tool_use/thinking/usage event semantics via eventRules.
 
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
@@ -21,7 +29,9 @@ const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
 const { default: which } = await import("which");
-const { CodexDispatcher } = await import("../../src/dispatchers/codex.js");
+const { GenericCliDispatcher } = await import(
+  "../../src/dispatchers/generic-cli.js"
+);
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
@@ -63,6 +73,23 @@ function mockFound(commandPath = "/usr/local/bin/codex"): void {
   });
 }
 
+function codex(overrides: Partial<ServiceConfig> = {}) {
+  return new GenericCliDispatcher({
+    name: "codex",
+    enabled: true,
+    type: "cli",
+    harness: "codex",
+    command: "codex",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    capabilities: {},
+    escalateOn: [],
+    protocol: CODEX_PROTOCOL,
+    ...overrides,
+  } as ServiceConfig);
+}
+
 const savedEnv = { ...process.env };
 
 beforeEach(() => {
@@ -81,10 +108,10 @@ afterEach(() => {
   }
 });
 
-describe("CodexDispatcher", () => {
+describe("Codex (GenericCliDispatcher + CODEX_PROTOCOL)", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
     whichMock.mockResolvedValue(null);
-    const d = new CodexDispatcher();
+    const d = codex();
 
     const res = await d.dispatch("hi", [], "");
 
@@ -111,7 +138,7 @@ describe("CodexDispatcher", () => {
     ].join("\n");
     runSubprocessMock.mockResolvedValue(ok({ stdout: jsonl }));
 
-    const d = new CodexDispatcher();
+    const d = codex();
     const res = await d.dispatch("write code", [], "");
 
     expect(res.success).toBe(true);
@@ -132,7 +159,7 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher();
+    const d = codex();
     await d.dispatch("go", [], "/tmp/project");
 
     const { args, opts } = captureSubprocessCall(0);
@@ -155,7 +182,7 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher();
+    const d = codex();
     await d.dispatch("go", [], "");
 
     const { args } = captureSubprocessCall(0);
@@ -174,18 +201,7 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher({
-      name: "codex",
-      enabled: true,
-      type: "cli",
-      command: "codex",
-      tier: 1,
-      weight: 1,
-      cliCapability: 1,
-      capabilities: {},
-      escalateOn: [],
-      apiKey: "configured-key",
-    });
+    const d = codex({ apiKey: "configured-key" });
     await d.dispatch("go", [], "");
 
     const { opts } = captureSubprocessCall(0);
@@ -205,7 +221,7 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher();
+    const d = codex();
     await d.dispatch("go", [], "");
 
     const { opts } = captureSubprocessCall(0);
@@ -226,7 +242,7 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher();
+    const d = codex();
     await d.dispatch("go", [], "", { modelOverride: "o4-mini" });
 
     const { args } = captureSubprocessCall(0);
@@ -246,18 +262,10 @@ describe("CodexDispatcher", () => {
       }),
     );
 
-    const d = new CodexDispatcher({
+    const d = codex({
       name: "codex_ollama",
-      enabled: true,
-      type: "cli",
-      harness: "codex",
-      command: "codex",
       model: "qwen3-coder:latest",
       tier: 3,
-      weight: 1,
-      cliCapability: 1,
-      capabilities: {},
-      escalateOn: [],
       endpointMode: "harness_native_endpoint",
       endpointProvider: "ollama",
       baseUrl: "http://127.0.0.1:11434/v1",
@@ -280,22 +288,22 @@ describe("CodexDispatcher", () => {
       ok({ stdout: "", stderr: "something broke", exitCode: 2 }),
     );
 
-    const d = new CodexDispatcher();
+    const d = codex();
     const res = await d.dispatch("go", [], "");
 
     expect(res.success).toBe(false);
     expect(res.error).toBe("something broke");
   });
 
-  it("reports 'unknown' quota in R1", async () => {
-    const d = new CodexDispatcher();
+  it("reports 'unknown' quota", async () => {
+    const d = codex();
     const q = await d.checkQuota();
     expect(q.service).toBe("codex");
     expect(q.source).toBe("unknown");
   });
 
   it("has a stable id and reports itself as available", () => {
-    const d = new CodexDispatcher();
+    const d = codex();
     expect(d.id).toBe("codex");
     expect(d.isAvailable()).toBe(true);
   });

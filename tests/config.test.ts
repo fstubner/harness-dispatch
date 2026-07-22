@@ -15,7 +15,7 @@ import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
 // ---- fixture files -------------------------------------------------------
 
 async function writeTmpYaml(name: string, text: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-router-test-`));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-dispatch-test-`));
   const p = path.join(dir, name);
   await fs.writeFile(p, text, "utf-8");
   return p;
@@ -76,15 +76,157 @@ services:
     command: my-cli
     tier: 1
     protocol:
-      prompt_input: { mode: positional }
-      output_mode: text
+      args: ["{{prompt}}"]
+      output: { mode: text }
 `;
     const p = await writeTmpYaml("legacy-generic.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(cfg.services.my_cli!.protocol).toEqual({
-      promptInput: { mode: "positional" },
-      outputMode: "text",
+      args: ["{{prompt}}"],
+      output: { mode: "text" },
     });
+  });
+
+  it("warns loudly (doesn't silently drop) when clis:/endpoints:/overrides: sit alongside services:", async () => {
+    const yamlText = `
+services:
+  old_route:
+    enabled: true
+    type: cli
+    command: old-bin
+    tier: 1
+clis:
+  - name: new_route
+    harness: codex
+endpoints:
+  - name: ollama
+    base_url: http://localhost:11434/v1
+    model: llama3.2
+`;
+    const p = await writeTmpYaml("mixed-format.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    // The known behavior: clis:/endpoints: are still ignored (legacy wins).
+    expect(Object.keys(cfg.services)).toEqual(["old_route"]);
+    // The fix: it's no longer silent.
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("services:");
+    expect(warningText).toContain("clis:");
+    expect(warningText).toContain("endpoints:");
+  });
+
+  it("does NOT warn about clis:/endpoints: when services: is used alone", async () => {
+    const yamlText = `
+services:
+  old_route:
+    enabled: true
+    type: cli
+    command: old-bin
+    tier: 1
+`;
+    const p = await writeTmpYaml("services-only.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.configWarnings ?? []).toEqual([]);
+  });
+
+  it("inherits maxInputTokens/maxOutputTokens from the named harness's shipped defaults (legacy format)", async () => {
+    // antigravity_cli's shipped entry declares a 2M-token context window;
+    // router.ts's preferLargeContext boost keys off this DECLARED value,
+    // not the harness name, so a legacy entry naming the harness must
+    // still inherit it or the boost silently becomes a no-op.
+    const yamlText = `
+services:
+  agy_legacy:
+    enabled: true
+    type: cli
+    harness: antigravity_cli
+    command: agy
+    tier: 1
+`;
+    const p = await writeTmpYaml("legacy-inherit-tokens.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.agy_legacy!;
+    expect(svc.maxInputTokens).toBe(2_000_000);
+    expect(svc.maxOutputTokens).toBe(65536);
+  });
+
+  it("an explicit max_input_tokens on a legacy entry still wins over the harness default", async () => {
+    const yamlText = `
+services:
+  agy_legacy:
+    enabled: true
+    type: cli
+    harness: antigravity_cli
+    command: agy
+    tier: 1
+    max_input_tokens: 500000
+`;
+    const p = await writeTmpYaml("legacy-explicit-tokens.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.agy_legacy!.maxInputTokens).toBe(500000);
+  });
+});
+
+describe("loadConfig — ${ENV_VAR} interpolation warnings", () => {
+  const origEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...origEnv };
+  });
+
+  it("warns when a ${VAR} reference resolves to nothing because the env var is unset", async () => {
+    delete process.env["HR_TEST_DEFINITELY_UNSET_VAR"];
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    api_key: \${HR_TEST_DEFINITELY_UNSET_VAR}
+    protocol:
+      args: ["{{prompt}}"]
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("unset-env-var.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("HR_TEST_DEFINITELY_UNSET_VAR");
+    // The field itself still silently empties (existing, documented
+    // behavior) — the fix is that it's no longer UNREPORTED.
+    expect(cfg.services.my_cli!.apiKey).toBeUndefined();
+  });
+
+  it("does NOT warn when the referenced env var is actually set", async () => {
+    process.env["HR_TEST_SET_VAR"] = "sk-real-value";
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    api_key: \${HR_TEST_SET_VAR}
+    protocol:
+      args: ["{{prompt}}"]
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("set-env-var.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.configWarnings ?? []).toEqual([]);
+    expect(cfg.services.my_cli!.apiKey).toBe("sk-real-value");
+  });
+
+  it("warns for an unset env var reached via the legacy services: format too", async () => {
+    delete process.env["HR_TEST_DEFINITELY_UNSET_VAR"];
+    const yamlText = `
+services:
+  my_svc:
+    enabled: true
+    type: openai_compatible
+    base_url: http://localhost:1234/v1
+    model: llama3
+    api_key: \${HR_TEST_DEFINITELY_UNSET_VAR}
+`;
+    const p = await writeTmpYaml("legacy-unset-env-var.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("HR_TEST_DEFINITELY_UNSET_VAR");
   });
 });
 
@@ -113,6 +255,11 @@ describe("loadConfig — auto-detect + overrides", () => {
       "codex_cli",
       "cursor_cli",
     ]);
+  });
+
+  it("claude_code_cli's protocol actually forwards api_key via ANTHROPIC_API_KEY (not silently dropped)", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: onlyClaudeFound });
+    expect(cfg.services.claude_code_cli!.protocol?.apiKeyEnvVar).toBe("ANTHROPIC_API_KEY");
   });
 
   it("merges overrides onto auto-detected defaults", async () => {
@@ -225,6 +372,45 @@ endpoints:
     expect(cfg.services.ollama!.paidUsagePossible).toBe(false);
 
     expect(cfg.services.lmstudio!.endpointProvider).toBe("lmstudio");
+  });
+
+  it("parses wire_protocol: anthropic_messages on an endpoint entry", async () => {
+    const yamlText = `
+endpoints:
+  - name: anthropic_api
+    base_url: https://api.anthropic.com/v1
+    model: claude-opus-4-6
+    api_key: sk-ant-test
+    wire_protocol: anthropic_messages
+    allow_paid_usage: true
+    max_output_tokens: 8192
+`;
+    const p = await writeTmpYaml("anthropic-endpoint.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.anthropic_api!;
+
+    expect(svc.wireProtocol).toBe("anthropic_messages");
+    expect(svc.baseUrl).toBe("https://api.anthropic.com/v1");
+    expect(svc.maxOutputTokens).toBe(8192);
+  });
+
+  it("parses thinking_level and max_input_tokens on an endpoint entry (previously silently dropped)", async () => {
+    const yamlText = `
+endpoints:
+  - name: openrouter_thinking
+    base_url: https://openrouter.ai/api/v1
+    model: openai/gpt-5.6
+    api_key: sk-or-test
+    thinking_level: high
+    max_input_tokens: 200000
+    allow_paid_usage: true
+`;
+    const p = await writeTmpYaml("endpoint-thinking.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.openrouter_thinking!;
+
+    expect(svc.thinkingLevel).toBe("high");
+    expect(svc.maxInputTokens).toBe(200000);
   });
 });
 
@@ -345,6 +531,47 @@ clis:
   });
 });
 
+describe("loadConfig — top-level settings (telemetry, retention)", () => {
+  it("parses telemetry.enabled and retention.jobs_days in the modern format", async () => {
+    const yamlText = `
+telemetry:
+  enabled: true
+retention:
+  jobs_days: 3
+clis: []
+`;
+    const p = await writeTmpYaml("settings-modern.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.telemetry).toEqual({ enabled: true });
+    expect(cfg.retention).toEqual({ jobsDays: 3 });
+  });
+
+  it("parses the same settings in the legacy services: format", async () => {
+    const yamlText = `
+telemetry:
+  enabled: true
+retention:
+  jobs_days: 14
+services:
+  alpha:
+    enabled: true
+    type: cli
+    command: alpha-bin
+    tier: 1
+`;
+    const p = await writeTmpYaml("settings-legacy.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.telemetry).toEqual({ enabled: true });
+    expect(cfg.retention).toEqual({ jobsDays: 14 });
+  });
+
+  it("defaults to no telemetry and no retention override when absent", async () => {
+    const cfg = await loadConfig(undefined, { whichFn: noCliFound });
+    expect(cfg.telemetry).toBeUndefined();
+    expect(cfg.retention).toBeUndefined();
+  });
+});
+
 describe("loadConfig — clis: harness: generic (config-driven CLI protocol)", () => {
   it("is never auto-detected, even when every CLI is found", async () => {
     const cfg = await loadConfig(undefined, { whichFn: allCliFound });
@@ -360,13 +587,13 @@ clis:
     command: my-cli
     tier: 3
     protocol:
-      prompt_input: { mode: flag, flag: "-p" }
+      args: ["-p", "{{prompt}}", "{{working_dir}}", "{{model}}", "{{safety}}", "--json"]
       working_dir: { flag: "--cd" }
-      model_flag: "--model"
-      extra_args: ["--json"]
-      output_mode: json_field
-      output_fields: ["result", "output"]
-      safety_args:
+      model: { flag: "--model" }
+      output:
+        mode: json_field
+        fields: ["result", "output"]
+      safety:
         read_only: ["--mode", "plan"]
         full_auto: ["--dangerous"]
 `;
@@ -376,13 +603,11 @@ clis:
     expect(svc.harness).toBe("generic");
     expect(svc.command).toBe("my-cli");
     expect(svc.protocol).toEqual({
-      promptInput: { mode: "flag", flag: "-p" },
+      args: ["-p", "{{prompt}}", "{{working_dir}}", "{{model}}", "{{safety}}", "--json"],
       workingDir: { flag: "--cd" },
-      modelFlag: "--model",
-      extraArgs: ["--json"],
-      outputMode: "json_field",
-      outputFields: ["result", "output"],
-      safetyArgs: { read_only: ["--mode", "plan"], full_auto: ["--dangerous"] },
+      model: { flag: "--model" },
+      output: { mode: "json_field", fields: ["result", "output"] },
+      safety: { read_only: ["--mode", "plan"], full_auto: ["--dangerous"] },
     });
   });
 
@@ -414,36 +639,109 @@ clis:
     expect(cfg.configWarnings!.join("\n")).toContain("requires a \"protocol\" block");
   });
 
-  it("skips a generic entry with an invalid prompt_input, with a warning", async () => {
+  it("warns on an unrecognized {{placeholder}} in protocol.args — the primary user typo", async () => {
     const yamlText = `
 clis:
   - name: my_cli
     harness: generic
     command: my-cli
     protocol:
-      prompt_input: { mode: carrier_pigeon }
-      output_mode: text
+      args: ["{{promt}}"]
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("clis-generic-typo-placeholder.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("{{promt}}");
+    expect(warningText).toContain("literal");
+    // A typo'd prompt placeholder also means the prompt is never sent at all.
+    expect(warningText).toContain("{{prompt}}");
+  });
+
+  it("does NOT report the same protocol defect twice under two different labels", async () => {
+    // addClis pre-validates (to skip malformed entries before the route
+    // ever lands) and buildCliServiceConfig parses the same protocol block
+    // again to actually build it — a naive implementation reports every
+    // defect once per parse, i.e. twice per real problem.
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      args: ["{{promt}}"]
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("clis-generic-dedup.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    // An unrecognized placeholder passes through as a literal token rather
+    // than failing to parse, so the entry is built successfully — meaning
+    // BOTH addClis's pre-validation pass and buildCliServiceConfig's real
+    // parse run against it, and would each warn without the dedup fix.
+    const occurrences = (cfg.configWarnings ?? []).filter((w) => w.includes("{{promt}}")).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("warns when protocol.args has no {{prompt}} and stdin is not enabled", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      args: ["--go"]
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("clis-generic-no-prompt.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.configWarnings!.join("\n")).toMatch(/prompt (is|will) never/i);
+  });
+
+  it("does NOT warn about a missing {{prompt}} when stdin: true carries it", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      args: ["--go", "-"]
+      stdin: true
+      output: { mode: text }
+`;
+    const p = await writeTmpYaml("clis-generic-stdin-ok.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect((cfg.configWarnings ?? []).join("\n")).not.toMatch(/prompt (is|will) never/i);
+  });
+
+  it("skips a generic entry with args missing, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      output: { mode: text }
 `;
     const p = await writeTmpYaml("clis-generic-badprompt.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(cfg.services.my_cli).toBeUndefined();
-    expect(cfg.configWarnings!.join("\n")).toContain("protocol.prompt_input");
+    expect(cfg.configWarnings!.join("\n")).toContain("protocol.args");
   });
 
-  it("skips a generic entry with an invalid output_mode, with a warning", async () => {
+  it("skips a generic entry with an invalid output.mode, with a warning", async () => {
     const yamlText = `
 clis:
   - name: my_cli
     harness: generic
     command: my-cli
     protocol:
-      prompt_input: { mode: positional }
-      output_mode: carrier_pigeon
+      args: ["{{prompt}}"]
+      output: { mode: carrier_pigeon }
 `;
     const p = await writeTmpYaml("clis-generic-badoutput.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     expect(cfg.services.my_cli).toBeUndefined();
-    expect(cfg.configWarnings!.join("\n")).toContain("protocol.output_mode");
+    expect(cfg.configWarnings!.join("\n")).toContain("protocol.output.mode");
   });
 
   it("defaults billing to unknown/blocked — no way to know an arbitrary CLI's real billing model", async () => {
@@ -453,8 +751,8 @@ clis:
     harness: generic
     command: my-cli
     protocol:
-      prompt_input: { mode: positional }
-      output_mode: text
+      args: ["{{prompt}}"]
+      output: { mode: text }
 `;
     const p = await writeTmpYaml("clis-generic-billing.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
@@ -463,20 +761,125 @@ clis:
     expect(svc.paidUsagePossible).toBe(true);
   });
 
-  it("minimal protocol (positional prompt, text output, no working_dir/model_flag) parses with those fields absent", async () => {
+  it("minimal protocol (positional prompt, text output, no working_dir/model) parses with those fields absent", async () => {
     const yamlText = `
 clis:
   - name: my_cli
     harness: generic
     command: my-cli
     protocol:
-      prompt_input: { mode: stdin }
-      output_mode: text
+      args: ["{{prompt}}"]
+      stdin: true
+      output: { mode: text }
 `;
     const p = await writeTmpYaml("clis-generic-minimal.yaml", yamlText);
     const cfg = await loadConfig(p, { whichFn: noCliFound });
     const svc = cfg.services.my_cli!;
-    expect(svc.protocol).toEqual({ promptInput: { mode: "stdin" }, outputMode: "text" });
+    expect(svc.protocol).toEqual({ args: ["{{prompt}}"], stdin: true, output: { mode: "text" } });
+  });
+
+  it("resolves protocol: <name> to a named preset", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: cursor-agent
+    protocol: cursor
+`;
+    const p = await writeTmpYaml("clis-generic-preset.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    expect(svc.protocol?.workingDir).toEqual({ flag: "--workspace", fallback: "home" });
+    expect(svc.protocol?.apiKeyEnvVar).toBe("CURSOR_API_KEY");
+  });
+
+  it("skips an entry with an unrecognized preset name, with a warning listing valid names", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol: not_a_real_preset
+`;
+    const p = await writeTmpYaml("clis-generic-badpreset.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("not_a_real_preset");
+    expect(warningText).toContain("cursor");
+  });
+
+  it("protocol.extends starts from a preset and overrides only the given fields", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      model: { flag: "--llm-model" }
+`;
+    const p = await writeTmpYaml("clis-generic-extends.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    // Overridden field:
+    expect(svc.protocol?.model).toEqual({ flag: "--llm-model" });
+    // Everything else inherited from the codex preset, untouched:
+    expect(svc.protocol?.stdin).toBe(true);
+    expect(svc.protocol?.args?.[0]).toBe("exec");
+    expect(svc.protocol?.output.eventRules?.length).toBeGreaterThan(0);
+  });
+
+  it("protocol.extends merges safety per-profile instead of replacing the whole map", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      safety:
+        full_auto: ["--yolo"]
+`;
+    const p = await writeTmpYaml("clis-generic-extends-safety.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    // Overridden profile:
+    expect(svc.protocol?.safety?.full_auto).toEqual(["--yolo"]);
+    // Untouched profiles still present from the preset:
+    expect(svc.protocol?.safety?.read_only).toEqual(["--sandbox", "read-only"]);
+    expect(svc.protocol?.safety?.workspace_edit).toEqual(["--sandbox", "workspace-write"]);
+  });
+
+  it("skips protocol.extends with an unrecognized preset name, with a warning", async () => {
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-cli
+    protocol:
+      extends: not_a_real_preset
+      model: { flag: "--model" }
+`;
+    const p = await writeTmpYaml("clis-generic-extends-bad.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.my_cli).toBeUndefined();
+    expect(cfg.configWarnings!.join("\n")).toContain("not_a_real_preset");
+  });
+
+  it("a built-in route's overrides.protocol accepts a preset name too", async () => {
+    const yamlText = `
+overrides:
+  claude_code_cli:
+    protocol: codex
+`;
+    const p = await writeTmpYaml("overrides-preset.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: onlyClaudeFound });
+    const svc = cfg.services.claude_code_cli!;
+    // Structurally identical to the codex preset now, despite being the
+    // claude_code_cli route — proof presets aren't tied to route identity.
+    expect(svc.protocol?.stdin).toBe(true);
+    expect(svc.protocol?.args?.[0]).toBe("exec");
   });
 });
 

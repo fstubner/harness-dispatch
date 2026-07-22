@@ -3,9 +3,15 @@ import type {
   SubprocessResult,
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
+import type { ServiceConfig } from "../../src/types.js";
+import { PROTOCOL_PRESETS } from "../../src/config.js";
 
-// Mock the shared modules Agent 1 writes + `which` (used for availability check).
-// Tests never spawn real subprocesses.
+const CLAUDE_CODE_PROTOCOL = PROTOCOL_PRESETS.claude_code!;
+
+// There is no ClaudeCodeDispatcher class — Claude Code is GenericCliDispatcher
+// parameterized by the claude_code preset (see the shipped config.default.yaml).
+// This suite exercises that exact protocol through the shared interpreter.
+
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
 }));
@@ -16,7 +22,6 @@ vi.mock("which", () => ({
   default: vi.fn(),
 }));
 
-// Import the mocked symbols and the dispatcher AFTER registering mocks.
 const { runSubprocess } = await import(
   "../../src/dispatchers/shared/subprocess.js"
 );
@@ -24,8 +29,8 @@ const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
 const { default: which } = await import("which");
-const { ClaudeCodeDispatcher } = await import(
-  "../../src/dispatchers/claude-code.js"
+const { GenericCliDispatcher } = await import(
+  "../../src/dispatchers/generic-cli.js"
 );
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
@@ -68,16 +73,33 @@ function mockFound(commandPath = "/usr/local/bin/claude"): void {
   });
 }
 
+function claudeCode(overrides: Partial<ServiceConfig> = {}) {
+  return new GenericCliDispatcher({
+    name: "claude_code",
+    enabled: true,
+    type: "cli",
+    harness: "claude_code",
+    command: "claude",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    capabilities: {},
+    escalateOn: [],
+    protocol: CLAUDE_CODE_PROTOCOL,
+    ...overrides,
+  } as ServiceConfig);
+}
+
 beforeEach(() => {
   runSubprocessMock.mockReset();
   resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 });
 
-describe("ClaudeCodeDispatcher", () => {
+describe("Claude Code (GenericCliDispatcher + CLAUDE_CODE_PROTOCOL)", () => {
   it("returns an error DispatchResult when the CLI is not found", async () => {
     whichMock.mockResolvedValue(null);
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
 
     const res = await d.dispatch("hi", [], "");
 
@@ -100,7 +122,7 @@ describe("ClaudeCodeDispatcher", () => {
       }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     const res = await d.dispatch("do thing", [], "/tmp/work");
 
     expect(res.success).toBe(true);
@@ -116,7 +138,7 @@ describe("ClaudeCodeDispatcher", () => {
       ok({ stdout: "not valid json at all" }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     const res = await d.dispatch("do thing", [], "");
 
     expect(res.success).toBe(true);
@@ -134,7 +156,7 @@ describe("ClaudeCodeDispatcher", () => {
       }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     const res = await d.dispatch("do thing", [], "");
 
     expect(res.success).toBe(false);
@@ -147,7 +169,7 @@ describe("ClaudeCodeDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     await d.dispatch("do thing", [], "", {
       modelOverride: "claude-opus-4-6",
     });
@@ -165,7 +187,7 @@ describe("ClaudeCodeDispatcher", () => {
       ok({ stdout: JSON.stringify({ result: "ok" }) }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     await d.dispatch("go", [], "", { timeoutMs: 5000 });
 
     const { opts } = captureSubprocessCall(0);
@@ -183,22 +205,22 @@ describe("ClaudeCodeDispatcher", () => {
       }),
     );
 
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     const res = await d.dispatch("go", [], "", { timeoutMs: 100 });
 
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/timed out/i);
   });
 
-  it("reports 'unknown' quota in R1", async () => {
-    const d = new ClaudeCodeDispatcher();
+  it("reports 'unknown' quota", async () => {
+    const d = claudeCode();
     const q = await d.checkQuota();
     expect(q.service).toBe("claude_code");
     expect(q.source).toBe("unknown");
   });
 
   it("has a stable id and reports itself as available", () => {
-    const d = new ClaudeCodeDispatcher();
+    const d = claudeCode();
     expect(d.id).toBe("claude_code");
     expect(d.isAvailable()).toBe(true);
   });
@@ -207,23 +229,13 @@ describe("ClaudeCodeDispatcher", () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "plain text reply" }));
 
-    const d = new ClaudeCodeDispatcher({
-      name: "claude_code",
-      enabled: true,
-      type: "cli",
-      harness: "claude_code",
-      command: "claude",
-      tier: 1,
-      weight: 1,
-      cliCapability: 1,
-      capabilities: {},
-      escalateOn: [],
+    const d = claudeCode({
       protocol: {
-        promptInput: { mode: "positional" },
-        outputMode: "text",
+        args: ["{{prompt}}"],
+        output: { mode: "text" },
         successRequiresOutput: false,
       },
-    } as unknown as ConstructorParameters<typeof ClaudeCodeDispatcher>[0]);
+    });
 
     const res = await d.dispatch("do thing", [], "/tmp");
     expect(res.success).toBe(true);
