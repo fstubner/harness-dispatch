@@ -10,16 +10,22 @@ quota_state.json
 test_state.json
 coverage/
 .vitest-cache/
+.harness-dispatch/
 .harness-router/
 
 # Local tool state
 .nvx/
 .playwright-mcp/
 
-# Personal live config and internal working docs (ship config.example.yaml instead)
+# Personal live config (may contain secrets/local overrides) — the shipped
+# canonical default config the router loads and users copy/edit is
+# config.default.yaml, tracked, a separate file with its own lifecycle so
+# package updates to it never collide with a user's local instance.
 config.yaml
 LAUNCH-PLAN.md
 BILLING_AUTH_AUDIT.md
+R1-HANDOFF.md
+HANDOVER.md
 
 # Editor + OS
 .vscode/
