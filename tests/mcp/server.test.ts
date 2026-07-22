@@ -97,7 +97,7 @@ async function startLinked(): Promise<{
   close: () => Promise<void>;
 }> {
   const server = new McpServer(
-    { name: "harness-router-test", version: "test" },
+    { name: "harness-dispatch-test", version: "test" },
     { instructions: "test server" },
   );
   const holder = new RuntimeHolder(buildState());
@@ -124,7 +124,7 @@ async function startLinked(): Promise<{
 }
 
 describe("MCP server — public surface", () => {
-  it("registers exactly the code tool", async () => {
+  it("registers exactly the public tools", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.listTools();
@@ -140,22 +140,24 @@ describe("MCP server — public surface", () => {
     }
   });
 
-  it("code round-trips through the in-memory transport", async () => {
+  it("dispatch round-trips through the in-memory transport", async () => {
     const { client, close } = await startLinked();
     try {
       const resp = await client.callTool({
-        name: "code",
+        name: "dispatch",
         arguments: { prompt: "say hi", hints: { taskType: "plan" } },
       });
       expect(resp.isError).not.toBe(true);
       const content = resp.content as Array<{ type: string; text: string }>;
       const parsed = JSON.parse(content[0]!.text) as {
         mode: "single";
+        completed: boolean;
         success: boolean;
         route: string;
         output: string;
       };
       expect(parsed.mode).toBe("single");
+      expect(parsed.completed).toBe(true);
       expect(parsed.success).toBe(true);
       expect(["a", "b"]).toContain(parsed.route);
       expect(parsed.output.length).toBeGreaterThan(0);
@@ -169,14 +171,14 @@ describe("MCP server — public surface", () => {
     try {
       const listed = await client.listResources();
       expect(listed.resources.map((r) => r.uri).sort()).toEqual([
-        "harness-router://status",
-        "harness-router://status.json",
+        "harness-dispatch://status",
+        "harness-dispatch://status.json",
       ]);
 
-      const text = await client.readResource({ uri: "harness-router://status" });
-      expect(text.contents[0]!.text).toContain("harness-router status");
+      const text = await client.readResource({ uri: "harness-dispatch://status" });
+      expect(text.contents[0]!.text).toContain("harness-dispatch status");
 
-      const json = await client.readResource({ uri: "harness-router://status.json" });
+      const json = await client.readResource({ uri: "harness-dispatch://status.json" });
       const parsed = JSON.parse(String(json.contents[0]!.text)) as {
         routes: Array<Record<string, unknown>>;
         skippedRoutes: unknown[];

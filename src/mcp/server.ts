@@ -1,5 +1,5 @@
 /**
- * MCP server entry points for harness-router.
+ * MCP server entry points for harness-dispatch.
  *
  * Exposes:
  *   startMcpServer({ configPath })            — stdio transport (default).
@@ -16,22 +16,29 @@ import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
 import { VERSION } from "../version.js";
 
-const SERVER_NAME = "harness-router";
+const SERVER_NAME = "harness-dispatch";
 const SERVER_VERSION = VERSION;
 
 const SERVER_INSTRUCTIONS =
-  "Delegate bounded coding work you'd otherwise do yourself — implement, fix, review, " +
-  "or plan a task in a project — to whichever configured harness (Claude Code, Codex, " +
-  "Cursor, Antigravity, or an endpoint) best fits it, freeing your own context/quota for " +
-  "orchestration. Prefer the `job` tool: action=start returns a jobId right away and " +
-  "tells you how long to wait before polling action=get for partial or final output; " +
-  "`code` blocks synchronously and is only safe for sub-1-2-minute tasks. Always pass " +
-  "workingDir (the caller's project root — it is NOT inferred) and hints.taskType " +
-  "(execute | plan | review | local) on every call; omitting either degrades routing or " +
-  "runs the task in the wrong directory. Call `usage` before using an unfamiliar " +
-  "hints.model, service, or models value — those are unvalidated and silently ignored " +
-  "if they don't match a real route id. Read harness-router://status or " +
-  "harness-router://status.json for route readiness, billing policy, and safety detail.";
+  "This server turns the machine's installed coding harnesses (Claude Code, Codex, " +
+  "Cursor, Antigravity) and configured local/remote API endpoints into tools you can " +
+  "call — delegate bounded coding work you'd otherwise do yourself (implement, fix, " +
+  "review, or plan a task in a project) to whichever backend best fits it, freeing " +
+  "your own context/quota for orchestration. One tool starts everything: `dispatch` " +
+  "runs the task as a background job and waits a short grace window — a fast task " +
+  "returns its full result inline (completed: true); a slow one returns completed: " +
+  "false plus a jobId to poll by calling `dispatch` again with that jobId (partial " +
+  "output while running, full result once done — nothing is ever lost to a timeout, " +
+  "including this MCP call's own). Always pass workingDir (the caller's project root " +
+  "— it is NOT inferred) and hints.taskType (execute | plan | review | local) on every " +
+  "call; omitting either degrades routing or runs the task in the wrong directory. " +
+  "Check the `usage` tool before passing an unfamiliar model or route name — " +
+  "semantics differ per field: hints.model is forwarded to the picked harness as-is " +
+  "(routing.modelHintMatched tells you whether it also matched a route), fanout " +
+  "`models` only selects which routes run (it does not set their model), and forcing " +
+  "a specific backend is done with the top-level `service` param. Read " +
+  "harness-dispatch://status or harness-dispatch://status.json for route readiness, " +
+  "billing policy, and safety detail.";
 
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
@@ -72,12 +79,16 @@ export function buildMcpServerInstance(
 
 /** Bootstrap runtime state + build an `McpServer` with all tools registered. */
 export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltMcp> {
-  // Initialize OpenTelemetry once. Idempotent; no-op when OTEL_SDK_DISABLED=true.
-  await initObservability();
-
   const stateOpts: { configPath?: string } = {};
   if (opts.configPath !== undefined) stateOpts.configPath = opts.configPath;
   const state = await bootstrapRuntime(stateOpts);
+
+  // Telemetry is opt-in: initialize only after config load, gated on
+  // `telemetry: { enabled: true }` (or the HARNESS_DISPATCH_TELEMETRY env
+  // var, which initObservability checks itself). Idempotent.
+  if (state.config.telemetry?.enabled) {
+    await initObservability({ enabled: true });
+  }
   const holder = new RuntimeHolder(state);
   const reloader = new ConfigHotReloader(holder, opts.configPath);
 

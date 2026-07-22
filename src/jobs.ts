@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   appendFile,
+  chmod,
   copyFile,
   mkdir,
   readFile,
@@ -25,7 +26,13 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { RuntimeHolder } from "./mcp/config-hot-reload.js";
-import type { DispatchResult, RouteHints, RoutingDecision, WorkspacePolicy } from "./types.js";
+import type {
+  DispatchResult,
+  DispatcherEvent,
+  RouteHints,
+  RoutingDecision,
+  WorkspacePolicy,
+} from "./types.js";
 import { resolveWorkingDir, workingDirWarning } from "./working-dir.js";
 
 /**
@@ -69,7 +76,7 @@ function pollInstructions(jobId: string): string {
   return (
     `Job runs in the background; CLI harnesses typically take 3-15 minutes. ` +
     `Wait ~${Math.round(SUGGESTED_POLL_SECONDS / 60)} minutes (e.g. sleep), then call ` +
-    `job action=get jobId=${jobId}. While status is "running", partialOutput shows ` +
+    `dispatch with jobId=${jobId}. While status is "running", partialOutput shows ` +
     `progress; poll again until status is "completed" or "failed". Results persist on ` +
     `disk, so a missed poll loses nothing.`
   );
@@ -86,6 +93,13 @@ export interface StartJobInput {
   hints?: RouteHints;
   workspacePolicy?: WorkspacePolicy;
   service?: string;
+  /**
+   * Live dispatcher-event tap, used by the `dispatch` tool to forward MCP
+   * progress notifications during its inline grace window. Never serialized
+   * (the manifest lists its fields explicitly), never awaited, and a throw
+   * here must not fail the job.
+   */
+  onEvent?: (event: DispatcherEvent) => void;
 }
 
 export interface JobStatus {
@@ -134,24 +148,39 @@ export interface JobResultPayload {
 
 function jobsRoot(): string {
   return (
-    process.env.HARNESS_ROUTER_JOBS_DIR ??
-    path.join(homedir(), ".harness-router", "jobs")
+    process.env.HARNESS_DISPATCH_JOBS_DIR ??
+    path.join(homedir(), ".harness-dispatch", "jobs")
   );
 }
 
 const DEFAULT_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+let configuredJobMaxAgeMs: number | undefined;
+
+/**
+ * Config-driven retention (`retention: { jobs_days: N }` in config.yaml) —
+ * set at runtime bootstrap and on every hot reload. Precedence:
+ * HARNESS_DISPATCH_JOB_MAX_AGE_MS env > config > 7-day default.
+ */
+export function setJobRetentionDays(days: number | undefined): void {
+  configuredJobMaxAgeMs =
+    days !== undefined && Number.isFinite(days) && days >= 0
+      ? days * 24 * 60 * 60 * 1000
+      : undefined;
+}
+
 function jobMaxAgeMs(): number {
-  const raw = process.env.HARNESS_ROUTER_JOB_MAX_AGE_MS;
+  const raw = process.env.HARNESS_DISPATCH_JOB_MAX_AGE_MS;
   const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_JOB_MAX_AGE_MS;
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return configuredJobMaxAgeMs ?? DEFAULT_JOB_MAX_AGE_MS;
 }
 
 /**
  * Nothing ever pruned old job directories — status.json/result.json/output
  * logs and every snapshotted context file accumulated under jobsRoot()
  * forever. Prune anything with no activity for the retention window
- * (default 7 days, override via HARNESS_ROUTER_JOB_MAX_AGE_MS) each time a
+ * (default 7 days, override via HARNESS_DISPATCH_JOB_MAX_AGE_MS) each time a
  * new job is about to start. Job directory mtime is a reasonable proxy for
  * "last activity": writeJson's tmp-then-rename touches the job dir on every
  * status update, so a running (or freshly completed but unpolled) job keeps
@@ -192,7 +221,7 @@ function safeBaseName(filePath: string): string {
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await renameWithRetry(tmpPath, filePath);
 }
 
@@ -224,7 +253,7 @@ async function updateStatus(jobDir: string, status: JobStatus): Promise<void> {
 async function snapshotFiles(jobDir: string, files: string[]): Promise<JobManifest["files"]> {
   const out: JobManifest["files"] = [];
   const filesDir = path.join(jobDir, "context", "files");
-  await mkdir(filesDir, { recursive: true });
+  await mkdir(filesDir, { recursive: true, mode: 0o700 });
 
   for (const [index, originalPath] of files.entries()) {
     const item: JobManifest["files"][number] = { originalPath };
@@ -238,6 +267,7 @@ async function snapshotFiles(jobDir: string, files: string[]): Promise<JobManife
       const snapshotName = `${String(index + 1).padStart(3, "0")}-${safeBaseName(originalPath)}`;
       const snapshotPath = path.join(filesDir, snapshotName);
       await copyFile(originalPath, snapshotPath);
+      await chmod(snapshotPath, 0o600);
       item.snapshotPath = snapshotPath;
       item.sizeBytes = fileStat.size;
     } catch (err) {
@@ -306,9 +336,16 @@ async function runJob(
     let finalDecision: RoutingDecision | null = null;
     for await (const { event, decision } of events) {
       if (decision) finalDecision = decision;
+      if (input.onEvent) {
+        try {
+          input.onEvent(event);
+        } catch {
+          // Progress forwarding is best-effort; the job itself must not fail.
+        }
+      }
       if (event.type === "stdout" || event.type === "stderr") {
         try {
-          await appendFile(partialPath, event.chunk, "utf8");
+          await appendFile(partialPath, event.chunk, { encoding: "utf8", mode: 0o600 });
         } catch {
           // Progress mirroring is best-effort; the final result still lands.
         }
@@ -329,13 +366,13 @@ async function runJob(
       result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
       decision: finalDecision,
     };
-    await writeFile(path.join(jobDir, "output", "stdout.log"), result.output, "utf8");
-    await writeFile(path.join(jobDir, "output", "stderr.log"), result.error ?? "", "utf8");
+    await writeFile(path.join(jobDir, "output", "stdout.log"), result.output, { encoding: "utf8", mode: 0o600 });
+    await writeFile(path.join(jobDir, "output", "stderr.log"), result.error ?? "", { encoding: "utf8", mode: 0o600 });
     await writeJson(path.join(jobDir, "output", "result.json"), payload);
     await writeFile(
       path.join(jobDir, "output", "result.md"),
       result.output || result.error || "",
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
     await updateStatus(jobDir, {
       jobId: manifest.jobId,
@@ -352,7 +389,7 @@ async function runJob(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await writeFile(path.join(jobDir, "output", "stderr.log"), message, "utf8");
+    await writeFile(path.join(jobDir, "output", "stderr.log"), message, { encoding: "utf8", mode: 0o600 });
     await updateStatus(jobDir, {
       jobId: manifest.jobId,
       status: "failed",
@@ -368,16 +405,31 @@ async function runJob(
   }
 }
 
+export interface StartedJob {
+  status: JobStatus;
+  /**
+   * Resolves once the background run has fully landed on disk (result.json +
+   * final status for a normal run; failed status for a crashed one). Never
+   * rejects — runJob catches everything. This is what lets the `dispatch`
+   * tool race an inline grace window against the run without polling disk.
+   */
+  completion: Promise<void>;
+}
+
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
+  return (await startAsyncJobTracked(deps, input)).status;
+}
+
+export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput): Promise<StartedJob> {
   await pruneStaleJobs();
   const jobId = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const root = jobsRoot();
   const jobDir = path.join(root, jobId);
-  await mkdir(path.join(jobDir, "context"), { recursive: true });
-  await mkdir(path.join(jobDir, "output"), { recursive: true });
+  await mkdir(path.join(jobDir, "context"), { recursive: true, mode: 0o700 });
+  await mkdir(path.join(jobDir, "output"), { recursive: true, mode: 0o700 });
 
   const promptPath = path.join(jobDir, "prompt.md");
-  await writeFile(promptPath, input.prompt, "utf8");
+  await writeFile(promptPath, input.prompt, { encoding: "utf8", mode: 0o600 });
   const fileSnapshots = await snapshotFiles(jobDir, input.files ?? []);
   const createdAt = timestamp();
   const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
@@ -408,8 +460,8 @@ export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promis
   };
   await updateStatus(jobDir, status);
 
-  void runJob(deps, jobDir, manifest, input);
-  return status;
+  const completion = runJob(deps, jobDir, manifest, input);
+  return { status, completion };
 }
 
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;

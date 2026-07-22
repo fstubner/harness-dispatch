@@ -47,7 +47,7 @@ async function startFakeOpenAi(): Promise<{ port: number; close(): Promise<void>
 }
 
 async function writeConfig(baseUrl: string, opts: { includePaidRoute?: boolean } = {}): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-http-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-http-"));
   const file = path.join(dir, "config.yaml");
   const paidRoute = opts.includePaidRoute
     ? [
@@ -223,11 +223,11 @@ describe("HTTP server", () => {
     expect(chat.status).toBe(200);
     const body = (await chat.json()) as {
       choices: Array<{ message: { content: string } }>;
-      harness_router: { route: string };
+      harness_dispatch: { route: string };
     };
     expect(body.choices[0]!.message.content).toBe("hello response");
-    expect(body.harness_router.route).toBe("local");
-    expect(body.harness_router).toHaveProperty("skippedRoutes");
+    expect(body.harness_dispatch.route).toBe("local");
+    expect(body.harness_dispatch).toHaveProperty("skippedRoutes");
   });
 
   it("surfaces skipped routes in REST chat completions", async () => {
@@ -252,9 +252,9 @@ describe("HTTP server", () => {
     });
     expect(chat.status).toBe(200);
     const body = (await chat.json()) as {
-      harness_router: { skippedRoutes?: Array<{ route: string; code: string }> };
+      harness_dispatch: { skippedRoutes?: Array<{ route: string; code: string }> };
     };
-    expect(body.harness_router.skippedRoutes).toEqual([
+    expect(body.harness_dispatch.skippedRoutes).toEqual([
       expect.objectContaining({ route: "paid_openai", code: "paid_blocked" }),
     ]);
   });
@@ -315,7 +315,7 @@ describe("HTTP server", () => {
     const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
     const handle = await startHttpServer({ configPath: config, token: "secret" });
     handles.push(handle);
-    const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-http-copy-"));
+    const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-http-copy-"));
 
     const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
       method: "POST",
@@ -334,10 +334,10 @@ describe("HTTP server", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      harness_router?: { mode?: string };
+      harness_dispatch?: { mode?: string };
       choices: Array<{ message: { content: string } }>;
     };
-    expect(body.harness_router?.mode).toBe("fanout");
+    expect(body.harness_dispatch?.mode).toBe("fanout");
     expect(body.choices[0]!.message.content).toContain("workspace");
   });
 
@@ -360,11 +360,11 @@ describe("HTTP server", () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["code", "job", "usage"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
       const resources = await client.listResources();
       expect(resources.resources.map((resource) => resource.uri).sort()).toEqual([
-        "harness-router://status",
-        "harness-router://status.json",
+        "harness-dispatch://status",
+        "harness-dispatch://status.json",
       ]);
     } finally {
       await client.close();
@@ -397,8 +397,8 @@ describe("HTTP server", () => {
         clientA.listTools(),
         clientB.listTools(),
       ]);
-      expect(toolsA.tools.map((tool) => tool.name)).toEqual(["code", "job", "usage"]);
-      expect(toolsB.tools.map((tool) => tool.name)).toEqual(["code", "job", "usage"]);
+      expect(toolsA.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
+      expect(toolsB.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
     } finally {
       await clientA.close();
       await clientB.close();

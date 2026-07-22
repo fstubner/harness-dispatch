@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-harness-router SessionStart hook.
+harness-dispatch SessionStart hook.
 
-Installed by harness-router configure into ~/.claude/hooks.json.
+Installed by harness-dispatch configure into ~/.claude/hooks.json.
 Runs at the start of every Claude Code session and prints routing
 instructions so Claude knows to delegate coding tasks to the router.
 
@@ -18,17 +18,19 @@ import json
 import sys
 
 ROUTING_CONTEXT = """
-## Active: harness-router MCP
+## Active: harness-dispatch MCP
 
-The harness-router MCP server is connected. For coding delegation, use the
-single code tool with the right taskType:
+The harness-dispatch MCP server is connected. For coding delegation, use the
+single dispatch tool with the right taskType:
 
   task_type=execute  → Codex/Cursor  (tests, patches, autonomous coding)
   task_type=plan     → Claude Opus   (architecture, design, reasoning)
   task_type=review   → Claude Opus   (code review, security, refactoring)
 
-For multiple model perspectives: code(mode="fanout", prompt=..., hints={"taskType":"plan"})
-Read harness-router://status.json to check route readiness, billing policy, safety,
+A fast task returns its result inline (completed=true); a slow one returns a
+jobId — call dispatch again with that jobId to poll. Nothing is lost to a timeout.
+For multiple model perspectives: dispatch(mode="fanout", prompt=..., hints={"taskType":"plan"})
+Read harness-dispatch://status.json to check route readiness, billing policy, safety,
 quota state, and breaker state before delegating when that matters.
 """.strip()
 

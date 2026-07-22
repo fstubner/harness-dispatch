@@ -4,8 +4,8 @@ if (!VERSION || typeof VERSION !== "string") {
   throw new Error("VERSION export is missing");
 }
 
-if (JSON.stringify(TOOL_NAMES) !== JSON.stringify(["code", "job", "usage"])) {
+if (JSON.stringify(TOOL_NAMES) !== JSON.stringify(["dispatch", "usage"])) {
   throw new Error(`Unexpected MCP tools: ${JSON.stringify(TOOL_NAMES)}`);
 }
 
-console.log(`harness-router ${VERSION} smoke ok`);
+console.log(`harness-dispatch ${VERSION} smoke ok`);

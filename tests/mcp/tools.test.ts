@@ -106,18 +106,18 @@ function buildHolder(
 }
 
 beforeEach(() => {
-  const jobsDir = mkdtempSync(path.join(tmpdir(), "harness-router-jobs-"));
-  vi.stubEnv("HARNESS_ROUTER_JOBS_DIR", jobsDir);
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "harness-dispatch-jobs-"));
+  vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", jobsDir);
   vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
 });
 
 describe("MCP tools — public surface", () => {
-  it("exports the public code, job, and usage tools", () => {
-    expect(TOOL_NAMES).toEqual(["code", "job", "usage"]);
+  it("exports the public dispatch and usage tools", () => {
+    expect(TOOL_NAMES).toEqual(["dispatch", "usage"]);
   });
 });
 
-describe("MCP tools — code", () => {
+describe("MCP tools — dispatch", () => {
   it("routes successfully in default single mode", async () => {
     const holder = buildHolder(
       {
@@ -130,7 +130,7 @@ describe("MCP tools — code", () => {
       },
     );
 
-    const r = await invokeTool("code", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
+    const r = await invokeTool("dispatch", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
     expect(r.kind).toBe("json");
     const data = r.data as {
       mode: "single";
@@ -159,7 +159,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { prompt: "hi", hints: { model: "preferred-model", taskType: "plan" } },
       { holder },
     );
@@ -176,7 +176,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { prompt: "hi", hints: { model: "totally-unrecognized-model", taskType: "plan" } },
       { holder },
     );
@@ -206,7 +206,7 @@ describe("MCP tools — code", () => {
       },
     );
 
-    const r = await invokeTool("code", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
+    const r = await invokeTool("dispatch", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
     const data = r.data as { route: string; skippedRoutes?: Array<{ route: string; code: string }> };
     expect(data.route).toBe("local");
     expect(data.skippedRoutes).toEqual([
@@ -234,7 +234,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { prompt: "hi", hints: { taskType: "plan", routePolicy: "local_only" } },
       { holder },
     );
@@ -262,7 +262,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { prompt: "hi", hints: { routePolicy: "approval_required" } },
       { holder },
     );
@@ -286,7 +286,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
       { holder },
     );
@@ -313,7 +313,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       {
         mode: "fanout",
         prompt: "edit files",
@@ -333,7 +333,7 @@ describe("MCP tools — code", () => {
   });
 
   it("allows explicit write-capable fanout with copy-isolated workspaces", async () => {
-    const workingDir = mkdtempSync(path.join(tmpdir(), "harness-router-fanout-copy-"));
+    const workingDir = mkdtempSync(path.join(tmpdir(), "harness-dispatch-fanout-copy-"));
     const holder = buildHolder(
       {
         a: makeService("a"),
@@ -346,7 +346,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       {
         mode: "fanout",
         prompt: "edit files",
@@ -388,7 +388,7 @@ describe("MCP tools — code", () => {
       },
     );
 
-    const r = await invokeTool("code", { mode: "fanout", prompt: "hi" }, { holder });
+    const r = await invokeTool("dispatch", { mode: "fanout", prompt: "hi" }, { holder });
     const data = r.data as {
       results: Array<{ route: string }>;
       skippedRoutes?: Array<{ route: string; code: string }>;
@@ -419,7 +419,7 @@ describe("MCP tools — code", () => {
     );
 
     const r = await invokeTool(
-      "code",
+      "dispatch",
       {
         mode: "fanout",
         prompt: "hi",
@@ -447,7 +447,7 @@ describe("MCP tools — code", () => {
       },
     );
 
-    const r = await invokeTool("code", { mode: "fanout", prompt: "hi", models: ["b-model"] }, { holder });
+    const r = await invokeTool("dispatch", { mode: "fanout", prompt: "hi", models: ["b-model"] }, { holder });
     const data = r.data as { results: Array<{ route: string }> };
     expect(data.results).toHaveLength(1);
     expect(data.results[0]!.route).toBe("b");
@@ -468,7 +468,7 @@ describe("MCP tools — code", () => {
     // hints.model targets route "b" specifically, but no top-level `models`
     // is given — fanout must still hit every eligible route, not just "b".
     const r = await invokeTool(
-      "code",
+      "dispatch",
       { mode: "fanout", prompt: "hi", hints: { model: "b-model" } },
       { holder },
     );
@@ -476,93 +476,166 @@ describe("MCP tools — code", () => {
     expect(data.results.map((item) => item.route).sort()).toEqual(["a", "b"]);
   });
 
-  it("starts and inspects an async job", async () => {
+  it("returns a full inline result with its jobId when the run beats the grace window", async () => {
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "fast A", service: "a", success: true }) },
+    );
+
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { holder },
+    );
+    const data = r.data as {
+      mode: string;
+      jobId: string;
+      completed: boolean;
+      success: boolean;
+      output: string;
+    };
+    expect(data.mode).toBe("single");
+    expect(data.completed).toBe(true);
+    // Inline results still come from a real background job — the jobId keeps
+    // pointing at the on-disk artifacts even after the inline reply.
+    expect(data.jobId).toMatch(/^job-/);
+    expect(data.success).toBe(true);
+    expect(data.output).toBe("fast A");
+  });
+
+  it("returns a pollable jobId with graceSeconds: 0 and completes via polling", async () => {
+    // A dispatcher slow enough to genuinely outlive a zero grace window —
+    // an instant fake can finish before the post-grace disk read, in which
+    // case dispatch correctly reports completed: true even at grace 0.
+    const slow: Dispatcher = {
+      id: "a",
+      async dispatch(): Promise<DispatchResult> {
+        return { output: "async A", service: "a", success: true };
+      },
+      async *stream(): AsyncIterable<DispatcherEvent> {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        yield { type: "completion", result: { output: "async A", service: "a", success: true } };
+      },
+      async checkQuota(): Promise<QuotaInfo> {
+        return { service: "a", source: "unknown" };
+      },
+      isAvailable: () => true,
+    };
     const holder = buildHolder(
       {
         a: makeService("a", { leaderboardModel: "a-model" }),
       },
-      {
-        a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }),
-      },
+      { a: slow },
     );
 
     const started = await invokeTool(
-      "job",
-      { action: "start", prompt: "hi", service: "a" },
+      "dispatch",
+      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: "/some/project" },
       { holder },
     );
-    const startData = started.data as { jobId: string; status: string; jobDir: string };
+    const startData = started.data as {
+      mode: string;
+      jobId: string;
+      completed: boolean;
+      nextPollSeconds?: number;
+      instructions?: string;
+      warning?: string;
+    };
+    expect(startData.completed).toBe(false);
     expect(startData.jobId).toMatch(/^job-/);
-    expect(startData.status).toBe("queued");
+    expect(startData.nextPollSeconds).toBeGreaterThan(0);
+    expect(startData.instructions).toMatch(/dispatch/);
+    // workingDir was provided explicitly, so no defaulted-cwd warning.
+    expect(startData.warning).toBeUndefined();
 
-    let data: { status: { status: string }; result?: { result: { output: string } } } | null =
-      null;
+    let data: {
+      completed: boolean;
+      status: { status: string; jobDir: string };
+      result?: { output: string };
+    } | null = null;
     for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool(
-        "job",
-        { action: "get", jobId: startData.jobId },
-        { holder },
-      );
+      const inspected = await invokeTool("dispatch", { jobId: startData.jobId }, { holder });
       data = inspected.data as typeof data;
-      if (data?.status.status === "completed") break;
+      if (data?.completed) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
 
+    expect(data?.completed).toBe(true);
     expect(data?.status.status).toBe("completed");
-    expect(data?.result?.result.output).toBe("async A");
-    rmSync(startData.jobDir, { recursive: true, force: true });
+    expect(data?.result?.output).toBe("async A");
+    rmSync(data!.status.jobDir, { recursive: true, force: true });
   });
 
-  it("gives a background job a 60-minute dispatch timeout by default, not the dispatcher's short one", async () => {
+  it("lists known background dispatches with list: true", async () => {
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
+    );
+
+    const started = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { holder },
+    );
+    const startData = started.data as { jobId: string };
+
+    const listed = await invokeTool("dispatch", { list: true }, { holder });
+    const listData = listed.data as { jobs: Array<{ jobId: string }> };
+    expect(listData.jobs.map((j) => j.jobId)).toContain(startData.jobId);
+  });
+
+  it("rejects ambiguous or incomplete dispatch inputs", async () => {
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a") },
+    );
+
+    await expect(invokeTool("dispatch", {}, { holder })).rejects.toThrow(/prompt.*required/);
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", jobId: "job-x" }, { holder }),
+    ).rejects.toThrow(/not both/);
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", list: true }, { holder }),
+    ).rejects.toThrow(/exclusive/);
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", mode: "fanout", service: "a" }, { holder }),
+    ).rejects.toThrow(/incompatible/);
+  });
+
+  it("gives every dispatch a 60-minute background timeout by default, not the dispatcher's short one", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
       { a: makeService("a", { leaderboardModel: "a-model" }) },
       { a: dispatcher },
     );
 
-    const started = await invokeTool(
-      "job",
-      { action: "start", prompt: "hi", service: "a" },
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project" },
       { holder },
     );
-    const startData = started.data as { jobId: string; jobDir: string };
-    for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-      const data = inspected.data as { status: { status: string } };
-      if (data.status.status === "completed") break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    rmSync(startData.jobDir, { recursive: true, force: true });
-
+    expect((r.data as { completed: boolean }).completed).toBe(true);
     expect(dispatcher.lastOpts?.timeoutMs).toBe(60 * 60 * 1000);
   });
 
-  it("lets hints.timeoutMs on job start override the 60-minute background default", async () => {
+  it("lets hints.timeoutMs override the 60-minute background default", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
       { a: makeService("a", { leaderboardModel: "a-model" }) },
       { a: dispatcher },
     );
 
-    const started = await invokeTool(
-      "job",
-      { action: "start", prompt: "hi", service: "a", hints: { timeoutMs: 5_400_000 } },
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project", hints: { timeoutMs: 5_400_000 } },
       { holder },
     );
-    const startData = started.data as { jobId: string; jobDir: string };
-    for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-      const data = inspected.data as { status: { status: string } };
-      if (data.status.status === "completed") break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    rmSync(startData.jobDir, { recursive: true, force: true });
-
+    expect((r.data as { completed: boolean }).completed).toBe(true);
     expect(dispatcher.lastOpts?.timeoutMs).toBe(5_400_000);
   });
 
   it("prunes job directories older than the retention window before starting a new one", async () => {
-    const jobsDir = process.env.HARNESS_ROUTER_JOBS_DIR!;
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
     const staleJobDir = path.join(jobsDir, "job-stale-0000000-aaaaaaaa");
     mkdirSync(staleJobDir, { recursive: true });
     const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
@@ -573,29 +646,19 @@ describe("MCP tools — code", () => {
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
-    vi.stubEnv("HARNESS_ROUTER_JOB_MAX_AGE_MS", String(7 * 24 * 60 * 60 * 1000));
+    vi.stubEnv("HARNESS_DISPATCH_JOB_MAX_AGE_MS", String(7 * 24 * 60 * 60 * 1000));
     try {
-      const started = await invokeTool(
-        "job",
-        { action: "start", prompt: "hi", service: "a" },
+      // Default grace: the dispatch returns only after the background run
+      // has fully landed, so nothing keeps writing after the test moves on.
+      const r = await invokeTool(
+        "dispatch",
+        { prompt: "hi", service: "a", workingDir: "/some/project" },
         { holder },
       );
-      const startData = started.data as { jobId: string; jobDir: string };
-      expect(existsSync(startData.jobDir)).toBe(true);
-
-      // Wait for the background job to finish before the test ends, same as
-      // the neighboring "starts and inspects an async job" test — otherwise
-      // its fire-and-forget runJob() keeps writing after the process moves on.
-      for (let i = 0; i < 100; i += 1) {
-        const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-        const data = inspected.data as { status: { status: string } };
-        if (data.status.status === "completed") break;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      rmSync(startData.jobDir, { recursive: true, force: true });
+      expect((r.data as { completed: boolean }).completed).toBe(true);
     } finally {
       vi.unstubAllEnvs();
-      vi.stubEnv("HARNESS_ROUTER_JOBS_DIR", jobsDir);
+      vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", jobsDir);
     }
 
     expect(existsSync(staleJobDir)).toBe(false);
@@ -607,12 +670,12 @@ describe("MCP tools — code", () => {
       { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
     );
 
-    const withoutWorkingDir = await invokeTool("code", { prompt: "hi" }, { holder });
+    const withoutWorkingDir = await invokeTool("dispatch", { prompt: "hi" }, { holder });
     const withoutData = withoutWorkingDir.data as { warning?: string };
     expect(withoutData.warning).toMatch(/workingDir was not provided/);
 
     const withWorkingDir = await invokeTool(
-      "code",
+      "dispatch",
       { prompt: "hi", workingDir: "/some/project" },
       { holder },
     );
@@ -620,42 +683,7 @@ describe("MCP tools — code", () => {
     expect(withData.warning).toBeUndefined();
   });
 
-  it("includes poll guidance when starting a job, and drops it once completed", async () => {
-    const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
-      { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
-    );
-
-    const started = await invokeTool(
-      "job",
-      { action: "start", prompt: "hi", service: "a", workingDir: "/some/project" },
-      { holder },
-    );
-    const startData = started.data as {
-      jobId: string;
-      jobDir: string;
-      nextPollSeconds?: number;
-      instructions?: string;
-      warning?: string;
-    };
-    expect(startData.nextPollSeconds).toBeGreaterThan(0);
-    expect(startData.instructions).toMatch(/job action=get/);
-    // workingDir was provided explicitly, so no defaulted-cwd warning.
-    expect(startData.warning).toBeUndefined();
-
-    let data: { status: { status: string }; result?: { result: { output: string } } } | null =
-      null;
-    for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-      data = inspected.data as typeof data;
-      if (data?.status.status === "completed") break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    expect(data?.status.status).toBe("completed");
-    rmSync(startData.jobDir, { recursive: true, force: true });
-  });
-
-  it("plumbs hints.taskType and hints.model through to an explicit-service job dispatch", async () => {
+  it("plumbs hints.taskType and hints.model through to an explicit-service dispatch", async () => {
     const holder = buildHolder(
       {
         a: makeService("a", {
@@ -666,10 +694,9 @@ describe("MCP tools — code", () => {
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
-    const started = await invokeTool(
-      "job",
+    const r = await invokeTool(
+      "dispatch",
       {
-        action: "start",
         prompt: "hi",
         service: "a",
         workingDir: "/some/project",
@@ -677,28 +704,20 @@ describe("MCP tools — code", () => {
       },
       { holder },
     );
-    const startData = started.data as { jobId: string; jobDir: string };
-
-    let data: {
-      status: { status: string };
-      result?: { decision: { taskType: string; model?: string; capabilityScore: number } };
-    } | null = null;
-    for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-      data = inspected.data as typeof data;
-      if (data?.status.status === "completed") break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    expect(data?.status.status).toBe("completed");
+    const data = r.data as {
+      completed: boolean;
+      model?: string;
+      routing?: { taskType: string; capabilityScore: number };
+    };
+    expect(data.completed).toBe(true);
     // Before the fix, explicit-service dispatch always recorded taskType: ""
     // and svc.model, ignoring hints entirely.
-    expect(data?.result?.decision.taskType).toBe("plan");
-    expect(data?.result?.decision.model).toBe("explicit-override");
-    expect(data?.result?.decision.capabilityScore).toBeCloseTo(0.4, 10);
-    rmSync(startData.jobDir, { recursive: true, force: true });
+    expect(data.routing?.taskType).toBe("plan");
+    expect(data.model).toBe("explicit-override");
+    expect(data.routing?.capabilityScore).toBeCloseTo(0.4, 10);
   });
 
-  it("bounds a huge dispatcher error in status/result JSON but keeps the full text in stderr.log", async () => {
+  it("bounds a huge dispatcher error in the inline result but keeps the full text in stderr.log", async () => {
     const hugeError = "X".repeat(200_000);
     const holder = buildHolder(
       { a: makeService("a", { leaderboardModel: "a-model" }) },
@@ -712,26 +731,130 @@ describe("MCP tools — code", () => {
       },
     );
 
-    const started = await invokeTool(
-      "job",
-      { action: "start", prompt: "hi", service: "a", workingDir: "/some/project" },
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project" },
       { holder },
     );
-    const startData = started.data as { jobId: string; jobDir: string };
+    const data = r.data as { jobId: string; completed: boolean; success: boolean; error?: string };
+    expect(data.completed).toBe(true);
+    expect(data.success).toBe(false);
+    expect(data.error?.length).toBeLessThan(hugeError.length);
+    expect(data.error).toContain("truncated");
 
-    let data: { status: { status: string; error?: string } } | null = null;
-    for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("job", { action: "get", jobId: startData.jobId }, { holder });
-      data = inspected.data as typeof data;
-      if (data?.status.status === "failed") break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    expect(data?.status.status).toBe("failed");
-    expect(data?.status.error?.length).toBeLessThan(hugeError.length);
-    expect(data?.status.error).toContain("truncated");
-
-    const stderrLog = readFileSync(path.join(startData.jobDir, "output", "stderr.log"), "utf8");
+    // The jobId from the inline reply still points at the full artifacts.
+    const polled = await invokeTool("dispatch", { jobId: data.jobId }, { holder });
+    const polledData = polled.data as { status: { jobDir: string } };
+    const stderrLog = readFileSync(
+      path.join(polledData.status.jobDir, "output", "stderr.log"),
+      "utf8",
+    );
     expect(stderrLog).toBe(hugeError);
-    rmSync(startData.jobDir, { recursive: true, force: true });
+    rmSync(polledData.status.jobDir, { recursive: true, force: true });
+  });
+});
+
+describe("MCP tools — usage listModels", () => {
+  it("returns a declared models: list verbatim, with source: declared, and skips the network entirely", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const holder = buildHolder(
+      {
+        nvidia: makeService("nvidia", {
+          type: "openai_compatible",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          apiKey: "fake-key",
+          models: ["qwen/qwen3-coder-480b-a35b-instruct", "moonshotai/kimi-k2-instruct"],
+        }),
+      },
+      { nvidia: new FakeDispatcher("nvidia") },
+    );
+
+    const r = await invokeTool("usage", { listModels: "nvidia" }, { holder });
+    const data = r.data as {
+      liveModels: { route: string; models?: string[]; source?: string; error?: string };
+    };
+
+    expect(data.liveModels).toEqual({
+      route: "nvidia",
+      models: ["qwen/qwen3-coder-480b-a35b-instruct", "moonshotai/kimi-k2-instruct"],
+      source: "declared",
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("falls back to a live GET /models fetch when no models: list is declared, tagged source: live", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), {
+        status: 200,
+      }),
+    );
+    const holder = buildHolder(
+      {
+        groq: makeService("groq", {
+          type: "openai_compatible",
+          baseUrl: "https://api.groq.com/openai/v1",
+          apiKey: "fake-key",
+        }),
+      },
+      { groq: new FakeDispatcher("groq") },
+    );
+
+    const r = await invokeTool("usage", { listModels: "groq" }, { holder });
+    const data = r.data as {
+      liveModels: { route: string; models?: string[]; source?: string; error?: string };
+    };
+
+    expect(data.liveModels).toEqual({
+      route: "groq",
+      models: ["model-a", "model-b"],
+      source: "live",
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.groq.com/openai/v1/models",
+      expect.objectContaining({ headers: { Authorization: "Bearer fake-key" } }),
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it("errors cleanly for a CLI harness route (no models: declared, not an endpoint)", async () => {
+    const holder = buildHolder(
+      { claude: makeService("claude", { type: "cli" }) },
+      { claude: new FakeDispatcher("claude") },
+    );
+    const r = await invokeTool("usage", { listModels: "claude" }, { holder });
+    const data = r.data as { liveModels: { route: string; error?: string } };
+    expect(data.liveModels.error).toMatch(/openai_compatible|models: list/);
+  });
+
+  it("errors cleanly for an unknown route id instead of throwing", async () => {
+    const holder = buildHolder({}, {});
+    const r = await invokeTool("usage", { listModels: "does_not_exist" }, { holder });
+    const data = r.data as { liveModels: { route: string; error?: string } };
+    expect(data.liveModels.error).toContain("unknown route");
+  });
+
+  it("appends /v1 before /models for a baseUrl that doesn't already end in /v1, matching the dispatcher", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 }),
+    );
+    const holder = buildHolder(
+      {
+        gateway: makeService("gateway", {
+          type: "openai_compatible",
+          baseUrl: "https://gateway.example.com",
+          apiKey: "fake-key",
+        }),
+      },
+      { gateway: new FakeDispatcher("gateway") },
+    );
+
+    await invokeTool("usage", { listModels: "gateway" }, { holder });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://gateway.example.com/v1/models",
+      expect.anything(),
+    );
+    fetchSpy.mockRestore();
   });
 });

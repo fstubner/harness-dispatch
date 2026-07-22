@@ -1,13 +1,17 @@
-# harness-router
+# harness-dispatch
 
-Local routing for coding agents and coding harnesses.
+Turns your locally installed coding harnesses (Claude Code, Codex, Cursor Agent,
+Antigravity CLI) and local or remote API endpoints into tools any AI can call, and
+handles the async nature of long-running agent work.
 
-`harness-router` sits between an agent client and the coding tools you already use:
-Claude Code, Codex, Cursor Agent, Antigravity CLI, and OpenAI-compatible local or metered
-endpoints. It detects available harnesses, verifies route readiness, applies billing
-and safety policy, and exposes a small MCP surface plus an OpenAI-compatible HTTP surface.
-(There is no Gemini CLI dispatcher — Google discontinued that CLI's backend in mid-2026;
-Antigravity CLI is its replacement.)
+Exposing them as explicit tools is more reliable than telling an agent to shell out
+to another CLI: models are trained on tool calling, so they actually use tools they
+are given. Each call is routed to the backend that fits the task, preferring the
+flat-rate subscription quota you already pay for; metered or unknown-billing routes
+are blocked until you opt in. Long tasks run as async jobs: start one, get an id back
+immediately, poll for partial output, collect the result when it finishes. Nothing is
+lost to a client timeout. (There is no Gemini CLI dispatcher; Google discontinued
+that CLI's backend in mid-2026, and Antigravity CLI is its replacement.)
 
 **What this does on your machine**, stated plainly before you install it: it spawns the
 CLI subprocesses above with your prompts, which can read and write files under the
@@ -21,7 +25,7 @@ inferred from separate sections.
 **A configured harness runs automatically** — nothing extra to switch on. If that
 harness's account has paid/overage billing enabled on the *provider's* side (Cursor's
 on-demand billing, Claude's usage credits, Codex's flexible credits, a raw metered API
-key, etc.), harness-router will use it too — it does not detect or prevent provider-side
+key, etc.), harness-dispatch will use it too — it does not detect or prevent provider-side
 billing state. It only blocks a route by default when there's no provider-side backstop
 at all (a raw metered API key, or unknown billing), until you set `allow_paid_usage: true`
 on it. See [Adding a harness](#adding-a-harness) for the config, and `status --json` /
@@ -35,9 +39,9 @@ on it. See [Adding a harness](#adding-a-harness) for the config, and `status --j
 ## Install
 
 ```bash
-npm install -g harness-router
-harness-router configure --yes
-harness-router doctor --live
+npm install -g harness-dispatch
+harness-dispatch configure --yes
+harness-dispatch doctor --live
 ```
 
 `configure --yes` detects installed harnesses and writes `config.yaml`.
@@ -54,17 +58,24 @@ Your Claude Code / Codex / Cursor subscriptions run by default, no opt-in needed
 — `configure`'s output tells you if anything's blocked and why. See
 [Adding a harness](#adding-a-harness) below for the config and the paid-usage note.
 
-> This repo publishes as `harness-router` (currently `0.4.0` here vs. an older `0.3.2`
-> on the registry). A separate, older package named `harness-router-mcp` (`0.2.0`) also
-> exists on npm from an earlier iteration of this project — it lacks `usage`,
-> `/v1/models`, `/v1/usage`, Antigravity, and every fix in this README's changelog.
-> Double-check any `mcpServers`/`claude_desktop_config.json` entry actually invokes
-> **this** package (or your local build's `dist/bin.js`), not the old one.
+> This project was renamed from `harness-router` to `harness-dispatch` — the npm
+> package, CLI command, env var prefix (`HARNESS_DISPATCH_*`), and MCP resource URIs
+> (`harness-dispatch://status`) all changed together. If you have an older install,
+> `npm uninstall -g harness-router && npm install -g harness-dispatch` and update any
+> `mcpServers`/`claude_desktop_config.json` entry to invoke `harness-dispatch`, not the
+> old command. Two older packages predate this rename and are no longer maintained:
+> `harness-router` (`0.3.2` on the registry) and the separately-published
+> `harness-router-mcp` (`0.2.0`) — both lack `usage`, `/v1/models`, `/v1/usage`,
+> Antigravity support, and every fix described in this README. Note that `npx -y
+> harness-dispatch` (used by the plugin's fallback launch path, see
+> [plugin/README.md](./plugin/README.md)) resolves to whatever is currently on the npm
+> registry, which can lag behind a local clone's `dist/`. Run `npm ls -g harness-dispatch`
+> to check which version is actually installed.
 
 You can also run without a global install:
 
 ```bash
-npx harness-router configure
+npx harness-dispatch configure
 ```
 
 ### Plugin install (Claude Code / Claude Desktop / Codex)
@@ -73,14 +84,16 @@ The `plugin/` directory packages the MCP server plus a delegation skill and
 `/route` + `/jobs` commands for one-step installs — see
 [plugin/README.md](./plugin/README.md). Claude Code:
 `/plugin marketplace add <repo path or URL>` then
-`/plugin install harness-router@harness-router`. Codex:
+`/plugin install harness-dispatch@harness-dispatch`. Codex:
 `node plugin/scripts/install-codex.mjs`.
 
 ## Adding a harness
 
-`config.yaml` is entirely optional. With none at all, harness-router auto-detects
-whichever of `claude`, `codex`, `agy` (Antigravity), and `cursor-agent` are on your
-PATH and routes across them with built-in defaults — that's the whole default config:
+`config.yaml` is entirely optional. There is no separate hidden defaults format —
+harness-dispatch ships with its own [`config.default.yaml`](config.default.yaml), the
+same shape you'd write yourself, and reads it as its built-in config. With no
+`config.yaml` of your own, the shipped one is filtered down to whichever of `claude`,
+`codex`, `agy` (Antigravity), and `cursor-agent` are on your PATH:
 
 ```yaml
 # config.yaml can be empty, or not exist at all.
@@ -103,12 +116,17 @@ endpoints:
     tier: 3
 ```
 
-See `config.example.yaml` for the full field reference (capability weights, tiers,
-escalation, workspace policy, and more).
+See the shipped [`config.default.yaml`](config.default.yaml) for the full field
+reference (capability weights, tiers, escalation, workspace policy, and more) — copy
+it to your own `config.yaml` and edit, or run `harness-dispatch configure` to generate
+a starting point.
 
 **A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
 either.** `harness: generic` takes a `protocol:` block instead of reusing one of the
-4 built-in dispatchers' hardcoded flag/output conventions:
+4 built-in harnesses' flag/output conventions. `protocol.args` is a literal
+command-line argument list, written the same way you'd type it by hand — a handful of
+reserved `{{name}}` tokens are substituted (or expanded to zero or more real tokens) at
+dispatch time; everything else passes through verbatim:
 
 ```yaml
 clis:
@@ -117,82 +135,127 @@ clis:
     command: my-cli           # the binary, resolved on PATH like any other
     tier: 3
     protocol:
-      prompt_input: { mode: flag, flag: "-p" }   # or {mode: positional} / {mode: stdin}
-      working_dir: { flag: "--cd" }              # omit to rely on process cwd alone
-      model_flag: "--model"                      # omit if the CLI has no model override
-      extra_args: ["--json"]                     # always appended
-      safety_args:                                # extra args per requested safety profile
+      args: ["-p", "{{prompt}}", "{{working_dir}}", "{{model}}", "{{safety}}", "--json"]
+      working_dir: { flag: "--cd" }              # omit {{working_dir}}/this to rely on process cwd alone
+      model: { flag: "--model" }                 # omit {{model}}/this if the CLI has no model override
+      safety:                                     # args per requested safety profile, via {{safety}}
         read_only: ["--mode", "plan"]
         workspace_edit: ["--mode", "accept-edits"]
         full_auto: ["--dangerously-skip-permissions"]
-      output_mode: json_field    # text | json_field | jsonl_stream
-      output_fields: [result, output, text]   # checked in order; dotted paths work ("message.content")
+      output:
+        mode: json_field    # text | json_field | jsonl_stream
+        fields: [result, output, text]   # checked in order; dotted paths work ("message.content")
 ```
 
+The full token reference:
+
+| Token | Expands to |
+| --- | --- |
+| `{{prompt}}` | the prompt text (one token) — omitted entirely if `stdin: true` |
+| `{{model}}` | `[model.flag, value]` if a model is set, else nothing |
+| `{{safety}}` | `safety[requested profile]` — zero or more tokens |
+| `{{working_dir}}` | `[working_dir.flag, dir, ...working_dir.extra_args_when_set]` if set, else nothing |
+| `{{file_dirs}}` | `[file_dirs.flag, dir]` repeated once per included file's directory |
+| `{{native_args}}` | `endpoint_native_args[endpoint_provider]`, only under `endpoint_mode: harness_native_endpoint` |
+
+**Protocols are named and selectable, not just inline.** `claude_code`, `codex`,
+`cursor`, and `antigravity_cli` are registered presets — every entry's `harness:` value
+in the shipped [`config.default.yaml`](config.default.yaml)'s `clis:` list is
+automatically selectable as a preset name. Reference one by name instead of retyping it:
+
+```yaml
+clis:
+  - name: my_cursor_fork
+    harness: generic
+    command: my-cursor-fork-cli   # a different binary that happens to share Cursor's CLI shape
+    protocol: cursor
+```
+
+Or start from a preset and override just what differs, for the common "95% the
+same, one flag different" case — `safety` merges per-profile (overriding just
+`full_auto` doesn't erase `read_only`/`workspace_edit` from the preset):
+
+```yaml
+clis:
+  - name: my_codex_fork
+    harness: generic
+    command: my-codex-fork-cli
+    protocol:
+      extends: codex
+      model: { flag: "--llm-model" }  # only this differs from the codex preset
+      safety:
+        full_auto: ["--yolo"]         # only this profile's args are replaced
+```
+
+A built-in route's own `protocol:` (under `overrides.claude_code_cli`, etc.) accepts a
+preset name or `extends:` too — it's parsed through the exact same code path as any
+other route.
+
 The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
-either — each ships a default `protocol:` (in `builtin-protocols.ts`) covering that
-CLI's real flags, including Codex's mid-run tool_use/thinking/usage streaming events
-via `event_rules` (see below), through the exact same `GenericCliDispatcher`
-interpreter every route runs on. Put a `protocol:` block under `overrides.claude_code_cli`
-(or any built-in route) in config.yaml and it replaces the default entirely — nothing
-about the 4 built-ins is more hardcoded than a route you add yourself.
+either — there is no per-harness dispatcher class or hardcoded TypeScript data for any
+of them in this codebase. All 4 are ordinary `clis:` entries in the shipped
+[`config.default.yaml`](config.default.yaml) — not a separate "defaults registry" in
+some other format, loaded through the exact same parser as your own `config.yaml`,
+covering each CLI's real flags including Codex's mid-run tool_use/thinking/usage
+streaming events via `event_rules` (see below). Every CLI-type route — built-in or
+user-added — runs through the one `GenericCliDispatcher` interpreter. Copy an entry
+from the shipped file into your own `config.yaml` and edit it directly (or add a
+`protocol:` block under `overrides.claude_code_cli`, etc.) and it replaces the default
+entirely — nothing about the 4 built-ins is more hardcoded than a route you add
+yourself.
 
 For a CLI whose events don't fit `text`/`json_field`'s single-parse-at-exit model —
 mid-run tool_use/thinking surfacing, token-usage aggregation across lines — use
-`output_mode: jsonl_stream` with `event_rules`:
+`output.mode: jsonl_stream` with `output.event_rules`:
 
 ```yaml
-      output_mode: jsonl_stream
-      event_rules:
-        - when: { type: "message" }             # every listed field must match this line
-          emit: text
-          text_field: message.content            # dotted paths work
-        - when: { "item.type": "tool_use" }
-          emit: tool_use
-          name_field: item.name
-          input_field: item.input
-        - when: { type: "thinking" }
-          emit: thinking
-          chunk_field: item.text
-        - when: {}                                # omit `when` (or leave it empty) to match every line
-          emit: usage
-          input_token_fields: [usage.input_tokens, usage.prompt_tokens]   # first present wins
-          output_token_fields: [usage.output_tokens, usage.completion_tokens]
+      output:
+        mode: jsonl_stream
+        event_rules:
+          - when: { type: "message" }             # every listed field must match this line
+            emit: text
+            text_field: message.content            # dotted paths work
+          - when: { "item.type": "tool_use" }
+            emit: tool_use
+            name_field: item.name
+            input_field: item.input
+          - when: { type: "thinking" }
+            emit: thinking
+            chunk_field: item.text
+          - when: {}                                # omit `when` (or leave it empty) to match every line
+            emit: usage
+            input_token_fields: [usage.input_tokens, usage.prompt_tokens]   # first present wins
+            output_token_fields: [usage.output_tokens, usage.completion_tokens]
 ```
 
-Other fields worth knowing: `file_dirs_flag` repeats a flag once per unique file
-directory (Antigravity's `--add-dir`); `api_key_env_var` injects `api_key` under a
-named env var for the child process (and clears it if ambient but unconfigured, so a
-stray key never leaks into a subscription-auth call); `success_requires_output: false`
-switches from the default strict contract (exit 0 AND a non-empty parsed field) to the
-lenient one Claude Code/Codex/Antigravity use (exit 0 alone, falling back to raw
-stdout/stderr text when parsing yields nothing). Billing for a `generic` route defaults
-to `unknown` (blocked until you classify it — there's no way to know an arbitrary CLI's
-real billing model) — set `billing_kind:` / `paid_usage_possible:` explicitly once you
-know it.
-
-**A harness runs as soon as it's configured — no separate "enable" step.** If that
-harness's account has paid/overage billing enabled on the *provider's* side, harness-
-router will use it too; it does not detect or prevent provider-side billing state
-(there's no API for that on any of Claude/Codex/Cursor). It only blocks a route by
-default when there's no provider-side backstop at all — a raw metered API key, or
-unknown billing — until you set `allow_paid_usage: true` on it.
+Other fields worth knowing: `file_dirs: { flag: ... }` (paired with `{{file_dirs}}`)
+repeats a flag once per unique file directory (Antigravity's `--add-dir`);
+`api_key_env_var` injects `api_key` under a named env var for the child process (and
+clears it if ambient but unconfigured, so a stray key never leaks into a
+subscription-auth call); `success_requires_output: false` switches from the default
+strict contract (exit 0 AND a non-empty parsed field) to the lenient one Claude
+Code/Codex/Antigravity use (exit 0 alone, falling back to raw stdout/stderr text when
+parsing yields nothing). Billing for a `generic` route defaults to `unknown` (blocked
+until you classify it — there's no way to know an arbitrary CLI's real billing model) —
+set `billing_kind:` / `paid_usage_possible:` explicitly once you know it.
 
 ## CLI
 
 ```bash
-harness-router                         # stdio MCP
-harness-router configure               # detect harnesses and prepare config
-harness-router configure --print       # inspect generated config YAML
-harness-router doctor                  # validate install, auth, config, and routes
-harness-router doctor --live           # run one eligible live routed probe
-harness-router doctor --live --allow-paid
-harness-router status                  # readable route readiness
-harness-router status --json           # structured route metadata
-harness-router status --watch          # live status refresh
-harness-router serve --port 3333       # /mcp and /v1/* over local HTTP
-harness-router auth show               # print HTTP bearer token
-harness-router auth rotate             # rotate HTTP bearer token
+harness-dispatch                         # stdio MCP
+harness-dispatch configure               # detect harnesses and prepare config
+harness-dispatch configure --print       # inspect generated config YAML
+harness-dispatch doctor                  # validate install, auth, config, and routes
+harness-dispatch doctor --live           # run one eligible live routed probe
+harness-dispatch doctor --live --allow-paid
+harness-dispatch status                  # readable route readiness
+harness-dispatch status --json           # structured route metadata
+harness-dispatch status --watch          # live status refresh
+harness-dispatch usage                   # per-route call counts, quota, billing kind
+harness-dispatch usage --json            # structured usage metadata
+harness-dispatch serve --port 3333       # /mcp and /v1/* over local HTTP
+harness-dispatch auth show               # print HTTP bearer token
+harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
 Hidden compatibility aliases currently map old alpha commands to the new surface:
@@ -201,34 +264,34 @@ They are not part of the public v0.4.0 vocabulary.
 
 ## MCP Surface
 
-`tools/list` returns three tools:
+`tools/list` returns two tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `code` | Route one coding task or fan out to multiple selected models. Blocks until the harness finishes — only safe for short (under ~1-2 min) tasks. |
-| `job` | Start (returns a `jobId` immediately) or inspect an async route job. Preferred for anything slower, since it can't hit an MCP client timeout. |
-| `usage` | Per-route call counts, quota, billing kind, and breaker state for the current session — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. |
+| `dispatch` | Start, poll, or list routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to poll. Nothing is ever lost to a timeout — including the MCP call's own. |
+| `usage` | Per-route call counts, quota, billing kind, and breaker state for the current session — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. Pass `listModels: <route id>` to fetch that `openai_compatible` route's live `GET /models` catalog instead of (or alongside) the summary. |
 
-`workingDir` is effectively required on `code` and `job`: if you omit it, the task runs
+`workingDir` is effectively required when starting work: if you omit it, the task runs
 in the router server's own process directory instead of your project, and the response
 carries a `warning` field saying so.
 
-**`code` and `job` use different dispatch-timeout defaults.** `code` blocks the MCP
-call regardless, so it uses each route's short built-in default (10 minutes for CLI
-harnesses, 2 minutes for `openai_compatible` endpoints). `job` runs in the background
-and is polled, so nothing requires killing a healthy process that quickly — it defaults
-to a generous 60-minute ceiling instead, meant only to catch a genuinely hung process
-(stuck waiting on input, a stalled network call), not to cap normal work. Either way,
-past the applicable default the result is discarded, not truncated. Raise it further
-per call with `hints.timeoutMs` (milliseconds), or set a permanent per-route default
-with `timeout_ms:` in that service's config entry — precedence is `hints.timeoutMs` >
-the service's `timeout_ms` > the mode's default.
+**How the grace window works.** `dispatch` starts the task as a background job
+immediately, then waits up to `graceSeconds` (default 25) for it to finish. Within the
+window you get the complete result inline, exactly as if the call had blocked. Past it
+you get the `jobId` — call `dispatch` again with just that `jobId` to see a
+`partialOutput` tail while it runs and the full `result` once `completed`. Because the
+run never depends on the MCP call staying open, a client-side timeout costs you the
+inline reply, never the work. Background runs default to a generous 60-minute ceiling
+meant only to catch a genuinely hung process (stuck waiting on input, a stalled
+network call), not to cap normal work — raise it per call with `hints.timeoutMs`
+(milliseconds), or set a permanent per-route default with `timeout_ms:` in that
+service's config entry. Precedence is `hints.timeoutMs` > the service's `timeout_ms` >
+the 60-minute default.
 
-`code` accepts:
+Starting a task:
 
 ```json
 {
-  "mode": "single",
   "prompt": "Review this package for release blockers.",
   "files": [],
   "workingDir": "/path/to/project",
@@ -242,7 +305,7 @@ the service's `timeout_ms` > the mode's default.
 }
 ```
 
-For fanout:
+For fanout (each route that outlives the grace window returns its own `jobId`):
 
 ```json
 {
@@ -257,32 +320,32 @@ For fanout:
 }
 ```
 
-`job` with `action: "start"` returns a `jobId` plus `nextPollSeconds` and `instructions`
-telling the caller how long to wait before calling `action: "get"` with that `jobId`.
-While still running, `get` returns a `partialOutput` tail of live stdout/stderr; once
-`status` is `completed` or `failed`, it returns the full `result`. Nothing is lost by
-polling late — everything persists under `~/.harness-router/jobs/<jobId>/`.
+Polling and listing: `{"jobId": "job-..."}` returns status plus `partialOutput` or the
+final `result`; `{"list": true}` returns every known background dispatch. Force pure
+async with `"graceSeconds": 0`, or force a specific backend with a top-level
+`"service"` (single mode only). Nothing is lost by polling late — everything persists
+under `~/.harness-dispatch/jobs/<jobId>/`.
 
 Status is exposed as resources:
 
-- `harness-router://status`
-- `harness-router://status.json`
+- `harness-dispatch://status`
+- `harness-dispatch://status.json`
 
 ## HTTP Surface
 
-`harness-router serve` starts an authenticated local server on `127.0.0.1`.
+`harness-dispatch serve` starts an authenticated local server on `127.0.0.1`.
 
 Endpoints:
 
 - `POST /mcp` for streamable HTTP MCP
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
-  `harness-router://status.json`)
+  `harness-dispatch://status.json`)
 - `GET /v1/usage` — per-route call counts, quota, billing kind, and breaker state only
 - `GET /v1/models` — OpenAI-style model list; each entry's `id` is a route id you can
   pass as `model` in `/v1/chat/completions`
 - `POST /v1/chat/completions`
 
-HTTP uses the bearer token from `harness-router auth show`. The same token protects
+HTTP uses the bearer token from `harness-dispatch auth show`. The same token protects
 MCP-over-HTTP and `/v1/*`.
 
 `--host <host>` overrides the default `127.0.0.1` bind address if you need to reach the
@@ -294,7 +357,7 @@ warning to stderr when it detects this so it isn't silent.
 Example:
 
 ```bash
-TOKEN="$(harness-router auth show)"
+TOKEN="$(harness-dispatch auth show)"
 
 curl http://127.0.0.1:3333/v1/chat/completions \
   -H "authorization: Bearer $TOKEN" \
@@ -375,7 +438,7 @@ only when explicitly asked with `--yes`.
 
 ## Status Model
 
-`status --json`, `/v1/status`, and `harness-router://status.json` share the same
+`status --json`, `/v1/status`, and `harness-dispatch://status.json` share the same
 shape. Each route includes:
 
 - route id and harness
@@ -401,7 +464,7 @@ Workspace policy:
 - `shared`: run directly in the caller's `workingDir`.
 - `shared_locked`: run directly in `workingDir`, but serialize write-capable
   dispatches for the same directory inside one router process.
-- `copy`: copy the project into `.harness-router/workspaces/...`, run the agent
+- `copy`: copy the project into `.harness-dispatch/workspaces/...`, run the agent
   there, and return the isolated workspace path plus changed-file metadata.
 - `git_worktree`: create a detached git worktree for the route and return the
   worktree path plus changed-file metadata. This starts from `HEAD`, so
@@ -426,21 +489,36 @@ Provider notes:
 
 ## Observability & Privacy
 
-harness-router contains **no phone-home telemetry** — nothing is ever sent to
-the author or any third party. The built-in observability is OpenTelemetry
-tracing for your own use:
+harness-dispatch contains **no phone-home telemetry** — nothing is ever sent to
+the author or any third party. OpenTelemetry tracing is available for your own
+use, but **it is off by default** — nothing OpenTelemetry-related initializes
+unless you opt in:
 
-- Traces export via OTLP/HTTP to `http://localhost:4318` (the standard local
-  collector port) by default. If nothing is listening there, spans are simply
-  dropped — no data leaves your machine.
+- Enable it with `telemetry: { enabled: true }` in `config.yaml`, or the
+  `HARNESS_DISPATCH_TELEMETRY=1` env var.
+- Once enabled, traces export via OTLP/HTTP to `http://localhost:4318` (the
+  standard local collector port) by default. If nothing is listening there,
+  spans are simply dropped — no data leaves your machine.
 - Traces only go somewhere else if *you* set `OTEL_EXPORTER_OTLP_ENDPOINT` to
   a remote collector.
-- Set `OTEL_SDK_DISABLED=true` to skip OpenTelemetry initialization entirely.
+- `OTEL_SDK_DISABLED=true` forces initialization off even if `telemetry:` is
+  enabled in config.
+
+Every dispatch also appends one JSONL line to a local
+dispatch log at `~/.harness-dispatch/logs/dispatches.jsonl` (override the
+directory with `HARNESS_DISPATCH_LOG_DIR`) — route, success, duration, token
+counts, and a capped error string, for post-hoc debugging. It's local-only,
+size-capped via single-file rotation, and never sent anywhere. Job artifacts
+(prompt, snapshotted files, stdout/stderr, result) live under
+`~/.harness-dispatch/jobs/<jobId>/` and are pruned after 7 days of inactivity by
+default — set `retention: { jobs_days: N }` in `config.yaml` (or
+`HARNESS_DISPATCH_JOB_MAX_AGE_MS` for a millisecond override) to change that
+window.
 
 Prompts and outputs otherwise flow only to the harnesses/endpoints you
-configured. The router's only other network call is the leaderboard refresh —
-a GET of public Arena ELO benchmark data from `api.wulong.dev` used for route
-scoring; it sends nothing about you or your prompts.
+configured. The router's only network call by default is the leaderboard
+refresh — a GET of public Arena ELO benchmark data from `api.wulong.dev` used
+for route scoring; it sends nothing about you or your prompts.
 
 ## Development
 
@@ -456,12 +534,12 @@ npm pack --dry-run
 
 Live agent workflow smoke tests are opt-in because they call real harnesses and
 can consume quota or product-plan usage. They create a disposable tiny Node
-project under `.harness-router/smoke-workspaces`, write the detailed task into a
-workspace-local `.harness-router/agent-task.md`, send the harness a short prompt
+project under `.harness-dispatch/smoke-workspaces`, write the detailed task into a
+workspace-local `.harness-dispatch/agent-task.md`, send the harness a short prompt
 pointing at that brief, then verify `node test.mjs` passes.
 
 ```powershell
-$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
 npm run build
 npm run smoke:agents -- --config config.yaml
 ```
@@ -469,14 +547,14 @@ npm run smoke:agents -- --config config.yaml
 To temporarily include routes that can incur paid usage:
 
 ```powershell
-$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
 npm run smoke:agents -- --config config.yaml --allow-paid
 ```
 
 To include Cursor's full-auto print-mode route:
 
 ```powershell
-$env:HARNESS_ROUTER_LIVE_AGENT_SMOKE = '1'
+$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
 npm run smoke:agents -- --config config.yaml --allow-paid --safety full_auto
 ```
 
@@ -493,5 +571,5 @@ npm pack --dry-run
 
 Before publishing, also run `smoke:agents` with the installed harnesses you want
 to claim as validated, and record which routes passed, failed, or were skipped.
-Set `HARNESS_ROUTER_AGENT_SMOKE_ROOT` only when you need the disposable
+Set `HARNESS_DISPATCH_AGENT_SMOKE_ROOT` only when you need the disposable
 workspaces somewhere other than the repo-local shared smoke cache.

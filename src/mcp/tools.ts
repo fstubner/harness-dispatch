@@ -1,9 +1,13 @@
 /**
- * MCP tool registry for harness-router.
+ * MCP tool registry for harness-dispatch.
  *
- * The public MCP surface is intentionally small: one `code` tool for both
- * single-route and fanout routing. Status is exposed as resources so clients
- * can inspect state without adding more tool choices.
+ * The public MCP surface is intentionally small: one `dispatch` tool that
+ * starts, polls, and lists routed work, and one `usage` tool for state.
+ * Every dispatch is job-backed from the first moment — the tool races an
+ * inline grace window against the background run, so a fast task returns
+ * its full result in-call and a slow one degrades to a pollable jobId with
+ * NOTHING lost to a timeout. Status is exposed as resources so clients can
+ * inspect state without adding more tool choices.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,13 +24,15 @@ import type {
   WorkspacePolicy,
   WorkspaceRun,
 } from "../types.js";
+import { setTimeout as delay } from "node:timers/promises";
+
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
-import { getAsyncJob, listAsyncJobs, startAsyncJob } from "../jobs.js";
+import { getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobStatus } from "../jobs.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { buildStatus, buildUsage } from "../status.js";
-import { resolveWorkingDir, workingDirWarning } from "../working-dir.js";
+import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
 const safetyProfileSchema = z.enum(["read_only", "workspace_edit", "full_auto"]);
@@ -89,14 +95,11 @@ const publicHintsSchema = z
       .positive()
       .optional()
       .describe(
-        "Override the dispatch timeout for this call (milliseconds). `code` uses each " +
-          "route's short hard-coded default (10 minutes for CLI harnesses, 2 minutes for " +
-          "openai_compatible endpoints) since it blocks the MCP call either way; `job` " +
-          "already defaults to a generous 60-minute ceiling in the background. Past " +
-          "that default, the result is DISCARDED, not truncated — set this explicitly " +
-          "for a task you expect to run longer than the applicable default. On `job` " +
-          "this only changes when the harness itself gives up, not how long you should " +
-          "wait to poll.",
+        "Override the background run's hard ceiling (milliseconds). Every dispatch " +
+          "runs as a background job with a generous 60-minute default meant to catch a " +
+          "genuinely hung process, not to cap a slow-but-healthy run — raise this for " +
+          "a task you expect to run past an hour. This changes when the harness itself " +
+          "gives up, not how long the inline grace window waits (that's `graceSeconds`).",
       ),
   })
   .describe("Public routing hints.");
@@ -106,21 +109,35 @@ const workingDirDescription =
   "the task runs in the router server's own working directory — almost never the " +
   "project you mean. Always pass the caller's project root.";
 
-const codeInputShape = {
+/** Inline grace window: how long `dispatch` waits for the background run before returning a pollable jobId instead of the full result. */
+const DEFAULT_GRACE_SECONDS = 25;
+
+const dispatchInputShape = {
+  prompt: z
+    .string()
+    .optional()
+    .describe(
+      "The coding task or question. Required unless `jobId` or `list` is set. Every " +
+        "dispatch starts as a background job immediately; if it finishes within the " +
+        "grace window you get the full result inline, otherwise you get a jobId to " +
+        "poll — either way nothing is ever lost to a timeout.",
+    ),
   mode: z
     .enum(["single", "fanout"])
     .optional()
     .default("single")
     .describe(
-      "'single' routes to one best harness and blocks until it finishes — fine for " +
-        "quick (under ~1-2 min) tasks. For anything slower, prefer the `job` tool instead " +
-        "so the MCP call doesn't time out mid-run. 'fanout' runs the prompt on MULTIPLE " +
-        "routes in parallel for independent perspectives — without `models` it hits every " +
-        "eligible route and consumes quota on each; prefer passing an explicit `models` " +
-        "list. Write-capable fanout requires workspacePolicy 'copy' or 'git_worktree'.",
+      "'single' routes to the one best-fit harness. 'fanout' runs the prompt on " +
+        "MULTIPLE routes in parallel for independent perspectives — without `models` it " +
+        "hits every eligible route and consumes quota on each; prefer passing an " +
+        "explicit `models` list. Write-capable fanout requires workspacePolicy 'copy' " +
+        "or 'git_worktree'. Fanout results that outlive the grace window each return " +
+        "their own jobId to poll individually.",
     ),
-  prompt: z.string().describe("The coding task or question."),
-  files: z.array(z.string()).optional().describe("Absolute file paths to include as context."),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe("Absolute file paths to snapshot and include as context."),
   workingDir: z.string().optional().describe(workingDirDescription),
   workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
   hints: publicHintsSchema.optional(),
@@ -134,29 +151,41 @@ const codeInputShape = {
         "dispatch); it only does anything in single mode. Get valid ids from the " +
         "`usage` tool.",
     ),
-} as const;
-
-const jobInputShape = {
-  action: z.enum(["start", "get", "list"]).describe("Async job action."),
-  prompt: z.string().optional().describe("The coding task or question for action=start."),
-  files: z
-    .array(z.string())
-    .optional()
-    .describe("Absolute file paths to snapshot and include as context."),
-  workingDir: z.string().optional().describe(workingDirDescription),
-  workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
-  hints: publicHintsSchema.optional(),
   service: z
     .string()
     .optional()
     .describe(
       "Optional explicit route id to run (e.g. 'codex', 'cursor', 'local_inference' — " +
-        "see the `usage` tool for valid ids). Omit to let the router pick.",
+        "see the `usage` tool for valid ids). Omit to let the router pick. Single " +
+        "mode only — incompatible with mode='fanout' (use `models` there).",
     ),
-  jobId: z.string().optional().describe("Job id for action=get."),
+  graceSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(600)
+    .optional()
+    .describe(
+      `Seconds to wait for the run inline before returning a pollable jobId (default ` +
+        `${DEFAULT_GRACE_SECONDS}). 0 returns the jobId immediately (pure async). ` +
+        `Raising it past your MCP client's own request timeout buys nothing — the run ` +
+        `continues in the background either way and the result stays collectible via ` +
+        `jobId, so a client timeout on this call loses nothing but the inline reply.`,
+    ),
+  jobId: z
+    .string()
+    .optional()
+    .describe(
+      "Poll a previously started dispatch: returns partialOutput while running and " +
+        "the full result once completed or failed. Mutually exclusive with `prompt`.",
+    ),
+  list: z
+    .boolean()
+    .optional()
+    .describe("List all known background dispatches instead of starting or polling one."),
 } as const;
 
-export const TOOL_NAMES = ["code", "job", "usage"] as const;
+export const TOOL_NAMES = ["dispatch", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
@@ -194,19 +223,51 @@ export interface RouteResponse {
 
 export interface FanoutItem {
   route: string;
-  success: boolean;
-  output: string;
+  jobId: string;
+  /** false = still running past the grace window; poll its jobId. */
+  completed: boolean;
+  success?: boolean;
+  output?: string;
   error?: string;
-  durationMs: number;
+  durationMs?: number;
   capabilityScore: number;
   qualityScore: number;
   elo?: number;
   workspace?: WorkspaceRun;
+  /** Tail of live output for a not-yet-completed item. */
+  partialOutput?: string;
 }
 
-export type CodeResponse =
-  | ({ mode: "single" } & RouteResponse)
-  | { mode: "fanout"; results: FanoutItem[]; skippedRoutes?: RouteSkip[]; warning?: string };
+/** A started dispatch: full inline result if it beat the grace window, else a pollable handle. */
+export type DispatchResponse =
+  | ({ mode: "single"; jobId: string; completed: true } & RouteResponse)
+  | {
+      mode: "single";
+      jobId: string;
+      completed: false;
+      partialOutput?: string;
+      nextPollSeconds?: number;
+      instructions?: string;
+      warning?: string;
+    }
+  | {
+      mode: "fanout";
+      /** true when every item finished within the grace window. */
+      completed: boolean;
+      results: FanoutItem[];
+      skippedRoutes?: RouteSkip[];
+      warning?: string;
+    };
+
+export interface DispatchPollResponse {
+  jobId: string;
+  completed: boolean;
+  status: JobStatus;
+  /** Present once the run completed or failed with a recorded result. */
+  result?: RouteResponse;
+  /** Tail of live output while still running. */
+  partialOutput?: string;
+}
 
 export interface ToolDeps {
   holder: RuntimeHolder;
@@ -333,50 +394,103 @@ function routeResponse(
   return response;
 }
 
-async function runSingle(
-  deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof codeInputShape>>,
-  extra?: ToolExtra,
-): Promise<CodeResponse> {
-  await ensureFreshConfig(deps.reloader);
-  const state = deps.holder.state;
+/**
+ * Wait up to `graceMs` for the background run, then report disk truth. The
+ * race only decides when we STOP waiting — completion state is always read
+ * back from the job artifacts, so the inline path and a later poll can
+ * never disagree about the same run. The grace timer is unref'd so a
+ * short-lived process (tests, one-shot CLI) never hangs on it.
+ */
+async function waitGrace(completion: Promise<void>, graceMs: number): Promise<void> {
+  if (graceMs <= 0) return;
+  await Promise.race([completion, delay(graceMs, undefined, { ref: false })]);
+}
+
+function jobCompleted(job: Awaited<ReturnType<typeof getAsyncJob>>): boolean {
+  return job.result !== undefined || job.status.status === "completed" || job.status.status === "failed";
+}
+
+/**
+ * Build the RouteResponse view of a finished job. Covers the crash path
+ * too: a runJob failure writes a final "failed" status but no result.json,
+ * which must still surface as a completed-and-failed dispatch, not as
+ * something to keep polling.
+ */
+function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteResponse {
+  if (job.result) {
+    return routeResponse(job.result.result, job.result.decision, job.status.warning);
+  }
+  const response: RouteResponse = {
+    success: false,
+    output: "",
+    route: job.status.route ?? job.status.service ?? "none",
+  };
+  if (job.status.error !== undefined) response.error = job.status.error;
+  if (job.status.warning !== undefined) response.warning = job.status.warning;
+  if (job.status.durationMs !== undefined) response.durationMs = job.status.durationMs;
+  return response;
+}
+
+/** Progress forwarder for the inline grace window — goes quiet once the MCP call has returned. */
+function makeProgressTap(
+  extra: ToolExtra | undefined,
+  live: { value: boolean },
+  counter: { value: number },
+  route?: string,
+): ((event: DispatcherEvent) => void) | undefined {
   const progressToken = extra?._meta?.progressToken;
+  if (progressToken === undefined || !extra?.sendNotification) return undefined;
+  return (event: DispatcherEvent): void => {
+    if (!live.value) return;
+    void emitProgress(extra, progressToken, counter, event, route);
+  };
+}
+
+async function startSingle(
+  deps: ToolDeps,
+  input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
+  extra?: ToolExtra,
+): Promise<DispatchResponse> {
+  await ensureFreshConfig(deps.reloader);
   const hints = toHints(input.hints);
   const workspacePolicy = workspacePolicyFromInput(input);
   if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
-  const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
-  const { workingDir } = resolvedWorkingDir;
-  const warning = workingDirWarning(resolvedWorkingDir);
-  const files = input.files ?? [];
 
-  if (progressToken === undefined) {
-    const { result, decision } = await state.router.route(input.prompt, files, workingDir, {
-      hints,
-      maxFallbacks: 2,
-    });
-    return { mode: "single", ...routeResponse(result, decision, warning) };
-  }
-
+  const live = { value: true };
   const counter = { value: 0 };
-  let finalResult: DispatchResult | null = null;
-  let finalDecision: import("../types.js").RoutingDecision | null = null;
-  for await (const { event, decision } of state.router.stream(input.prompt, files, workingDir, {
-    hints,
-    maxFallbacks: 2,
-  })) {
-    if (decision) finalDecision = decision;
-    await emitProgress(extra, progressToken, counter, event, decision?.service);
-    if (event.type === "completion") finalResult = event.result;
+  const onEvent = makeProgressTap(extra, live, counter, input.service);
+
+  const { status, completion } = await startAsyncJobTracked(
+    { holder: deps.holder },
+    {
+      prompt: input.prompt!,
+      files: input.files ?? [],
+      ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
+      hints,
+      ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
+      ...(input.service !== undefined ? { service: input.service } : {}),
+      ...(onEvent !== undefined ? { onEvent } : {}),
+    },
+  );
+
+  const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
+  await waitGrace(completion, graceMs);
+  live.value = false;
+
+  const job = await getAsyncJob(status.jobId);
+  if (jobCompleted(job)) {
+    return { mode: "single", jobId: status.jobId, completed: true, ...jobRouteResponse(job) };
   }
-  const result =
-    finalResult ??
-    ({
-      output: "",
-      service: "none",
-      success: false,
-      error: "Router stream ended without a completion event",
-    } satisfies DispatchResult);
-  return { mode: "single", ...routeResponse(result, finalDecision, warning) };
+  const pending: DispatchResponse = {
+    mode: "single",
+    jobId: status.jobId,
+    completed: false,
+  };
+  if (job.partialOutput !== undefined) pending.partialOutput = job.partialOutput;
+  if (job.status.nextPollSeconds !== undefined) pending.nextPollSeconds = job.status.nextPollSeconds;
+  if (job.status.instructions !== undefined) pending.instructions = job.status.instructions;
+  if (job.status.warning !== undefined) pending.warning = job.status.warning;
+  return pending;
 }
 
 function matchesRequestedModel(
@@ -391,11 +505,11 @@ function matchesRequestedModel(
     .some((v) => lower.has(v.toLowerCase()));
 }
 
-async function runFanout(
+async function startFanout(
   deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof codeInputShape>>,
+  input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
   extra?: ToolExtra,
-): Promise<CodeResponse> {
+): Promise<DispatchResponse> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
   const hints = toHints(input.hints);
@@ -408,6 +522,7 @@ async function runFanout(
   ) {
     return {
       mode: "fanout",
+      completed: true,
       results: [],
       skippedRoutes: [
         {
@@ -420,9 +535,12 @@ async function runFanout(
     };
   }
   hints.safetyProfile = fanoutSafetyProfile;
+  // Contract: hints.model is ignored entirely in fanout mode — `models` is
+  // the only selection mechanism. The job runner would forward it to every
+  // arm otherwise.
+  delete hints.model;
   const taskType: TaskType = hints.taskType ?? "plan";
   const requested = new Set(input.models ?? []);
-  const progressToken = extra?._meta?.progressToken;
   const counter = { value: 0 };
   const skippedRoutes: RouteSkip[] = [];
 
@@ -442,80 +560,78 @@ async function runFanout(
     candidates.push(routeName);
   }
 
-  const prompt = input.prompt;
+  const prompt = input.prompt!;
   const files = input.files ?? [];
-  const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
-  const { workingDir } = resolvedWorkingDir;
-  const warning = workingDirWarning(resolvedWorkingDir);
+  const live = { value: true };
 
-  const results = await Promise.all(
-    candidates.map(async (routeName): Promise<FanoutItem> => {
+  // Start every candidate as its own background job up front, then wait ONE
+  // shared grace window for all of them — a route that beats the deadline
+  // reports inline, the rest hand back their jobIds. Per-route job dirs also
+  // give each fanout arm its own artifacts, which the blocking version never
+  // had.
+  const started = await Promise.all(
+    candidates.map(async (routeName) => {
       const svc = state.config.services[routeName]!;
       const cap = svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0;
       const quality = await state.leaderboard.getQualityScore(
         svc.leaderboardModel,
         svc.thinkingLevel,
       );
-      const t0 = Date.now();
-      let result: DispatchResult;
-      if (progressToken !== undefined) {
-        let captured: DispatchResult | null = null;
-        for await (const { event } of state.router.streamTo(routeName, prompt, files, workingDir, {
-          ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
-          ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
-          ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
-          ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
-          ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
-        })) {
-          await emitProgress(extra, progressToken, counter, event, routeName);
-          if (event.type === "completion") captured = event.result;
-        }
-        result =
-          captured ??
-          ({
-            output: "",
-            service: routeName,
-            success: false,
-            error: "Stream ended without completion",
-          } satisfies DispatchResult);
-      } else {
-        result = (
-          await state.router.routeTo(routeName, prompt, files, workingDir, {
-            ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
-            ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
-            ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
-            ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
-            ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
-          })
-        ).result;
-      }
+      const onEvent = makeProgressTap(extra, live, counter, routeName);
+      const job = await startAsyncJobTracked(
+        { holder: deps.holder },
+        {
+          prompt,
+          files,
+          ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
+          hints,
+          service: routeName,
+          ...(onEvent !== undefined ? { onEvent } : {}),
+        },
+      );
+      return { routeName, cap, quality, job };
+    }),
+  );
 
+  const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
+  await waitGrace(Promise.all(started.map((s) => s.job.completion)).then(() => undefined), graceMs);
+  live.value = false;
+
+  let warning: string | undefined;
+  const results = await Promise.all(
+    started.map(async ({ routeName, cap, quality, job }): Promise<FanoutItem> => {
+      const current = await getAsyncJob(job.status.jobId);
+      if (current.status.warning !== undefined) warning = current.status.warning;
       const item: FanoutItem = {
         route: routeName,
-        success: result.success,
-        output: result.output,
-        durationMs: Date.now() - t0,
+        jobId: job.status.jobId,
+        completed: jobCompleted(current),
         capabilityScore: cap,
         qualityScore: quality.qualityScore,
       };
-      if (result.error !== undefined) item.error = result.error;
-      if (result.workspace !== undefined) item.workspace = result.workspace;
       if (quality.elo !== null) item.elo = quality.elo;
+      if (item.completed) {
+        const response = jobRouteResponse(current);
+        item.success = response.success;
+        item.output = response.output;
+        if (response.error !== undefined) item.error = response.error;
+        if (response.durationMs !== undefined) item.durationMs = response.durationMs;
+        if (response.workspace !== undefined) item.workspace = response.workspace;
+      } else if (current.partialOutput !== undefined) {
+        item.partialOutput = current.partialOutput;
+      }
       return item;
     }),
   );
 
   results.sort((a, b) => {
+    if (a.completed !== b.completed) return a.completed ? -1 : 1;
     if (a.success !== b.success) return a.success ? -1 : 1;
     return b.capabilityScore - a.capabilityScore;
   });
-  const response: {
-    mode: "fanout";
-    results: FanoutItem[];
-    skippedRoutes?: RouteSkip[];
-    warning?: string;
-  } = {
+  const response: DispatchResponse = {
     mode: "fanout",
+    completed: results.every((r) => r.completed),
     results,
   };
   if (skippedRoutes.length > 0) response.skippedRoutes = skippedRoutes;
@@ -523,49 +639,114 @@ async function runFanout(
   return response;
 }
 
-export async function handleCode(
+async function pollDispatch(jobId: string): Promise<DispatchPollResponse> {
+  const job = await getAsyncJob(jobId);
+  const completed = jobCompleted(job);
+  const response: DispatchPollResponse = { jobId, completed, status: job.status };
+  if (completed) {
+    response.result = jobRouteResponse(job);
+  } else if (job.partialOutput !== undefined) {
+    response.partialOutput = job.partialOutput;
+  }
+  return response;
+}
+
+export async function handleDispatch(
   deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof codeInputShape>>,
+  input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
   extra?: ToolExtra,
-): Promise<CodeResponse> {
-  return withMcpToolSpan({ "tool.name": "code" }, async () => {
-    if ((input.mode ?? "single") === "fanout") {
-      return runFanout(deps, input, extra);
-    }
-    return runSingle(deps, input, extra);
-  });
-}
-
-async function handleJob(
-  deps: ToolDeps,
-  input: z.infer<z.ZodObject<typeof jobInputShape>>,
 ): Promise<unknown> {
-  return withMcpToolSpan({ "tool.name": "job" }, async () => {
-    switch (input.action) {
-      case "start": {
-        if (!input.prompt) throw new Error("job action=start requires prompt");
-        const hints = toHints(input.hints);
-        const workspacePolicy = workspacePolicyFromInput(input);
-        if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
-        return startAsyncJob(deps, {
-          prompt: input.prompt,
-          files: input.files ?? [],
-          ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
-          hints,
-          ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
-          ...(input.service !== undefined ? { service: input.service } : {}),
-        });
+  return withMcpToolSpan({ "tool.name": "dispatch" }, async () => {
+    if (input.list) {
+      if (input.prompt !== undefined || input.jobId !== undefined) {
+        throw new Error("dispatch: `list` is exclusive — omit prompt and jobId");
       }
-      case "get":
-        if (!input.jobId) throw new Error("job action=get requires jobId");
-        return getAsyncJob(input.jobId);
-      case "list":
-        return listAsyncJobs();
+      return { jobs: await listAsyncJobs() };
     }
+    if (input.jobId !== undefined) {
+      if (input.prompt !== undefined) {
+        throw new Error(
+          "dispatch: pass either `prompt` (start new work) or `jobId` (poll existing work), not both",
+        );
+      }
+      return pollDispatch(input.jobId);
+    }
+    if (input.prompt === undefined) {
+      throw new Error("dispatch: `prompt` is required unless polling with `jobId` or using `list`");
+    }
+    if ((input.mode ?? "single") === "fanout") {
+      if (input.service !== undefined) {
+        throw new Error(
+          "dispatch: `service` forces a single route and is incompatible with mode='fanout' — use `models` to select fanout routes",
+        );
+      }
+      return startFanout(deps, input, extra);
+    }
+    return startSingle(deps, input, extra);
   });
 }
 
-async function handleUsage(deps: ToolDeps) {
+const usageInputShape = {
+  listModels: z
+    .string()
+    .optional()
+    .describe(
+      "Route id of an OpenAI-compatible endpoint (e.g. an entry from `endpoints:` " +
+        "like nvidia_nim or ollama). If the route declares a `models:` list in " +
+        "config, that operator-curated list is returned as-is — declaring it is " +
+        "how you override live discovery (e.g. to pin specific ids, or the " +
+        "endpoint's /models listing is noisy/untrustworthy). Otherwise fetches the " +
+        "endpoint's live GET /models catalog server-side — the API key never " +
+        "leaves the router. Either way, results come back under `liveModels`. CLI " +
+        "harness routes don't support this; use their modelHint instead.",
+    ),
+};
+
+/**
+ * Model catalog for one OpenAI-compatible route. An operator-declared
+ * `models:` list is an override, not a supplement — if present it's
+ * returned as-is with NO network call, so a curated/pinned list stays
+ * authoritative even if the endpoint's live /models changes or is noisy.
+ * `source` distinguishes the two so a caller can tell which happened.
+ */
+async function fetchEndpointModels(
+  route: string,
+  svc: { type: string; baseUrl?: string; apiKey?: string; models?: string[] } | undefined,
+): Promise<{ route: string; models?: string[]; source?: "declared" | "live"; error?: string }> {
+  if (!svc) {
+    return { route, error: `unknown route '${route}' — call usage without listModels to see valid route ids` };
+  }
+  if (svc.models && svc.models.length > 0) {
+    return { route, models: svc.models, source: "declared" };
+  }
+  if (svc.type !== "openai_compatible" || !svc.baseUrl) {
+    return {
+      route,
+      error:
+        "listModels only works for openai_compatible endpoint routes (or any route " +
+        "with a declared models: list) — CLI harnesses publish their catalog via " +
+        "this route's modelHint instead",
+    };
+  }
+  const url = endpointUrl(svc.baseUrl, "/models");
+  const headers: Record<string, string> = {};
+  if (svc.apiKey) headers["Authorization"] = `Bearer ${svc.apiKey}`;
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) {
+      return { route, error: `GET ${url} -> HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    const models = (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string");
+    return { route, models, source: "live" };
+  } catch (err) {
+    return { route, error: `GET ${url} failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefined } = {}) {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
   const status = await buildStatus(
@@ -575,53 +756,35 @@ async function handleUsage(deps: ToolDeps) {
     state.router,
     state.leaderboard,
   );
-  return buildUsage(status);
+  const usage = buildUsage(status);
+  if (args.listModels) {
+    const svc = state.config.services[args.listModels];
+    return { ...usage, liveModels: await fetchEndpointModels(args.listModels, svc) };
+  }
+  return usage;
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   server.registerTool(
-    "code",
+    "dispatch",
     {
-      title: "Route code task",
+      title: "Dispatch a coding task",
       description:
         "Delegate a bounded coding task (implement, fix, review, plan, or investigate — " +
         "not general Q&A) to the best-fit harness (Claude Code, Codex, Cursor, " +
         "Antigravity, or a configured endpoint), or fan out to several for independent " +
-        "opinions. BLOCKS until the harness finishes, with NO early bail-out — if the " +
-        "task runs long you get a timeout and no partial result, not a graceful signal. " +
-        "Safe for a scope you can actually bound: a single-file fix, a quick review, a " +
-        "narrow question. Risky for anything that could spiral once the harness starts " +
-        "working (multi-file refactors, open-ended investigation, a prompt whose true " +
-        "scope you're not sure of) — prefer `job` for those, since it removes the MCP " +
-        "client's own timeout (the underlying dispatch still has a ceiling — see " +
-        "hints.timeoutMs below). When in doubt, use `job`; the cost is a poll loop, not " +
-        "a lost result. Every `code` response includes `durationMs` — use it to " +
-        "calibrate whether similar tasks belong on `code` or `job` next time. Always " +
-        "pass `workingDir` (the caller's project root) and `hints.taskType`.",
-      inputSchema: codeInputShape,
+        "opinions. Every dispatch runs as a background job from the first moment: if it " +
+        "finishes within the grace window (default " +
+        `${DEFAULT_GRACE_SECONDS}s, see graceSeconds) you get the full result inline ` +
+        "(completed: true); otherwise you get completed: false plus a jobId — call this " +
+        "tool again with that jobId to see partialOutput while it runs and the full " +
+        "result once done. NOTHING is ever lost to a timeout, including this MCP call's " +
+        "own: the run continues in the background regardless, and results persist on " +
+        "disk. Pass list: true to see all known background dispatches. Always pass " +
+        "`workingDir` (the caller's project root) and `hints.taskType`.",
+      inputSchema: dispatchInputShape,
     },
-    async (args, extra) => jsonText(await handleCode(deps, args, extra as ToolExtra)),
-  );
-
-  server.registerTool(
-    "job",
-    {
-      title: "Start or check an async route job",
-      description:
-        "Preferred way to delegate coding work that may take minutes. action=start " +
-        "returns a jobId immediately (the work runs in the background) along with " +
-        "nextPollSeconds/instructions telling you how long to wait. action=get with that " +
-        "jobId returns partialOutput while still running, and the full result once " +
-        "status is 'completed' or 'failed' — nothing is lost if you poll late. Background " +
-        "dispatches default to a generous 60-minute ceiling (vs. the short per-dispatch " +
-        "default `code` uses) meant only to catch a genuinely hung process, not to cap a " +
-        "slow-but-healthy run — pass `hints.timeoutMs` on start to raise it further for " +
-        "something you expect to run past an hour. action=list shows all known jobs. " +
-        "Always pass `workingDir` (the caller's project root) and `hints.taskType` on " +
-        "start.",
-      inputSchema: jobInputShape,
-    },
-    async (args) => jsonText(await handleJob(deps, args)),
+    async (args, extra) => jsonText(await handleDispatch(deps, args, extra as ToolExtra)),
   );
 
   server.registerTool(
@@ -633,14 +796,16 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "circuit-breaker state for this session. Call this before using an unfamiliar " +
         "`hints.model`/`service`/`models` value to see valid route ids and their " +
         "current models — those fields are not validated and silently ignore unknown names. " +
-        "Each route also includes modelHint: a pointer to where that harness's real model " +
-        "catalog is documented, or a command/endpoint to list it live (e.g. run " +
-        "`cursor-agent --list-models`, or GET {baseUrl}/models for OpenAI-compatible " +
-        "endpoints) — use it to pick a real model up front or self-correct after a " +
-        "dispatch failure caused by an unsupported model name.",
-      inputSchema: {},
+        "Each route also includes modelHint (where that harness's real model catalog " +
+        "is documented or listed live) and, when the operator declared one, models: " +
+        "a list of known-good ids. For OpenAI-compatible endpoint routes, pass " +
+        "listModels: <route id> to fetch the endpoint's live GET /models catalog " +
+        "server-side and get the real ids back under liveModels — use these to pick " +
+        "a real model up front or self-correct after a dispatch failure caused by an " +
+        "unsupported model name.",
+      inputSchema: usageInputShape,
     },
-    async () => jsonText(await handleUsage(deps)),
+    async (args) => jsonText(await handleUsage(deps, args)),
   );
 }
 
@@ -651,16 +816,13 @@ export async function invokeTool(
   args: unknown,
   deps: ToolDeps,
 ): Promise<InvokeResult> {
-  if (name === "code") {
-    const parsed = z.object(codeInputShape).parse(args);
-    return { kind: "json", data: await handleCode(deps, parsed) };
-  }
-  if (name === "job") {
-    const parsed = z.object(jobInputShape).parse(args);
-    return { kind: "json", data: await handleJob(deps, parsed) };
+  if (name === "dispatch") {
+    const parsed = z.object(dispatchInputShape).parse(args);
+    return { kind: "json", data: await handleDispatch(deps, parsed) };
   }
   if (name === "usage") {
-    return { kind: "json", data: await handleUsage(deps) };
+    const parsed = z.object(usageInputShape).parse(args ?? {});
+    return { kind: "json", data: await handleUsage(deps, parsed) };
   }
-  throw new Error(`Unknown tool: ${name}`);
+  throw new Error(`Unknown tool: ${name} (valid: ${TOOL_NAMES.join(", ")})`);
 }
