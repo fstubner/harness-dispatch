@@ -16,6 +16,7 @@ coverage/
 # Local tool state
 .nvx/
 .playwright-mcp/
+.superpowers/
 
 # Personal live config (may contain secrets/local overrides) — the shipped
 # canonical default config the router loads and users copy/edit is

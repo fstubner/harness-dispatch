@@ -360,7 +360,7 @@ describe("HTTP server", () => {
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["dispatch", "job_status", "usage"]);
       const resources = await client.listResources();
       expect(resources.resources.map((resource) => resource.uri).sort()).toEqual([
         "harness-dispatch://status",
@@ -397,8 +397,8 @@ describe("HTTP server", () => {
         clientA.listTools(),
         clientB.listTools(),
       ]);
-      expect(toolsA.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
-      expect(toolsB.tools.map((tool) => tool.name)).toEqual(["dispatch", "usage"]);
+      expect(toolsA.tools.map((tool) => tool.name)).toEqual(["dispatch", "job_status", "usage"]);
+      expect(toolsB.tools.map((tool) => tool.name)).toEqual(["dispatch", "job_status", "usage"]);
     } finally {
       await clientA.close();
       await clientB.close();

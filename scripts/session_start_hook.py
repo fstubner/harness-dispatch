@@ -21,14 +21,14 @@ ROUTING_CONTEXT = """
 ## Active: harness-dispatch MCP
 
 The harness-dispatch MCP server is connected. For coding delegation, use the
-single dispatch tool with the right taskType:
+dispatch tool with the right taskType:
 
   task_type=execute  → Codex/Cursor  (tests, patches, autonomous coding)
   task_type=plan     → Claude Opus   (architecture, design, reasoning)
   task_type=review   → Claude Opus   (code review, security, refactoring)
 
 A fast task returns its result inline (completed=true); a slow one returns a
-jobId — call dispatch again with that jobId to poll. Nothing is lost to a timeout.
+jobId — call job_status with that jobId to check on it. Nothing is lost to a timeout.
 For multiple model perspectives: dispatch(mode="fanout", prompt=..., hints={"taskType":"plan"})
 Read harness-dispatch://status.json to check route readiness, billing policy, safety,
 quota state, and breaker state before delegating when that matters.

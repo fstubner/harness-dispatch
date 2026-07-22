@@ -1,13 +1,15 @@
 /**
  * MCP tool registry for harness-dispatch.
  *
- * The public MCP surface is intentionally small: one `dispatch` tool that
- * starts, polls, and lists routed work, and one `usage` tool for state.
- * Every dispatch is job-backed from the first moment — the tool races an
- * inline grace window against the background run, so a fast task returns
- * its full result in-call and a slow one degrades to a pollable jobId with
- * NOTHING lost to a timeout. Status is exposed as resources so clients can
- * inspect state without adding more tool choices.
+ * The public MCP surface is three tools, each doing exactly one thing:
+ * `dispatch` starts routed work (single or fanout) and only ever starts —
+ * `job_status` checks or lists it, `usage` reads route/quota state. Every
+ * dispatch is job-backed from the first moment — dispatch races an inline
+ * grace window against the background run, so a fast task returns its full
+ * result in-call and a slow one degrades to a pollable jobId with NOTHING
+ * lost to a timeout; job_status is how that jobId gets checked on later.
+ * Status is also exposed as resources so clients can inspect state without
+ * a tool call.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -115,12 +117,11 @@ const DEFAULT_GRACE_SECONDS = 25;
 const dispatchInputShape = {
   prompt: z
     .string()
-    .optional()
     .describe(
-      "The coding task or question. Required unless `jobId` or `list` is set. Every " +
-        "dispatch starts as a background job immediately; if it finishes within the " +
-        "grace window you get the full result inline, otherwise you get a jobId to " +
-        "poll — either way nothing is ever lost to a timeout.",
+      "The coding task or question. Every dispatch starts as a background job " +
+        "immediately; if it finishes within the grace window you get the full result " +
+        "inline, otherwise you get a jobId — check on it with the `job_status` tool. " +
+        "Either way nothing is ever lost to a timeout.",
     ),
   mode: z
     .enum(["single", "fanout"])
@@ -170,22 +171,22 @@ const dispatchInputShape = {
         `${DEFAULT_GRACE_SECONDS}). 0 returns the jobId immediately (pure async). ` +
         `Raising it past your MCP client's own request timeout buys nothing — the run ` +
         `continues in the background either way and the result stays collectible via ` +
-        `jobId, so a client timeout on this call loses nothing but the inline reply.`,
+        `\`job_status\`, so a client timeout on this call loses nothing but the inline reply.`,
     ),
+} as const;
+
+const jobStatusInputShape = {
   jobId: z
     .string()
     .optional()
     .describe(
-      "Poll a previously started dispatch: returns partialOutput while running and " +
-        "the full result once completed or failed. Mutually exclusive with `prompt`.",
+      "Check a previously started dispatch: returns partialOutput while running and " +
+        "the full result once completed or failed. Omit to list every known background " +
+        "dispatch instead.",
     ),
-  list: z
-    .boolean()
-    .optional()
-    .describe("List all known background dispatches instead of starting or polling one."),
 } as const;
 
-export const TOOL_NAMES = ["dispatch", "usage"] as const;
+export const TOOL_NAMES = ["dispatch", "job_status", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
@@ -463,7 +464,7 @@ async function startSingle(
   const { status, completion } = await startAsyncJobTracked(
     { holder: deps.holder },
     {
-      prompt: input.prompt!,
+      prompt: input.prompt,
       files: input.files ?? [],
       ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
       hints,
@@ -560,7 +561,7 @@ async function startFanout(
     candidates.push(routeName);
   }
 
-  const prompt = input.prompt!;
+  const prompt = input.prompt;
   const files = input.files ?? [];
   const live = { value: true };
 
@@ -657,23 +658,6 @@ export async function handleDispatch(
   extra?: ToolExtra,
 ): Promise<unknown> {
   return withMcpToolSpan({ "tool.name": "dispatch" }, async () => {
-    if (input.list) {
-      if (input.prompt !== undefined || input.jobId !== undefined) {
-        throw new Error("dispatch: `list` is exclusive — omit prompt and jobId");
-      }
-      return { jobs: await listAsyncJobs() };
-    }
-    if (input.jobId !== undefined) {
-      if (input.prompt !== undefined) {
-        throw new Error(
-          "dispatch: pass either `prompt` (start new work) or `jobId` (poll existing work), not both",
-        );
-      }
-      return pollDispatch(input.jobId);
-    }
-    if (input.prompt === undefined) {
-      throw new Error("dispatch: `prompt` is required unless polling with `jobId` or using `list`");
-    }
     if ((input.mode ?? "single") === "fanout") {
       if (input.service !== undefined) {
         throw new Error(
@@ -683,6 +667,15 @@ export async function handleDispatch(
       return startFanout(deps, input, extra);
     }
     return startSingle(deps, input, extra);
+  });
+}
+
+export async function handleJobStatus(
+  input: z.infer<z.ZodObject<typeof jobStatusInputShape>>,
+): Promise<unknown> {
+  return withMcpToolSpan({ "tool.name": "job_status" }, async () => {
+    if (input.jobId !== undefined) return pollDispatch(input.jobId);
+    return { jobs: await listAsyncJobs() };
   });
 }
 
@@ -773,18 +766,33 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Delegate a bounded coding task (implement, fix, review, plan, or investigate — " +
         "not general Q&A) to the best-fit harness (Claude Code, Codex, Cursor, " +
         "Antigravity, or a configured endpoint), or fan out to several for independent " +
-        "opinions. Every dispatch runs as a background job from the first moment: if it " +
-        "finishes within the grace window (default " +
+        "opinions. Always starts new work — every dispatch runs as a background job " +
+        "from the first moment: if it finishes within the grace window (default " +
         `${DEFAULT_GRACE_SECONDS}s, see graceSeconds) you get the full result inline ` +
-        "(completed: true); otherwise you get completed: false plus a jobId — call this " +
-        "tool again with that jobId to see partialOutput while it runs and the full " +
-        "result once done. NOTHING is ever lost to a timeout, including this MCP call's " +
-        "own: the run continues in the background regardless, and results persist on " +
-        "disk. Pass list: true to see all known background dispatches. Always pass " +
-        "`workingDir` (the caller's project root) and `hints.taskType`.",
+        "(completed: true); otherwise you get completed: false plus a jobId — check on " +
+        "it with the `job_status` tool, which returns partialOutput while it runs and " +
+        "the full result once done. NOTHING is ever lost to a timeout, including this " +
+        "MCP call's own: the run continues in the background regardless, and results " +
+        "persist on disk. Always pass `workingDir` (the caller's project root) and " +
+        "`hints.taskType`.",
       inputSchema: dispatchInputShape,
     },
     async (args, extra) => jsonText(await handleDispatch(deps, args, extra as ToolExtra)),
+  );
+
+  server.registerTool(
+    "job_status",
+    {
+      title: "Check or list background dispatches",
+      description:
+        "Check on work started by `dispatch`. Pass the `jobId` it returned: while " +
+        "running you get `partialOutput` (a live tail), and once `completed` is true " +
+        "you get the full `result` — same shape as an inline dispatch reply. Omit " +
+        "`jobId` to list every known background dispatch instead. Nothing is lost by " +
+        "checking late; results persist on disk.",
+      inputSchema: jobStatusInputShape,
+    },
+    async (args) => jsonText(await handleJobStatus(args)),
   );
 
   server.registerTool(
@@ -819,6 +827,10 @@ export async function invokeTool(
   if (name === "dispatch") {
     const parsed = z.object(dispatchInputShape).parse(args);
     return { kind: "json", data: await handleDispatch(deps, parsed) };
+  }
+  if (name === "job_status") {
+    const parsed = z.object(jobStatusInputShape).parse(args ?? {});
+    return { kind: "json", data: await handleJobStatus(parsed) };
   }
   if (name === "usage") {
     const parsed = z.object(usageInputShape).parse(args ?? {});

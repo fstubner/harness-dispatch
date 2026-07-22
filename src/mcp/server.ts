@@ -24,13 +24,14 @@ const SERVER_INSTRUCTIONS =
   "Cursor, Antigravity) and configured local/remote API endpoints into tools you can " +
   "call — delegate bounded coding work you'd otherwise do yourself (implement, fix, " +
   "review, or plan a task in a project) to whichever backend best fits it, freeing " +
-  "your own context/quota for orchestration. One tool starts everything: `dispatch` " +
+  "your own context/quota for orchestration. `dispatch` always starts new work: it " +
   "runs the task as a background job and waits a short grace window — a fast task " +
   "returns its full result inline (completed: true); a slow one returns completed: " +
-  "false plus a jobId to poll by calling `dispatch` again with that jobId (partial " +
-  "output while running, full result once done — nothing is ever lost to a timeout, " +
-  "including this MCP call's own). Always pass workingDir (the caller's project root " +
-  "— it is NOT inferred) and hints.taskType (execute | plan | review | local) on every " +
+  "false plus a jobId. Check on it with `job_status` (partial output while running, " +
+  "full result once done, or omit jobId to list every known job) — nothing is ever " +
+  "lost to a timeout, including this MCP call's own. Always pass workingDir " +
+  "(the caller's project root — it is NOT inferred) and hints.taskType " +
+  "(execute | plan | review | local) on every " +
   "call; omitting either degrades routing or runs the task in the wrong directory. " +
   "Check the `usage` tool before passing an unfamiliar model or route name — " +
   "semantics differ per field: hints.model is forwarded to the picked harness as-is " +

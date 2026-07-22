@@ -113,7 +113,7 @@ beforeEach(() => {
 
 describe("MCP tools — public surface", () => {
   it("exports the public dispatch and usage tools", () => {
-    expect(TOOL_NAMES).toEqual(["dispatch", "usage"]);
+    expect(TOOL_NAMES).toEqual(["dispatch", "job_status", "usage"]);
   });
 });
 
@@ -554,7 +554,7 @@ describe("MCP tools — dispatch", () => {
       result?: { output: string };
     } | null = null;
     for (let i = 0; i < 100; i += 1) {
-      const inspected = await invokeTool("dispatch", { jobId: startData.jobId }, { holder });
+      const inspected = await invokeTool("job_status", { jobId: startData.jobId }, { holder });
       data = inspected.data as typeof data;
       if (data?.completed) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -566,37 +566,13 @@ describe("MCP tools — dispatch", () => {
     rmSync(data!.status.jobDir, { recursive: true, force: true });
   });
 
-  it("lists known background dispatches with list: true", async () => {
-    const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
-      { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
-    );
-
-    const started = await invokeTool(
-      "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project" },
-      { holder },
-    );
-    const startData = started.data as { jobId: string };
-
-    const listed = await invokeTool("dispatch", { list: true }, { holder });
-    const listData = listed.data as { jobs: Array<{ jobId: string }> };
-    expect(listData.jobs.map((j) => j.jobId)).toContain(startData.jobId);
-  });
-
-  it("rejects ambiguous or incomplete dispatch inputs", async () => {
+  it("rejects an incomplete dispatch call", async () => {
     const holder = buildHolder(
       { a: makeService("a") },
       { a: new FakeDispatcher("a") },
     );
 
-    await expect(invokeTool("dispatch", {}, { holder })).rejects.toThrow(/prompt.*required/);
-    await expect(
-      invokeTool("dispatch", { prompt: "hi", jobId: "job-x" }, { holder }),
-    ).rejects.toThrow(/not both/);
-    await expect(
-      invokeTool("dispatch", { prompt: "hi", list: true }, { holder }),
-    ).rejects.toThrow(/exclusive/);
+    await expect(invokeTool("dispatch", {}, { holder })).rejects.toThrow(/prompt/);
     await expect(
       invokeTool("dispatch", { prompt: "hi", mode: "fanout", service: "a" }, { holder }),
     ).rejects.toThrow(/incompatible/);
@@ -743,7 +719,7 @@ describe("MCP tools — dispatch", () => {
     expect(data.error).toContain("truncated");
 
     // The jobId from the inline reply still points at the full artifacts.
-    const polled = await invokeTool("dispatch", { jobId: data.jobId }, { holder });
+    const polled = await invokeTool("job_status", { jobId: data.jobId }, { holder });
     const polledData = polled.data as { status: { jobDir: string } };
     const stderrLog = readFileSync(
       path.join(polledData.status.jobDir, "output", "stderr.log"),
@@ -751,6 +727,31 @@ describe("MCP tools — dispatch", () => {
     );
     expect(stderrLog).toBe(hugeError);
     rmSync(polledData.status.jobDir, { recursive: true, force: true });
+  });
+});
+
+describe("MCP tools — job_status", () => {
+  it("lists known background dispatches when jobId is omitted", async () => {
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
+    );
+
+    const started = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { holder },
+    );
+    const startData = started.data as { jobId: string };
+
+    const listed = await invokeTool("job_status", {}, { holder });
+    const listData = listed.data as { jobs: Array<{ jobId: string }> };
+    expect(listData.jobs.map((j) => j.jobId)).toContain(startData.jobId);
+  });
+
+  it("errors on an unknown jobId rather than returning a blank status", async () => {
+    const holder = buildHolder({ a: makeService("a") }, { a: new FakeDispatcher("a") });
+    await expect(invokeTool("job_status", { jobId: "job-does-not-exist" }, { holder })).rejects.toThrow();
   });
 });
 

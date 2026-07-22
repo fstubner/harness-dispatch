@@ -3,7 +3,7 @@
 For coding tasks in this project, use the harness-dispatch MCP server when it is
 available. The public MCP surface is intentionally small:
 
-- Tools: `dispatch`, `usage`
+- Tools: `dispatch`, `job_status`, `usage`
 - Resources: `harness-dispatch://status`, `harness-dispatch://status.json`
 
 ## Routing
@@ -21,8 +21,8 @@ Use `dispatch` for normal coding work:
 ```
 
 A fast task returns its full result inline (`completed: true`). A slow one returns
-`completed: false` plus a `jobId` — call `dispatch` again with just that `jobId` to
-poll: `partialOutput` while running, the full `result` once done. Nothing is ever
+`completed: false` plus a `jobId` — call `job_status` with that `jobId` to check on
+it: `partialOutput` while running, the full `result` once done. Nothing is ever
 lost to a timeout.
 
 Use fanout mode when a plan, review, or architecture decision benefits from
@@ -38,8 +38,9 @@ multiple model perspectives:
 }
 ```
 
-Pass `list: true` to see all background dispatches, `graceSeconds: 0` to skip the
-inline wait, or a top-level `service` to force a specific backend (single mode only).
+Call `job_status` with no `jobId` to see all background dispatches. On `dispatch`,
+pass `graceSeconds: 0` to skip the inline wait, or a top-level `service` to force a
+specific backend (single mode only).
 
 Read `harness-dispatch://status.json` before routing when route readiness,
 billing policy, safety, quota state, or breaker state matters.

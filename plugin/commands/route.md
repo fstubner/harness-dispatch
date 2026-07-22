@@ -16,8 +16,8 @@ Follow the `delegating-work` skill. Specifically:
    `completed: false` plus a `jobId`; report that `jobId` to the user
    immediately so they have the ticket.
 3. Wait ~`nextPollSeconds` (do other useful work first if any is pending,
-   otherwise sleep), then call `dispatch` again with just that `jobId`.
-   While running, relay a one-line progress summary from `partialOutput`.
+   otherwise sleep), then call `job_status` with that `jobId`. While
+   running, relay a one-line progress summary from `partialOutput`.
    Repeat until it completes or fails.
 4. Present the final output, flag any `warning` or `skippedRoutes`, and
    critically review any code changes it made before declaring success.

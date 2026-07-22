@@ -264,11 +264,12 @@ They are not part of the public v0.4.0 vocabulary.
 
 ## MCP Surface
 
-`tools/list` returns two tools:
+`tools/list` returns three tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `dispatch` | Start, poll, or list routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to poll. Nothing is ever lost to a timeout — including the MCP call's own. |
+| `dispatch` | Always starts new routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to check on. Nothing is ever lost to a timeout — including the MCP call's own. |
+| `job_status` | Checks work started by `dispatch`. Pass the `jobId` it returned to get a `partialOutput` tail while running and the full `result` once done; omit `jobId` to list every known background dispatch. |
 | `usage` | Per-route call counts, quota, billing kind, and breaker state for the current session — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. Pass `listModels: <route id>` to fetch that `openai_compatible` route's live `GET /models` catalog instead of (or alongside) the summary. |
 
 `workingDir` is effectively required when starting work: if you omit it, the task runs
@@ -278,15 +279,14 @@ carries a `warning` field saying so.
 **How the grace window works.** `dispatch` starts the task as a background job
 immediately, then waits up to `graceSeconds` (default 25) for it to finish. Within the
 window you get the complete result inline, exactly as if the call had blocked. Past it
-you get the `jobId` — call `dispatch` again with just that `jobId` to see a
-`partialOutput` tail while it runs and the full `result` once `completed`. Because the
-run never depends on the MCP call staying open, a client-side timeout costs you the
-inline reply, never the work. Background runs default to a generous 60-minute ceiling
-meant only to catch a genuinely hung process (stuck waiting on input, a stalled
-network call), not to cap normal work — raise it per call with `hints.timeoutMs`
-(milliseconds), or set a permanent per-route default with `timeout_ms:` in that
-service's config entry. Precedence is `hints.timeoutMs` > the service's `timeout_ms` >
-the 60-minute default.
+you get the `jobId` — call `job_status` with that `jobId` to see a `partialOutput` tail
+while it runs and the full `result` once `completed`. Because the run never depends on
+the MCP call staying open, a client-side timeout costs you the inline reply, never the
+work. Background runs default to a generous 60-minute ceiling meant only to catch a
+genuinely hung process (stuck waiting on input, a stalled network call), not to cap
+normal work — raise it per call with `hints.timeoutMs` (milliseconds), or set a
+permanent per-route default with `timeout_ms:` in that service's config entry.
+Precedence is `hints.timeoutMs` > the service's `timeout_ms` > the 60-minute default.
 
 Starting a task:
 
@@ -320,11 +320,11 @@ For fanout (each route that outlives the grace window returns its own `jobId`):
 }
 ```
 
-Polling and listing: `{"jobId": "job-..."}` returns status plus `partialOutput` or the
-final `result`; `{"list": true}` returns every known background dispatch. Force pure
-async with `"graceSeconds": 0`, or force a specific backend with a top-level
-`"service"` (single mode only). Nothing is lost by polling late — everything persists
-under `~/.harness-dispatch/jobs/<jobId>/`.
+Checking and listing (`job_status`): `{"jobId": "job-..."}` returns status plus
+`partialOutput` or the final `result`; `{}` (no `jobId`) returns every known background
+dispatch. On `dispatch`, force pure async with `"graceSeconds": 0`, or force a specific
+backend with a top-level `"service"` (single mode only). Nothing is lost by checking
+late — everything persists under `~/.harness-dispatch/jobs/<jobId>/`.
 
 Status is exposed as resources:
 
