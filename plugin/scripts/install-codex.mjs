@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * Install harness-router into Codex (CLI and desktop — both read ~/.codex).
+ * Install harness-dispatch into Codex (CLI and desktop — both read ~/.codex).
  *
  *   node plugin/scripts/install-codex.mjs [--config <path>] [--dry-run]
  *
  * Does two things, both idempotent:
- *   1. Registers the MCP server: `codex mcp add harness-router -- node
+ *   1. Registers the MCP server: `codex mcp add harness-dispatch -- node
  *      <launcher>` (re-running replaces the existing entry). The launcher is
  *      this plugin's launch-mcp.mjs, so config resolution behaves identically
  *      to the Claude plugin (local repo build when run from a working copy,
  *      published package otherwise).
- *   2. Copies the delegating-work skill to ~/.codex/skills/harness-router/
+ *   2. Copies the delegating-work skill to ~/.codex/skills/harness-dispatch/
  *      (Codex uses the same SKILL.md format as Claude Code).
  *
  * --config, when given, is persisted into the `codex mcp add` env as
- * HARNESS_ROUTER_CONFIG so the launcher picks it up without requiring a
+ * HARNESS_DISPATCH_CONFIG so the launcher picks it up without requiring a
  * global environment variable.
  */
 
@@ -52,15 +52,15 @@ function run(command, commandArgs) {
 
 // 1. MCP server registration.
 const envArgs = [];
-if (configOverride) envArgs.push("--env", `HARNESS_ROUTER_CONFIG=${configOverride}`);
+if (configOverride) envArgs.push("--env", `HARNESS_DISPATCH_CONFIG=${configOverride}`);
 
 // `codex mcp add` overwrites an existing entry of the same name, but remove
 // first so stale env vars from a previous install can't survive.
-run("codex", ["mcp", "remove", "harness-router"]);
+run("codex", ["mcp", "remove", "harness-dispatch"]);
 const added = run("codex", [
   "mcp",
   "add",
-  "harness-router",
+  "harness-dispatch",
   ...envArgs,
   "--",
   "node",
@@ -72,7 +72,7 @@ if (added.status !== 0) {
 }
 
 // 2. Skill installation (same SKILL.md works in both ecosystems).
-const skillDir = path.join(homedir(), ".codex", "skills", "harness-router");
+const skillDir = path.join(homedir(), ".codex", "skills", "harness-dispatch");
 if (!existsSync(skillSource)) {
   console.error(`skill source missing: ${skillSource}`);
   process.exit(1);
@@ -84,8 +84,8 @@ if (dryRun) {
   copyFileSync(skillSource, path.join(skillDir, "SKILL.md"));
 }
 
-console.log("\nharness-router installed for Codex:");
-console.log("  - MCP server: codex mcp list   (look for harness-router)");
+console.log("\nharness-dispatch installed for Codex:");
+console.log("  - MCP server: codex mcp list   (look for harness-dispatch)");
 console.log(`  - Skill:      ${path.join(skillDir, "SKILL.md")}`);
 console.log("\nEndpoint API keys (GROQ_API_KEY, GEMINI_API_KEY, ...) must be present in");
 console.log("the environment Codex runs in; CLI-based routes need no keys.");

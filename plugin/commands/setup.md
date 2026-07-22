@@ -1,13 +1,13 @@
 ---
 name: setup
-description: Interactive setup — detect providers, configure enable/disable and API keys, write ~/.harness-router/config.yaml
+description: Interactive setup — detect providers, configure enable/disable and API keys, write ~/.harness-dispatch/config.yaml
 ---
 
-Set up harness-router configuration for this user. $ARGUMENTS
+Set up harness-dispatch configuration for this user. $ARGUMENTS
 
 1. **Detect current state.** Check which provider CLIs are installed
    (`claude`, `codex`, `cursor-agent`, `agy` — use `where`/`which`). Check
-   whether `~/.harness-router/config.yaml` already exists; if so, read it and
+   whether `~/.harness-dispatch/config.yaml` already exists; if so, read it and
    treat this as an edit session, preserving anything the user doesn't change.
 
 2. **Interview the user** (use structured questions where available):
@@ -20,7 +20,7 @@ Set up harness-router configuration for this user. $ARGUMENTS
    - Which route should be preferred for everyday delegation, if they have
      an opinion (implement via `overrides` tiers/weights).
 
-3. **Write `~/.harness-router/config.yaml`.** Use `disabled: [...]`,
+3. **Write `~/.harness-dispatch/config.yaml`.** Use `disabled: [...]`,
    `overrides:` (model/tier/weight per service), and `endpoints:` entries.
    API keys MUST be written as `${ENV_VAR}` references — never literal
    secrets. Keep the file commented so it's self-explanatory.

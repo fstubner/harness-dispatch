@@ -82,7 +82,7 @@ BUNDLED_SCORES: Dict[str, Dict[str, float]] = {
 # ---------------------------------------------------------------------------
 
 def _get(url: str) -> bytes:
-    req = Request(url, headers={"User-Agent": "harness-router/0.4 fetch_benchmarks"})
+    req = Request(url, headers={"User-Agent": "harness-dispatch/0.4 fetch_benchmarks"})
     with urlopen(req, timeout=10) as resp:
         return resp.read()
 

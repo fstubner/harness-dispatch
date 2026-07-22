@@ -35,7 +35,7 @@ function makeFetchMock(init: MockResponseInit) {
       opts?.headers instanceof Headers
         ? opts.headers.get("User-Agent")
         : (opts?.headers as Record<string, string> | undefined)?.["User-Agent"];
-    expect(ua).toBe("harness-router/0.4 (leaderboard quality scoring)");
+    expect(ua).toBe("harness-dispatch/0.4 (leaderboard quality scoring)");
     expect(String(input)).toBe(LEADERBOARD_URL);
 
     if (init.throwError) {

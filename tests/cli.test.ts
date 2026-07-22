@@ -17,7 +17,7 @@ import { main } from "../src/bin.js";
 import { QuotaCache } from "../src/quota.js";
 
 async function writeConfig(opts: { includePaidRoute?: boolean } = {}): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-cli-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-"));
   const file = path.join(dir, "config.yaml");
   const paidRoute = opts.includePaidRoute
     ? [
@@ -107,12 +107,12 @@ describe("CLI parser", () => {
   it("prints public help with the v0.4 commands", async () => {
     const result = await capture(() => main(["--help"]));
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("harness-router configure");
-    expect(result.stdout).toContain("harness-router doctor");
-    expect(result.stdout).toContain("harness-router doctor --live");
-    expect(result.stdout).toContain("harness-router status");
-    expect(result.stdout).toContain("harness-router serve");
-    expect(result.stdout).toContain("harness-router auth show");
+    expect(result.stdout).toContain("harness-dispatch configure");
+    expect(result.stdout).toContain("harness-dispatch doctor");
+    expect(result.stdout).toContain("harness-dispatch doctor --live");
+    expect(result.stdout).toContain("harness-dispatch status");
+    expect(result.stdout).toContain("harness-dispatch serve");
+    expect(result.stdout).toContain("harness-dispatch auth show");
     expect(result.stdout).not.toContain("list-services");
     expect(result.stdout).not.toContain("dashboard");
   });
@@ -127,7 +127,7 @@ describe("CLI parser", () => {
       routes: Array<Record<string, unknown> & { id: string }>;
       skippedRoutes: unknown[];
     };
-    expect(parsed.name).toBe("harness-router");
+    expect(parsed.name).toBe("harness-dispatch");
     expect(parsed.routes[0]!.id).toBe("local");
     expect(parsed.routes[0]).toHaveProperty("billing");
     expect(parsed.routes[0]).toHaveProperty("effectiveSafetyProfile");
@@ -169,7 +169,7 @@ describe("CLI parser", () => {
 
   it("surfaces configWarnings for an unrecognized overrides: key in doctor and configure", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-router-cli-warn-"));
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-warn-"));
     const configPath = path.join(dir, "config.yaml");
     // Shorthand auto-detect format with a pre-rename override key — nothing
     // is auto-detected on a bare test machine, but the warning fires purely
@@ -203,7 +203,7 @@ describe("CLI parser", () => {
     const config = await writeConfig();
     const dashboard = await capture(() => main(["dashboard", "--config", config]));
     expect(dashboard.code).toBe(0);
-    expect(dashboard.stdout).toContain("harness-router status");
+    expect(dashboard.stdout).toContain("harness-dispatch status");
 
     const list = await capture(() => main(["list-services", "--config", config]));
     expect(list.code).toBe(0);
@@ -215,12 +215,63 @@ describe("CLI parser", () => {
     const config = await writeConfig();
     const result = await capture(() => main(["configure", "--print", "--config", config]));
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("version: 4");
-    expect(result.stdout).toContain("local:");
+    expect(result.stdout).toContain("endpoints:");
+    expect(result.stdout).toContain("name: local");
+    expect(result.stdout).not.toContain("version: 4");
+    expect(result.stdout).not.toContain("services:");
+  });
+
+  it("does not write a misleading safety_profile for a route whose real effective_safety is a stricter floor", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-safety-"));
+    const configPath = path.join(dir, "config.yaml");
+    // harness: cursor pulls effective_safety: full_auto from the shipped
+    // harness defaults (config.default.yaml) without this entry declaring it
+    // itself — exactly the auto-detected-route shape configure normally sees.
+    await fs.writeFile(
+      configPath,
+      "services:\n  my_cursor:\n    enabled: true\n    type: cli\n    harness: cursor\n    command: cursor-agent\n",
+      "utf-8",
+    );
+
+    const result = await capture(() => main(["configure", "--print", "--config", configPath]));
+    expect(result.code).toBe(0);
+    // The route's real capability floor is full_auto; the file must say so...
+    expect(result.stdout).toContain("effective_safety: full_auto");
+    // ...and must NOT also claim safety_profile: workspace_edit, which used
+    // to be baked in as a fallback default even though nobody chose it and
+    // it contradicts the effective_safety `status` actually enforces.
+    expect(result.stdout).not.toContain("safety_profile:");
+  });
+
+  it("writes a modern config whose MCP snippet uses an absolute --config path, and round-trips through loadConfig", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const source = await writeConfig();
+    const printed = await capture(() => main(["configure", "--print", "--config", source]));
+    expect(printed.code).toBe(0);
+
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-out-"));
+    const target = path.join(dir, "out.yaml");
+    await fs.writeFile(target, printed.stdout, "utf-8");
+
+    const written = await fs.readFile(target, "utf-8");
+    expect(written).not.toContain("version: 4");
+    expect(written).not.toMatch(/^services:/m);
+
+    const { loadConfig } = await import("../src/config.js");
+    const reloaded = await loadConfig(target);
+    expect(Object.keys(reloaded.services)).toContain("local");
+
+    // Now exercise the real --yes write path against a not-yet-existing
+    // target and check the printed MCP snippet points at it absolutely.
+    const writeResult = await capture(() => main(["configure", "--yes", "--config", target]));
+    expect(writeResult.code).toBe(0);
+    expect(writeResult.stdout).toContain(`Wrote ${target}`);
+    expect(writeResult.stdout).toContain(JSON.stringify(path.resolve(target)));
   });
 
   it("supports doctor --json without running a live probe", async () => {
-    process.env.HARNESS_ROUTER_HTTP_TOKEN = "test-token";
+    process.env.HARNESS_DISPATCH_HTTP_TOKEN = "test-token";
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();
     const result = await capture(() => main(["doctor", "--json", "--config", config]));
@@ -253,7 +304,7 @@ describe("CLI parser", () => {
   });
 
   it("supports auth show through the environment token", async () => {
-    process.env.HARNESS_ROUTER_HTTP_TOKEN = "test-token";
+    process.env.HARNESS_DISPATCH_HTTP_TOKEN = "test-token";
     const result = await capture(() => main(["auth", "show"]));
     expect(result.code).toBe(0);
     expect(result.stdout.trim()).toBe("test-token");

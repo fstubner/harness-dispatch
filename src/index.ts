@@ -1,5 +1,5 @@
 /**
- * harness-router — TypeScript package.
+ * harness-dispatch — TypeScript package.
  *
  * Public library surface.
  */
@@ -39,7 +39,7 @@ export {
 } from "./http/server.js";
 export { buildDispatchers } from "./mcp/dispatcher-factory.js";
 export { TOOL_NAMES } from "./mcp/tools.js";
-export { buildStatus, renderStatusText, type HarnessRouterStatus } from "./status.js";
+export { buildStatus, renderStatusText, type HarnessDispatchStatus } from "./status.js";
 export { ensureHttpToken, readHttpToken, rotateHttpToken } from "./auth.js";
 export { buildRouteBilling, billingIsBlocked, billingIsUnknown } from "./billing.js";
 export { evaluateRoutePolicy } from "./route-policy.js";

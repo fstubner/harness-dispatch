@@ -290,8 +290,8 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             id: route.id,
             object: "model",
             created,
-            owned_by: "harness-router",
-            harness_router: {
+            owned_by: "harness-dispatch",
+            harness_dispatch: {
               harness: route.harness,
               enabled: route.enabled,
               available: route.available,
@@ -420,7 +420,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
                   finish_reason: null,
                 },
               ],
-              harness_router: {
+              harness_dispatch: {
                 mode: "fanout",
                 skippedRoutes: selected.skippedRoutes,
                 ...(parsed.workingDirWarning !== undefined
@@ -444,7 +444,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
                       finish_reason: null,
                     },
                   ],
-                  harness_router: decision ? { route: decision.service } : undefined,
+                  harness_dispatch: decision ? { route: decision.service } : undefined,
                 });
               } else if (event.type === "completion" && !event.result.success) {
                 writeSse(res, {
@@ -498,9 +498,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
                 null,
                 2,
               ),
-              typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-router",
+              typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-dispatch",
               {
-                harness_router: {
+                harness_dispatch: {
                   mode: "fanout",
                   skippedRoutes: selected.skippedRoutes,
                   ...(parsed.workingDirWarning !== undefined
@@ -522,8 +522,8 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         sendJson(
           res,
           200,
-          completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-router", {
-            harness_router: {
+          completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
+            harness_dispatch: {
               route: result.service,
               success: result.success,
               error: result.error,
@@ -594,7 +594,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
   if (!isLoopbackHost(host)) {
     process.stderr.write(
-      `WARNING: harness-router is binding to ${host}, not loopback. This exposes ` +
+      `WARNING: harness-dispatch is binding to ${host}, not loopback. This exposes ` +
         `a bearer-token-gated server — and everything the dispatched harness can ` +
         `do (spawn CLIs, read/write files in workingDir) — to your network, not ` +
         `just this machine. Only do this if you specifically intend to reach it ` +

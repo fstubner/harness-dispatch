@@ -3,10 +3,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const TOKEN_ENV = "HARNESS_ROUTER_HTTP_TOKEN";
+const TOKEN_ENV = "HARNESS_DISPATCH_HTTP_TOKEN";
 
 export function authDir(): string {
-  return process.env.HARNESS_ROUTER_HOME ?? path.join(os.homedir(), ".harness-router");
+  return process.env.HARNESS_DISPATCH_HOME ?? path.join(os.homedir(), ".harness-dispatch");
 }
 
 export function tokenPath(): string {

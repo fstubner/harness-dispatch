@@ -26,8 +26,12 @@ export function effectiveSafetyProfile(
   svc: ServiceConfig,
   requested?: SafetyProfile,
 ): SafetyProfile {
-  const harness = svc.harness ?? svc.name;
-  if (harness === "cursor") return "full_auto";
+  // A route's declared capability floor wins over any request — this comes
+  // from config (`effective_safety:` on the route or its harness defaults),
+  // NOT from harness-name special cases in code. openai_compatible is the
+  // one structural rule: an HTTP endpoint has no file or shell access, so
+  // it is read_only by construction.
+  if (svc.effectiveSafety) return svc.effectiveSafety;
   if (svc.type === "openai_compatible") return "read_only";
   return requestedSafetyProfile(svc, requested);
 }

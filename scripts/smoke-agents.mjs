@@ -28,8 +28,8 @@ const AGENT_HARNESSES = new Set([
   "antigravity_cli",
   "antigravity",
 ]);
-const TASK_BRIEF_RELATIVE_PATH = path.join(".harness-router", "agent-task.md");
-const SMOKE_WORKSPACE_RELATIVE_ROOT = path.join(".harness-router", "smoke-workspaces");
+const TASK_BRIEF_RELATIVE_PATH = path.join(".harness-dispatch", "agent-task.md");
+const SMOKE_WORKSPACE_RELATIVE_ROOT = path.join(".harness-dispatch", "smoke-workspaces");
 
 function parseArgs(argv) {
   const out = {
@@ -38,7 +38,7 @@ function parseArgs(argv) {
     config: undefined,
     keep: false,
     routes: [],
-    safetyProfile: process.env.HARNESS_ROUTER_AGENT_SMOKE_SAFETY ?? "workspace_edit",
+    safetyProfile: process.env.HARNESS_DISPATCH_AGENT_SMOKE_SAFETY ?? "workspace_edit",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -62,10 +62,10 @@ function parseArgs(argv) {
 }
 
 function printUsage() {
-  console.log(`harness-router live agent smoke
+  console.log(`harness-dispatch live agent smoke
 
 Usage:
-  HARNESS_ROUTER_LIVE_AGENT_SMOKE=1 npm run smoke:agents -- [options]
+  HARNESS_DISPATCH_LIVE_AGENT_SMOKE=1 npm run smoke:agents -- [options]
 
 Options:
   --config <path>       Config file to load.
@@ -76,27 +76,27 @@ Options:
   --keep                Keep temp workspaces for inspection.
 
 Environment:
-  HARNESS_ROUTER_AGENT_SMOKE_ROOT  Override the repo-local smoke workspace root.
+  HARNESS_DISPATCH_AGENT_SMOKE_ROOT  Override the repo-local smoke workspace root.
 
 PowerShell:
-  $env:HARNESS_ROUTER_LIVE_AGENT_SMOKE='1'; npm run smoke:agents -- --allow-paid
+  $env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE='1'; npm run smoke:agents -- --allow-paid
 `);
 }
 
 function requireExplicitLiveOptIn() {
-  if (process.env.HARNESS_ROUTER_LIVE_AGENT_SMOKE === "1") return;
+  if (process.env.HARNESS_DISPATCH_LIVE_AGENT_SMOKE === "1") return;
   console.error(
     [
       "Refusing to run live agent smoke without explicit opt-in.",
       "This command can consume provider quota or product-plan usage.",
-      "Set HARNESS_ROUTER_LIVE_AGENT_SMOKE=1 and rerun.",
+      "Set HARNESS_DISPATCH_LIVE_AGENT_SMOKE=1 and rerun.",
     ].join("\n"),
   );
   process.exit(1);
 }
 
 export function smokeWorkspaceRoot(cwd = process.cwd()) {
-  const override = process.env.HARNESS_ROUTER_AGENT_SMOKE_ROOT;
+  const override = process.env.HARNESS_DISPATCH_AGENT_SMOKE_ROOT;
   return path.resolve(override ?? path.join(cwd, SMOKE_WORKSPACE_RELATIVE_ROOT));
 }
 
@@ -116,13 +116,13 @@ async function createFixture(route, root = smokeWorkspaceRoot()) {
     "AGENTS.md": [
       "# Live Smoke Workspace",
       "",
-      "These instructions apply only inside this generated harness-router smoke workspace.",
+      "These instructions apply only inside this generated harness-dispatch smoke workspace.",
       "They supersede parent project instructions for this workspace.",
       "",
       "- Do not use MCP tools to complete this smoke task.",
-      "- Do not use harness-router recursively.",
+      "- Do not use harness-dispatch recursively.",
       "- Work only with the local files in this smoke workspace.",
-      "- Follow `.harness-router/agent-task.md`.",
+      "- Follow `.harness-dispatch/agent-task.md`.",
       "",
     ].join("\n"),
     "calc.mjs": [
@@ -168,7 +168,7 @@ export function buildTaskBrief(routeName, dir) {
     "- Do not modify `package.json`.",
     "- Do not modify `AGENTS.md`.",
     "- Do not modify this task brief.",
-    "- Do not run shell commands; harness-router will run `node test.mjs` after your edit.",
+    "- Do not run shell commands; harness-dispatch will run `node test.mjs` after your edit.",
     "",
     "## Acceptance",
     "- `node test.mjs` passes after the edit.",
@@ -188,7 +188,7 @@ async function writeTaskBrief(routeName, dir) {
 
 export function buildShortTaskPrompt(briefPath) {
   return [
-    "Read the harness-router live smoke task brief and complete it.",
+    "Read the harness-dispatch live smoke task brief and complete it.",
     `Task brief: ${briefPath}`,
   ].join("\n");
 }
@@ -357,7 +357,7 @@ async function main() {
   const status = await buildStatus(config, dispatchers, quota, router, leaderboard);
   const { selected, skipped } = selectRoutes(config, dispatchers, router, opts);
 
-  console.log(`harness-router ${VERSION} live agent smoke`);
+  console.log(`harness-dispatch ${VERSION} live agent smoke`);
   console.log(`configured routes: ${Object.keys(config.services).length}`);
   console.log(`ready before live smoke: ${status.ready.join(", ") || "none"}`);
   if (skipped.length > 0) {

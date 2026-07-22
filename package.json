@@ -1,7 +1,7 @@
 {
-  "name": "harness-router",
+  "name": "harness-dispatch",
   "version": "0.4.0",
-  "description": "Local harness router for coding agents with MCP and OpenAI-compatible HTTP surfaces.",
+  "description": "Turn locally installed coding harnesses (Claude Code, Codex, Cursor, Antigravity) and local/remote API endpoints into tools any AI can call, with async job handling for long-running agent work.",
   "keywords": [
     "mcp",
     "claude",
@@ -10,11 +10,12 @@
     "llm",
     "cursor",
     "codex",
-    "gemini"
+    "dispatch",
+    "antigravity"
   ],
   "license": "MIT",
   "author": "Felix Stubner",
-  "homepage": "https://fstubner.github.io/harness-router/",
+  "homepage": "https://fstubner.github.io/harness-dispatch/",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,12 +26,12 @@
     }
   },
   "bin": {
-    "harness-router": "./dist/bin.js"
+    "harness-dispatch": "./dist/bin.js"
   },
   "files": [
     "dist/",
     "data/",
-    "config.example.yaml",
+    "config.default.yaml",
     "README.md"
   ],
   "engines": {
@@ -41,7 +42,8 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "check": "npm run typecheck && npm test",
     "dev": "tsx src/bin.ts",
     "smoke": "node scripts/smoke.mjs",
@@ -51,7 +53,8 @@
     "test:watch": "vitest",
     "test:parity": "vitest run tests/scoring-parity.test.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -77,9 +80,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/fstubner/harness-router"
+    "url": "https://github.com/fstubner/harness-dispatch"
   },
   "bugs": {
-    "url": "https://github.com/fstubner/harness-router/issues"
+    "url": "https://github.com/fstubner/harness-dispatch/issues"
   }
 }

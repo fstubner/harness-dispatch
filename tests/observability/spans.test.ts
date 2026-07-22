@@ -125,7 +125,7 @@ describe("withDispatcherSpan", () => {
     );
     expect(result).toBe("ok");
     expect(recordedSpans).toHaveLength(1);
-    expect(recordedSpans[0]!.name).toBe("harness-router.dispatcher.dispatch");
+    expect(recordedSpans[0]!.name).toBe("harness-dispatch.dispatcher.dispatch");
     expect(recordedSpans[0]!.attributes["dispatcher.id"]).toBe("claude_code");
     expect(recordedSpans[0]!.attributes["model"]).toBe("opus-4");
     expect(recordedSpans[0]!.status.code).toBe(SpanStatusCode.OK);
@@ -139,7 +139,7 @@ describe("withDispatcherSpan", () => {
       }),
     ).rejects.toThrow("boom");
     expect(recordedSpans).toHaveLength(1);
-    expect(recordedSpans[0]!.name).toBe("harness-router.dispatcher.stream");
+    expect(recordedSpans[0]!.name).toBe("harness-dispatch.dispatcher.stream");
     expect(recordedSpans[0]!.status.code).toBe(SpanStatusCode.ERROR);
     expect(recordedSpans[0]!.exceptions).toHaveLength(1);
     expect(recordedSpans[0]!.exceptions[0]!.message).toBe("boom");
@@ -153,20 +153,20 @@ describe("withRouterSpan", () => {
       { "router.op": "route", task_type: "plan" },
       async () => 1,
     );
-    expect(recordedSpans[0]!.name).toBe("harness-router.router.route");
+    expect(recordedSpans[0]!.name).toBe("harness-dispatch.router.route");
     expect(recordedSpans[0]!.attributes["task_type"]).toBe("plan");
   });
 
   it("supports pick_service operation", async () => {
     await withRouterSpan({ "router.op": "pick_service" }, async () => 1);
-    expect(recordedSpans[0]!.name).toBe("harness-router.router.pick_service");
+    expect(recordedSpans[0]!.name).toBe("harness-dispatch.router.pick_service");
   });
 });
 
 describe("withMcpToolSpan", () => {
   it("emits an mcp.tool span with the tool.name attribute", async () => {
     await withMcpToolSpan({ "tool.name": "code" }, async () => 1);
-    expect(recordedSpans[0]!.name).toBe("harness-router.mcp.tool");
+    expect(recordedSpans[0]!.name).toBe("harness-dispatch.mcp.tool");
     expect(recordedSpans[0]!.attributes["tool.name"]).toBe("code");
   });
 });

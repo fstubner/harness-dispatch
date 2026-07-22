@@ -1,12 +1,12 @@
 /**
- * Span helpers for harness-router.
+ * Span helpers for harness-dispatch.
  *
  * Thin wrappers around `@opentelemetry/api` that encapsulate the three span
  * types this project emits:
  *
- *   harness-router.dispatcher.*   — per-dispatch and per-stream invocations
- *   harness-router.router.*       — routing decisions and route() calls
- *   harness-router.mcp.tool       — MCP tool invocations
+ *   harness-dispatch.dispatcher.*   — per-dispatch and per-stream invocations
+ *   harness-dispatch.router.*       — routing decisions and route() calls
+ *   harness-dispatch.mcp.tool       — MCP tool invocations
  *
  * Each helper takes a name, an attribute bag, and an async function. The
  * helper sets standard attributes, records exceptions, sets status, and
@@ -18,7 +18,7 @@
 
 import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
 
-const TRACER_NAME = "harness-router";
+const TRACER_NAME = "harness-dispatch";
 const TRACER_VERSION = "1.0.0-alpha.0";
 
 export interface SpanAttrs {
@@ -89,7 +89,7 @@ export async function withDispatcherSpan<T>(
   attrs: DispatcherSpanAttrs,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
-  return withSpan(`harness-router.dispatcher.${op}`, attrs, fn);
+  return withSpan(`harness-dispatch.dispatcher.${op}`, attrs, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ export async function withRouterSpan<T>(
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
   const { "router.op": op, ...rest } = attrs;
-  return withSpan(`harness-router.router.${op}`, { ...rest, "router.op": op }, fn);
+  return withSpan(`harness-dispatch.router.${op}`, { ...rest, "router.op": op }, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,5 +126,5 @@ export async function withMcpToolSpan<T>(
   attrs: McpToolSpanAttrs,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
-  return withSpan("harness-router.mcp.tool", attrs, fn);
+  return withSpan("harness-dispatch.mcp.tool", attrs, fn);
 }

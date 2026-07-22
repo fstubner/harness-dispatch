@@ -87,22 +87,22 @@ function resolveDir(workingDir: string): string {
 
 function workspaceRootFor(originalWorkingDir: string): string {
   return (
-    process.env.HARNESS_ROUTER_WORKSPACES_DIR ??
-    path.join(originalWorkingDir, ".harness-router", "workspaces")
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
+    path.join(originalWorkingDir, ".harness-dispatch", "workspaces")
   );
 }
 
 function gitWorkspaceRootFor(originalWorkingDir: string): string {
   return (
-    process.env.HARNESS_ROUTER_WORKSPACES_DIR ??
-    path.join(os.tmpdir(), "harness-router", "workspaces", safeName(path.basename(originalWorkingDir)))
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
+    path.join(os.tmpdir(), "harness-dispatch", "workspaces", safeName(path.basename(originalWorkingDir)))
   );
 }
 
 const DEFAULT_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function workspaceMaxAgeMs(): number {
-  const raw = process.env.HARNESS_ROUTER_WORKSPACE_MAX_AGE_MS;
+  const raw = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WORKSPACE_MAX_AGE_MS;
 }
@@ -181,7 +181,7 @@ async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<vo
 function shouldExclude(relPath: string, direntName: string): boolean {
   if (EXCLUDED_DIRS.has(direntName)) return true;
   const normalized = relPath.split(path.sep).join("/");
-  return normalized === ".harness-router/workspaces" || normalized.startsWith(".harness-router/workspaces/");
+  return normalized === ".harness-dispatch/workspaces" || normalized.startsWith(".harness-dispatch/workspaces/");
 }
 
 async function copyTree(sourceRoot: string, destRoot: string, rel = ""): Promise<void> {

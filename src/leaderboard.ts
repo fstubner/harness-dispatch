@@ -1,5 +1,5 @@
 /**
- * Leaderboard-based quality scoring for harness-router.
+ * Leaderboard-based quality scoring for harness-dispatch.
  *
  * Ported from `coding_agent.leaderboard`. Fetches Arena ELO scores from the
  * public wulong.dev API with a 24-hour cache. Scores are used as routing
@@ -48,7 +48,7 @@ export const QUALITY_MAX = 1.0;
 export const QUALITY_DEFAULT = 0.85;
 
 // User-Agent required — API returns 403 without it
-const USER_AGENT = "harness-router/0.4 (leaderboard quality scoring)";
+const USER_AGENT = "harness-dispatch/0.4 (leaderboard quality scoring)";
 
 // ---------------------------------------------------------------------------
 // Benchmark file resolution

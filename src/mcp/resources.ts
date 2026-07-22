@@ -27,7 +27,7 @@ async function currentStatus(deps: ResourceDeps) {
 export function registerResources(server: McpServer, deps: ResourceDeps): void {
   server.registerResource(
     "status",
-    "harness-router://status",
+    "harness-dispatch://status",
     {
       title: "Harness Router Status",
       description: "Human-readable route availability, quota, and breaker state.",
@@ -38,7 +38,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
       return {
         contents: [
           {
-            uri: "harness-router://status",
+            uri: "harness-dispatch://status",
             mimeType: "text/plain",
             text: renderStatusText(status),
           },
@@ -49,7 +49,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
 
   server.registerResource(
     "status-json",
-    "harness-router://status.json",
+    "harness-dispatch://status.json",
     {
       title: "Harness Router Status JSON",
       description: "Structured route availability, quota, and breaker state.",
@@ -60,7 +60,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
       return {
         contents: [
           {
-            uri: "harness-router://status.json",
+            uri: "harness-dispatch://status.json",
             mimeType: "application/json",
             text: JSON.stringify(status, null, 2),
           },

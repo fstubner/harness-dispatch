@@ -1,13 +1,13 @@
 {
-  "name": "harness-router",
+  "name": "harness-dispatch",
   "owner": {
     "name": "Felix Stubner"
   },
   "plugins": [
     {
-      "name": "harness-router",
+      "name": "harness-dispatch",
       "source": "./plugin",
-      "description": "Billing- and safety-aware delegation of coding tasks to your existing AI subscriptions (Claude Code, Codex, Cursor, Antigravity, local endpoints) via the harness-router MCP server."
+      "description": "Billing- and safety-aware delegation of coding tasks to your existing AI subscriptions (Claude Code, Codex, Cursor, Antigravity, local endpoints) via the harness-dispatch MCP server."
     }
   ]
 }

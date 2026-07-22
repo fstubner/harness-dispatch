@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * harness-router CLI entrypoint.
+ * harness-dispatch CLI entrypoint.
  */
 
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import { parseArgs } from "node:util";
 
 import yaml from "js-yaml";
@@ -21,7 +22,7 @@ import { buildStatus, buildUsage, renderStatusText, renderUsageText } from "./st
 import { startHttpServer } from "./http/server.js";
 import type { RouterConfig, ServiceConfig } from "./types.js";
 import { billingIsBlocked, buildRouteBilling } from "./billing.js";
-import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
+import { effectiveSafetyProfile } from "./safety.js";
 
 interface Runtime {
   config: RouterConfig;
@@ -43,20 +44,20 @@ async function buildRuntime(configPath: string | undefined): Promise<Runtime> {
 function printUsage(): void {
   process.stdout.write(
     [
-      "harness-router",
+      "harness-dispatch",
       "",
       "Usage:",
-      "  harness-router                         Start stdio MCP.",
-      "  harness-router configure [--print]     Detect and prepare harness config.",
-      "  harness-router doctor [--json]         Check install, config, auth, and routes.",
-      "  harness-router doctor --live           Run one routed probe when billing policy allows it.",
-      "  harness-router doctor --live --allow-paid  Run a live probe through paid/unknown routes.",
-      "  harness-router status [--json]         Show route, quota, and breaker state.",
-      "  harness-router status --watch          Re-render status every --interval ms.",
-      "  harness-router usage [--json]          Show per-route call counts, quota, and billing kind.",
-      "  harness-router serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
-      "  harness-router auth show               Print the HTTP bearer token.",
-      "  harness-router auth rotate             Rotate the HTTP bearer token.",
+      "  harness-dispatch                         Start stdio MCP.",
+      "  harness-dispatch configure [--print]     Detect and prepare harness config.",
+      "  harness-dispatch doctor [--json]         Check install, config, auth, and routes.",
+      "  harness-dispatch doctor --live           Run one routed probe when billing policy allows it.",
+      "  harness-dispatch doctor --live --allow-paid  Run a live probe through paid/unknown routes.",
+      "  harness-dispatch status [--json]         Show route, quota, and breaker state.",
+      "  harness-dispatch status --watch          Re-render status every --interval ms.",
+      "  harness-dispatch usage [--json]          Show per-route call counts, quota, and billing kind.",
+      "  harness-dispatch serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
+      "  harness-dispatch auth show               Print the HTTP bearer token.",
+      "  harness-dispatch auth rotate             Rotate the HTTP bearer token.",
       "",
       "Options:",
       "  --config <path>       Path to config.yaml.",
@@ -64,6 +65,8 @@ function printUsage(): void {
       "  --host <host>         HTTP host for serve (default: 127.0.0.1).",
       "  --interval <ms>       Watch refresh interval (default: 1000).",
       "  --json                Print JSON where supported.",
+      "  --print               configure: print generated config YAML without writing it.",
+      "  --yes                 configure: write config.yaml instead of only previewing it.",
       "  --allow-paid          Allow doctor --live to probe paid or unknown-paid routes.",
       "  -h, --help            Show help.",
       "",
@@ -71,15 +74,26 @@ function printUsage(): void {
   );
 }
 
-function serviceToYaml(svc: ServiceConfig): Record<string, unknown> {
-  const billing = buildRouteBilling(svc);
+/**
+ * Common fields between clis: and endpoints: entries. Billing fields
+ * (provider/surface/auth_source/billing_kind/paid_usage_possible/
+ * billing_confidence/billing_notes) are deliberately NOT emitted — they're
+ * computed from the harness/endpoint defaults every time the config loads
+ * (see buildRouteBilling), so writing them out would freeze a snapshot that
+ * silently stops tracking future default changes and looks like a deliberate
+ * user override when it never was one. `allow_paid_usage` is the one real
+ * opt-in flag here, so it's the only billing-adjacent field written.
+ *
+ * `safety_profile`/`effective_safety` are only emitted when the service
+ * actually carries an explicit value — never a fallback default. Baking in
+ * `requestedSafetyProfile()`'s "workspace_edit" fallback for every route used
+ * to write `safety_profile: workspace_edit` on cursor_cli even though its
+ * real effective_safety (the capability floor that actually governs it) is
+ * full_auto, making the written file self-contradictory next to `status`.
+ */
+function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
   return {
-    enabled: svc.enabled,
-    type: svc.type,
-    harness: svc.harness,
-    command: svc.command,
-    api_key: svc.apiKey,
-    base_url: svc.baseUrl,
+    enabled: svc.enabled ? undefined : false,
     model: svc.model,
     tier: svc.tier,
     weight: svc.weight,
@@ -87,38 +101,53 @@ function serviceToYaml(svc: ServiceConfig): Record<string, unknown> {
     leaderboard_model: svc.leaderboardModel,
     thinking_level: svc.thinkingLevel,
     escalate_model: svc.escalateModel,
-    escalate_on: svc.escalateOn,
-    capabilities: svc.capabilities,
+    escalate_on: svc.escalateOn.length > 0 ? svc.escalateOn : undefined,
+    capabilities:
+      Object.keys(svc.capabilities).length > 0 ? svc.capabilities : undefined,
     max_output_tokens: svc.maxOutputTokens,
     max_input_tokens: svc.maxInputTokens,
-    provider: svc.provider ?? billing.provider,
-    surface: svc.surface ?? billing.surface,
-    auth_source: svc.authSource ?? billing.authSource,
-    billing_kind: svc.billingKind ?? billing.kind,
-    paid_usage_possible: svc.paidUsagePossible ?? billing.paidUsagePossible,
-    allow_paid_usage: svc.allowPaidUsage ?? false,
-    billing_confidence: svc.billingConfidence ?? billing.confidence,
-    billing_notes: svc.billingNotes ?? billing.notes,
-    safety_profile: svc.safetyProfile ?? requestedSafetyProfile(svc),
+    allow_paid_usage: svc.allowPaidUsage ? true : undefined,
+    safety_profile: svc.safetyProfile,
+    effective_safety: svc.effectiveSafety,
     endpoint_mode: svc.endpointMode,
     endpoint_provider: svc.endpointProvider,
     wire_protocol: svc.wireProtocol,
     workspace_policy: svc.workspacePolicy,
+    models: svc.models && svc.models.length > 0 ? svc.models : undefined,
+    model_hint: svc.modelHint,
+  };
+}
+
+function cliEntryToYaml(svc: ServiceConfig): Record<string, unknown> {
+  return {
+    name: svc.name,
+    harness: svc.harness,
+    command: svc.command,
+    api_key: svc.apiKey,
+    ...commonEntryFields(svc),
+  };
+}
+
+function endpointEntryToYaml(svc: ServiceConfig): Record<string, unknown> {
+  return {
+    name: svc.name,
+    base_url: svc.baseUrl,
+    api_key: svc.apiKey,
+    ...commonEntryFields(svc),
   };
 }
 
 function configToYaml(config: RouterConfig): string {
-  const services: Record<string, unknown> = {};
-  for (const [name, svc] of Object.entries(config.services)) {
-    services[name] = serviceToYaml(svc);
+  const clis: Record<string, unknown>[] = [];
+  const endpoints: Record<string, unknown>[] = [];
+  for (const svc of Object.values(config.services)) {
+    if (svc.type === "cli") clis.push(cliEntryToYaml(svc));
+    else endpoints.push(endpointEntryToYaml(svc));
   }
-  return yaml.dump(
-    {
-      version: 4,
-      services,
-    },
-    { noRefs: true, lineWidth: 100 },
-  );
+  const doc: Record<string, unknown> = {};
+  if (clis.length > 0) doc.clis = clis;
+  if (endpoints.length > 0) doc.endpoints = endpoints;
+  return yaml.dump(doc, { noRefs: true, lineWidth: 100 });
 }
 
 async function cmdConfigure(
@@ -152,7 +181,7 @@ async function cmdConfigure(
       `\nBlocked until you opt in: ${blocked.join(", ")}. These routes can incur paid\n` +
         "usage (metered API, unknown billing, or subscription overage), so they are\n" +
         "skipped until you set allow_paid_usage: true on each route you trust.\n" +
-        "Verify with: harness-router doctor --live\n",
+        "Verify with: harness-dispatch doctor --live\n",
     );
   }
 
@@ -171,7 +200,7 @@ async function cmdConfigure(
       `\nNo files written. Re-run with --yes to write ${target}, or use --print to inspect YAML.\n`,
     );
     process.stdout.write(
-      "After writing config, connect agents by adding the harness-router MCP snippet to the agent you use.\n",
+      "After writing config, connect agents by adding the harness-dispatch MCP snippet to the agent you use.\n",
     );
     return 0;
   }
@@ -183,14 +212,20 @@ async function cmdConfigure(
     return 1;
   }
   await fs.writeFile(target, yamlText, "utf-8");
+  const absoluteTarget = path.resolve(target);
   process.stdout.write(`Wrote ${target}.\n`);
-  process.stdout.write("MCP snippet:\n");
+  process.stdout.write(
+    "MCP snippet (uses an absolute --config path so it resolves correctly no matter what\n" +
+      "directory the MCP client launches from — a relative path or none at all silently\n" +
+      "falls back to the shipped defaults, ignoring every edit you make to this file):\n",
+  );
   process.stdout.write(
     JSON.stringify(
       {
         mcpServers: {
-          "harness-router": {
-            command: "harness-router",
+          "harness-dispatch": {
+            command: "harness-dispatch",
+            args: ["--config", absoluteTarget],
           },
         },
       },
@@ -305,8 +340,8 @@ async function cmdDoctor(
       name: "http-auth",
       ok: true,
       detail: (await readHttpToken())
-        ? `token configured at ${tokenPath()} or HARNESS_ROUTER_HTTP_TOKEN`
-        : "no token yet; run harness-router auth show or serve to create one before using HTTP",
+        ? `token configured at ${tokenPath()} or HARNESS_DISPATCH_HTTP_TOKEN`
+        : "no token yet; run harness-dispatch auth show or serve to create one before using HTTP",
     },
   ];
   const blocked = status.skippedRoutes.filter(
@@ -343,7 +378,7 @@ async function cmdDoctor(
     | undefined;
   if (opts.live) {
     const { result } = await runtime.router.route(
-      "Reply with exactly: harness-router live probe ok. Do not inspect or modify files.",
+      "Reply with exactly: harness-dispatch live probe ok. Do not inspect or modify files.",
       [],
       process.cwd(),
       { hints: { taskType: "local" }, maxFallbacks: 0 },
@@ -373,7 +408,7 @@ async function cmdDoctor(
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
-    process.stdout.write("harness-router doctor\n\n");
+    process.stdout.write("harness-dispatch doctor\n\n");
     for (const check of checks) {
       process.stdout.write(`${check.ok ? "ok" : "fail"} ${check.name}: ${check.detail}\n`);
     }
@@ -390,7 +425,7 @@ async function cmdServe(
     ...(opts.port !== undefined ? { port: opts.port } : {}),
     ...(opts.host !== undefined ? { host: opts.host } : {}),
   });
-  process.stderr.write(`harness-router listening on http://${handle.host}:${handle.port}\n`);
+  process.stderr.write(`harness-dispatch listening on http://${handle.host}:${handle.port}\n`);
   process.stderr.write(`MCP:  http://${handle.host}:${handle.port}/mcp\n`);
   process.stderr.write(`REST: http://${handle.host}:${handle.port}/v1/chat/completions\n`);
   if (handle.token) {

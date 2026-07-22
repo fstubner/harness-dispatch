@@ -1,5 +1,5 @@
 /**
- * Live dashboard renderer for harness-router.
+ * Live dashboard renderer for harness-dispatch.
  *
  * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
  * by:
@@ -108,8 +108,8 @@ export function renderDashboard(state: DashboardState): string {
   if (ansi) out.push(CLEAR_SCREEN);
 
   // Header
-  if (ansi) out.push(`${BOLD}harness-router — live dashboard${RESET}`);
-  else out.push("harness-router — live dashboard");
+  if (ansi) out.push(`${BOLD}harness-dispatch — live dashboard${RESET}`);
+  else out.push("harness-dispatch — live dashboard");
   out.push(
     ansi
       ? `${DIM}refreshed ${new Date(now).toISOString()}${RESET}`

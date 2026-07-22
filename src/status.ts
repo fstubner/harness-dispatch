@@ -19,45 +19,23 @@ import { workspacePolicyFor } from "./workspaces.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Where to find the authoritative, current model catalog for a CLI harness.
+ * Where to find the authoritative, current model catalog for a route.
  * hints.model routing is unvalidated by this server — a mismatched or
  * unsupported name is passed straight to the harness and fails at dispatch
- * time with that harness's real error (see router.ts: the router no longer
- * silently discards a requested model just because it doesn't match a
- * statically configured one). These are public-documentation pointers so a
- * caller can pick a real model up front or self-correct after a failure,
- * verified reachable and current as of 2026-07-14 — not a guarantee that a
- * specific local CLI install supports everything listed there yet.
+ * time with that harness's real error, so these hints let a caller pick a
+ * real model up front or self-correct after a failure.
+ *
+ * The hint itself is DECLARED CONFIG (`model_hint:` on the route or its
+ * harness's shipped-config entry) — no per-harness table lives in code. The
+ * one structural fallback: OpenAI-compatible endpoints all support the
+ * standard GET /models catalog, hint or no hint.
  */
-const CLI_MODEL_DISCOVERY_HINT: Record<string, string> = {
-  claude_code:
-    "Anthropic model family only. Current model ids: " +
-    "https://platform.claude.com/docs/en/docs/about-claude/models/overview " +
-    "(e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may lag " +
-    "behind what's newly listed there.",
-  codex:
-    "OpenAI/Codex model family only. Current model ids: " +
-    "https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol, gpt-5.6-terra) " +
-    "— the installed codex CLI may lag behind what's newly listed there.",
-  cursor:
-    "Wide multi-vendor catalog. Current model ids and pricing across providers: " +
-    "https://cursor.com/docs/models — or run `cursor-agent --list-models` for what's " +
-    "actually available on this install.",
-  antigravity_cli:
-    "Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's portion " +
-    "is documented at https://ai.google.dev/gemini-api/docs/models; the rest of " +
-    "Antigravity's catalog and exact --model support aren't independently verified " +
-    "here — check the agy CLI's own docs.",
-};
-
 function modelDiscoveryHint(route: {
   type: ServiceConfig["type"];
-  harness?: string;
+  modelHint?: string;
   baseUrl?: string;
 }): string | undefined {
-  if (route.type === "cli" && route.harness) {
-    return CLI_MODEL_DISCOVERY_HINT[route.harness];
-  }
+  if (route.modelHint) return route.modelHint;
   if (route.type === "openai_compatible" && route.baseUrl) {
     return `Standard OpenAI-compatible catalog: GET ${route.baseUrl.replace(/\/+$/, "")}/models`;
   }
@@ -73,6 +51,8 @@ export interface RouteStatus {
   command?: string;
   baseUrl?: string;
   model?: string;
+  models?: string[];
+  modelHint?: string;
   leaderboardModel?: string;
   tier: number;
   weight: number;
@@ -112,8 +92,8 @@ export interface RouteStatus {
   };
 }
 
-export interface HarnessRouterStatus {
-  name: "harness-router";
+export interface HarnessDispatchStatus {
+  name: "harness-dispatch";
   generatedAt: string;
   routes: RouteStatus[];
   ready: string[];
@@ -133,7 +113,7 @@ export async function buildStatus(
   quota: QuotaCache,
   router: Router,
   leaderboard: LeaderboardCache,
-): Promise<HarnessRouterStatus> {
+): Promise<HarnessDispatchStatus> {
   const quotaStatus = await quota.fullStatus();
   const breakers = router.circuitBreakerStatus();
   const routes: RouteStatus[] = [];
@@ -187,6 +167,8 @@ export async function buildStatus(
       if (svc.wireProtocol !== undefined) route.endpoint.wireProtocol = svc.wireProtocol;
     }
     if (svc.model !== undefined) route.model = svc.model;
+    if (svc.models !== undefined) route.models = svc.models;
+    if (svc.modelHint !== undefined) route.modelHint = svc.modelHint;
     if (svc.leaderboardModel !== undefined) route.leaderboardModel = svc.leaderboardModel;
     if (svc.maxInputTokens !== undefined) route.maxInputTokens = svc.maxInputTokens;
     if (svc.maxOutputTokens !== undefined) route.maxOutputTokens = svc.maxOutputTokens;
@@ -208,8 +190,8 @@ export async function buildStatus(
     .filter((route) => route.enabled && route.available && !route.breaker.tripped && !route.skipped)
     .map((route) => route.id);
   const decision = await router.pickService();
-  const status: HarnessRouterStatus = {
-    name: "harness-router",
+  const status: HarnessDispatchStatus = {
+    name: "harness-dispatch",
     generatedAt: new Date().toISOString(),
     routes,
     ready,
@@ -234,6 +216,7 @@ export interface RouteUsage {
   ready: boolean;
   tier: number;
   model?: string;
+  models?: string[];
   modelHint?: string;
   billingKind: RouteBilling["kind"];
   paidUsagePossible: boolean;
@@ -248,16 +231,16 @@ export interface RouteUsage {
   breakerFailures: number;
 }
 
-export interface HarnessRouterUsage {
-  name: "harness-router";
+export interface HarnessDispatchUsage {
+  name: "harness-dispatch";
   generatedAt: string;
   routes: RouteUsage[];
 }
 
 /** Narrows full status down to just the fields relevant to "how much have I used this?". */
-export function buildUsage(status: HarnessRouterStatus): HarnessRouterUsage {
+export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage {
   return {
-    name: "harness-router",
+    name: "harness-dispatch",
     generatedAt: status.generatedAt,
     routes: status.routes.map((route) => {
       const usage: RouteUsage = {
@@ -276,6 +259,7 @@ export function buildUsage(status: HarnessRouterStatus): HarnessRouterUsage {
         breakerFailures: route.breaker.failures,
       };
       if (route.model !== undefined) usage.model = route.model;
+      if (route.models !== undefined) usage.models = route.models;
       const hint = modelDiscoveryHint(route);
       if (hint !== undefined) usage.modelHint = hint;
       if (typeof route.quota.remaining === "number") usage.quotaRemaining = route.quota.remaining;
@@ -286,8 +270,8 @@ export function buildUsage(status: HarnessRouterStatus): HarnessRouterUsage {
   };
 }
 
-export function renderUsageText(usage: HarnessRouterUsage): string {
-  const lines: string[] = ["harness-router usage", ""];
+export function renderUsageText(usage: HarnessDispatchUsage): string {
+  const lines: string[] = ["harness-dispatch usage", ""];
   for (const route of usage.routes) {
     const mark = route.available && route.enabled ? "ok" : "off";
     const quota =
@@ -311,9 +295,9 @@ function fmtTokens(n: number | undefined): string {
   return `${n}`;
 }
 
-export function renderStatusText(status: HarnessRouterStatus): string {
+export function renderStatusText(status: HarnessDispatchStatus): string {
   const lines: string[] = [];
-  lines.push("harness-router status", "");
+  lines.push("harness-dispatch status", "");
   for (const route of status.routes) {
     const mark = route.available && route.enabled ? "ok" : "off";
     const model = route.model ?? route.leaderboardModel ?? "model unknown";

@@ -8,7 +8,7 @@ import {
 
 describe("live agent smoke task brief", () => {
   it("keeps the routed prompt short and puts detailed instructions in the workspace brief", () => {
-    const briefPath = "C:\\tmp\\fixture\\.harness-router\\agent-task.md";
+    const briefPath = "C:\\tmp\\fixture\\.harness-dispatch\\agent-task.md";
     const prompt = buildShortTaskPrompt(briefPath);
     const brief = buildTaskBrief("codex", "C:\\tmp\\fixture");
 
@@ -24,15 +24,15 @@ describe("live agent smoke task brief", () => {
   });
 
   it("uses a project-local shared smoke workspace by default", () => {
-    const previous = process.env.HARNESS_ROUTER_AGENT_SMOKE_ROOT;
-    delete process.env.HARNESS_ROUTER_AGENT_SMOKE_ROOT;
+    const previous = process.env.HARNESS_DISPATCH_AGENT_SMOKE_ROOT;
+    delete process.env.HARNESS_DISPATCH_AGENT_SMOKE_ROOT;
     try {
       const root = smokeWorkspaceRoot(process.cwd());
       expect(path.isAbsolute(root)).toBe(true);
-      expect(root.endsWith(path.join(".harness-router", "smoke-workspaces"))).toBe(true);
+      expect(root.endsWith(path.join(".harness-dispatch", "smoke-workspaces"))).toBe(true);
     } finally {
-      if (previous === undefined) delete process.env.HARNESS_ROUTER_AGENT_SMOKE_ROOT;
-      else process.env.HARNESS_ROUTER_AGENT_SMOKE_ROOT = previous;
+      if (previous === undefined) delete process.env.HARNESS_DISPATCH_AGENT_SMOKE_ROOT;
+      else process.env.HARNESS_DISPATCH_AGENT_SMOKE_ROOT = previous;
     }
   });
 });

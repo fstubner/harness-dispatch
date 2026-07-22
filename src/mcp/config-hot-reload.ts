@@ -16,6 +16,7 @@
 import { promises as fs } from "node:fs";
 
 import { loadConfig } from "../config.js";
+import { setJobRetentionDays } from "../jobs.js";
 import { LeaderboardCache } from "../leaderboard.js";
 import { QuotaCache } from "../quota.js";
 import { Router } from "../router.js";
@@ -61,6 +62,9 @@ export async function bootstrapRuntime(opts: {
   leaderboard?: LeaderboardCache;
 }): Promise<RuntimeState> {
   const config = await loadConfig(opts.configPath);
+  // Runs at boot AND on every hot reload, so config-driven retention tracks
+  // the live config.
+  setJobRetentionDays(config.retention?.jobsDays);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
   const leaderboard = opts.leaderboard ?? new LeaderboardCache();

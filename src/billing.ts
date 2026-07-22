@@ -29,15 +29,15 @@ function isKnownLocalRuntime(baseUrl: string | undefined): boolean {
   );
 }
 
+// NOTE: no harness-name special cases here. Built-in harnesses declare
+// provider/surface/auth_source/billing_kind in the shipped config.default.yaml,
+// and config.ts copies those onto every route built from them — by the time a
+// ServiceConfig reaches this file, its billing identity is declared data.
+// The fallbacks below are structural inference only (endpoint type, base_url
+// shape), for entries that declare nothing.
+
 function providerFromService(svc: ServiceConfig): BillingProvider {
   if (svc.provider) return svc.provider;
-  const harness = svc.harness ?? svc.name;
-  if (harness === "claude_code") return "anthropic";
-  if (harness === "codex") return "openai";
-  if (harness === "cursor") return "cursor";
-  if (harness === "antigravity_cli" || harness === "antigravity") {
-    return "google";
-  }
   if (svc.type === "openai_compatible" && isKnownLocalRuntime(svc.baseUrl)) return "local";
   if (svc.baseUrl?.includes("api.openai.com")) return "openai";
   return "custom";
@@ -45,13 +45,6 @@ function providerFromService(svc: ServiceConfig): BillingProvider {
 
 function surfaceFromService(svc: ServiceConfig): BillingSurface {
   if (svc.surface) return svc.surface;
-  const harness = svc.harness ?? svc.name;
-  if (harness === "claude_code") return "claude_agent_sdk";
-  if (harness === "codex") return "codex_cli";
-  if (harness === "cursor") return "cursor_agent_cli";
-  if (harness === "antigravity_cli" || harness === "antigravity") {
-    return "antigravity_cli";
-  }
   if (svc.type === "openai_compatible") {
     if (svc.baseUrl?.includes("api.openai.com")) return "openai_api";
     if (isKnownLocalRuntime(svc.baseUrl)) return "local_endpoint";
@@ -118,6 +111,11 @@ function inferredConfidence(
 ): BillingConfidence {
   if (svc.billingConfidence) return svc.billingConfidence;
   if (kind === "unknown") return "unknown";
+  // An explicit billing_kind in the route's config IS documentation — the
+  // operator declared it. Without this, a custom/loopback route stays
+  // confidence-unknown (and therefore blocked by billingIsUnknown) even
+  // after the operator does exactly what the docs tell them to do.
+  if (svc.billingKind) return "documented";
   if (surface === "openai_compatible" && isLoopback(svc.baseUrl)) return "unknown";
   if (surface === "custom") return "unknown";
   if (surface === "cursor_agent_cli" && svc.authSource === "api_key") return "inferred";
@@ -126,7 +124,7 @@ function inferredConfidence(
 
 /**
  * Whether a route can incur a REAL charge with no further action from the
- * user, by default — i.e. whether harness-router should block it until
+ * user, by default — i.e. whether harness-dispatch should block it until
  * explicitly allowed.
  *
  * "included_X_then_optional_Y" kinds (Codex flexible credits, Claude usage
@@ -135,7 +133,7 @@ function inferredConfidence(
  * included cap by default — continuing past it requires the user to have
  * ALREADY completed a separate, deliberate opt-in on the PROVIDER's own
  * side (enabling usage credits/flexible pricing/on-demand billing, usually
- * with its own payment method and spend limit). harness-router blocking
+ * with its own payment method and spend limit). harness-dispatch blocking
  * these by default would just be re-gating something the provider already
  * gates, and asking every user to prove a negative ("I haven't opted into
  * my provider's overage") for a state that's off by default anyway.

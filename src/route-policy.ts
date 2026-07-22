@@ -60,7 +60,7 @@ export function evaluateRoutePolicy(
       "paid_blocked",
       "route can incur paid usage and paid usage is not allowed — this is a config-level " +
         `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
-        `to '${route}' in config.yaml (or run \`harness-router configure --allow-paid\`) to enable it`,
+        `to '${route}' in config.yaml (or run \`harness-dispatch configure --allow-paid\`) to enable it`,
     );
   }
 

@@ -3,603 +3,64 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>harness-router</title>
+    <title>harness-dispatch</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%2316160f'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='13' font-weight='600' fill='%23fbfaf6'%3EHR%3C/text%3E%3C/svg%3E"
+    />
     <meta
       name="description"
-      content="Local routing for coding agents: Claude Code, Codex, Cursor, Antigravity, and OpenAI-compatible endpoints. Billing-aware. Safety profiles. MCP and REST."
+      content="Turns your installed coding harnesses (Claude Code, Codex, Cursor, Antigravity) and local/remote API endpoints into tools any AI can call, and handles the async nature of long-running work. Billing-aware. Safety profiles. MCP and REST."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <style>
-      :root {
-        --bg: #fbfaf6;
-        --panel: #14140f;
-        --panel-line: #2c2c22;
-        --ink: #16160f;
-        --muted: #5c5c4d;
-        --line: #dedcd0;
-        --accent: #b8410f;
-        --accent-soft: #f0e2d4;
-        --green: #3f7a53;
-        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-        --display: "Fraunces", Georgia, serif;
-        --max: 1180px;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      html {
-        scroll-behavior: smooth;
-      }
-
-      body {
-        margin: 0;
-        color: var(--ink);
-        background: var(--bg);
-        font-family: var(--mono);
-        font-size: 15px;
-        line-height: 1.65;
-      }
-
-      .wrap {
-        width: min(var(--max), calc(100% - 48px));
-        margin: 0 auto;
-      }
-
-      a {
-        color: var(--accent);
-      }
-
-      h1, h2, h3 {
-        font-family: var(--display);
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        margin: 0;
-      }
-
-      code {
-        font-family: var(--mono);
-      }
-
-      /* ── header ── */
-
-      header {
-        position: sticky;
-        top: 0;
-        z-index: 20;
-        border-bottom: 1px solid var(--line);
-        background: rgba(251, 250, 246, 0.92);
-        backdrop-filter: blur(10px);
-      }
-
-      .nav {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 18px 0;
-      }
-
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 0.88rem;
-        font-weight: 600;
-        letter-spacing: -0.01em;
-        text-decoration: none;
-        color: var(--ink);
-      }
-
-      .brand-mark {
-        display: grid;
-        place-items: center;
-        width: 22px;
-        height: 22px;
-        background: var(--ink);
-        color: var(--bg);
-        font-size: 0.62rem;
-        border-radius: 3px;
-      }
-
-      .nav-links {
-        display: flex;
-        gap: 28px;
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        font-size: 0.8rem;
-      }
-
-      .nav-links a {
-        color: var(--muted);
-        text-decoration: none;
-      }
-
-      .nav-links a:hover {
-        color: var(--ink);
-      }
-
-      .nav-links .gh {
-        color: var(--ink);
-        font-weight: 600;
-      }
-
-      /* ── hero ── */
-
-      .hero {
-        padding: 108px 0 88px;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .kicker {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 30px;
-        font-size: 0.76rem;
-        font-weight: 500;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--accent);
-      }
-
-      .kicker::before {
-        content: "";
-        width: 8px;
-        height: 8px;
-        background: var(--accent);
-        border-radius: 50%;
-      }
-
-      h1 {
-        font-size: clamp(3.4rem, 7.8vw, 6.6rem);
-        line-height: 0.98;
-        max-width: 17ch;
-        margin-bottom: 40px;
-        letter-spacing: -0.02em;
-      }
-
-      h1 .accent {
-        color: var(--accent);
-        font-style: italic;
-      }
-
-      .hero-foot {
-        display: grid;
-        grid-template-columns: minmax(0, 44ch) auto;
-        gap: 48px;
-        align-items: end;
-        padding-top: 28px;
-        border-top: 1px solid var(--line);
-      }
-
-      .lead {
-        color: var(--muted);
-        font-size: 1.02rem;
-        line-height: 1.75;
-        margin: 0;
-      }
-
-      .lead strong {
-        color: var(--ink);
-        font-weight: 600;
-      }
-
-      .cta-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        flex: none;
-      }
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        height: 46px;
-        padding: 0 20px;
-        border: 1px solid var(--ink);
-        border-radius: 3px;
-        font-size: 0.82rem;
-        font-weight: 500;
-        text-decoration: none;
-        color: var(--ink);
-        transition: transform 120ms ease, background 120ms ease, color 120ms ease;
-      }
-
-      .btn:hover {
-        transform: translateY(-1px);
-      }
-
-      .btn.primary {
-        background: var(--ink);
-        color: var(--bg);
-      }
-
-      .btn.primary:hover {
-        background: var(--accent);
-        border-color: var(--accent);
-      }
-
-      /* ── sections ── */
-
-      section {
-        border-top: 1px solid var(--line);
-        padding: 72px 0;
-      }
-
-      .label {
-        display: block;
-        margin-bottom: 16px;
-        font-size: 0.76rem;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: var(--accent);
-      }
-
-      h2 {
-        font-size: clamp(1.7rem, 2.6vw, 2.3rem);
-        max-width: 22ch;
-        margin-bottom: 16px;
-      }
-
-      .section-head {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 40px;
-        margin-bottom: 44px;
-        align-items: end;
-      }
-
-      .section-head p {
-        color: var(--muted);
-        line-height: 1.75;
-        margin: 0;
-      }
-
-      p {
-        margin: 0 0 1em;
-      }
-
-      .prose p {
-        color: var(--muted);
-        max-width: 68ch;
-        line-height: 1.8;
-      }
-
-      .prose code {
-        background: var(--accent-soft);
-        color: var(--accent);
-        padding: 0.1em 0.4em;
-        border-radius: 3px;
-        font-size: 0.88em;
-      }
-
-      /* stat grid */
-
-      .stats {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        overflow: hidden;
-      }
-
-      .stat {
-        padding: 26px 22px;
-        border-left: 1px solid var(--line);
-      }
-
-      .stat:first-child {
-        border-left: none;
-      }
-
-      .stat h3 {
-        font-family: var(--mono);
-        font-size: 0.78rem;
-        font-weight: 600;
-        color: var(--accent);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 10px;
-      }
-
-      .stat p {
-        color: var(--muted);
-        font-size: 0.86rem;
-        line-height: 1.6;
-        margin: 0;
-      }
-
-      /* code blocks */
-
-      .code {
-        border-radius: 6px;
-        overflow: hidden;
-        background: var(--panel);
-        border: 1px solid var(--panel-line);
-      }
-
-      .code-head {
-        padding: 10px 16px;
-        border-bottom: 1px solid var(--panel-line);
-        color: #7d7c6c;
-        font-size: 0.72rem;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-      }
-
-      .code pre {
-        margin: 0;
-        padding: 20px;
-        overflow-x: auto;
-        font-size: 0.85rem;
-        line-height: 2;
-        color: #e4e3d6;
-      }
-
-      .code .prompt::before {
-        content: "$ ";
-        color: #6f6e5e;
-      }
-
-      .code .c {
-        color: #6f6e5e;
-      }
-
-      .two-col {
-        display: grid;
-        grid-template-columns: 0.85fr 1fr;
-        gap: 56px;
-        align-items: start;
-      }
-
-      .steps {
-        display: grid;
-        gap: 18px;
-        margin: 26px 0 0;
-        padding: 0;
-        list-style: none;
-        counter-reset: s;
-      }
-
-      .steps li {
-        display: flex;
-        gap: 16px;
-        counter-increment: s;
-        color: var(--muted);
-        line-height: 1.7;
-        font-size: 0.92rem;
-      }
-
-      .steps li::before {
-        content: counter(s, decimal-leading-zero);
-        flex: none;
-        color: var(--accent);
-        font-weight: 600;
-      }
-
-      /* interface grid */
-
-      .iface-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1px;
-        background: var(--line);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        overflow: hidden;
-      }
-
-      .iface-grid .card {
-        background: var(--bg);
-        padding: 26px 24px;
-      }
-
-      .iface-grid h3 {
-        font-family: var(--mono);
-        font-size: 0.86rem;
-        font-weight: 600;
-        margin-bottom: 10px;
-      }
-
-      .iface-grid p {
-        color: var(--muted);
-        font-size: 0.88rem;
-        line-height: 1.7;
-        margin: 0 0 6px;
-      }
-
-      .iface-grid code {
-        background: var(--accent-soft);
-        color: var(--accent);
-        padding: 0.08em 0.35em;
-        border-radius: 3px;
-        font-size: 0.9em;
-      }
-
-      /* compare table */
-
-      table.compare {
-        width: 100%;
-        border-collapse: collapse;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        overflow: hidden;
-        font-size: 0.88rem;
-      }
-
-      .compare th,
-      .compare td {
-        padding: 16px 18px;
-        text-align: left;
-        border-bottom: 1px solid var(--line);
-        vertical-align: top;
-        line-height: 1.65;
-      }
-
-      .compare th {
-        background: #f2f0e6;
-        font-size: 0.72rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--muted);
-      }
-
-      .compare td:first-child {
-        color: var(--accent);
-        font-weight: 600;
-        white-space: nowrap;
-      }
-
-      .compare td {
-        color: var(--muted);
-      }
-
-      .compare tr:last-child td {
-        border-bottom: none;
-      }
-
-      /* faq */
-
-      .faq {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 36px 48px;
-      }
-
-      .faq-item {
-        padding-top: 18px;
-        border-top: 1px solid var(--line);
-      }
-
-      .faq-item h3 {
-        font-family: var(--mono);
-        font-size: 0.92rem;
-        font-weight: 600;
-        margin-bottom: 8px;
-      }
-
-      .faq-item p {
-        color: var(--muted);
-        line-height: 1.7;
-        font-size: 0.9rem;
-        margin: 0;
-      }
-
-      /* final cta */
-
-      .final {
-        text-align: center;
-        padding: 88px 0;
-      }
-
-      .final h2 {
-        max-width: none;
-        margin: 0 auto 14px;
-      }
-
-      .final p {
-        color: var(--muted);
-        margin: 0 auto 30px;
-      }
-
-      .final .cta-row {
-        justify-content: center;
-      }
-
-      footer {
-        border-top: 1px solid var(--line);
-        padding: 28px 0;
-        color: var(--muted);
-        font-size: 0.8rem;
-      }
-
-      footer .wrap {
-        display: flex;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-
-      @media (max-width: 920px) {
-        .two-col,
-        .section-head {
-          grid-template-columns: 1fr;
-        }
-
-        .hero-foot {
-          grid-template-columns: 1fr;
-          gap: 24px;
-          align-items: start;
-        }
-
-        .stats {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
-        .stat {
-          border-left: none;
-          border-top: 1px solid var(--line);
-        }
-
-        .stat:first-child {
-          border-top: none;
-        }
-
-        .iface-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .faq {
-          grid-template-columns: 1fr;
-        }
-
-        .nav-links {
-          display: none;
-        }
-      }
-    </style>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header>
       <div class="wrap nav">
         <a class="brand" href="#top">
           <span class="brand-mark">HR</span>
-          harness-router
+          harness-dispatch
         </a>
         <ul class="nav-links">
           <li><a href="#how">How it works</a></li>
           <li><a href="#install">Install</a></li>
           <li><a href="#faq">FAQ</a></li>
-          <li><a class="gh" href="https://github.com/fstubner/harness-router">GitHub →</a></li>
+          <li><a class="gh" href="https://github.com/fstubner/harness-dispatch">GitHub →</a></li>
         </ul>
       </div>
     </header>
 
     <main id="top">
       <div class="wrap hero">
-        <p class="kicker">Local · MIT · Node ≥ 24</p>
-        <h1>Route coding tasks to the agent that <span class="accent">fits</span>.</h1>
-
-        <div class="hero-foot">
-          <p class="lead">
-            harness-router is a local MCP server that puts
-            <strong>Claude Code, Codex, Cursor, Antigravity</strong>, and any OpenAI-compatible
-            endpoint behind one interface. It picks the agent for the job and runs the task
-            through that agent's own CLI. Not a proxy. Not a wrapper around raw model calls.
-          </p>
-          <div class="cta-row">
-            <a class="btn primary" href="#install">Install →</a>
-            <a class="btn" href="https://github.com/fstubner/harness-router">View source</a>
+        <div class="hero-grid">
+          <div>
+            <h1>Route coding tasks to the agent that fits.</h1>
+            <p class="lead">
+              harness-dispatch turns the coding harnesses already on your machine
+              (<strong>Claude Code, Codex, Cursor, Antigravity</strong>) and any local or
+              remote OpenAI-compatible endpoint into tools any AI can call, and handles
+              the async nature of long-running work.
+            </p>
+            <div class="cta-row">
+              <a class="btn primary" href="#install">Install →</a>
+              <a class="btn" href="https://github.com/fstubner/harness-dispatch">View source</a>
+            </div>
+          </div>
+          <div class="code">
+            <div class="code-head">setup</div>
+            <pre><span class="prompt">npm install -g harness-dispatch</span>
+<span class="prompt">harness-dispatch configure</span>
+<span class="c">Detected 4 harness routes.</span>
+<span class="prompt">harness-dispatch doctor --live</span>
+<span class="c">ok routes: 1 ready route(s)
+ok live-probe: routed one prompt via codex
+note 3 route(s) blocked pending allow_paid_usage</span></pre>
           </div>
         </div>
       </div>
@@ -614,7 +75,7 @@
             <p>
               Codex is good at grinding through execution with its own test loop. Claude
               tends to plan and architect better. Cursor has editor-aware context built in.
-              harness-router matches the task to whichever fits, then hands off to that
+              harness-dispatch matches the task to whichever fits, then hands off to that
               agent's own CLI. No proxy in between.
             </p>
           </div>
@@ -656,21 +117,11 @@
             </ol>
           </div>
           <div>
-            <div class="code" style="margin-bottom: 18px;">
-              <div class="code-head">setup</div>
-              <pre><span class="prompt">npm install -g harness-router</span>
-<span class="prompt">harness-router configure</span>
-<span class="c">Detected 4 harness routes.</span>
-<span class="prompt">harness-router doctor --live</span>
-<span class="c">ok routes: 1 ready route(s)
-ok live-probe: routed one prompt via codex
-note 3 route(s) blocked pending allow_paid_usage</span></pre>
-            </div>
             <div class="code">
               <div class="code-head">mcp config</div>
               <pre>{
   "mcpServers": {
-    "harness-router": { "command": "harness-router" }
+    "harness-dispatch": { "command": "harness-dispatch" }
   }
 }</pre>
             </div>
@@ -686,7 +137,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
             <div class="card">
               <h3>MCP</h3>
               <p><strong>Tools:</strong> <code>code</code> <code>job</code> <code>usage</code></p>
-              <p><strong>Resources:</strong> <code>harness-router://status</code></p>
+              <p><strong>Resources:</strong> <code>harness-dispatch://status</code></p>
             </div>
             <div class="card">
               <h3>REST</h3>
@@ -702,38 +153,9 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
         </div>
       </section>
 
-      <section id="compare">
-        <div class="wrap">
-          <span class="label">04 — Positioning</span>
-          <h2 style="margin-bottom: 32px;">What it is, and isn't.</h2>
-          <table class="compare">
-            <thead>
-              <tr><th>Category</th><th>What it does</th><th>What it does not claim</th></tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Agent CLIs</td>
-                <td>Delegates to the agents you own, through their official interfaces.</td>
-                <td>It is not a replacement coding agent.</td>
-              </tr>
-              <tr>
-                <td>Routing</td>
-                <td>Scores by task type, live quota, billing, safety, and configured priority.</td>
-                <td>It does not measure or advertise token savings.</td>
-              </tr>
-              <tr>
-                <td>Protocols</td>
-                <td>Exposes MCP for agents and OpenAI-compatible REST for tools.</td>
-                <td>A2A orchestration is out of scope.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section id="faq">
         <div class="wrap">
-          <span class="label">05 — FAQ</span>
+          <span class="label">04 — FAQ</span>
           <h2 style="margin-bottom: 40px;">Short answers.</h2>
           <div class="faq">
             <div class="faq-item">
@@ -742,15 +164,19 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
             </div>
             <div class="faq-item">
               <h3>Why require opt-in for paid routes?</h3>
-              <p>Any route that can cost money — metered API, unknown billing, subscription overage — stays blocked until you set <code>allow_paid_usage: true</code> on it. No accidental bills.</p>
+              <p>Routes with no provider-side backstop — a raw metered API key, or unknown billing — stay blocked until you set <code>allow_paid_usage: true</code> on it. Subscription overage on the provider's own side (Cursor on-demand billing, Claude usage credits, Codex flexible credits) isn't something harness-dispatch can detect or block — if your account has that enabled, it applies exactly as it would outside this tool.</p>
             </div>
             <div class="faq-item">
               <h3>How is this different from a model proxy?</h3>
-              <p>Proxies swap which model answers your agent's next request. harness-router swaps which agent runs the task — each harness keeps its own scaffolding, tools, and context.</p>
+              <p>Proxies swap which model answers your agent's next request. harness-dispatch swaps which agent runs the task; each harness keeps its own scaffolding, tools, and context.</p>
+            </div>
+            <div class="faq-item">
+              <h3>Why explicit tools instead of prompt instructions?</h3>
+              <p>Models are trained on tool calling. An agent given a <code>code</code> or <code>job</code> tool reliably delegates; a prompt telling it to shell out to another CLI often gets ignored.</p>
             </div>
             <div class="faq-item">
               <h3>Is it production-ready?</h3>
-              <p>The parts that matter most are tested against real behavior, not just mocks: billing-policy gating (a route that can incur cost stays blocked until you opt in — verified for every billing kind), workspace isolation (copy/git_worktree dispatches actually run away from your source tree), and subprocess handling (timeouts, cancellation, and process-tree cleanup tested against real spawned processes, not simulated). Cross-platform CI on Windows/macOS/Linux, small and stable API surface.</p>
+              <p>The high-stakes paths are tested against real behavior rather than mocks: billing gating for every billing kind, workspace isolation actually dispatching away from your source tree, and subprocess timeouts and cleanup against real spawned processes. CI runs on Windows, macOS, and Linux.</p>
             </div>
           </div>
         </div>
@@ -761,7 +187,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
           <h2>Point your agent at every harness you own.</h2>
           <p>MIT licensed. Runs on your machine.</p>
           <div class="cta-row">
-            <a class="btn primary" href="https://www.npmjs.com/package/harness-router">npm install -g harness-router</a>
+            <a class="btn primary" href="https://www.npmjs.com/package/harness-dispatch">npm install -g harness-dispatch</a>
           </div>
         </div>
       </section>
@@ -769,8 +195,8 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
 
     <footer>
       <div class="wrap">
-        <span>harness-router · MIT licensed</span>
-        <span><a href="https://github.com/fstubner/harness-router">GitHub</a></span>
+        <span>harness-dispatch · MIT licensed</span>
+        <span><a href="https://github.com/fstubner/harness-dispatch">GitHub</a></span>
       </div>
     </footer>
   </body>
