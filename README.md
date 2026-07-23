@@ -1,17 +1,20 @@
 # harness-dispatch
 
-Turns your locally installed coding harnesses (Claude Code, Codex, Cursor Agent,
-Antigravity CLI) and local or remote API endpoints into tools any AI can call, and
-handles the async nature of long-running agent work.
+Delegate coding tasks to the agent CLIs you already pay for. harness-dispatch is a
+local MCP server that turns the coding harnesses on your machine (Claude Code,
+Codex, Cursor Agent, Antigravity CLI) and any local or remote API endpoint into
+tools any AI can call — routing each task to the best-fit agent, spending the
+flat-rate subscription quota you already own first. Routes with no billing backstop
+at all — a raw metered API key, or unknown billing — stay blocked until you opt in.
 
-Exposing them as explicit tools is more reliable than telling an agent to shell out
-to another CLI: models are trained on tool calling, so they actually use tools they
-are given. Each call is routed to the backend that fits the task, preferring the
-flat-rate subscription quota you already pay for; metered or unknown-billing routes
-are blocked until you opt in. Long tasks run as async jobs: start one, get an id back
-immediately, poll for partial output, collect the result when it finishes. Nothing is
-lost to a client timeout. (There is no Gemini CLI dispatcher; Google discontinued
-that CLI's backend in mid-2026, and Antigravity CLI is its replacement.)
+Exposing harnesses as explicit tools is more reliable than telling an agent to shell
+out to another CLI: models are trained on tool calling, so they actually use tools
+they are given. And it routes whole tasks, not API requests — each harness keeps its
+own scaffolding, test loop, and codebase context; there's no proxy in between. Long
+tasks run as async jobs: start one, get an id back immediately, check for partial
+output, collect the result when it finishes. Nothing is lost to a client timeout.
+(There is no Gemini CLI dispatcher; Google discontinued that CLI's backend in
+mid-2026, and Antigravity CLI is its replacement.)
 
 **What this does on your machine**, stated plainly before you install it: it spawns the
 CLI subprocesses above with your prompts, which can read and write files under the

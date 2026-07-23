@@ -6,7 +6,7 @@ import { transcript, executeCall, fanoutCall } from "../data/scenario";
 
 <Base
   title="harness-dispatch"
-  description="Turns your installed coding harnesses (Claude Code, Codex, Cursor, Antigravity) and local/remote API endpoints into tools any AI can call, and handles the async nature of long-running work. Billing-aware. Safety profiles. MCP and REST."
+  description="Delegate coding tasks to the agent CLIs you already pay for. harness-dispatch routes each task to the best-fit harness (Claude Code, Codex, Cursor, Antigravity, or any endpoint), spending subscription quota first — metered and unknown-billing routes stay blocked until you opt in. Local MCP server, MIT."
 >
   <header>
     <div class="wrap nav">
@@ -25,12 +25,14 @@ import { transcript, executeCall, fanoutCall } from "../data/scenario";
 
   <main id="top">
     <div class="wrap hero">
-      <h1>Route coding tasks to the agent that fits.</h1>
+      <h1>Delegate to the coding agents you already pay for.</h1>
       <p class="lead">
-        harness-dispatch turns the coding harnesses already on your machine
+        harness-dispatch turns the coding harnesses on your machine
         (<strong>Claude Code, Codex, Cursor, Antigravity</strong>) and any local or
-        remote OpenAI-compatible endpoint into tools any AI can call, and handles
-        the async nature of long-running work.
+        remote OpenAI-compatible endpoint into tools any AI can call. Each task
+        routes to the best-fit agent, spending flat-rate subscription quota first —
+        raw metered keys and unknown-billing routes stay blocked until you opt in.
+        Long tasks run as background jobs; nothing is ever lost to a timeout.
       </p>
       <div class="cta-row">
         <a class="btn primary" href="#install">Install →</a>
