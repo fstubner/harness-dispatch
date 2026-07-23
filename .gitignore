@@ -18,6 +18,11 @@ coverage/
 .playwright-mcp/
 .superpowers/
 
+# Landing page build (site/ has its own package.json)
+site/node_modules/
+site/dist/
+site/.astro/
+
 # Personal live config (may contain secrets/local overrides) — the shipped
 # canonical default config the router loads and users copy/edit is
 # config.default.yaml, tracked, a separate file with its own lifecycle so

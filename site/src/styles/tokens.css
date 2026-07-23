@@ -1,0 +1,14 @@
+/*
+ * Design tokens the hero transcript adds on top of global.css's :root set.
+ * Rule 5 (docs/superpowers/specs/2026-07-23-landing-page-design.md): colors
+ * live here and in global.css's :root — nowhere else. Components reference
+ * var(--*) only.
+ */
+:root {
+  /* status colors: one meaning each, never reused for anything else */
+  --ok: #3f7a53; /* success glyphs/rows only */
+  --busy: #8a7050; /* in-progress only */
+  /* text ramp below --muted, for de-emphasized keys and hints */
+  --faint: #888780;
+  --hint: #a8a698;
+}

@@ -1,0 +1,179 @@
+---
+/**
+ * The ONLY place a tool-call line is rendered — rules 2/3/5/6 of
+ * docs/superpowers/specs/2026-07-23-landing-page-design.md are enforced by
+ * this component's structure:
+ *  - collapsed line: `✓ dispatch <label> … <outcome> ▸` (one template)
+ *  - expanded: exactly REQUEST + RESULT, in that order
+ *  - bold only on key-column cells; accent only on the tool name; the ✓
+ *    glyph carries state and is never restated in words
+ * Uses native <details>/<summary> — accessible, zero custom JS.
+ */
+import type { ToolCallData } from "../data/scenario";
+
+interface Props {
+  call: ToolCallData;
+}
+const { call } = Astro.props;
+---
+
+<details class="toolcall">
+  <summary>
+    <span class="glyph">✓</span>
+    <span class="tool">dispatch</span>
+    <span class="label">{call.label}</span>
+    <span class="spacer"></span>
+    <span class="outcome">{call.outcome}</span>
+    <span class="chev" aria-hidden="true">▸</span>
+  </summary>
+  <div class="body">
+    <div class="eyebrow">request</div>
+    <table class="kv">
+      {call.request.map((row) => (
+        <tr>
+          <td class="k">{row.key}</td>
+          <td class="v">{row.value}</td>
+        </tr>
+      ))}
+    </table>
+    <div class="eyebrow">result</div>
+    {call.result.kind === "steps" ? (
+      <div class="steps">
+        {call.result.steps.map((step) => (
+          <>
+            {step.gapText && (
+              <div class="step gap">
+                <div class="marker rail"></div>
+                <div class="gap-text">{step.gapText}</div>
+              </div>
+            )}
+            <div class="step">
+              <div class="marker">{step.marker}</div>
+              <div class="text">{step.text}</div>
+            </div>
+          </>
+        ))}
+      </div>
+    ) : (
+      <div class="steps">
+        {call.result.items.map((item) => (
+          <div class="step">
+            <div class="marker">·</div>
+            <div class="text">{item}</div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+</details>
+
+<style>
+  .toolcall {
+    margin: 14px 0;
+    padding-left: 14px;
+    border-left: 2px solid var(--line);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+  }
+  summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    list-style: none;
+  }
+  summary::-webkit-details-marker {
+    display: none;
+  }
+  .glyph {
+    color: var(--ok);
+    flex-shrink: 0;
+  }
+  .tool {
+    color: var(--accent);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .label {
+    color: var(--faint);
+    flex-shrink: 0;
+  }
+  .spacer {
+    flex: 1;
+    min-width: 0;
+  }
+  .outcome {
+    color: var(--muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .chev {
+    color: var(--hint);
+    font-size: 11px;
+    flex-shrink: 0;
+    transition: transform 0.15s;
+  }
+  details[open] .chev {
+    transform: rotate(90deg);
+  }
+  .body {
+    margin-top: 8px;
+  }
+  .eyebrow {
+    color: var(--hint);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  .kv {
+    border-collapse: collapse;
+    margin-bottom: 14px;
+  }
+  .kv .k {
+    padding: 1px 16px 1px 2px;
+    color: var(--faint);
+    vertical-align: top;
+    white-space: nowrap;
+  }
+  .kv .v {
+    color: var(--muted);
+  }
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .step {
+    display: flex;
+    gap: 10px;
+  }
+  .marker {
+    color: var(--hint);
+    flex-shrink: 0;
+    width: 14px;
+  }
+  .marker.rail {
+    align-self: stretch;
+    border-left: 1px dashed var(--line);
+    margin-left: 6px;
+    width: 7px;
+  }
+  .gap-text {
+    color: var(--hint);
+    font-style: italic;
+  }
+  .text {
+    color: var(--muted);
+  }
+
+  @media (max-width: 720px) {
+    summary {
+      flex-wrap: wrap;
+    }
+    .outcome {
+      white-space: normal;
+    }
+  }
+</style>
