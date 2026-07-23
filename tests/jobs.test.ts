@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { startAsyncJob, type JobDeps } from "../src/jobs.js";
+import { startAsyncJobTracked, type JobDeps } from "../src/jobs.js";
 import type { RuntimeHolder } from "../src/mcp/config-hot-reload.js";
 
 let tmpDir: string;
@@ -39,7 +39,14 @@ describe("startAsyncJob file permissions", () => {
   it.skipIf(process.platform === "win32")(
     "creates job dirs and files as owner-only (0700/0600), not world-readable",
     async () => {
-      const status = await startAsyncJob(fakeDeps(), { prompt: "hello", workingDir: tmpDir });
+      // Tracked variant: await the background run before afterEach removes
+      // tmpDir — the fire-and-forget form races cleanup (ENOTEMPTY on the
+      // slower macOS CI runners; caught by the first cross-platform run).
+      const { status, completion } = await startAsyncJobTracked(fakeDeps(), {
+        prompt: "hello",
+        workingDir: tmpDir,
+      });
+      await completion;
 
       const jobDir = status.jobDir;
       const dirMode = (await fs.stat(jobDir)).mode & 0o777;
