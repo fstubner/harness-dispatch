@@ -41,13 +41,16 @@ class AvailableDispatcher implements Dispatcher {
 }
 
 describe("billing classification", () => {
-  it("classifies Claude Agent SDK billing before and after the June 2026 credit change", () => {
+  it("classifies Claude Agent SDK billing as included plan usage — the announced June 2026 credit split was paused before taking effect", () => {
     const route = svc({ name: "claude_code", harness: "claude_code", surface: "claude_agent_sdk" });
     expect(buildRouteBilling(route, { now: new Date("2026-05-25T00:00:00Z") }).kind).toBe(
       "included_plan_usage",
     );
-    const after = buildRouteBilling(route, { now: new Date("2026-06-15T00:00:00Z") });
-    expect(after.kind).toBe("included_credit_then_optional_overage");
+    // Anthropic paused the 2026-06-15 Agent SDK credit split on launch day —
+    // post-date classification must NOT flip to the credit kind.
+    const after = buildRouteBilling(route, { now: new Date("2026-07-23T00:00:00Z") });
+    expect(after.kind).toBe("included_plan_usage");
+    expect(after.notes).toMatch(/same subscription usage pool/);
     // Not paidUsagePossible by default: Anthropic hard-stops at the plan's
     // included usage unless the user has separately opted into "usage
     // credits" overage on their own account — see inferredPaidUsagePossible

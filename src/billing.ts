@@ -8,8 +8,6 @@ import type {
   ServiceConfig,
 } from "./types.js";
 
-const ANTHROPIC_AGENT_SDK_CREDIT_START = Date.UTC(2026, 5, 15);
-
 function isLoopback(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false;
   return (
@@ -80,9 +78,14 @@ function inferredKind(
   switch (surface) {
     case "claude_agent_sdk":
     case "claude_code":
-      return now.getTime() >= ANTHROPIC_AGENT_SDK_CREDIT_START
-        ? "included_credit_then_optional_overage"
-        : "included_plan_usage";
+      // Anthropic announced a separate Agent SDK credit pool for claude -p
+      // (2026-06-15) but PAUSED the change on launch day, before it took
+      // effect — as of 2026-07, programmatic and interactive Claude Code
+      // usage still draw from the same subscription pool. Reclassify to
+      // included_credit_then_optional_overage only if/when Anthropic
+      // actually ships the split (verify against
+      // https://support.claude.com/en/articles/15036540 first).
+      return "included_plan_usage";
     case "codex_cli":
     case "codex_sdk":
       return "included_plan_then_flexible_credits";
@@ -167,8 +170,14 @@ function defaultNotes(
   now: Date,
 ): string | undefined {
   if (svc.billingNotes) return svc.billingNotes;
-  if (surface === "claude_agent_sdk" && now.getTime() < ANTHROPIC_AGENT_SDK_CREDIT_START) {
-    return "Claude -p moves to Agent SDK credit behavior on 2026-06-15.";
+  if (surface === "claude_agent_sdk" || surface === "claude_code") {
+    // The genuinely useful operational fact for this route: dispatched jobs
+    // compete with the user's own interactive Claude Code sessions.
+    return (
+      "claude -p draws from the same subscription usage pool as interactive " +
+      "Claude Code (Anthropic's announced 2026-06-15 Agent SDK credit split " +
+      "was paused before taking effect)."
+    );
   }
   if (surface === "openai_compatible" && isLoopback(svc.baseUrl) && kind === "unknown") {
     return "Loopback endpoint is not assumed local unless configured as a known local runtime.";
