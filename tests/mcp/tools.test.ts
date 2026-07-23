@@ -556,7 +556,10 @@ describe("MCP tools — dispatch", () => {
     for (let i = 0; i < 100; i += 1) {
       const inspected = await invokeTool("job_status", { jobId: startData.jobId }, { holder });
       data = inspected.data as typeof data;
-      if (data?.completed) break;
+      // completed flips true as soon as result.json lands; the status file's
+      // final "completed" write follows one step later — poll for the
+      // terminal status too, or a slow runner observes the in-between state.
+      if (data?.completed && data.status.status === "completed") break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
 
