@@ -24,11 +24,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck and test
-        run: npm run check
-
+      # Build BEFORE tests: tests/smoke-agents.test.ts imports
+      # scripts/smoke-agents.mjs, which imports from dist/ — on a fresh
+      # checkout the suite fails without a prior build (caught by the very
+      # first cross-platform run of this workflow).
       - name: Build
         run: npm run build
+
+      - name: Typecheck and test
+        run: npm run check
 
       - name: Smoke test
         run: npm run smoke
