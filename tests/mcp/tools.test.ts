@@ -544,7 +544,7 @@ describe("MCP tools — dispatch", () => {
     expect(startData.completed).toBe(false);
     expect(startData.jobId).toMatch(/^job-/);
     expect(startData.nextPollSeconds).toBeGreaterThan(0);
-    expect(startData.instructions).toMatch(/dispatch/);
+    expect(startData.instructions).toMatch(/job_status/);
     // workingDir was provided explicitly, so no defaulted-cwd warning.
     expect(startData.warning).toBeUndefined();
 

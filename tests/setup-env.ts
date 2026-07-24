@@ -16,3 +16,10 @@ process.env.HARNESS_DISPATCH_LOG_DIR = mkdtempSync(
 process.env.HARNESS_DISPATCH_STATE_DIR = mkdtempSync(
   path.join(os.tmpdir(), "hr-test-state-"),
 );
+// Jobs too: suites that exercise startAsyncJob without their own stub (the
+// http/mcp server tests) were writing REAL job dirs into the user's
+// ~/.harness-dispatch/jobs, which then polluted every job_status list in
+// live sessions (observed: a dozen junk "route: a" entries).
+process.env.HARNESS_DISPATCH_JOBS_DIR = mkdtempSync(
+  path.join(os.tmpdir(), "hr-test-jobs-"),
+);

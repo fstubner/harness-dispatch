@@ -42,8 +42,39 @@ import { resolveWorkingDir, workingDirWarning } from "./working-dir.js";
  */
 const MAX_JSON_ERROR_CHARS = 4000;
 
-/** Suggested delay before an agent polls `job action=get` again. */
+/** Suggested delay before an agent checks `job_status` again. */
 const SUGGESTED_POLL_SECONDS = 300;
+
+/** How often a live background run bumps its status file's updatedAt. */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * A "running" status whose updatedAt is older than this is a lie — the
+ * process that owned the run is gone (several missed heartbeats), so
+ * readers report the job as orphaned instead of keeping callers polling a
+ * corpse forever. Generous multiple of the heartbeat so an event-loop
+ * stall can't produce false orphans.
+ */
+const ORPHAN_THRESHOLD_MS = 90_000;
+
+/**
+ * Compute-on-read orphan detection. Never writes the verdict back — the
+ * status file stays whatever the (dead) owner last wrote, so a future
+ * attach/recovery feature keeps its evidence intact.
+ */
+function withOrphanCheck(status: JobStatus): JobStatus {
+  if (status.status !== "running" && status.status !== "queued") return status;
+  const beat = Date.parse(status.updatedAt);
+  if (Number.isFinite(beat) && Date.now() - beat <= ORPHAN_THRESHOLD_MS) return status;
+  return {
+    ...status,
+    status: "orphaned",
+    success: false,
+    error:
+      "The dispatch server that started this job exited before the run finished — " +
+      "the background run died with it. Re-dispatch the task; this job will never complete.",
+  };
+}
 
 /**
  * Fallback dispatch timeout for jobs. Dispatchers hard-code a short default
@@ -76,9 +107,9 @@ function pollInstructions(jobId: string): string {
   return (
     `Job runs in the background; CLI harnesses typically take 3-15 minutes. ` +
     `Wait ~${Math.round(SUGGESTED_POLL_SECONDS / 60)} minutes (e.g. sleep), then call ` +
-    `dispatch with jobId=${jobId}. While status is "running", partialOutput shows ` +
-    `progress; poll again until status is "completed" or "failed". Results persist on ` +
-    `disk, so a missed poll loses nothing.`
+    `job_status with jobId=${jobId}. While status is "running", partialOutput shows ` +
+    `progress; check again until status is "completed" or "failed". Results persist ` +
+    `on disk, so checking late loses nothing.`
   );
 }
 
@@ -104,7 +135,14 @@ export interface StartJobInput {
 
 export interface JobStatus {
   jobId: string;
-  status: "queued" | "running" | "completed" | "failed";
+  /**
+   * "orphaned" is never written to disk — it's computed on read: a job
+   * whose status file says "running" but whose heartbeat (updatedAt) has
+   * gone stale means the server process that owned the background run
+   * exited (session restart, crash) and the run died with it. Reporting it
+   * as still "running" forever is a lie that makes callers poll a corpse.
+   */
+  status: "queued" | "running" | "completed" | "failed" | "orphaned";
   createdAt: string;
   updatedAt: string;
   jobDir: string;
@@ -287,7 +325,7 @@ async function runJob(
   input: StartJobInput,
 ): Promise<void> {
   const started = Date.now();
-  await updateStatus(jobDir, {
+  const runningStatus = (): JobStatus => ({
     jobId: manifest.jobId,
     status: "running",
     createdAt: manifest.createdAt,
@@ -296,6 +334,21 @@ async function runJob(
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
   });
+  await updateStatus(jobDir, runningStatus());
+
+  // Heartbeat: bump updatedAt while the run is alive so a reader can tell
+  // "running" apart from "the server that owned this run died and left a
+  // stale status file" (getAsyncJob reports the latter as "orphaned").
+  // unref'd so an exiting process never lingers on it — which is exactly
+  // the scenario the heartbeat exists to expose. The `finished` flag stops
+  // a beat that fires between the terminal status write and clearInterval
+  // from resurrecting "running".
+  let finished = false;
+  const heartbeat = setInterval(() => {
+    if (finished) return;
+    void updateStatus(jobDir, runningStatus()).catch(() => undefined);
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
 
   try {
     const state = deps.holder.state;
@@ -361,6 +414,7 @@ async function runJob(
       error: "Router stream ended without a completion event",
     };
 
+    finished = true;
     const payload: JobResultPayload = {
       jobId: manifest.jobId,
       result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
@@ -388,6 +442,7 @@ async function runJob(
       durationMs: Date.now() - started,
     });
   } catch (err) {
+    finished = true;
     const message = err instanceof Error ? err.message : String(err);
     await writeFile(path.join(jobDir, "output", "stderr.log"), message, { encoding: "utf8", mode: 0o600 });
     await updateStatus(jobDir, {
@@ -402,6 +457,8 @@ async function runJob(
       ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
       durationMs: Date.now() - started,
     });
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -475,10 +532,14 @@ export async function getAsyncJob(jobId: string): Promise<{
 }> {
   const jobDir = path.join(jobsRoot(), jobId);
   const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
-  const status = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+  const status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
   const resultPath = path.join(jobDir, "output", "result.json");
   if (existsSync(resultPath)) {
     return { manifest, status, result: await readJson<JobResultPayload>(resultPath) };
+  }
+  if (status.status === "orphaned") {
+    // Terminal: no poll guidance — polling will never resolve this job.
+    return { manifest, status };
   }
 
   const out: { manifest: JobManifest; status: JobStatus; partialOutput?: string } = {
@@ -513,7 +574,9 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     try {
-      statuses.push(await readJson<JobStatus>(path.join(root, entry.name, "status.json")));
+      statuses.push(
+        withOrphanCheck(await readJson<JobStatus>(path.join(root, entry.name, "status.json"))),
+      );
     } catch {
       // Ignore incomplete or manually edited job directories.
     }

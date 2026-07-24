@@ -88,6 +88,15 @@ const TASK_TYPES_WITH_CAPABILITY: ReadonlySet<TaskType> = new Set([
 const workspaceLocks = new Map<string, Promise<void>>();
 
 /**
+ * `service` is a raw string from the caller — a near-miss ("codex" for
+ * "codex_cli") used to fail with no hint at what WOULD have worked, costing
+ * a round-trip to `usage` to find out.
+ */
+function unknownServiceError(service: string, valid: string[]): string {
+  return `Unknown service: ${service} (valid route ids: ${valid.join(", ")})`;
+}
+
+/**
  * Options for explicit-service dispatch (routeTo / streamTo).
  *
  * `model` is an instruction, not a routing hint: the caller already chose
@@ -695,7 +704,7 @@ export class Router {
             output: "",
             service,
             success: false,
-            error: `Unknown service: ${service}`,
+            error: unknownServiceError(service, Object.keys(this.dispatchers)),
           },
         },
         decision: null,
@@ -981,7 +990,7 @@ export class Router {
           output: "",
           service,
           success: false,
-          error: `Unknown service: ${service}`,
+          error: unknownServiceError(service, Object.keys(this.dispatchers)),
         } as DispatchResult,
         decision: null,
       };

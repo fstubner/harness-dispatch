@@ -272,7 +272,7 @@ They are not part of the public v0.4.0 vocabulary.
 | Tool | Purpose |
 | --- | --- |
 | `dispatch` | Always starts new routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to check on. Nothing is ever lost to a timeout — including the MCP call's own. |
-| `job_status` | Checks work started by `dispatch`. Pass the `jobId` it returned to get a `partialOutput` tail while running and the full `result` once done; omit `jobId` to list every known background dispatch. |
+| `job_status` | Checks work started by `dispatch`. Pass the `jobId` it returned to get a `partialOutput` tail while running and the full `result` once done; omit `jobId` to list recent background dispatches (compact, newest first). |
 | `usage` | Per-route call counts, quota, billing kind, and breaker state for the current session — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. Pass `listModels: <route id>` to fetch that `openai_compatible` route's live `GET /models` catalog instead of (or alongside) the summary. |
 
 `workingDir` is effectively required when starting work: if you omit it, the task runs

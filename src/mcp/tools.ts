@@ -408,7 +408,14 @@ async function waitGrace(completion: Promise<void>, graceMs: number): Promise<vo
 }
 
 function jobCompleted(job: Awaited<ReturnType<typeof getAsyncJob>>): boolean {
-  return job.result !== undefined || job.status.status === "completed" || job.status.status === "failed";
+  return (
+    job.result !== undefined ||
+    job.status.status === "completed" ||
+    job.status.status === "failed" ||
+    // Orphaned (owner process died mid-run) is terminal: it will never
+    // complete, so callers must stop polling and re-dispatch.
+    job.status.status === "orphaned"
+  );
 }
 
 /**
@@ -670,12 +677,31 @@ export async function handleDispatch(
   });
 }
 
+/** Most-recent jobs returned by the list view. */
+const LIST_LIMIT = 20;
+
 export async function handleJobStatus(
   input: z.infer<z.ZodObject<typeof jobStatusInputShape>>,
 ): Promise<unknown> {
   return withMcpToolSpan({ "tool.name": "job_status" }, async () => {
     if (input.jobId !== undefined) return pollDispatch(input.jobId);
-    return { jobs: await listAsyncJobs() };
+    // Compact list: full detail (jobDir, warnings, instructions, errors)
+    // lives behind a per-job check — dumping it for every job ever was a
+    // several-KB token tax on each list call.
+    const all = await listAsyncJobs();
+    const jobs = all.slice(0, LIST_LIMIT).map((j) => ({
+      jobId: j.jobId,
+      status: j.status,
+      createdAt: j.createdAt,
+      ...(j.route !== undefined ? { route: j.route } : {}),
+      ...(j.service !== undefined && j.service !== j.route ? { service: j.service } : {}),
+      ...(j.success !== undefined ? { success: j.success } : {}),
+      ...(j.durationMs !== undefined ? { durationMs: j.durationMs } : {}),
+    }));
+    return {
+      jobs,
+      ...(all.length > LIST_LIMIT ? { omitted: all.length - LIST_LIMIT } : {}),
+    };
   });
 }
 
@@ -773,8 +799,11 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "it with the `job_status` tool, which returns partialOutput while it runs and " +
         "the full result once done. NOTHING is ever lost to a timeout, including this " +
         "MCP call's own: the run continues in the background regardless, and results " +
-        "persist on disk. Always pass `workingDir` (the caller's project root) and " +
-        "`hints.taskType`.",
+        "persist on disk — if THIS call times out client-side, the jobId was lost with " +
+        "the reply, so call `job_status` with no arguments and pick the newest running " +
+        "entry (it is yours). Keep graceSeconds under your MCP client's own request " +
+        "timeout, or skip the inline wait entirely with graceSeconds: 0. Always pass " +
+        "`workingDir` (the caller's project root) and `hints.taskType`.",
       inputSchema: dispatchInputShape,
     },
     async (args, extra) => jsonText(await handleDispatch(deps, args, extra as ToolExtra)),
@@ -788,7 +817,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Check on work started by `dispatch`. Pass the `jobId` it returned: while " +
         "running you get `partialOutput` (a live tail), and once `completed` is true " +
         "you get the full `result` — same shape as an inline dispatch reply. Omit " +
-        "`jobId` to list every known background dispatch instead. Nothing is lost by " +
+        "`jobId` to list recent background dispatches instead (compact, newest first). "
+        + "Nothing is lost by " +
         "checking late; results persist on disk.",
       inputSchema: jobStatusInputShape,
     },
