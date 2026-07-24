@@ -38,7 +38,7 @@ on it. See [Adding a harness](#adding-a-harness) for the config, and `status --j
 
 ## Requirements
 
-- Node.js `>=24.0.0`
+- Node.js `>=24.15.0`
 - At least one configured harness or OpenAI-compatible endpoint
 
 ## Install

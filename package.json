@@ -35,7 +35,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public",
@@ -65,7 +65,7 @@
     "@opentelemetry/sdk-node": "^0.221.0",
     "cross-spawn": "^7.0.6",
     "js-yaml": "^4.2.0",
-    "which": "^5.0.0",
+    "which": "^7.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
