@@ -167,7 +167,7 @@ export interface QuotaInfo {
 export interface CliEventRule {
   /** Dotted field path -> exact string it must equal, e.g. {"type": "thinking"}. */
   when: Record<string, string>;
-  emit: "text" | "tool_use" | "thinking" | "usage";
+  emit: "text" | "tool_use" | "thinking" | "usage" | "error";
   /** For emit: "text" — dotted path to the text; becomes the run's output-so-far. */
   textField?: string;
   /** For emit: "tool_use". */
@@ -178,6 +178,17 @@ export interface CliEventRule {
   /** For emit: "usage" — dotted paths, checked in order, first present wins. */
   inputTokenFields?: string[];
   outputTokenFields?: string[];
+  /**
+   * For emit: "error" — dotted path to the human-readable error message
+   * (e.g. Codex's real `{"type":"error","message":"You've hit your usage
+   * limit..."}` frame). Without a rule for this, a structured error frame
+   * is silently invisible to the dispatcher — it falls through to raw
+   * stdout/stderr text heuristics, which lose the message entirely if
+   * stderr happens to carry unrelated CLI banner noise (confirmed
+   * 2026-07-24: Codex's real stderr is just "Reading additional input from
+   * stdin...", which was shadowing the actual JSON error in stdout).
+   */
+  messageField?: string;
 }
 
 /**
@@ -259,6 +270,17 @@ export interface CliProtocolConfig {
     usage?: { input: string[]; output: string[] };
     /** jsonl_stream only — see CliEventRule. */
     eventRules?: CliEventRule[];
+    /**
+     * Explicit error detection for "text"/"json_field" modes (jsonl_stream
+     * uses eventRules' emit: "error" instead) — a CLI can exit 0 while its
+     * JSON body reports an API-level failure (confirmed 2026-07-24: Claude
+     * Code's `is_error`/`api_error_status` fields on an otherwise-0-exit
+     * response). `field` is a dotted path to a boolean; when true, the
+     * dispatch is forced to success: false regardless of exit code or
+     * `successRequiresOutput`, with the message from `messageFields`
+     * (falls back to `fields` if omitted).
+     */
+    error?: { field: string; messageFields?: string[] };
   };
   /**
    * Default true (matches most CLIs, and Cursor specifically): success

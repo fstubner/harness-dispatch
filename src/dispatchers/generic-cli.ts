@@ -38,6 +38,11 @@ function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: numb
     lowered.includes("quota exceeded") ||
     lowered.includes("resource_exhausted") ||
     lowered.includes("too many requests") ||
+    // "usage limit" is OpenAI Codex's real phrasing (confirmed live,
+    // 2026-07-24: "You've hit your usage limit... try again at Jul 28th,
+    // 2026 10:16 PM.") — none of the phrases above matched it, so a real
+    // Codex exhaustion was silently NOT flagged as rate-limited.
+    lowered.includes("usage limit") ||
     text.includes("429");
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
@@ -159,6 +164,8 @@ class JsonlAccumulator {
   outputTokens = 0;
   sawUsage = false;
   sawAnyJson = false;
+  /** Set by the first matching emit: "error" rule; last one wins if several match across the stream. */
+  errorMessage: string | undefined;
 
   constructor(private readonly rules: CliEventRule[]) {}
 
@@ -204,6 +211,11 @@ class JsonlAccumulator {
             this.outputTokens += outTok;
             this.sawUsage = true;
           }
+          break;
+        }
+        case "error": {
+          const message = rule.messageField ? getPath(event, rule.messageField) : undefined;
+          if (typeof message === "string" && message.length > 0) this.errorMessage = message;
           break;
         }
       }
@@ -386,6 +398,17 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     let parsedOutput: string | undefined;
     let tokensUsed: { input: number; output: number } | undefined;
+    /**
+     * A structured, unambiguous error message extracted from a parsed CLI
+     * response (event `emit: "error"` rule, or `output.error`'s boolean
+     * field) — takes priority over exit code and raw-text heuristics below.
+     * Exists because a CLI can report failure while exiting 0 (Claude
+     * Code's is_error flag) or bury the real message behind an unrelated
+     * exit-1 stderr banner (Codex — confirmed 2026-07-24: its actual error
+     * is JSON on stdout; stderr is just "Reading additional input from
+     * stdin...", which the old stderr-first fallback picked instead).
+     */
+    let structuredError: string | undefined;
 
     if (eventDriven && acc) {
       // Windows cmd /c can shuffle streams — if nothing parsed from stdout, retry stderr.
@@ -394,6 +417,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
       }
       parsedOutput = acc.sawAnyJson ? acc.lastText.trim() || undefined : undefined;
       if (acc.sawUsage) tokensUsed = { input: acc.inputTokens, output: acc.outputTokens };
+      structuredError = acc.errorMessage;
     } else {
       const fields = protocol.output.fields ?? ["result", "output", "text", "response"];
       switch (protocol.output.mode) {
@@ -415,6 +439,15 @@ export class GenericCliDispatcher extends BaseDispatcher {
             const inTok = firstNumberAt(usageSource, protocol.output.usage.input);
             const outTok = firstNumberAt(usageSource, protocol.output.usage.output);
             if (inTok || outTok) tokensUsed = { input: inTok, output: outTok };
+          }
+          if (usageSource !== undefined && protocol.output.error) {
+            const flagged = getPath(usageSource, protocol.output.error.field) === true;
+            if (flagged) {
+              const messageFields = protocol.output.error.messageFields ?? fields;
+              structuredError =
+                extractField(usageSource, messageFields) ??
+                `CLI reported an error (${protocol.output.error.field} set) with no extractable message`;
+            }
           }
           break;
         }
@@ -438,23 +471,36 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     const lenient = protocol.successRequiresOutput === false;
 
-    if (lenient && exitCode === 0) {
-      const output = parsedOutput ?? (stdout.trim() || stderr.trim());
-      const result: DispatchResult = { output, service: this.id, success: true, durationMs };
-      if (tokensUsed) result.tokensUsed = tokensUsed;
-      yield { type: "completion", result };
-      return;
-    }
-    if (!lenient && exitCode === 0 && parsedOutput) {
-      const result: DispatchResult = { output: parsedOutput, service: this.id, success: true, durationMs };
-      if (tokensUsed) result.tokensUsed = tokensUsed;
-      yield { type: "completion", result };
-      return;
+    // A structured error overrides exit code entirely — a CLI that reports
+    // failure in its own response body (is_error, a turn.failed event) is
+    // reporting failure regardless of what the process exit code says.
+    if (structuredError === undefined) {
+      if (lenient && exitCode === 0) {
+        const output = parsedOutput ?? (stdout.trim() || stderr.trim());
+        const result: DispatchResult = { output, service: this.id, success: true, durationMs };
+        if (tokensUsed) result.tokensUsed = tokensUsed;
+        yield { type: "completion", result };
+        return;
+      }
+      if (!lenient && exitCode === 0 && parsedOutput) {
+        const result: DispatchResult = { output: parsedOutput, service: this.id, success: true, durationMs };
+        if (tokensUsed) result.tokensUsed = tokensUsed;
+        yield { type: "completion", result };
+        return;
+      }
     }
 
-    const combined = `${stdout}\n${stderr}`;
-    const { rateLimited, retryAfter } = detectRateLimit(combined);
-    const errorDetail = stderr.trim() || stdout.trim() || `Exit code ${exitCode}`;
+    // Text-mode CLIs conventionally put real error text on stderr with
+    // stdout empty; JSON-oriented modes (json_field/jsonl_stream) put their
+    // real payload — errors included — on stdout, with stderr often just
+    // decorative banner noise (see structuredError's doc comment). A
+    // structuredError, when present, is authoritative over both.
+    const rawErrorFallback =
+      protocol.output.mode === "text"
+        ? stderr.trim() || stdout.trim()
+        : stdout.trim() || stderr.trim();
+    const errorDetail = structuredError ?? (rawErrorFallback || `Exit code ${exitCode}`);
+    const { rateLimited, retryAfter } = detectRateLimit(errorDetail);
     const result: DispatchResult = {
       output: parsedOutput ?? errorDetail,
       service: this.id,

@@ -64,6 +64,14 @@ clis:
         mode: json_field
         fields: [result, response, text]
         usage: { input: [usage.input_tokens], output: [usage.output_tokens] }
+        # Confirmed live 2026-07-24: a successful response carries a sibling
+        # "is_error": false (and "api_error_status": null) alongside "result"
+        # — without this, an API-level failure that still exits 0 would be
+        # reported as success (success_requires_output: false takes ANY
+        # exit-0 output as a win, including an error's own JSON text).
+        # message_fields omitted deliberately: the error text lands in the
+        # same "result" field as a successful answer, already covered above.
+        error: { field: is_error }
       success_requires_output: false
 
   # ── Codex ───────────────────────────────────────────────────────────────────
@@ -124,6 +132,18 @@ clis:
             emit: usage
             input_token_fields: [usage.input_tokens, usage.prompt_tokens]
             output_token_fields: [usage.output_tokens, usage.completion_tokens]
+          # Real shapes confirmed live 2026-07-24 against an actually-exhausted
+          # account: {"type":"error","message":"You've hit your usage
+          # limit..."} followed by {"type":"turn.failed","error":{"message":
+          # "..."}}. Without these, the dispatcher never sees either frame —
+          # it falls back to stderr text (just "Reading additional input from
+          # stdin..." noise) and reports a useless, unclassifiable failure.
+          - when: { type: "error" }
+            emit: error
+            message_field: message
+          - when: { type: "turn.failed" }
+            emit: error
+            message_field: error.message
       success_requires_output: false
       # Used only when a route runs endpoint_mode: harness_native_endpoint
       # against a matching endpoint_provider (see codex_ollama example below).
@@ -177,6 +197,13 @@ clis:
         usage: { input: [usage.input_tokens, usage.prompt_tokens], output: [usage.output_tokens, usage.completion_tokens] }
       # success_requires_output omitted -> strict: exit 0 with no parseable
       # output still counts as failure.
+      # No protocol.output.error entry: unlike Codex/Claude Code above (both
+      # verified live 2026-07-24 against real exhausted-quota responses),
+      # cursor-agent isn't installed on this machine to capture its actual
+      # on-quota-exhaustion JSON shape — deliberately not guessing one. A
+      # real Cursor exhaustion still falls through to detectRateLimit's raw
+      # text scan (rate limit/quota exceeded/usage limit/429), just without
+      # a structured message or forced-failure-past-exit-0 override.
 
   # ── Antigravity ─────────────────────────────────────────────────────────────
   # Google's successor to Gemini CLI (shut down 2026-06-18). Best for plan +

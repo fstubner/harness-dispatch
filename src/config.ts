@@ -559,6 +559,17 @@ function parseProtocolFields(
       }
       if (eventRules.length > 0) output.eventRules = eventRules;
     }
+    const errorRaw = o.error;
+    if (errorRaw !== null && typeof errorRaw === "object") {
+      const e = errorRaw as Record<string, unknown>;
+      const field = str(e.field);
+      if (field !== undefined) {
+        const messageFields = stringArrayFrom(e.message_fields);
+        output.error = messageFields !== undefined ? { field, messageFields } : { field };
+      } else {
+        warnings.push(`${routeLabel}: protocol.output.error.field is required — error detection ignored.`);
+      }
+    }
   }
   if (output === undefined) {
     warnings.push(`${routeLabel}: protocol.output is required — entry ignored.`);
@@ -692,8 +703,16 @@ function eventRuleFrom(raw: unknown, label: string, warnings: string[]): CliEven
     if (typeof v === "string") when[k] = v;
   }
   const emit = r.emit;
-  if (emit !== "text" && emit !== "tool_use" && emit !== "thinking" && emit !== "usage") {
-    warnings.push(`${label}: "emit" must be one of text | tool_use | thinking | usage — ignored.`);
+  if (
+    emit !== "text" &&
+    emit !== "tool_use" &&
+    emit !== "thinking" &&
+    emit !== "usage" &&
+    emit !== "error"
+  ) {
+    warnings.push(
+      `${label}: "emit" must be one of text | tool_use | thinking | usage | error — ignored.`,
+    );
     return undefined;
   }
   const rule: CliEventRule = { when, emit };
@@ -709,6 +728,8 @@ function eventRuleFrom(raw: unknown, label: string, warnings: string[]): CliEven
   if (inputTokenFields !== undefined) rule.inputTokenFields = inputTokenFields;
   const outputTokenFields = stringArrayFrom(r.output_token_fields);
   if (outputTokenFields !== undefined) rule.outputTokenFields = outputTokenFields;
+  const messageField = str(r.message_field);
+  if (messageField !== undefined) rule.messageField = messageField;
   return rule;
 }
 

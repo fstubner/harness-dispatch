@@ -524,6 +524,136 @@ describe("GenericCliDispatcher", () => {
     });
   });
 
+  describe("structured error detection — quota/failure signals that survive exit code 0", () => {
+    it("jsonl_stream: an emit:'error' rule forces failure even on exit 0, extracting the message field", async () => {
+      mockFound();
+      const lines = [
+        JSON.stringify({ type: "error", message: "You've hit your usage limit. try again at Jul 28th, 2026." }),
+      ];
+      runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n", exitCode: 0 }));
+      const d = new GenericCliDispatcher(
+        svc({
+          args: ["{{prompt}}"],
+          stdin: true,
+          output: {
+            mode: "jsonl_stream",
+            eventRules: [{ when: { type: "error" }, emit: "error", messageField: "message" }],
+          },
+          successRequiresOutput: false,
+        }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("You've hit your usage limit. try again at Jul 28th, 2026.");
+      expect(res.rateLimited).toBe(true);
+    });
+
+    it("jsonl_stream: a later emit:'error' rule (turn.failed) also matches, via a nested message path", async () => {
+      mockFound();
+      const lines = [JSON.stringify({ type: "turn.failed", error: { message: "quota exceeded" } })];
+      runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n", exitCode: 0 }));
+      const d = new GenericCliDispatcher(
+        svc({
+          args: ["{{prompt}}"],
+          stdin: true,
+          output: {
+            mode: "jsonl_stream",
+            eventRules: [{ when: { type: "turn.failed" }, emit: "error", messageField: "error.message" }],
+          },
+          successRequiresOutput: false,
+        }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("quota exceeded");
+    });
+
+    it("json_field: protocol.output.error's boolean field forces failure on exit 0 (Claude Code is_error pattern)", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(
+        ok({ stdout: JSON.stringify({ result: "something went wrong upstream", is_error: true }), exitCode: 0 }),
+      );
+      const d = new GenericCliDispatcher(
+        svc({
+          args: ["{{prompt}}"],
+          output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+          successRequiresOutput: false,
+        }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("something went wrong upstream");
+    });
+
+    it("json_field: is_error: false leaves the lenient success path untouched", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(
+        ok({ stdout: JSON.stringify({ result: "all good", is_error: false }), exitCode: 0 }),
+      );
+      const d = new GenericCliDispatcher(
+        svc({
+          args: ["{{prompt}}"],
+          output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+          successRequiresOutput: false,
+        }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(true);
+      expect(res.output).toBe("all good");
+    });
+
+    it("json_field: falls back to a generic message when the flagged error has no extractable text field", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(ok({ stdout: JSON.stringify({ is_error: true }), exitCode: 0 }));
+      const d = new GenericCliDispatcher(
+        svc({
+          args: ["{{prompt}}"],
+          output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+          successRequiresOutput: false,
+        }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/is_error/);
+    });
+
+    it("json_field on a non-zero exit prefers stdout's real payload over stderr banner noise", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(
+        ok({
+          stdout: JSON.stringify({ error: "the real failure reason" }),
+          stderr: "Reading additional input from stdin...",
+          exitCode: 1,
+        }),
+      );
+      const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "json_field", fields: ["result"] } }));
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toContain("the real failure reason");
+      expect(res.error).not.toContain("Reading additional input");
+    });
+
+    it("text mode keeps preferring stderr over stdout on failure (unchanged behavior)", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(ok({ stdout: "some stray stdout", stderr: "the real error", exitCode: 1 }));
+      const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("the real error");
+    });
+
+    it("detectRateLimit recognizes OpenAI Codex's real 'usage limit' phrasing", async () => {
+      mockFound();
+      runSubprocessMock.mockResolvedValue(
+        ok({ stdout: "", stderr: "You've hit your usage limit. Upgrade to Pro.", exitCode: 1 }),
+      );
+      const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
+      const res = await d.dispatch("go", [], "/tmp");
+      expect(res.success).toBe(false);
+      expect(res.rateLimited).toBe(true);
+    });
+  });
+
   describe("successRequiresOutput: false — lenient success (Claude Code/Codex/Antigravity pattern)", () => {
     it("succeeds on exit 0 even when the configured field can't be parsed, falling back to raw stdout", async () => {
       mockFound();
