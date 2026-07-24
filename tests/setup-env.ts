@@ -23,3 +23,8 @@ process.env.HARNESS_DISPATCH_STATE_DIR = mkdtempSync(
 process.env.HARNESS_DISPATCH_JOBS_DIR = mkdtempSync(
   path.join(os.tmpdir(), "hr-test-jobs-"),
 );
+// Unit tests inject fake dispatchers through an in-memory RuntimeHolder — a
+// detached runner process could never see those, so jobs run in-process
+// here. The detached path gets its own end-to-end coverage in
+// tests/job-runner.test.ts against the real dist/ build.
+process.env.HARNESS_DISPATCH_INPROC_JOBS = "1";

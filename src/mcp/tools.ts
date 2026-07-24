@@ -798,7 +798,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "(completed: true); otherwise you get completed: false plus a jobId — check on " +
         "it with the `job_status` tool, which returns partialOutput while it runs and " +
         "the full result once done. NOTHING is ever lost to a timeout, including this " +
-        "MCP call's own: the run continues in the background regardless, and results " +
+        "MCP call's own: the run executes in a detached process that survives even a " +
+        "server restart, and results " +
         "persist on disk — if THIS call times out client-side, the jobId was lost with " +
         "the reply, so call `job_status` with no arguments and pick the newest running " +
         "entry (it is yours). Keep graceSeconds under your MCP client's own request " +

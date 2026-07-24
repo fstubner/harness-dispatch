@@ -1,14 +1,19 @@
 /**
- * Minimal async job bundle support.
+ * Async job bundle support.
  *
- * The MCP `job` tool returns quickly after creating a reproducible bundle on
- * disk, then runs the selected router dispatch in the background. This avoids
- * MCP client timeouts for slow CLI agents while preserving the exact prompt,
- * file list, copied context snapshots, stdout/stderr, and final result.
+ * `dispatch` returns quickly after creating a reproducible bundle on disk,
+ * then the run executes in a DETACHED job-runner process (job-runner.ts) —
+ * not inside the MCP server — so a server restart, session reconnect, or
+ * client timeout never kills an in-flight run. The server (and any later
+ * server instance) reads progress and results back from the job directory.
+ * Set HARNESS_DISPATCH_INPROC_JOBS=1 to run jobs in-process instead (used
+ * by the unit-test suite, which injects fake dispatchers a separate
+ * process could not see).
  */
 
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import {
   appendFile,
   chmod,
@@ -24,6 +29,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 import type { RuntimeHolder } from "./mcp/config-hot-reload.js";
 import type {
@@ -465,12 +471,97 @@ async function runJob(
 export interface StartedJob {
   status: JobStatus;
   /**
-   * Resolves once the background run has fully landed on disk (result.json +
-   * final status for a normal run; failed status for a crashed one). Never
-   * rejects — runJob catches everything. This is what lets the `dispatch`
-   * tool race an inline grace window against the run without polling disk.
+   * Resolves once the run has reached a terminal state on disk (result.json
+   * or a failed/orphaned status). Never rejects. In detached mode this is a
+   * disk watcher on the job directory — the run itself lives in a separate
+   * job-runner process; in in-process mode (HARNESS_DISPATCH_INPROC_JOBS=1,
+   * used by unit tests with injected fakes) it is the runJob promise itself.
    */
   completion: Promise<void>;
+}
+
+/**
+ * Rebuild a job's input from its on-disk bundle and execute it. This is the
+ * detached runner's whole job; the manifest deliberately carries everything
+ * a run needs (prompt path, resolved workingDir, hints, service) precisely
+ * so execution can happen in a process that wasn't there when the job was
+ * created.
+ */
+export async function executeJobDir(deps: JobDeps, jobDir: string): Promise<void> {
+  const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
+  const prompt = await readFile(manifest.promptPath, "utf8");
+  const input: StartJobInput = {
+    prompt,
+    files: manifest.files.map((f) => f.originalPath),
+    workingDir: manifest.workingDir,
+    ...(manifest.hints !== undefined ? { hints: manifest.hints } : {}),
+    ...(manifest.workspacePolicy !== undefined
+      ? { workspacePolicy: manifest.workspacePolicy }
+      : {}),
+    ...(manifest.service !== undefined ? { service: manifest.service } : {}),
+  };
+  await runJob(deps, jobDir, manifest, input);
+}
+
+/** dist/job-runner.js next to this module (compiled), or via the package's dist/ when running from src. */
+function resolveRunnerPath(): string | undefined {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(here, "job-runner.js"),
+    path.join(here, "..", "dist", "job-runner.js"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+const TERMINAL_WATCH_INTERVAL_MS = 300;
+
+/**
+ * Watch a detached job's directory until it reaches a terminal state
+ * (result.json present, or a failed/orphaned status — the orphan check
+ * doubles as the exit path if the runner dies). Timer is unref'd: an
+ * exiting server abandons the watch, which is exactly the point of
+ * detached execution.
+ */
+async function watchUntilTerminal(jobDir: string): Promise<void> {
+  const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if (existsSync(path.join(jobDir, "output", "result.json"))) return;
+    try {
+      const status = withOrphanCheck(
+        await readJson<JobStatus>(path.join(jobDir, "status.json")),
+      );
+      if (
+        status.status === "completed" ||
+        status.status === "failed" ||
+        status.status === "orphaned"
+      ) {
+        return;
+      }
+    } catch {
+      // Transient read during an atomic rename — retry next tick.
+    }
+    await delay(TERMINAL_WATCH_INTERVAL_MS, undefined, { ref: false });
+  }
+}
+
+function spawnDetachedRunner(runnerPath: string, jobDir: string, configPath: string | undefined): void {
+  // The runner's own stdout/stderr go to a log inside the job dir so a
+  // bootstrap crash (bad config, missing module) leaves evidence.
+  const logFd = openSync(path.join(jobDir, "output", "runner.log"), "a");
+  try {
+    const child = spawn(process.execPath, [runnerPath, jobDir], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
+      },
+    });
+    child.unref();
+  } finally {
+    closeSync(logFd);
+  }
 }
 
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
@@ -517,8 +608,25 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   };
   await updateStatus(jobDir, status);
 
-  const completion = runJob(deps, jobDir, manifest, input);
-  return { status, completion };
+  // Detached by default: the run must not die with this process. In-process
+  // mode exists for unit tests (injected fake dispatchers aren't visible to
+  // a separate process) and as the fallback when the runner script can't be
+  // found (running from raw src/ with no dist/ build).
+  const inproc = process.env.HARNESS_DISPATCH_INPROC_JOBS === "1";
+  const runnerPath = inproc ? undefined : resolveRunnerPath();
+  if (inproc || runnerPath === undefined) {
+    if (!inproc) {
+      console.error(
+        "harness-dispatch: dist/job-runner.js not found (unbuilt checkout?) — " +
+          "running the job in-process; it will not survive a server restart.",
+      );
+    }
+    const completion = runJob(deps, jobDir, manifest, input);
+    return { status, completion };
+  }
+
+  spawnDetachedRunner(runnerPath, jobDir, deps.holder.state.configPath);
+  return { status, completion: watchUntilTerminal(jobDir) };
 }
 
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;

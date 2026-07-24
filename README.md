@@ -12,7 +12,9 @@ out to another CLI: models are trained on tool calling, so they actually use too
 they are given. And it routes whole tasks, not API requests — each harness keeps its
 own scaffolding, test loop, and codebase context; there's no proxy in between. Long
 tasks run as async jobs: start one, get an id back immediately, check for partial
-output, collect the result when it finishes. Nothing is lost to a client timeout.
+output, collect the result when it finishes. Runs execute in a detached runner
+process, so nothing is lost to a client timeout — or to the server itself
+restarting mid-run.
 (There is no Gemini CLI dispatcher; Google discontinued that CLI's backend in
 mid-2026, and Antigravity CLI is its replacement.)
 

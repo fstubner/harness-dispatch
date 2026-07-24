@@ -30,6 +30,13 @@ export interface RuntimeState {
   router: Router;
   leaderboard: LeaderboardCache;
   mtimeMs: number;
+  /**
+   * Where this runtime's config came from (undefined = auto-detect). Jobs
+   * pass it to their detached runner process so a run bootstraps against
+   * the SAME config file as the server that started it, not whatever the
+   * runner's cwd happens to contain.
+   */
+  configPath?: string;
 }
 
 /** A mutable holder you pass to tool handlers so hot-reloads are picked up. */
@@ -70,7 +77,15 @@ export async function bootstrapRuntime(opts: {
   const leaderboard = opts.leaderboard ?? new LeaderboardCache();
   const router = new Router(config, quota, dispatchers, leaderboard);
   const mtimeMs = await statMtime(opts.configPath);
-  return { config, dispatchers, quota, router, leaderboard, mtimeMs };
+  return {
+    config,
+    dispatchers,
+    quota,
+    router,
+    leaderboard,
+    mtimeMs,
+    ...(opts.configPath !== undefined ? { configPath: opts.configPath } : {}),
+  };
 }
 
 /** Gate that serialises concurrent reload attempts. */
