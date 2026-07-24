@@ -42,8 +42,26 @@ vi.mock("../src/circuit-breaker.js", () => {
     status(): unknown {
       return { tripped: this._tripped, failures: this.failures };
     }
+    snapshot(): { failures: number; blockedUntilMs: number | null } {
+      return { failures: this.failures, blockedUntilMs: null };
+    }
+    restore(): void {
+      /* not exercised by scoring-parity fixtures */
+    }
   }
   return { CircuitBreaker };
+});
+
+vi.mock("../src/breaker-store.js", () => {
+  class BreakerStore {
+    loadAll(): Record<string, unknown> {
+      return {};
+    }
+    save(): void {
+      /* no-op for tests */
+    }
+  }
+  return { BreakerStore };
 });
 
 vi.mock("../src/quota.js", () => {

@@ -120,4 +120,61 @@ describe("CircuitBreaker", () => {
     expect(cb.isTripped).toBe(false);
     expect(cb.status().failures).toBe(CIRCUIT_BREAKER_THRESHOLD - 1);
   });
+
+  describe("snapshot()/restore() — wall-clock bridge for cross-process persistence", () => {
+    it("snapshot() returns blockedUntilMs: null when not tripped", () => {
+      const cb = new CircuitBreaker();
+      cb.recordFailure();
+      expect(cb.snapshot()).toEqual({ failures: 1, blockedUntilMs: null });
+    });
+
+    it("snapshot() converts a live cooldown into a wall-clock deadline", () => {
+      const cb = new CircuitBreaker();
+      cb.trip(42);
+      const before = Date.now();
+      const snap = cb.snapshot();
+      expect(snap.failures).toBe(0);
+      expect(snap.blockedUntilMs).not.toBeNull();
+      // Should land ~42s out from real wall-clock time (independent of the
+      // mocked performance.now() used for the breaker's own monotonic math).
+      expect(snap.blockedUntilMs!).toBeGreaterThan(before + 40_000);
+      expect(snap.blockedUntilMs!).toBeLessThanOrEqual(before + 42_000);
+    });
+
+    it("restore() hydrates a still-active cooldown from a snapshot", () => {
+      const cb = new CircuitBreaker();
+      cb.restore({ failures: 5, blockedUntilMs: Date.now() + 60_000 });
+      expect(cb.isTripped).toBe(true);
+      expect(cb.status().failures).toBe(5);
+      const remaining = cb.cooldownRemaining();
+      expect(remaining).toBeGreaterThan(58);
+      expect(remaining).toBeLessThanOrEqual(60);
+    });
+
+    it("restore() treats an already-expired blockedUntilMs as not tripped", () => {
+      const cb = new CircuitBreaker();
+      cb.restore({ failures: 5, blockedUntilMs: Date.now() - 1_000 });
+      expect(cb.isTripped).toBe(false);
+    });
+
+    it("restore() with blockedUntilMs: null just restores the failure count", () => {
+      const cb = new CircuitBreaker();
+      cb.restore({ failures: 3, blockedUntilMs: null });
+      expect(cb.isTripped).toBe(false);
+      expect(cb.status().failures).toBe(3);
+    });
+
+    it("round-trips through snapshot() -> restore() across two separate instances", () => {
+      const original = new CircuitBreaker();
+      original.trip(42);
+      const snap = original.snapshot();
+
+      const restored = new CircuitBreaker();
+      restored.restore(snap);
+      expect(restored.isTripped).toBe(true);
+      const remaining = restored.cooldownRemaining();
+      expect(remaining).toBeGreaterThan(40);
+      expect(remaining).toBeLessThanOrEqual(42);
+    });
+  });
 });

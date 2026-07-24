@@ -61,6 +61,7 @@ import type {
 } from "./types.js";
 import path from "node:path";
 import { CircuitBreaker } from "./circuit-breaker.js";
+import { BreakerStore } from "./breaker-store.js";
 import { QuotaCache } from "./quota.js";
 import { LeaderboardCache } from "./leaderboard.js";
 import type { Dispatcher } from "./dispatchers/base.js";
@@ -332,16 +333,31 @@ export interface RouterStreamEvent {
 export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
   private lastSkippedRoutes: RouteSkip[] = [];
+  private readonly breakerStore: BreakerStore;
 
   constructor(
     private readonly config: RouterConfig,
     private readonly quota: QuotaCache,
     private readonly dispatchers: Record<string, Dispatcher>,
     private readonly leaderboard: LeaderboardCache,
+    breakerStore?: BreakerStore,
   ) {
+    this.breakerStore = breakerStore ?? new BreakerStore();
+    // Restart survival: a route rate-limited right before the process died
+    // would otherwise come back with a clean slate the instant the server
+    // restarts — hydrate any cooldown still in effect from the last process.
+    const persisted = this.breakerStore.loadAll();
     for (const name of Object.keys(config.services)) {
-      this.breakers.set(name, new CircuitBreaker());
+      const breaker = new CircuitBreaker();
+      const snapshot = persisted[name];
+      if (snapshot) breaker.restore(snapshot);
+      this.breakers.set(name, breaker);
     }
+  }
+
+  private persistBreaker(service: string): void {
+    const breaker = this.breakers.get(service);
+    if (breaker) this.breakerStore.save(service, breaker.snapshot());
   }
 
   getBreaker(service: string): CircuitBreaker | undefined {
@@ -1103,6 +1119,7 @@ export class Router {
     } else {
       breaker.recordFailure(result.retryAfter);
     }
+    this.persistBreaker(service);
   }
 
   circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {

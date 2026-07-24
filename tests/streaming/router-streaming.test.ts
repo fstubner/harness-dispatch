@@ -44,8 +44,30 @@ vi.mock("../../src/circuit-breaker.js", () => {
         ? { tripped: true, failures: this.failures, cooldownRemainingSec: this._cooldown }
         : { tripped: false, failures: this.failures };
     }
+    snapshot(): { failures: number; blockedUntilMs: number | null } {
+      return { failures: this.failures, blockedUntilMs: this._tripped ? Date.now() + this._cooldown * 1000 : null };
+    }
+    restore(snapshot: { failures: number; blockedUntilMs: number | null }): void {
+      this.failures = snapshot.failures;
+      this._tripped = snapshot.blockedUntilMs !== null && snapshot.blockedUntilMs > Date.now();
+      if (this._tripped && snapshot.blockedUntilMs !== null) {
+        this._cooldown = (snapshot.blockedUntilMs - Date.now()) / 1000;
+      }
+    }
   }
   return { CircuitBreaker };
+});
+
+vi.mock("../../src/breaker-store.js", () => {
+  class BreakerStore {
+    loadAll(): Record<string, unknown> {
+      return {};
+    }
+    save(): void {
+      /* no-op for tests */
+    }
+  }
+  return { BreakerStore };
 });
 
 vi.mock("../../src/quota.js", () => {

@@ -19,6 +19,12 @@ export interface CircuitBreakerStatus {
   cooldownRemainingSec?: number;
 }
 
+export interface CircuitBreakerSnapshot {
+  failures: number;
+  /** Wall-clock epoch ms when the current cooldown ends; null when not tripped. */
+  blockedUntilMs: number | null;
+}
+
 export class CircuitBreaker {
   private failures = 0;
   private trippedAt: number | null = null;
@@ -75,6 +81,40 @@ export class CircuitBreaker {
       failures: this.failures,
       cooldownRemainingSec: Math.round(this.cooldownRemaining() * 10) / 10,
     };
+  }
+
+  /**
+   * Wall-clock snapshot for cross-process persistence. `trippedAt`/`cooldown`
+   * are deliberately monotonic (performance.now(), immune to clock
+   * adjustments mid-run) so they can't be written to disk as-is; this
+   * converts the live state to an absolute deadline a future process (after
+   * a restart) can compare against its own Date.now().
+   */
+  snapshot(): CircuitBreakerSnapshot {
+    if (!this.isTripped) {
+      return { failures: this.failures, blockedUntilMs: null };
+    }
+    return { failures: this.failures, blockedUntilMs: Date.now() + this.cooldownRemaining() * 1000 };
+  }
+
+  /**
+   * Hydrate from a snapshot persisted by a previous process. A
+   * `blockedUntilMs` already in the past is treated as expired, matching
+   * this class's own auto-reset-on-expiry semantics.
+   */
+  restore(snapshot: CircuitBreakerSnapshot): void {
+    this.failures = snapshot.failures;
+    if (snapshot.blockedUntilMs === null) {
+      this.trippedAt = null;
+      return;
+    }
+    const remainingSec = (snapshot.blockedUntilMs - Date.now()) / 1000;
+    if (remainingSec <= 0) {
+      this.trippedAt = null;
+      return;
+    }
+    this.cooldown = remainingSec;
+    this.trippedAt = monotonicSec();
   }
 
   private reset(): void {
