@@ -12,9 +12,22 @@
  * Override with `OTEL_EXPORTER_OTLP_ENDPOINT` (standard env var) or by passing
  * `otlpUrl` to `initObservability`.
  *
- * Auto-instrumentation of Node core (http, fs, child_process, etc.) is
- * installed so dispatcher subprocess spawns and fetch calls are traced out
- * of the box alongside our manual dispatcher/router/MCP spans.
+ * Instrumentation is explicit, not `@opentelemetry/auto-instrumentations-node`
+ * (dropped 2026-07-25): that meta-package bundles instrumentation for
+ * MongoDB, MySQL, Postgres, Kafka, Restify, Hapi, Koa, Connect, plus
+ * AWS/GCP/Azure/Alibaba Cloud resource detectors — none of which
+ * harness-dispatch touches, all of which still ship on every install
+ * regardless of whether telemetry is ever enabled. Worse, several of those
+ * unused branches (gaxios/gcp-metadata via the GCP detector, glob/minimatch/
+ * rimraf/brace-expansion via transitive tooling) carried real CVEs that
+ * `package.json`'s `overrides` could never fix for anyone who installs this
+ * package as a dependency — `overrides` only apply to the root project doing
+ * the installing, never downstream. Only `http` and `fs` are instrumented
+ * directly: http covers dispatcher fetch calls and this server's own HTTP
+ * surface; fs covers config/job-file reads. Subprocess spawns are covered by
+ * our own manual dispatcher/router/MCP spans (see spans.ts), not an OTel
+ * core auto-instrumentation — no `child_process` instrumentation package
+ * exists in the OTel JS ecosystem.
  */
 
 import type { Span } from "@opentelemetry/api";
@@ -77,13 +90,16 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
     url: `${otlpEndpoint.replace(/\/+$/, "")}/v1/traces`,
   });
 
-  // Pull auto-instrumentations on demand — keeps cold-start cheap when tests
-  // bring their own (empty) instrumentation set.
+  // Lazily imported for the same reason as the SDK/exporter above — keeps
+  // cold-start cheap when tests bring their own (empty) instrumentation set.
   let instrumentations = opts.instrumentations;
   if (instrumentations === undefined) {
     try {
-      const auto = await import("@opentelemetry/auto-instrumentations-node");
-      instrumentations = [auto.getNodeAutoInstrumentations()];
+      const [{ HttpInstrumentation }, { FsInstrumentation }] = await Promise.all([
+        import("@opentelemetry/instrumentation-http"),
+        import("@opentelemetry/instrumentation-fs"),
+      ]);
+      instrumentations = [new HttpInstrumentation(), new FsInstrumentation()];
     } catch {
       instrumentations = [];
     }
