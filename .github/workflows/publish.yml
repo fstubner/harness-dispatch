@@ -41,11 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Deliberately no dependency cache in the job that publishes: npm's
+      # trusted-publishing guidance is to skip package-manager caching in
+      # release builds, so a poisoned cache entry can't reach the registry.
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          cache: npm
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1. Node 24 already
+      # ships 11.x, but pinning latest removes any doubt about which patch
+      # setup-node happened to resolve.
+      - name: Ensure npm supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
 
       - name: Install dependencies
         run: npm ci
@@ -58,7 +68,20 @@ jobs:
       - name: Build
         run: npm run build
 
+      # No NODE_AUTH_TOKEN — this authenticates via OIDC (trusted publishing),
+      # configured on npmjs.com against this repo AND this workflow filename
+      # (`publish.yml`, case-sensitive). There is no long-lived npm token
+      # stored anywhere in this repo.
+      #
+      # The skip-if-already-published guard keeps the workflow idempotent:
+      # 0.4.0 was bootstrap-published by hand (npm won't let you configure a
+      # trusted publisher until the package exists), so tagging v0.4.0 after
+      # the fact is a clean no-op instead of a hard EPUBLISHCONFLICT failure.
       - name: Publish to npm
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "harness-dispatch@$VERSION" version >/dev/null 2>&1; then
+            echo "harness-dispatch@$VERSION is already on npm — nothing to publish."
+            exit 0
+          fi
+          npm publish --access public --provenance
