@@ -19,12 +19,12 @@
 import { existsSync } from "node:fs";
 
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
-import { drainSlotQueue, executeJobDir } from "./jobs.js";
+import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
 
 async function main(): Promise<void> {
-  const jobDir = process.argv[2];
-  if (!jobDir) {
-    console.error("usage: job-runner <jobDir>");
+  const arg = process.argv[2];
+  if (!arg) {
+    console.error("usage: job-runner <jobDir> | job-runner --supervisor");
     process.exit(2);
   }
   const configPath =
@@ -33,7 +33,17 @@ async function main(): Promise<void> {
   const state = await bootstrapRuntime(
     configPath !== undefined ? { configPath } : {},
   );
-  await executeJobDir({ holder: new RuntimeHolder(state) }, jobDir);
+
+  // Pool mode: claim work from the queue and run several jobs at once, so
+  // supervision costs a bounded number of processes rather than one per job.
+  if (arg === "--supervisor") {
+    await runSupervisor({ holder: new RuntimeHolder(state) }, process.argv[3]);
+    process.exit(0);
+  }
+
+  // Single-job mode is retained: it is the narrowest way to run one job dir,
+  // which is what the end-to-end runner test drives against the real build.
+  await executeJobDir({ holder: new RuntimeHolder(state) }, arg);
   // This runner's slot just freed — hand it to whoever is waiting. Doing it
   // here (rather than in a daemon) is what keeps the queue moving between
   // dispatches; a failure to drain must not fail the run that already
