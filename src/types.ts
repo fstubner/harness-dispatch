@@ -395,6 +395,17 @@ export interface RouterConfig {
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
   /**
+   * Resolved secret -> the `${VAR}` reference it came from, for every
+   * `${VAR}` in the config file that resolved to a non-empty value.
+   *
+   * Exists so `configure` can write the reference back instead of the secret.
+   * Interpolation happens on the raw YAML tree before it is shaped into
+   * routes, so by the time a ServiceConfig exists its `apiKey` is already the
+   * resolved string and the reference is gone; this is the only surviving
+   * record of it. Never serialize this map.
+   */
+  envRefs?: ReadonlyMap<string, string>;
+  /**
    * Ceiling on agent CLIs running at once, machine-wide (default 4).
    *
    * Not a throughput knob — a resource guard. Every dispatch spawns a
