@@ -85,7 +85,7 @@ interface CliDefaults {
   billingKind?: BillingKind;
   paidUsagePossible?: boolean;
   /** Safety level this harness actually runs at (capability floor) — see ServiceConfig.effectiveSafety. */
-  effectiveSafety?: SafetyProfile;
+  effectiveSafety?: SafetyProfile | Partial<Record<SafetyProfile, SafetyProfile>>;
   /** Operator-declared known-good model ids — see ServiceConfig.models. */
   models?: string[];
   /** Where this harness's real model catalog lives — see ServiceConfig.modelHint. */
@@ -475,6 +475,21 @@ function warnUnknownSafetyEnums(node: unknown, warnings: string[], where = ""): 
     const value = obj[key];
     if (value === undefined) continue;
     if (typeof value === "string" && allowed.includes(value)) continue;
+    // effective_safety may also be a per-request map; validate it entry by
+    // entry so a typo in one key still warns without condemning the whole
+    // block. See effectiveSafetyFrom().
+    if (key === "effective_safety" && value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const entries = Object.entries(value as Record<string, unknown>);
+      const bad = entries.filter(
+        ([k, v]) => !allowed.includes(k) || typeof v !== "string" || !allowed.includes(v),
+      );
+      if (bad.length === 0) continue;
+      warnings.push(
+        `${label}: effective_safety: ${bad.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")} ` +
+          `is not a ${allowed.join("/")} pair — IGNORED for those requests.`,
+      );
+      continue;
+    }
     warnings.push(
       `${label}: ${key}: ${JSON.stringify(value)} is not one of ${allowed.join(", ")} — ` +
         `IGNORED, and the default applies instead, which is less restrictive than what ` +
@@ -484,6 +499,26 @@ function warnUnknownSafetyEnums(node: unknown, warnings: string[], where = ""): 
   for (const [k, v] of Object.entries(obj)) {
     warnUnknownSafetyEnums(v, warnings, where ? `${where}.${k}` : k);
   }
+}
+
+/**
+ * `effective_safety` as either one profile or a per-request map.
+ *
+ * An unrecognised value is dropped rather than guessed at, and an unrecognised
+ * KEY or value inside the map is dropped individually — a typo must not
+ * silently widen the floor for a request it was meant to restrict.
+ */
+function effectiveSafetyFrom(raw: unknown): SafetyProfile | Partial<Record<SafetyProfile, SafetyProfile>> | undefined {
+  const single = normalizeSafetyProfile(raw);
+  if (single !== undefined) return single;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Partial<Record<SafetyProfile, SafetyProfile>> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const requested = normalizeSafetyProfile(key);
+    const floor = normalizeSafetyProfile(value);
+    if (requested !== undefined && floor !== undefined) out[requested] = floor;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
@@ -900,7 +935,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       })(),
       ...billingFields(svc),
       ...(() => {
-        const effectiveSafety = normalizeSafetyProfile(svc.effective_safety);
+        const effectiveSafety = effectiveSafetyFrom(svc.effective_safety);
         return effectiveSafety !== undefined ? { effectiveSafety } : {};
       })(),
       ...(() => {
@@ -1054,7 +1089,7 @@ function buildCliServiceConfig(
     })(),
     ...(() => {
       const effectiveSafety =
-        normalizeSafetyProfile(override.effective_safety) ?? defaults.effectiveSafety;
+        effectiveSafetyFrom(override.effective_safety) ?? defaults.effectiveSafety;
       return effectiveSafety !== undefined ? { effectiveSafety } : {};
     })(),
     ...(() => {
@@ -1468,7 +1503,7 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
       ...(billingKind !== undefined ? { billingKind } : {}),
       ...(typeof raw.paid_usage_possible === "boolean" ? { paidUsagePossible: raw.paid_usage_possible } : {}),
       ...(() => {
-        const effectiveSafety = normalizeSafetyProfile(raw.effective_safety);
+        const effectiveSafety = effectiveSafetyFrom(raw.effective_safety);
         return effectiveSafety !== undefined ? { effectiveSafety } : {};
       })(),
       ...(() => {

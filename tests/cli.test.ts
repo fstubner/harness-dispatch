@@ -236,8 +236,14 @@ describe("CLI parser", () => {
 
     const result = await capture(() => main(["configure", "--print", "--config", configPath]));
     expect(result.code).toBe(0);
-    // The route's real capability floor is full_auto; the file must say so...
-    expect(result.stdout).toContain("effective_safety: full_auto");
+    // The route's real capability floor must be written faithfully. For cursor
+    // that is now a PER-REQUEST map, because --mode plan is genuinely
+    // read-only while default print mode has write and shell — one value
+    // cannot express both, and flattening it to a string here would either
+    // overstate the floor for read-only work or understate it for the rest.
+    expect(result.stdout).toContain("effective_safety:");
+    expect(result.stdout).toContain("read_only: read_only");
+    expect(result.stdout).toContain("workspace_edit: full_auto");
     // ...and must NOT also claim safety_profile: workspace_edit, which used
     // to be baked in as a fallback default even though nobody chose it and
     // it contradicts the effective_safety `status` actually enforces.

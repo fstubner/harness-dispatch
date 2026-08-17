@@ -175,15 +175,34 @@ clis:
     # Cursor hard-stops at the plan's included pool unless on-demand billing is
     # enabled in Settings -> Billing -> Spending — set true here if you did.
     paid_usage_possible: false
-    # Capability floor: cursor-agent print mode always has write+shell
-    # capability, so this route only serves requests that allow full_auto —
-    # it is skipped (safety_incompatible) for read_only/workspace_edit calls.
-    # Override here if a future cursor-agent grows restricted modes.
-    effective_safety: full_auto
+    # Capability floor, per requested profile. cursor-agent's capability really
+    # does differ by mode, so a single value cannot describe it:
+    #
+    #   --mode plan  read-only. Verified 2026-08-17: asked to create one file
+    #                and overwrite another, it did neither, while the identical
+    #                invocation without --mode plan created the file.
+    #   default -p   "Has access to all tools, including write and shell"
+    #                (its own --help). Write and shell arrive together, so
+    #                there is no workspace_edit rung on this ladder and a
+    #                workspace_edit request still gets the full_auto floor,
+    #                i.e. it is still skipped unless full_auto is allowed.
+    #
+    # --sandbox enabled looks like the missing middle rung but is macOS/Linux
+    # only ("Sandbox mode is enabled but not available on this system" on
+    # Windows), so it is not used here.
+    effective_safety:
+      read_only: read_only
+      workspace_edit: full_auto
+      full_auto: full_auto
     protocol:
       # -p is Cursor's boolean "print mode" flag; the prompt itself is the
       # trailing positional {{prompt}}.
-      args: ["-p", "--trust", "{{working_dir}}", "--output-format", "json", "{{model}}", "{{prompt}}"]
+      args: ["-p", "--trust", "{{safety}}", "{{working_dir}}", "--output-format", "json", "{{model}}", "{{prompt}}"]
+      # Only read_only gets extra flags; the other profiles run print mode as
+      # before. --trust is unrelated to capability — it just suppresses the
+      # workspace-trust prompt, which would hang a non-interactive run.
+      safety:
+        read_only: ["--mode", "plan"]
       # cursor-agent needs SOME --workspace value even with no workingDir —
       # fall back to the user's home directory.
       working_dir: { flag: "--workspace", fallback: home }

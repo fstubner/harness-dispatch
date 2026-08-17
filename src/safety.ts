@@ -31,7 +31,15 @@ export function effectiveSafetyProfile(
   // NOT from harness-name special cases in code. openai_compatible is the
   // one structural rule: an HTTP endpoint has no file or shell access, so
   // it is read_only by construction.
-  if (svc.effectiveSafety) return svc.effectiveSafety;
+  const declared = svc.effectiveSafety;
+  if (typeof declared === "string") return declared;
+  if (declared !== undefined && declared !== null) {
+    // Per-request floor: a harness whose capability genuinely varies by mode.
+    // An unlisted request falls through to the rules below rather than
+    // defaulting to something permissive.
+    const mapped = declared[requestedSafetyProfile(svc, requested)];
+    if (mapped !== undefined) return mapped;
+  }
   if (svc.type === "openai_compatible") return "read_only";
   return requestedSafetyProfile(svc, requested);
 }

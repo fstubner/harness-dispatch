@@ -349,7 +349,18 @@ export interface ServiceConfig {
    * requests. Declared in config (shipped or user), not hardcoded per
    * harness anywhere in code.
    */
-  effectiveSafety?: SafetyProfile;
+  /**
+   * Capability floor: what the harness ACTUALLY runs at, regardless of what
+   * was requested.
+   *
+   * Either one profile for every request, or a map from requested profile to
+   * the floor that applies to it. The map exists because a CLI can have
+   * genuinely different capability per mode: cursor-agent's `--mode plan` is
+   * read-only (verified — it declined to create or overwrite files), while its
+   * default print mode has write AND shell. One value cannot say that, so the
+   * route was pinned at full_auto and skipped every ordinary request.
+   */
+  effectiveSafety?: SafetyProfile | Partial<Record<SafetyProfile, SafetyProfile>>;
   /**
    * Operator-declared known-good model ids for this route (`models:` in
    * config) — surfaced verbatim in status/usage so a calling agent can pick
