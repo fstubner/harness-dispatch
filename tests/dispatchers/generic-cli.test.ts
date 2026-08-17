@@ -510,6 +510,31 @@ describe("GenericCliDispatcher", () => {
       expect(res.tokensUsed).toEqual({ input: 13, output: 7 });
     });
 
+    it("reports the parsed agent message as the error on a non-zero exit, not the raw event stream", async () => {
+      // Field shape from 2026-08-03: nine real Codex runs emitted valid JSONL
+      // and then exited non-zero with no turn.failed event. errorDetail fell
+      // through to rawErrorFallback — which for jsonl_stream is stdout — so
+      // the caller was shown ~300 chars of {"type":"thread.started",...} as
+      // the error message after waiting 11-88s, while the actual message sat
+      // parsed and unused.
+      mockFound();
+      const lines = [
+        JSON.stringify({ type: "thread.started", thread_id: "019fc90f-4117-7e71-8d67-ecb7b6b1" }),
+        JSON.stringify({ type: "message", message: { content: "I could not reach the sandbox." } }),
+      ];
+      runSubprocessMock.mockResolvedValue(
+        ok({ stdout: lines.join("\n") + "\n", exitCode: 1 }),
+      );
+      const d = new GenericCliDispatcher(
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+
+      expect(res.success).toBe(false);
+      expect(res.error).toBe("I could not reach the sandbox.");
+      expect(res.error).not.toContain("thread.started");
+    });
+
     it("falls back to parsing stderr lines when nothing parsed from stdout", async () => {
       mockFound();
       const stderrLines = [JSON.stringify({ type: "message", message: { content: "from stderr" } })];

@@ -499,7 +499,18 @@ export class GenericCliDispatcher extends BaseDispatcher {
       protocol.output.mode === "text"
         ? stderr.trim() || stdout.trim()
         : stdout.trim() || stderr.trim();
-    const errorDetail = structuredError ?? (rawErrorFallback || `Exit code ${exitCode}`);
+    // Event-driven modes only: there, rawErrorFallback IS the raw JSONL event
+    // stream, so a CLI that emitted valid events and then exited non-zero
+    // reported ~300 chars of {"type":"thread.started",...} as its error.
+    // Observed across 9 real failures on 2026-08-03, after 11-88s waits, while
+    // the parsed agent_message sat unused. Gated on eventDriven deliberately:
+    // in text mode parsedOutput IS stdout, and preferring it would defeat the
+    // stderr-first rule above (a real error on stderr losing to stray stdout).
+    // structuredError still wins — a turn.failed reason beats the last
+    // message — and rawErrorFallback still covers the nothing-parsed case.
+    const parsedErrorDetail = eventDriven ? parsedOutput : undefined;
+    const errorDetail =
+      structuredError ?? parsedErrorDetail ?? (rawErrorFallback || `Exit code ${exitCode}`);
     const { rateLimited, retryAfter } = detectRateLimit(errorDetail);
     const result: DispatchResult = {
       output: parsedOutput ?? errorDetail,
