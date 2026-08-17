@@ -32,8 +32,8 @@ vi.mock("../../src/breaker-store.js", () => ({
 }));
 
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -74,19 +74,35 @@ import type {
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 
 /**
- * Fresh breaker state per test.
+ * Fresh breaker state per test, inside ONE directory per file.
  *
- * These suites used to vi.mock CircuitBreaker and BreakerStore with
- * hand-written stand-ins, so persistence was a no-op and tests could not
- * interfere. Running the real classes exposed genuine pollution: a breaker
- * tripped by one test was persisted and rehydrated by the next Router, which
- * then skipped the route and failed unrelated assertions. Isolating the state
- * directory per test is the fix; sharing it was never intended.
+ * These suites used to vi.mock CircuitBreaker with a hand-written stand-in, so
+ * persistence was inert and tests could not interfere. Running the real class
+ * exposed genuine pollution: a breaker tripped by one test was rehydrated by
+ * the next Router, which then skipped the route and failed unrelated
+ * assertions.
+ *
+ * One mkdtemp per FILE with a counter inside it, not one per test: the
+ * first version of this made a fresh temp dir per test and cleaned none of
+ * them, which left 368 orphaned directories in a single run — the exact leak
+ * setup-env.ts was just fixed for.
  */
+let stateRoot: string;
+let stateSeq = 0;
+
+beforeAll(() => {
+  stateRoot = mkdtempSync(path.join(tmpdir(), "hr-router-state-"));
+});
+
+afterAll(() => {
+  rmSync(stateRoot, { recursive: true, force: true, maxRetries: 3 });
+});
+
 beforeEach(() => {
-  process.env.HARNESS_DISPATCH_STATE_DIR = mkdtempSync(
-    path.join(tmpdir(), "hr-router-state-"),
-  );
+  stateSeq += 1;
+  const dir = path.join(stateRoot, String(stateSeq));
+  mkdirSync(dir, { recursive: true });
+  process.env.HARNESS_DISPATCH_STATE_DIR = dir;
 });
 
 
