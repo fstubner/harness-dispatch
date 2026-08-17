@@ -118,31 +118,79 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
   };
 }
 
-function cliEntryToYaml(svc: ServiceConfig): Record<string, unknown> {
+/**
+ * Render a route's api_key WITHOUT materialising the secret.
+ *
+ * `svc.apiKey` is the RESOLVED value — config.ts interpolates `${VAR}` at
+ * load time, so by here the reference is gone. Emitting it verbatim wrote
+ * live credentials into config.yaml and echoed them to stdout on
+ * `configure --print`, which is documented as the safe preview and is exactly
+ * what someone pastes into a bug report. It also broke the project's own
+ * stated invariant (plugin/commands/setup.md: "API keys MUST be written as
+ * ${ENV_VAR} references — never literal").
+ *
+ * `config.envRefs` maps the resolved value back to the reference that
+ * produced it, so a key that came from `${GROQ_API_KEY}` round-trips exactly.
+ *
+ * A key written as a LITERAL in the source file has no reference to restore.
+ * That case splits by destination: `--yes` writes to disk, where the literal
+ * already lives and dropping it would break a working config, so it is
+ * preserved; `--print` goes to a terminal and a bug report, so it is redacted
+ * to the placeholder below.
+ */
+function apiKeyForYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: { redactLiterals: boolean },
+): string | undefined {
+  if (svc.apiKey === undefined || svc.apiKey === "") return undefined;
+  const ref = config.envRefs?.get(svc.apiKey);
+  if (ref !== undefined) return ref;
+  if (!opts.redactLiterals) return svc.apiKey;
+  // protocol.apiKeyEnvVar is the var the CHILD CLI reads, which is only a
+  // suggestion for what to name the config reference — they need not match,
+  // and endpoint routes have no protocol at all. Hence the generic fallback.
+  const envVar = svc.protocol?.apiKeyEnvVar ?? "YOUR_API_KEY_ENV_VAR";
+  return `\${${envVar}}`;
+}
+
+interface YamlOpts {
+  redactLiterals: boolean;
+}
+
+function cliEntryToYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: YamlOpts,
+): Record<string, unknown> {
   return {
     name: svc.name,
     harness: svc.harness,
     command: svc.command,
-    api_key: svc.apiKey,
+    api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
   };
 }
 
-function endpointEntryToYaml(svc: ServiceConfig): Record<string, unknown> {
+function endpointEntryToYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: YamlOpts,
+): Record<string, unknown> {
   return {
     name: svc.name,
     base_url: svc.baseUrl,
-    api_key: svc.apiKey,
+    api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
   };
 }
 
-function configToYaml(config: RouterConfig): string {
+function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   const clis: Record<string, unknown>[] = [];
   const endpoints: Record<string, unknown>[] = [];
   for (const svc of Object.values(config.services)) {
-    if (svc.type === "cli") clis.push(cliEntryToYaml(svc));
-    else endpoints.push(endpointEntryToYaml(svc));
+    if (svc.type === "cli") clis.push(cliEntryToYaml(svc, config, opts));
+    else endpoints.push(endpointEntryToYaml(svc, config, opts));
   }
   const doc: Record<string, unknown> = {};
   if (clis.length > 0) doc.clis = clis;
@@ -156,13 +204,31 @@ async function cmdConfigure(
   opts: { print: boolean; yes: boolean },
 ): Promise<number> {
   const config = await loadConfig(configPath);
-  const yamlText = configToYaml(config);
   const routeCount = Object.keys(config.services).length;
 
   if (opts.print) {
-    process.stdout.write(yamlText);
+    // Preview goes to a terminal and, routinely, into a bug report — a
+    // literal key with no ${VAR} to restore is redacted rather than echoed.
+    const preview = configToYaml(config, { redactLiterals: true });
+    process.stdout.write(preview);
+    const redacted = Object.values(config.services).some(
+      (svc) =>
+        svc.apiKey !== undefined &&
+        svc.apiKey !== "" &&
+        config.envRefs?.get(svc.apiKey) === undefined,
+    );
+    if (redacted) {
+      process.stderr.write(
+        "note: one or more api_key values are literals in the source config and were " +
+          "replaced with ${ENV_VAR} placeholders in this preview. Move them to " +
+          "environment variables — this output is not a drop-in replacement for that file " +
+          "until you do.\n",
+      );
+    }
     return 0;
   }
+
+  const yamlText = configToYaml(config, { redactLiterals: false });
 
   process.stdout.write(`Detected ${routeCount} harness route${routeCount === 1 ? "" : "s"}.\n`);
   for (const [name, svc] of Object.entries(config.services)) {

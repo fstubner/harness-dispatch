@@ -270,6 +270,51 @@ describe("CLI parser", () => {
     expect(writeResult.stdout).toContain(JSON.stringify(path.resolve(target)));
   });
 
+  it("configure never emits a resolved api_key — ${VAR} round-trips, a literal is redacted", async () => {
+    // configToYaml emitted svc.apiKey, which config.ts has already resolved
+    // from ${VAR} at load time. `configure --print` is documented as the safe
+    // preview and is what someone pastes into a bug report, so this wrote
+    // live credentials to stdout and, via --yes, to disk.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-secret-"));
+    const source = path.join(dir, "config.yaml");
+    await fs.writeFile(
+      source,
+      [
+        "endpoints:",
+        "  - name: from_env",
+        "    base_url: https://api.example.com/v1",
+        "    api_key: ${SENTINEL_CFG_KEY}",
+        "    model: m",
+        "  - name: from_literal",
+        "    base_url: https://api.example.com/v1",
+        "    api_key: sk-literal-must-not-leak",
+        "    model: m",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    process.env.SENTINEL_CFG_KEY = "resolved-secret-must-not-leak";
+    try {
+      const printed = await capture(() => main(["configure", "--print", "--config", source]));
+      expect(printed.code).toBe(0);
+
+      expect(printed.stdout).not.toContain("resolved-secret-must-not-leak");
+      expect(printed.stdout).not.toContain("sk-literal-must-not-leak");
+
+      // The reference survives verbatim, so the preview still reloads to the
+      // same effective config for anyone with the variable set.
+      expect(printed.stdout).toContain("${SENTINEL_CFG_KEY}");
+      // A literal has no reference to restore; it becomes a placeholder, and
+      // that substitution is announced rather than silent.
+      expect(printed.stdout).toContain("${YOUR_API_KEY_ENV_VAR}");
+      expect(printed.stderr).toMatch(/literals in the source config/);
+    } finally {
+      delete process.env.SENTINEL_CFG_KEY;
+    }
+  });
+
   it("supports doctor --json without running a live probe", async () => {
     process.env.HARNESS_DISPATCH_HTTP_TOKEN = "test-token";
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);

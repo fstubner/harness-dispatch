@@ -153,26 +153,39 @@ const ENV_VAR_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
  * that needed an api_key loses it with zero feedback, and doctor reports
  * the route "ready" right up until the first real call 401s.
  */
-function interpolateEnv(value: string, unsetVars: Set<string>): string {
+function interpolateEnv(
+  value: string,
+  unsetVars: Set<string>,
+  refs: Map<string, string>,
+): string {
   const m = ENV_VAR_RE.exec(value);
   if (!m) return value;
   const name = m[1]!;
   if (!(name in process.env)) unsetVars.add(name);
-  return process.env[name] ?? "";
+  const resolved = process.env[name] ?? "";
+  // Remember which reference produced this value so `configure` can emit the
+  // ${VAR} back instead of the secret it resolved to. Keyed by resolved value
+  // rather than by config path because interpolation runs over the raw tree
+  // before any of it is shaped into routes. Two variables holding the same
+  // secret collide, but harmlessly: either reference resolves to that same
+  // value, so emitting either is correct. Empty resolutions are skipped —
+  // they carry no secret and would collide with every other unset var.
+  if (resolved !== "") refs.set(resolved, value);
+  return resolved;
 }
 
 /** Walk an object tree and replace any "${VAR}" string leaves with env values. */
-function interpolateTree<T>(node: T, unsetVars: Set<string>): T {
+function interpolateTree<T>(node: T, unsetVars: Set<string>, refs: Map<string, string>): T {
   if (typeof node === "string") {
-    return interpolateEnv(node, unsetVars) as unknown as T;
+    return interpolateEnv(node, unsetVars, refs) as unknown as T;
   }
   if (Array.isArray(node)) {
-    return node.map((v) => interpolateTree(v, unsetVars)) as unknown as T;
+    return node.map((v) => interpolateTree(v, unsetVars, refs)) as unknown as T;
   }
   if (node !== null && typeof node === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-      out[k] = interpolateTree(v, unsetVars);
+      out[k] = interpolateTree(v, unsetVars, refs);
     }
     return out as unknown as T;
   }
@@ -1194,12 +1207,13 @@ export async function loadConfig(
 
   let raw: Record<string, unknown> = {};
   const unsetEnvVars = new Set<string>();
+  const envRefs = new Map<string, string>();
   if (path) {
     try {
       const text = await fs.readFile(path, "utf-8");
       const parsed = yaml.load(text);
       if (parsed && typeof parsed === "object") {
-        raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars);
+        raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
       }
     } catch (err: unknown) {
       // File not found -> auto-detect mode. Any other error -> rethrow.
@@ -1217,10 +1231,12 @@ export async function loadConfig(
   // Legacy full format: has a `services:` key -> use as-is.
   if (raw.services && typeof raw.services === "object") {
     const legacyCfg = buildLegacyConfig(raw);
+    const withRefs =
+      envRefs.size > 0 ? { ...legacyCfg, envRefs } : legacyCfg;
     if (envVarWarning !== undefined) {
-      return { ...legacyCfg, configWarnings: [...(legacyCfg.configWarnings ?? []), envVarWarning] };
+      return { ...withRefs, configWarnings: [...(withRefs.configWarnings ?? []), envVarWarning] };
     }
-    return legacyCfg;
+    return withRefs;
   }
 
   const disabled: string[] = Array.isArray(raw.disabled)
@@ -1258,6 +1274,7 @@ export async function loadConfig(
     services,
     disabled,
     ...topLevelSettings(raw),
+    ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;
