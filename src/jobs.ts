@@ -36,6 +36,7 @@ import type {
   DispatchResult,
   DispatcherEvent,
   RouteHints,
+  RouterConfig,
   RoutingDecision,
   WorkspacePolicy,
 } from "./types.js";
@@ -69,6 +70,10 @@ const ORPHAN_THRESHOLD_MS = 90_000;
  * attach/recovery feature keeps its evidence intact.
  */
 function withOrphanCheck(status: JobStatus): JobStatus {
+  // Waiting for a concurrency slot is not death: nothing is heartbeating for
+  // it by design, so the staleness rule below would misreport every job that
+  // waits longer than 90s. drainSlotQueue() is what moves it forward.
+  if (status.slotQueued) return status;
   if (status.status !== "running" && status.status !== "queued") return status;
   const beat = Date.parse(status.updatedAt);
   if (Number.isFinite(beat) && Date.now() - beat <= ORPHAN_THRESHOLD_MS) return status;
@@ -164,6 +169,14 @@ export interface JobStatus {
   instructions?: string;
   /** Set when workingDir was omitted and defaulted to the router's own cwd. */
   warning?: string;
+  /**
+   * Queued because the machine is at `max_concurrent_runs`, NOT because its
+   * owner died. Load-bearing for orphan detection: a slot-queued job has no
+   * process heartbeating for it, so without this flag the 90s staleness rule
+   * would report a job that is merely waiting its turn as a dead one.
+   * Cleared the moment a slot frees and its runner is spawned.
+   */
+  slotQueued?: true;
 }
 
 export interface JobManifest {
@@ -544,6 +557,99 @@ async function watchUntilTerminal(jobDir: string): Promise<void> {
   }
 }
 
+/**
+ * Default ceiling on agent CLIs running at once, machine-wide.
+ *
+ * 4 is a resource guard, not a throughput target. Measured 2026-08-03: 20
+ * dispatches to one route, 13 running concurrently, 10 of the 20 failing, one
+ * killed outright by a Rust OOM inside Codex. Agent CLIs each carry a model
+ * runtime; the binding constraint is memory, not cores, so this does NOT
+ * scale with CPU count. Override with `max_concurrent_runs:` in config.yaml
+ * (0 disables the bound).
+ */
+const DEFAULT_MAX_CONCURRENT_RUNS = 4;
+
+function maxConcurrentRuns(config: RouterConfig | undefined): number {
+  const configured = config?.maxConcurrentRuns;
+  if (configured !== undefined && Number.isFinite(configured) && configured >= 0) {
+    return configured;
+  }
+  return DEFAULT_MAX_CONCURRENT_RUNS;
+}
+
+/** Job dirs, oldest first by name — jobIds embed Date.now(), so name order is start order. */
+async function readJobStatuses(): Promise<Array<{ jobDir: string; status: JobStatus }>> {
+  const root = jobsRoot();
+  if (!existsSync(root)) return [];
+  const entries = await readdir(root, { withFileTypes: true });
+  const out: Array<{ jobDir: string; status: JobStatus }> = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const jobDir = path.join(root, entry.name);
+    try {
+      out.push({ jobDir, status: await readJson<JobStatus>(path.join(jobDir, "status.json")) });
+    } catch {
+      // Half-written or pruned mid-scan — not a live run either way.
+    }
+  }
+  return out;
+}
+
+/**
+ * Occupied slots: jobs actually executing right now. Counts `running` (and
+ * plain `queued` — a runner spawned but not yet started) only while the
+ * heartbeat is fresh, so a crashed runner's slot is reclaimed by the same
+ * ORPHAN_THRESHOLD_MS rule that already frees its status. Slot-queued jobs
+ * are waiting for a slot, not holding one.
+ */
+function countActiveRuns(statuses: Array<{ status: JobStatus }>): number {
+  let active = 0;
+  for (const { status } of statuses) {
+    if (status.slotQueued) continue;
+    if (status.status !== "running" && status.status !== "queued") continue;
+    const beat = Date.parse(status.updatedAt);
+    if (Number.isFinite(beat) && Date.now() - beat > ORPHAN_THRESHOLD_MS) continue;
+    active += 1;
+  }
+  return active;
+}
+
+/**
+ * Start slot-queued jobs, oldest first, until the machine is at its limit.
+ *
+ * Deliberately has no daemon behind it: this runs on every new dispatch and
+ * again as each runner exits, which between them covers every moment a slot
+ * can free. The cost of that choice is that if every runner dies while jobs
+ * are queued, the queue resumes on the next dispatch rather than immediately.
+ * Bounded waiting was the explicit alternative and was not chosen — a queued
+ * job keeps its jobId and its artifacts either way, so nothing is lost.
+ */
+export async function drainSlotQueue(
+  config: RouterConfig | undefined,
+  configPath: string | undefined,
+): Promise<void> {
+  const limit = maxConcurrentRuns(config);
+  if (limit === 0) return;
+  const runnerPath = resolveRunnerPath();
+  if (runnerPath === undefined) return;
+
+  const statuses = await readJobStatuses();
+  let active = countActiveRuns(statuses);
+  const waiting = statuses.filter((s) => s.status.slotQueued);
+
+  for (const { jobDir, status } of waiting) {
+    if (active >= limit) return;
+    const { slotQueued: _dropped, ...released } = status;
+    await updateStatus(jobDir, {
+      ...released,
+      updatedAt: timestamp(),
+      instructions: pollInstructions(status.jobId),
+    });
+    spawnDetachedRunner(runnerPath, jobDir, configPath);
+    active += 1;
+  }
+}
+
 function spawnDetachedRunner(runnerPath: string, jobDir: string, configPath: string | undefined): void {
   // The runner's own stdout/stderr go to a log inside the job dir so a
   // bootstrap crash (bad config, missing module) leaves evidence.
@@ -625,8 +731,27 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     return { status, completion };
   }
 
-  spawnDetachedRunner(runnerPath, jobDir, deps.holder.state.configPath);
-  return { status, completion: watchUntilTerminal(jobDir) };
+  // Concurrency gate. Every dispatch spawns its own detached runner, so an
+  // in-process semaphore would bound nothing — the count has to come off
+  // disk. The caller still gets its jobId back immediately either way, so the
+  // API contract is unchanged and only the start time can move.
+  const limit = maxConcurrentRuns(deps.holder.state.config);
+  if (limit === 0) {
+    spawnDetachedRunner(runnerPath, jobDir, deps.holder.state.configPath);
+    return { status, completion: watchUntilTerminal(jobDir) };
+  }
+
+  // Enqueue first, then let drainSlotQueue decide — rather than testing the
+  // limit here and spawning inline. Two reasons, both learned the hard way:
+  // this job's own `queued` status is already on disk, so an inline count
+  // included itself and deadlocked at limit 1; and a fresh dispatch arriving
+  // while others wait must not jump the queue, which only one FIFO drainer
+  // can guarantee. Whether this job starts now is then just "did the drain
+  // reach it".
+  await updateStatus(jobDir, { ...status, slotQueued: true });
+  await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
+  const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+  return { status: settled, completion: watchUntilTerminal(jobDir) };
 }
 
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;

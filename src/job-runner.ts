@@ -19,7 +19,7 @@
 import { existsSync } from "node:fs";
 
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
-import { executeJobDir } from "./jobs.js";
+import { drainSlotQueue, executeJobDir } from "./jobs.js";
 
 async function main(): Promise<void> {
   const jobDir = process.argv[2];
@@ -34,6 +34,15 @@ async function main(): Promise<void> {
     configPath !== undefined ? { configPath } : {},
   );
   await executeJobDir({ holder: new RuntimeHolder(state) }, jobDir);
+  // This runner's slot just freed — hand it to whoever is waiting. Doing it
+  // here (rather than in a daemon) is what keeps the queue moving between
+  // dispatches; a failure to drain must not fail the run that already
+  // succeeded, hence the swallow.
+  try {
+    await drainSlotQueue(state.config, configPath);
+  } catch {
+    // Next dispatch drains instead.
+  }
   // executeJobDir never throws (runJob writes failures to the job dir), but
   // dispatcher/OTEL handles can keep the loop alive — exit deliberately.
   process.exit(0);

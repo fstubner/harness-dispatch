@@ -522,6 +522,13 @@ default — set `retention: { jobs_days: N }` in `config.yaml` (or
 `HARNESS_DISPATCH_JOB_MAX_AGE_MS` for a millisecond override) to change that
 window.
 
+At most **4 agent CLIs run at once**, machine-wide. Dispatches past that limit
+wait in `queued` and start as slots free — you still get a `jobId` back
+immediately and nothing is rejected or lost, only delayed. The bound exists
+because agent CLIs are heavyweight processes, not fan-outable HTTP calls: a
+measured burst of 13 concurrent runs exhausted memory and failed half of them.
+Change it with `max_concurrent_runs: N` in `config.yaml`; `0` removes the bound.
+
 Prompts and outputs otherwise flow only to the harnesses/endpoints you
 configured. The router's only network call by default is the leaderboard
 refresh — a GET of public Arena ELO benchmark data from `api.wulong.dev` used
