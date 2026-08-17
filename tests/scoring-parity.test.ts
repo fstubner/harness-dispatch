@@ -12,57 +12,35 @@
  * the routing hints, and the expected winning service + final_score.
  */
 
+// Persistence only — NOT a re-implementation of CircuitBreaker.
+//
+// The real CircuitBreaker now runs in these suites (it previously had a
+// hand-written mock carrying a forceTrip() method production does not have,
+// so the tests could not be pointed at the real threshold logic at all).
+// BreakerStore stays stubbed because saving calls Date.now(), and several
+// tests below drive Date.now through an exact mocked call sequence to check
+// the whole-call timeout budget — real persistence silently consumes entries
+// from that sequence. Persistence has its own coverage in
+// breaker-store.test.ts and router-restart-survival.test.ts, both against the
+// real class.
+vi.mock("../src/breaker-store.js", () => ({
+  BreakerStore: class {
+    loadAll() {
+      return {};
+    }
+    save() {}
+  },
+}));
+
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 // ---- Mocks (same shape as router.test.ts) -------------------------------
 
-vi.mock("../src/circuit-breaker.js", () => {
-  class CircuitBreaker {
-    failures = 0;
-    private _tripped = false;
-    get isTripped(): boolean {
-      return this._tripped;
-    }
-    recordFailure(): void {
-      this.failures += 1;
-    }
-    recordSuccess(): void {
-      this.failures = 0;
-      this._tripped = false;
-    }
-    trip(): void {
-      this._tripped = true;
-    }
-    forceTrip(): void {
-      this._tripped = true;
-    }
-    cooldownRemaining(): number {
-      return 0;
-    }
-    status(): unknown {
-      return { tripped: this._tripped, failures: this.failures };
-    }
-    snapshot(): { failures: number; blockedUntilMs: number | null } {
-      return { failures: this.failures, blockedUntilMs: null };
-    }
-    restore(): void {
-      /* not exercised by scoring-parity fixtures */
-    }
-  }
-  return { CircuitBreaker };
-});
 
-vi.mock("../src/breaker-store.js", () => {
-  class BreakerStore {
-    loadAll(): Record<string, unknown> {
-      return {};
-    }
-    save(): void {
-      /* no-op for tests */
-    }
-  }
-  return { BreakerStore };
-});
 
 vi.mock("../src/quota.js", () => {
   class QuotaCache {
@@ -109,6 +87,23 @@ import { QuotaCache } from "../src/quota.js";
 import { LeaderboardCache } from "../src/leaderboard.js";
 import type { DispatchResult, RouterConfig, RouteHints, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
+
+/**
+ * Fresh breaker state per test.
+ *
+ * These suites used to vi.mock CircuitBreaker and BreakerStore with
+ * hand-written stand-ins, so persistence was a no-op and tests could not
+ * interfere. Running the real classes exposed genuine pollution: a breaker
+ * tripped by one test was persisted and rehydrated by the next Router, which
+ * then skipped the route and failed unrelated assertions. Isolating the state
+ * directory per test is the fix; sharing it was never intended.
+ */
+beforeEach(() => {
+  process.env.HARNESS_DISPATCH_STATE_DIR = mkdtempSync(
+    path.join(tmpdir(), "hr-router-state-"),
+  );
+});
+
 
 // ---- Helpers -------------------------------------------------------------
 
@@ -360,7 +355,7 @@ function buildContext(fixture: Fixture): {
   const router = new Router(config, quota, dispatchers, leaderboard);
   for (const name of fixture.brokenServices ?? []) {
     const b = router.getBreaker(name);
-    (b as unknown as { forceTrip(): void }).forceTrip();
+    b!.trip();
   }
   return { router, quota, leaderboard };
 }
