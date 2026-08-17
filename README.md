@@ -53,7 +53,7 @@ timeout — or to the server itself restarting mid-run.**
 
 ## Install
 
-Needs Node.js `>=24.15.0` and at least one harness or endpoint.
+Needs Node.js `>=22.22.2` (so current LTS works) and at least one harness or endpoint.
 
 ```bash
 npm install -g harness-dispatch

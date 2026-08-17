@@ -36,16 +36,46 @@ function flagValue(flag) {
 }
 const configOverride = flagValue("--config");
 
+/** Quote one argument for cmd.exe, doubling any embedded quote. */
+function quoteForCmd(arg) {
+  const escaped = String(arg).replace(/"/g, '""');
+  return /[\s&|<>^()"]/.test(String(arg)) ? `"${escaped}"` : escaped;
+}
+
+/** Exactly the string the win32 branch below executes, so --dry-run is honest. */
+function windowsCommandLine(command, commandArgs) {
+  return `${quoteForCmd(command)} ${commandArgs.map(quoteForCmd).join(" ")}`;
+}
+
 function run(command, commandArgs) {
   if (dryRun) {
-    console.log(`[dry-run] ${command} ${commandArgs.join(" ")}`);
+    // Print what would ACTUALLY run. Previously this joined the raw args with
+    // spaces while the real win32 path quoted them, so --dry-run showed a
+    // different command than it would execute — which is precisely how a
+    // quoting bug hides from the flag meant to reveal it.
+    console.log(
+      process.platform === "win32"
+        ? `[dry-run] ${windowsCommandLine(command, commandArgs)}`
+        : `[dry-run] ${command} ${commandArgs.join(" ")}`,
+    );
     return { status: 0 };
   }
   if (process.platform === "win32") {
     // codex is a .cmd shim on Windows: needs shell resolution, and Node
     // deprecates args-array + shell:true, so quote into a single string.
-    const quoted = commandArgs.map((a) => (/[\s&|<>^]/.test(a) ? `"${a}"` : a)).join(" ");
-    return spawnSync(`${command} ${quoted}`, { stdio: "inherit", shell: true });
+    //
+    // The metacharacter set below now includes " and (), which the previous
+    // version omitted: an argument carrying an embedded quote closed the
+    // quoting early and let a chained `&` command run — reproduced with
+    // `--config 'x" & echo INJECTED & rem "'`. Embedded quotes are doubled,
+    // cmd.exe's own escape, so the payload stays one argument. Reaching this
+    // requires the user to pass themselves a hostile --config, so it is
+    // hardening rather than a live hole, but it is the same class windows-cmd.ts
+    // already fixed on the dispatch path and should not survive here.
+    return spawnSync(windowsCommandLine(command, commandArgs), {
+      stdio: "inherit",
+      shell: true,
+    });
   }
   return spawnSync(command, commandArgs, { stdio: "inherit" });
 }
