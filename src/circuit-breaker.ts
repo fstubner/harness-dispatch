@@ -9,6 +9,25 @@
 export const CIRCUIT_BREAKER_THRESHOLD = 5;
 export const CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 300;
 
+/**
+ * Hard ceiling on any cooldown, in seconds (24h).
+ *
+ * Belt-and-braces alongside the clamp in rate-limit-headers.ts. That one
+ * guards the parser; this one guards the class, because `retryAfter` reaches
+ * trip()/recordFailure() from dispatcher code paths generally, not only from
+ * that parser — and because a cooldown is now written to disk and rehydrated
+ * by later processes, so a bad value stops being a per-process nuisance and
+ * becomes a permanent one.
+ */
+export const MAX_COOLDOWN_SEC = 24 * 60 * 60;
+
+function boundedCooldown(retryAfterSec?: number): number {
+  if (retryAfterSec === undefined || !Number.isFinite(retryAfterSec) || retryAfterSec <= 0) {
+    return CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
+  }
+  return Math.min(retryAfterSec, MAX_COOLDOWN_SEC);
+}
+
 function monotonicSec(): number {
   return performance.now() / 1000;
 }
@@ -45,10 +64,7 @@ export class CircuitBreaker {
     this.failures += 1;
     if (this.failures >= CIRCUIT_BREAKER_THRESHOLD) {
       this.trippedAt = monotonicSec();
-      this.cooldown =
-        retryAfterSec && retryAfterSec > 0
-          ? retryAfterSec
-          : CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
+      this.cooldown = boundedCooldown(retryAfterSec);
     }
   }
 
@@ -59,10 +75,7 @@ export class CircuitBreaker {
   /** Immediately trip — use on 429 or explicit rate-limit response. */
   trip(retryAfterSec?: number): void {
     this.trippedAt = monotonicSec();
-    this.cooldown =
-      retryAfterSec && retryAfterSec > 0
-        ? retryAfterSec
-        : CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
+    this.cooldown = boundedCooldown(retryAfterSec);
   }
 
   cooldownRemaining(): number {
@@ -113,7 +126,10 @@ export class CircuitBreaker {
       this.trippedAt = null;
       return;
     }
-    this.cooldown = remainingSec;
+    // Clamped on the way back in too: state written by an older build (or a
+    // hand-edited file) can carry a deadline centuries out, and hydrating it
+    // verbatim would make the ceiling above trivially bypassable.
+    this.cooldown = Math.min(remainingSec, MAX_COOLDOWN_SEC);
     this.trippedAt = monotonicSec();
   }
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -7,39 +7,38 @@ import { BreakerStore } from "../src/breaker-store.js";
 
 describe("BreakerStore", () => {
   let dir: string;
-  let stateFile: string;
+  let stateDir: string;
 
   beforeEach(() => {
     dir = mkdtempSync(path.join(tmpdir(), "hr-breaker-store-"));
-    stateFile = path.join(dir, "breaker_state.json");
+    stateDir = path.join(dir, "breaker_state");
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("loadAll() returns {} when the state file doesn't exist yet", () => {
-    const store = new BreakerStore(stateFile);
-    expect(store.loadAll()).toEqual({});
+  it("loadAll() returns {} when nothing has been persisted yet", () => {
+    expect(new BreakerStore(stateDir).loadAll()).toEqual({});
   });
 
   it("save() then loadAll() round-trips a tripped snapshot", () => {
-    const store = new BreakerStore(stateFile);
+    const store = new BreakerStore(stateDir);
     store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
     expect(store.loadAll()).toEqual({
       codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
     });
   });
 
-  it("save() with a fully-healthy snapshot removes any existing entry instead of writing a no-op record", () => {
-    const store = new BreakerStore(stateFile);
+  it("save() with a fully-healthy snapshot removes the record instead of writing a no-op", () => {
+    const store = new BreakerStore(stateDir);
     store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
     store.save("codex_cli", { failures: 0, blockedUntilMs: null });
     expect(store.loadAll()).toEqual({});
   });
 
   it("tracks multiple services independently", () => {
-    const store = new BreakerStore(stateFile);
+    const store = new BreakerStore(stateDir);
     store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
     store.save("claude_code_cli", { failures: 2, blockedUntilMs: null });
     expect(store.loadAll()).toEqual({
@@ -49,7 +48,7 @@ describe("BreakerStore", () => {
   });
 
   it("a later save() for one service doesn't clobber another service's entry", () => {
-    const store = new BreakerStore(stateFile);
+    const store = new BreakerStore(stateDir);
     store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
     store.save("claude_code_cli", { failures: 1, blockedUntilMs: null });
     store.save("codex_cli", { failures: 0, blockedUntilMs: null });
@@ -58,33 +57,65 @@ describe("BreakerStore", () => {
     });
   });
 
-  it("loadAll() tolerates a corrupted state file by returning {}", () => {
-    writeFileSync(stateFile, "{ not valid json");
-    const store = new BreakerStore(stateFile);
-    expect(store.loadAll()).toEqual({});
+  it("gives each route its own file, so concurrent writers cannot clobber each other", () => {
+    // This is the whole point of the per-route split. The previous
+    // single-blob format did read-modify-write over one file and lost 600 of
+    // 800 writes under four concurrent processes; separate files make that
+    // impossible by construction rather than by locking.
+    const store = new BreakerStore(stateDir);
+    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("claude_code_cli", { failures: 3, blockedUntilMs: null });
+    const files = readdirSync(stateDir).filter((f) => f.endsWith(".json")).sort();
+    expect(files).toEqual(["claude_code_cli.json", "codex_cli.json"]);
   });
 
-  it("loadAll() skips malformed entries but keeps well-formed ones", () => {
-    writeFileSync(
-      stateFile,
-      JSON.stringify({
-        codex_cli: { failures: 3, blockedUntilMs: 1_900_000_000_000 },
-        garbage_entry: null,
-        weird_entry: "not an object",
-      }),
-    );
-    const store = new BreakerStore(stateFile);
-    expect(store.loadAll()).toEqual({
+  it("keeps a route name with path separators inside the state directory", () => {
+    const store = new BreakerStore(stateDir);
+    store.save("../../escape", { failures: 1, blockedUntilMs: 1_900_000_000_000 });
+    // Nothing written above the state dir, and the name still round-trips.
+    expect(readdirSync(dir).sort()).toEqual(["breaker_state"]);
+    expect(store.loadAll()["../../escape"]).toEqual({
+      failures: 1,
+      blockedUntilMs: 1_900_000_000_000,
+    });
+  });
+
+  it("loadAll() skips an unreadable record but keeps the well-formed ones", () => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "codex_cli.json"), JSON.stringify({ failures: 3, blockedUntilMs: 1_900_000_000_000 }));
+    writeFileSync(path.join(stateDir, "garbage.json"), "{ not valid json");
+    writeFileSync(path.join(stateDir, "nulled.json"), "null");
+    expect(new BreakerStore(stateDir).loadAll()).toEqual({
       codex_cli: { failures: 3, blockedUntilMs: 1_900_000_000_000 },
     });
   });
 
-  it("writes are atomic — no leftover .tmp files after a save()", () => {
-    const store = new BreakerStore(stateFile);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
-    const raw = readFileSync(stateFile, "utf-8");
-    expect(JSON.parse(raw)).toEqual({
+  it("migrates state written by the pre-split single-blob format, then removes it", () => {
+    // Without this an upgrade silently drops every live cooldown — the exact
+    // failure persistence exists to prevent, reintroduced by the fix for it.
+    const legacy = path.join(dir, "breaker_state.json");
+    writeFileSync(
+      legacy,
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+    );
+    const store = new BreakerStore(stateDir);
+    expect(store.loadAll()).toEqual({
       codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+    });
+    expect(readdirSync(dir)).not.toContain("breaker_state.json");
+  });
+
+  it("leaves no .tmp files behind after a save()", () => {
+    // The previous version of this test was named for this guarantee and
+    // asserted neither half of it — it only re-read the state file. Now it
+    // actually lists the directory.
+    const store = new BreakerStore(stateDir);
+    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    const entries = readdirSync(stateDir);
+    expect(entries.filter((f) => f.includes(".tmp"))).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(stateDir, "codex_cli.json"), "utf-8"))).toEqual({
+      failures: 5,
+      blockedUntilMs: 1_900_000_000_000,
     });
   });
 });

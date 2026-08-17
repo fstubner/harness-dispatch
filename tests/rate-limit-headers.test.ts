@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_RETRY_AFTER_SEC,
   parseLimit,
   parseRemaining,
   parseRetryAfter,
@@ -194,6 +195,43 @@ describe("parseRetryAfter — epoch reset", () => {
       "x-ratelimit-reset": String(nowSec + 9999),
     });
     expect(result).toBe(5);
+  });
+});
+
+describe("parseRetryAfter — implausible values are clamped, not trusted", () => {
+  // The gap these close is not "malformed string" — the suite already covered
+  // that thoroughly. It is a correctly-formatted number meaning something
+  // absurd. Unclamped, these flowed to CircuitBreaker.trip() and, since
+  // breaker state now persists, removed a route across restarts: a
+  // millisecond-epoch header measured out at a 56,600-year cooldown.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-14T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("clamps an x-ratelimit-reset sent in MILLISECONDS instead of seconds", () => {
+    const ms = Date.now() + 60_000;
+    const result = parseRetryAfter({ "x-ratelimit-reset": String(ms) });
+    expect(result).toBe(MAX_RETRY_AFTER_SEC);
+    expect(result).toBeLessThan(365 * 24 * 60 * 60);
+  });
+
+  it("clamps a Retry-After HTTP-date a year out", () => {
+    const nextYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+    expect(parseRetryAfter({ "retry-after": nextYear })).toBe(MAX_RETRY_AFTER_SEC);
+  });
+
+  it("clamps an absurd delta-seconds value", () => {
+    expect(parseRetryAfter({ "retry-after": "999999999" })).toBe(MAX_RETRY_AFTER_SEC);
+  });
+
+  it("leaves a plausible value untouched", () => {
+    expect(parseRetryAfter({ "retry-after": "30" })).toBe(30);
+    const nowSec = Math.floor(Date.now() / 1000);
+    expect(parseRetryAfter({ "x-ratelimit-reset": String(nowSec + 120) })).toBeCloseTo(120, 1);
   });
 });
 
