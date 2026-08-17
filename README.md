@@ -1,47 +1,59 @@
 # harness-dispatch
 
-Delegate coding tasks to the agent CLIs you already pay for. harness-dispatch is a
-local MCP server that turns the coding harnesses on your machine (Claude Code,
-Codex, Cursor Agent, Antigravity CLI) and any local or remote API endpoint into
-tools any AI can call — routing each task to the best-fit agent, spending the
-flat-rate subscription quota you already own first. Routes with no billing backstop
-at all — a raw metered API key, or unknown billing — stay blocked until you opt in.
+**Route whole coding tasks — not API requests — to the agent CLIs you already pay for.**
 
-Exposing harnesses as explicit tools is more reliable than telling an agent to shell
-out to another CLI: models are trained on tool calling, so they actually use tools
-they are given. And it routes whole tasks, not API requests — each harness keeps its
-own scaffolding, test loop, and codebase context; there's no proxy in between. Long
-tasks run as async jobs: start one, get an id back immediately, check for partial
-output, collect the result when it finishes. Runs execute in a detached runner
-process, so nothing is lost to a client timeout — or to the server itself
-restarting mid-run.
-(There is no Gemini CLI dispatcher; Google discontinued that CLI's backend in
-mid-2026, and Antigravity CLI is its replacement.)
+Each harness keeps its own scaffolding, test loop, and codebase index. There's no
+proxy in between and nothing is re-implemented: Claude Code stays Claude Code. One
+orchestrating agent picks the right one per task and spends your flat-rate
+subscription quota before anything metered.
 
-**What this does on your machine**, stated plainly before you install it: it spawns the
-CLI subprocesses above with your prompts, which can read and write files under the
-`workingDir` you pass it (this is the point — it's a coding agent router) and, depending
-on the workspace/safety policy in effect, run shell commands via those CLIs. Running
-`serve` additionally binds a local HTTP port (loopback by default, bearer-token gated —
-see [HTTP Surface](#http-surface) before pointing `--host` anywhere else). Nothing here
-is unusual for a coding-agent tool, but it's worth having in one place rather than
-inferred from separate sections.
+It's a local MCP server, so the harnesses on your machine (Claude Code, Codex,
+Cursor Agent, Antigravity CLI, plus any local or remote OpenAI-compatible endpoint)
+become tools any AI can call. Exposing them as real tools beats asking an agent to
+shell out to another CLI: models are trained on tool calling, so they actually use
+the tools they're given. (No Gemini CLI: Google discontinued that CLI's backend in
+mid-2026, and Antigravity CLI replaced it.)
 
-**A configured harness runs automatically** — nothing extra to switch on. If that
-harness's account has paid/overage billing enabled on the *provider's* side (Cursor's
-on-demand billing, Claude's usage credits, Codex's flexible credits, a raw metered API
-key, etc.), harness-dispatch will use it too — it does not detect or prevent provider-side
-billing state. It only blocks a route by default when there's no provider-side backstop
-at all (a raw metered API key, or unknown billing), until you set `allow_paid_usage: true`
-on it. See [Adding a harness](#adding-a-harness) for the config, and `status --json` /
-`status`'s `note:` lines for a given route's billing classification.
+## What it looks like
 
-## Requirements
+Your agent calls one tool:
 
-- Node.js `>=24.15.0`
-- At least one configured harness or OpenAI-compatible endpoint
+```json
+{
+  "prompt": "Port the retry logic in src/net/ to the new backoff helper, then run the tests.",
+  "workingDir": "/path/to/project",
+  "hints": { "taskType": "execute" }
+}
+```
+
+Quick tasks come straight back:
+
+```json
+{
+  "mode": "single",
+  "completed": true,
+  "success": true,
+  "route": "codex_cli",
+  "model": "gpt-5.6-terra",
+  "output": "Ported 4 call sites to withBackoff(); 118 tests pass.",
+  "durationMs": 47210,
+  "routing": { "tier": 1, "taskType": "execute", "reason": "tier 1 best (3 available)" }
+}
+```
+
+Slow ones hand back a `jobId` after 25 seconds instead, and keep running:
+
+```json
+{ "mode": "single", "completed": false, "jobId": "job-1786977316001-b49d1232" }
+```
+
+Carry on working, then call `job_status` with that id for a live output tail or the
+finished result. The run lives in a detached process, so **nothing is lost to a client
+timeout — or to the server itself restarting mid-run.**
 
 ## Install
+
+Needs Node.js `>=24.15.0` and at least one harness or endpoint.
 
 ```bash
 npm install -g harness-dispatch
@@ -49,39 +61,17 @@ harness-dispatch configure --yes
 harness-dispatch doctor --live
 ```
 
-`configure --yes` detects installed harnesses and writes `config.yaml`.
-Without `--yes` it only previews what it would detect and writes nothing —
-useful to check first, but not a substitute for the real run above. `doctor`
-then verifies the install end-to-end: binary + config load, harness
-detection, auth/billing classification, and route readiness. `--live` goes one
-step further and routes a single tiny prompt through the best eligible route so
-you see a real completion before wiring the server into your agent. The live
-probe respects billing policy — it never touches paid or unknown-billing routes
-unless you pass `--allow-paid`.
+`configure --yes` detects installed harnesses and writes `config.yaml`; without
+`--yes` it previews and writes nothing. `doctor` then checks the whole chain:
+binary, config load, harness detection, auth and billing classification, route
+readiness. `--live` goes further and routes one tiny real prompt, so you see a
+completion before wiring anything into your agent. The live probe never touches paid or
+unknown-billing routes unless you pass `--allow-paid`.
 
-Your Claude Code / Codex / Cursor subscriptions run by default, no opt-in needed
-— `configure`'s output tells you if anything's blocked and why. See
-[Adding a harness](#adding-a-harness) below for the config and the paid-usage note.
+Your Claude Code / Codex / Cursor subscriptions run by default with no opt-in;
+`configure` tells you if anything is blocked and why.
 
-> This project was renamed from `harness-router` to `harness-dispatch` — the npm
-> package, CLI command, env var prefix (`HARNESS_DISPATCH_*`), and MCP resource URIs
-> (`harness-dispatch://status`) all changed together. If you have an older install,
-> `npm uninstall -g harness-router && npm install -g harness-dispatch` and update any
-> `mcpServers`/`claude_desktop_config.json` entry to invoke `harness-dispatch`, not the
-> old command. Two older packages predate this rename and are no longer maintained:
-> `harness-router` (`0.3.2` on the registry) and the separately-published
-> `harness-router-mcp` (`0.2.0`) — both lack `usage`, `/v1/models`, `/v1/usage`,
-> Antigravity support, and every fix described in this README. Note that `npx -y
-> harness-dispatch` (used by the plugin's fallback launch path, see
-> [plugin/README.md](./plugin/README.md)) resolves to whatever is currently on the npm
-> registry, which can lag behind a local clone's `dist/`. Run `npm ls -g harness-dispatch`
-> to check which version is actually installed.
-
-You can also run without a global install:
-
-```bash
-npx harness-dispatch configure
-```
+No global install needed either: `npx harness-dispatch configure`.
 
 ### Plugin install (Claude Code / Claude Desktop / Codex)
 
@@ -91,6 +81,56 @@ The `plugin/` directory packages the MCP server plus a delegation skill and
 `/plugin marketplace add <repo path or URL>` then
 `/plugin install harness-dispatch@harness-dispatch`. Codex:
 `node plugin/scripts/install-codex.mjs`.
+
+## What it does on your machine
+
+Stated plainly, up front, rather than left to be inferred:
+
+- It **spawns the CLIs above as subprocesses** with your prompts.
+- Those CLIs **read and write files** under the `workingDir` you pass (that's the
+  point of the tool) and **run shell commands**, depending on the workspace and
+  safety policy in effect.
+- At most **4 agent CLIs run at once**; extra dispatches queue and start as slots
+  free. Tune with `max_concurrent_runs`.
+- `serve` additionally binds a local HTTP port: loopback only by default,
+  bearer-token gated. Read [HTTP Surface](#http-surface) before pointing `--host`
+  anywhere else.
+
+None of this is unusual for a coding-agent tool. It's here in one place so you can
+decide before installing rather than after.
+
+## Billing, and what it can't promise
+
+**A configured harness runs automatically**, with nothing to switch on. Routes that
+have no billing backstop at all, meaning a raw metered API key or billing it can't
+classify, stay blocked until you set `allow_paid_usage: true` on them.
+
+The honest limit: if a harness's account already has paid or overage billing switched
+on at the **provider** (Cursor on-demand, Claude usage credits, Codex flexible
+credits), harness-dispatch will spend that too. It cannot see or change provider-side
+billing state. What it does is refuse routes where *no* provider-side ceiling exists
+at all.
+
+Run `status` (or `status --json`) for any route's billing classification; the `note:`
+lines spell out the reasoning per route.
+
+<details>
+<summary>Renamed from <code>harness-router</code> — upgrade notes</summary>
+
+The npm package, CLI command, env var prefix (`HARNESS_DISPATCH_*`), and MCP resource
+URIs (`harness-dispatch://status`) all changed together. From an older install:
+`npm uninstall -g harness-router && npm install -g harness-dispatch`, then update any
+`mcpServers` / `claude_desktop_config.json` entry to invoke `harness-dispatch`.
+
+Two packages predate the rename and are unmaintained: `harness-router` (`0.3.2`) and
+the separately-published `harness-router-mcp` (`0.2.0`). Both lack `usage`,
+`/v1/models`, `/v1/usage`, Antigravity support, and every fix described here.
+
+`npx -y harness-dispatch`, the plugin's fallback launch path, resolves to whatever
+is currently on the npm registry, which can lag a local clone's `dist/`. Check with
+`npm ls -g harness-dispatch`.
+
+</details>
 
 ## Adding a harness
 
