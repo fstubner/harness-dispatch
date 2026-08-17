@@ -21,6 +21,15 @@ export const CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 300;
  */
 export const MAX_COOLDOWN_SEC = 24 * 60 * 60;
 
+/**
+ * Gap after which the consecutive-failure count restarts (30 min).
+ *
+ * Without this the counter only ever reset on success, so five failures
+ * separated by days tripped the breaker as readily as five in a burst — the
+ * opposite of what a breaker is for.
+ */
+export const FAILURE_DECAY_SEC = 30 * 60;
+
 function boundedCooldown(retryAfterSec?: number): number {
   if (retryAfterSec === undefined || !Number.isFinite(retryAfterSec) || retryAfterSec <= 0) {
     return CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
@@ -46,6 +55,7 @@ export interface CircuitBreakerSnapshot {
 
 export class CircuitBreaker {
   private failures = 0;
+  private lastFailureAt: number | null = null;
   private trippedAt: number | null = null;
   private cooldown: number = CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
 
@@ -61,6 +71,15 @@ export class CircuitBreaker {
   }
 
   recordFailure(retryAfterSec?: number): void {
+    // Decay first: five failures spread across a week are not the same signal
+    // as five in a row, but the counter never reset except on success, so a
+    // route that fails rarely eventually tripped anyway. Any gap longer than
+    // the decay window starts the count over.
+    const now = monotonicSec();
+    if (this.lastFailureAt !== null && now - this.lastFailureAt > FAILURE_DECAY_SEC) {
+      this.failures = 0;
+    }
+    this.lastFailureAt = now;
     this.failures += 1;
     if (this.failures >= CIRCUIT_BREAKER_THRESHOLD) {
       this.trippedAt = monotonicSec();
@@ -135,6 +154,7 @@ export class CircuitBreaker {
 
   private reset(): void {
     this.failures = 0;
+    this.lastFailureAt = null;
     this.trippedAt = null;
     this.cooldown = CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC;
   }

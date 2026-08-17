@@ -33,7 +33,7 @@ import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
 import { getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobStatus } from "../jobs.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { buildStatus, buildUsage } from "../status.js";
+import { buildStatus, buildUsage, redactEndpointHost } from "../status.js";
 import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
@@ -785,7 +785,7 @@ async function fetchEndpointModels(
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
-      return { route, error: `GET ${url} -> HTTP ${res.status}` };
+      return { route, error: `GET ${redactEndpointHost(url)} -> HTTP ${res.status}` };
     }
     const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
     const models = (body.data ?? [])
@@ -793,7 +793,10 @@ async function fetchEndpointModels(
       .filter((id): id is string => typeof id === "string");
     return { route, models, source: "live" };
   } catch (err) {
-    return { route, error: `GET ${url} failed: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      route,
+      error: `GET ${redactEndpointHost(url)} failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 

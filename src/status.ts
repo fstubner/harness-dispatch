@@ -30,6 +30,31 @@ import { workspacePolicyFor } from "./workspaces.js";
  * one structural fallback: OpenAI-compatible endpoints all support the
  * standard GET /models catalog, hint or no hint.
  */
+/**
+ * Replace a private endpoint host with a stable placeholder for output that
+ * gets shared.
+ *
+ * `usage` output, the model-discovery hint and endpoint fetch errors all
+ * quoted the full base_url, so a private host — a `.ts.net` tailnet name, an
+ * internal DNS entry — travelled into anything a user pastes into an issue.
+ * The scheme, port and path carry all the diagnostic value; the hostname
+ * carries none of it and is the only part that identifies infrastructure.
+ *
+ * Loopback is left intact: "localhost" tells the reader something useful and
+ * discloses nothing.
+ */
+export function redactEndpointHost(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return baseUrl;
+    url.hostname = "<endpoint-host>";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return "<endpoint>";
+  }
+}
+
 function modelDiscoveryHint(route: {
   type: ServiceConfig["type"];
   modelHint?: string;
@@ -37,7 +62,7 @@ function modelDiscoveryHint(route: {
 }): string | undefined {
   if (route.modelHint) return route.modelHint;
   if (route.type === "openai_compatible" && route.baseUrl) {
-    return `Standard OpenAI-compatible catalog: GET ${route.baseUrl.replace(/\/+$/, "")}/models`;
+    return `Standard OpenAI-compatible catalog: GET ${redactEndpointHost(route.baseUrl)}/models`;
   }
   return undefined;
 }
