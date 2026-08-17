@@ -424,6 +424,11 @@ function topLevelSettings(raw: Record<string, unknown>): Partial<RouterConfig> {
     const days = num((retentionRaw as Record<string, unknown>).jobs_days, Number.NaN);
     if (Number.isFinite(days) && days >= 0) out.retention = { jobsDays: days };
   }
+  const leaderboardRaw = raw.leaderboard;
+  if (leaderboardRaw !== null && typeof leaderboardRaw === "object") {
+    const enabled = (leaderboardRaw as Record<string, unknown>).enabled;
+    if (typeof enabled === "boolean") out.leaderboard = { enabled };
+  }
   const maxRuns = num(raw.max_concurrent_runs, Number.NaN);
   if (Number.isFinite(maxRuns) && maxRuns >= 0) out.maxConcurrentRuns = Math.floor(maxRuns);
   return out;

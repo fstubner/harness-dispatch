@@ -1,3 +1,7 @@
+// Arena scoring is opt-in as of the leaderboard gate, so these suites — which
+// exist to test the ELO paths themselves — construct the cache with
+// { enabled: true }. The default-off behaviour is covered in
+// leaderboard-optin.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -156,7 +160,7 @@ describe("LeaderboardCache.getQualityScore", () => {
     installFetch(mock);
 
     // Use a fresh cache with a path that won't load any benchmark file.
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     const { qualityScore, elo } = await cache.getQualityScore(
       "testmodel",
       "medium",
@@ -173,7 +177,7 @@ describe("LeaderboardCache.getQualityScore", () => {
     });
     installFetch(mock);
 
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     const { qualityScore, elo } = await cache.getQualityScore(
       "unknown-xyz",
       "high",
@@ -189,7 +193,7 @@ describe("LeaderboardCache.getQualityScore", () => {
     });
     installFetch(mock);
 
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     const { qualityScore } = await cache.getQualityScore("m", undefined);
     expect(qualityScore).toBeCloseTo(0.8, 8);
   });
@@ -202,7 +206,7 @@ describe("LeaderboardCache.autoTier", () => {
         body: { models: [{ model: "A", score: TIER1_ELO_MIN }] },
       }),
     );
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     expect(await cache.autoTier("a", "medium", 3)).toBe(1);
   });
 
@@ -212,7 +216,7 @@ describe("LeaderboardCache.autoTier", () => {
         body: { models: [{ model: "B", score: TIER2_ELO_MIN }] },
       }),
     );
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     expect(await cache.autoTier("b", "medium", 3)).toBe(2);
   });
 
@@ -222,7 +226,7 @@ describe("LeaderboardCache.autoTier", () => {
         body: { models: [{ model: "C", score: 1199 }] },
       }),
     );
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     expect(await cache.autoTier("c", "medium", 1)).toBe(3);
   });
 
@@ -232,7 +236,7 @@ describe("LeaderboardCache.autoTier", () => {
         body: { models: [{ model: "D", score: 1325 }] },
       }),
     );
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     // 1325 + 25 (high boost) = 1350 ≥ TIER1_ELO_MIN → tier 1
     expect(await cache.autoTier("d", "high", 3)).toBe(1);
     // Without the boost it would be tier 2.
@@ -240,7 +244,7 @@ describe("LeaderboardCache.autoTier", () => {
 
   it("falls back to fallbackTier for unknown model", async () => {
     installFetch(makeFetchMock({ body: { models: [] } }));
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     expect(await cache.autoTier("unknown", "medium", 2)).toBe(2);
   });
 });
@@ -257,7 +261,7 @@ describe("LeaderboardCache fetch retry suppression", () => {
     });
     globalThis.fetch = mock as unknown as typeof fetch;
 
-    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json");
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     const first = await cache.getElo("anything");
     expect(first).toBeNull();
     expect(mock).toHaveBeenCalledTimes(1);

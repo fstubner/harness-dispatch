@@ -569,10 +569,22 @@ because agent CLIs are heavyweight processes, not fan-outable HTTP calls: a
 measured burst of 13 concurrent runs exhausted memory and failed half of them.
 Change it with `max_concurrent_runs: N` in `config.yaml`; `0` removes the bound.
 
-Prompts and outputs otherwise flow only to the harnesses/endpoints you
-configured. The router's only network call by default is the leaderboard
-refresh — a GET of public Arena ELO benchmark data from `api.wulong.dev` used
-for route scoring; it sends nothing about you or your prompts.
+Prompts and outputs flow only to the harnesses/endpoints you configured. **The
+router makes no other network call by default.**
+
+Routes rank on the `tier` and `weight` you set. Optionally, public Arena ELO
+benchmark data can inform ranking and derive tiers automatically:
+
+```yaml
+leaderboard:
+  enabled: true    # default false
+```
+
+Turning it on adds one GET to `api.wulong.dev` per process, refreshed daily.
+It sends nothing about you or your prompts. It is off by default because a
+benchmark maintained elsewhere should not quietly reorder the subscriptions
+you are paying for, and because a routing tool should not need the network to
+decide which of your local CLIs to run.
 
 ## Development
 

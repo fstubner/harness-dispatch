@@ -395,6 +395,12 @@ export interface RouterConfig {
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
   /**
+   * Arena ELO scoring. OFF by default: routing ranks on the `tier` and
+   * `weight` you set, and the router makes no outbound request. Enable to let
+   * public benchmark scores influence ranking and tier auto-derivation.
+   */
+  leaderboard?: { enabled?: boolean };
+  /**
    * Resolved secret -> the `${VAR}` reference it came from, for every
    * `${VAR}` in the config file that resolved to a non-empty value.
    *
