@@ -55,7 +55,7 @@ describe("detached job runner", () => {
         "utf8",
       );
 
-      const jobId = "job-0000000000002-runner";
+      const jobId = "job-1786977300002-0f0ccccc";
       const jobDir = path.join(tmpDir, jobId);
       await fs.mkdir(path.join(jobDir, "context"), { recursive: true });
       await fs.mkdir(path.join(jobDir, "output"), { recursive: true });

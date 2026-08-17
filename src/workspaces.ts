@@ -264,8 +264,38 @@ function mapFiles(files: string[], originalWorkingDir: string, effectiveWorkingD
     if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
       return path.join(effectiveWorkingDir, rel);
     }
+    // Deliberately passed through unmapped: there is nothing inside the
+    // isolated workspace that corresponds to a file from outside it, and
+    // rewriting the path would hand the agent a path that doesn't exist.
+    // The cost is real though — see escapedFiles() — so callers warn.
     return file;
   });
+}
+
+/**
+ * Files that sit outside `workingDir`, i.e. the ones mapFiles cannot bring
+ * into an isolated workspace.
+ *
+ * These are not merely "still readable at their original path". On CLI routes
+ * each such file's PARENT DIRECTORY is passed to the spawned agent as an
+ * access grant (generic-cli.ts includedDirectories -> {{file_dirs}} ->
+ * `--add-dir`), so under workspace_policy copy/git_worktree a single
+ * out-of-tree entry silently widens the "isolated" workspace to include a
+ * host directory. files: ["~/.ssh/id_rsa"] grants ~/.ssh.
+ *
+ * Isolation is the caller's stated intent, so this is surfaced as a warning
+ * rather than silently honoured or silently dropped.
+ */
+export function escapedFiles(files: string[], originalWorkingDir: string): string[] {
+  const root = resolveDir(originalWorkingDir);
+  const out = new Set<string>();
+  for (const file of files) {
+    const rel = path.relative(root, path.resolve(file));
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      out.add(path.dirname(path.resolve(file)));
+    }
+  }
+  return [...out];
 }
 
 function diffSummary(changes: WorkspaceFileChange[]): string {
@@ -273,6 +303,23 @@ function diffSummary(changes: WorkspaceFileChange[]): string {
   const counts = { added: 0, modified: 0, deleted: 0 };
   for (const change of changes) counts[change.kind] += 1;
   return `${changes.length} changed file(s): ${counts.added} added, ${counts.modified} modified, ${counts.deleted} deleted.`;
+}
+
+/**
+ * Note appended to an isolated run when `files` reach outside workingDir.
+ *
+ * Silence here would be the worst option: the caller asked for isolation and
+ * would reasonably assume they got it, while the agent was handed host
+ * directories via --add-dir.
+ */
+function escapeNote(files: string[], originalWorkingDir: string): string[] {
+  const dirs = escapedFiles(files, originalWorkingDir);
+  if (dirs.length === 0) return [];
+  return [
+    `ISOLATION WIDENED: ${dirs.length} director${dirs.length === 1 ? "y" : "ies"} outside ` +
+      `the workspace were granted to the agent because \`files\` referenced them — ` +
+      `${dirs.join(", ")}. Those paths are NOT isolated; edits there hit the real filesystem.`,
+  ];
 }
 
 function attachWorkspace(result: DispatchResult, workspace: WorkspaceRun): DispatchResult {
@@ -345,6 +392,7 @@ async function prepareCopyWorkspace(
         notes: [
           "The source workspace was copied before dispatch, so edits in the agent workspace are not applied automatically.",
           "This isolates project state, but it is not a hardened OS sandbox for commands with host filesystem access.",
+          ...escapeNote(files, originalWorkingDir),
         ],
       });
     },
@@ -396,6 +444,7 @@ async function prepareGitWorktreeWorkspace(
         notes: [
           "The git worktree starts from HEAD; uncommitted source-workspace changes are not copied into it.",
           "This isolates project state, but it is not a hardened OS sandbox for commands with host filesystem access.",
+          ...escapeNote(files, originalWorkingDir),
         ],
       });
     },

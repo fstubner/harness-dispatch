@@ -676,7 +676,7 @@ export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promis
 
 export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput): Promise<StartedJob> {
   await pruneStaleJobs();
-  const jobId = `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const jobId = newJobId();
   const root = jobsRoot();
   const jobDir = path.join(root, jobId);
   await mkdir(path.join(jobDir, "context"), { recursive: true, mode: 0o700 });
@@ -754,6 +754,33 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   return { status: settled, completion: watchUntilTerminal(jobDir) };
 }
 
+/**
+ * The only jobId shape this module ever produces. Kept adjacent to
+ * `assertValidJobId` so the two cannot drift.
+ */
+function newJobId(): string {
+  return `job-${Date.now()}-${randomUUID().slice(0, 8)}`;
+}
+
+const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
+
+/**
+ * Reject anything that isn't a jobId we generated, BEFORE it reaches
+ * path.join.
+ *
+ * The MCP schema validates this too, but the check belongs here as well:
+ * path.join(jobsRoot(), "../../etc/hosts") escapes the jobs root, and this
+ * function is reachable from more than one caller. Validating only at the
+ * schema would mean any future caller silently reintroduces the traversal.
+ */
+function assertValidJobId(jobId: string): void {
+  if (!JOB_ID_RE.test(jobId)) {
+    throw new Error(
+      `Invalid jobId ${JSON.stringify(jobId)} — expected job-<timestamp>-<8 hex chars>.`,
+    );
+  }
+}
+
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;
 
 export async function getAsyncJob(jobId: string): Promise<{
@@ -763,6 +790,7 @@ export async function getAsyncJob(jobId: string): Promise<{
   /** Tail of live stdout/stderr while the job is still running. */
   partialOutput?: string;
 }> {
+  assertValidJobId(jobId);
   const jobDir = path.join(jobsRoot(), jobId);
   const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
   const status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
