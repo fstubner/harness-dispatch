@@ -184,7 +184,60 @@ function shouldExclude(relPath: string, direntName: string): boolean {
   return normalized === ".harness-dispatch/workspaces" || normalized.startsWith(".harness-dispatch/workspaces/");
 }
 
-async function copyTree(sourceRoot: string, destRoot: string, rel = ""): Promise<void> {
+/**
+ * Recreate one symlink in the copy, but only if it stays inside the workspace.
+ *
+ * The previous version read the target and recreated it verbatim, with no
+ * containment check, under a comment saying "preserve relative symlinks" over
+ * code that preserved absolute ones just as happily. A link pointing at /etc
+ * or a home directory was faithfully rebuilt inside the "isolated" copy, so an
+ * agent writing through it wrote to the real host path — isolation defeated by
+ * a link the agent may itself have created on an earlier turn.
+ *
+ * On Windows this happened to be inert: unprivileged fs.symlink fails EPERM
+ * and the old bare `catch {}` swallowed it. That is an accident of platform
+ * permissions, not a defence, and it does not hold on Linux or macOS where the
+ * call succeeds. Verified on Windows with a directory JUNCTION, which needs no
+ * privileges and which readdir reports as a symlink.
+ *
+ * Escaping links are dropped rather than followed. Copying the TARGET's
+ * contents in would smuggle host files into the workspace — the same leak
+ * pointing the other way.
+ */
+async function copyLink(
+  sourceRoot: string,
+  destRoot: string,
+  childRel: string,
+  skipped: string[],
+): Promise<void> {
+  const linkPath = path.join(sourceRoot, childRel);
+  let target: string;
+  try {
+    target = await readlink(linkPath);
+  } catch {
+    return;
+  }
+  // Resolve against the link's own directory, exactly as the OS would.
+  const resolved = path.resolve(path.dirname(linkPath), target);
+  const rel = path.relative(sourceRoot, resolved);
+  if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) {
+    skipped.push(`${childRel} -> ${target}`);
+    return;
+  }
+  try {
+    await symlink(target, path.join(destRoot, childRel));
+  } catch {
+    // Best effort: Windows refuses symlink creation without privileges, and a
+    // missing in-tree link is a far smaller problem than an escaping one.
+  }
+}
+
+async function copyTree(
+  sourceRoot: string,
+  destRoot: string,
+  rel = "",
+  skipped: string[] = [],
+): Promise<void> {
   const sourceDir = rel ? path.join(sourceRoot, rel) : sourceRoot;
   const destDir = rel ? path.join(destRoot, rel) : destRoot;
   await mkdir(destDir, { recursive: true });
@@ -193,7 +246,7 @@ async function copyTree(sourceRoot: string, destRoot: string, rel = ""): Promise
     const childRel = rel ? path.join(rel, entry.name) : entry.name;
     if (entry.isDirectory()) {
       if (shouldExclude(childRel, entry.name)) continue;
-      await copyTree(sourceRoot, destRoot, childRel);
+      await copyTree(sourceRoot, destRoot, childRel, skipped);
       continue;
     }
     if (entry.isFile()) {
@@ -201,13 +254,7 @@ async function copyTree(sourceRoot: string, destRoot: string, rel = ""): Promise
       continue;
     }
     if (entry.isSymbolicLink()) {
-      // Preserve relative symlinks, but do not resolve links during copying.
-      try {
-        const target = await readlink(path.join(sourceRoot, childRel));
-        await symlink(target, path.join(destRoot, childRel));
-      } catch {
-        // Symlink preservation is best effort; agents can still work with the copied files.
-      }
+      await copyLink(sourceRoot, destRoot, childRel, skipped);
     }
   }
 }
@@ -367,7 +414,8 @@ async function prepareCopyWorkspace(
   await pruneStaleCopyWorkspaces(root);
   const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
-  await copyTree(originalWorkingDir, effectiveWorkingDir);
+  const skippedLinks: string[] = [];
+  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks);
   const before = await fingerprintTree(effectiveWorkingDir);
   return {
     policy: "copy",
@@ -392,6 +440,12 @@ async function prepareCopyWorkspace(
         notes: [
           "The source workspace was copied before dispatch, so edits in the agent workspace are not applied automatically.",
           "This isolates project state, but it is not a hardened OS sandbox for commands with host filesystem access.",
+          ...(skippedLinks.length > 0
+            ? [
+                `Dropped ${skippedLinks.length} symlink(s) pointing outside the workspace, which would ` +
+                  `otherwise have resolved to real host paths from inside the copy: ${skippedLinks.join(", ")}.`,
+              ]
+            : []),
           ...escapeNote(files, originalWorkingDir),
         ],
       });
