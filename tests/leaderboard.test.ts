@@ -3,6 +3,8 @@
 // { enabled: true }. The default-off behaviour is covered in
 // leaderboard-optin.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+import path from "node:path";
 
 import {
   ELO_NORM_MAX,
@@ -18,6 +20,19 @@ import {
   fuzzyMatch,
   normalizeElo,
 } from "../src/leaderboard.js";
+
+// The leaderboard now shares its fetch through a file in the state directory,
+// and setup-env gives one state directory per test FILE — so without this a
+// fetch mocked by one test is served from disk to the next, and tests that
+// assert on fetch counts or on a different payload fail for reasons that have
+// nothing to do with them. Deleting the one file is enough; a fresh state dir
+// per test would mean temp directories to clean up.
+beforeEach(() => {
+  rmSync(path.join(process.env.HARNESS_DISPATCH_STATE_DIR ?? "", "leaderboard_cache.json"), {
+    force: true,
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // Mock fetch — avoid all network IO
