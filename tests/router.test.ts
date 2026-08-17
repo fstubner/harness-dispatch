@@ -6,6 +6,37 @@
  * not on those dependencies.
  */
 
+// A clock-free, filesystem-free stand-in for the workspace lock.
+//
+// NOT a no-op: "serializes concurrent write-capable dispatches for the same
+// workingDir" below depends on real mutual exclusion, so this keeps the
+// in-process promise-chain semantics and drops only the cross-process file
+// layer. That layer is what reads the clock, and several tests here drive
+// Date.now through an exact mocked sequence to check the whole-call timeout
+// budget — a stray clock read silently consumes entries and breaks them for
+// reasons unrelated to what they test. The file layer has its own coverage in
+// workspace-lock.test.ts.
+vi.mock("../src/workspace-lock.js", () => {
+  const held = new Map<string, Promise<void>>();
+  return {
+    LOCK_STALE_MS: 90_000,
+    acquireWorkspaceLock: async (workingDir: string) => {
+      const key = String(workingDir);
+      const previous = held.get(key) ?? Promise.resolve();
+      let release!: () => void;
+      const current = previous.catch(() => undefined).then(
+        () => new Promise<void>((resolve) => { release = resolve; }),
+      );
+      held.set(key, current);
+      await previous.catch(() => undefined);
+      return () => {
+        release();
+        if (held.get(key) === current) held.delete(key);
+      };
+    },
+  };
+});
+
 // Persistence only — NOT a re-implementation of CircuitBreaker.
 //
 // The real CircuitBreaker now runs in these suites (it previously had a
