@@ -36,7 +36,9 @@ async function buildRuntime(configPath: string | undefined): Promise<Runtime> {
   const config = await loadConfig(configPath);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = new LeaderboardCache();
+  const leaderboard = new LeaderboardCache(undefined, {
+    enabled: config.leaderboard?.enabled === true,
+  });
   const router = new Router(config, quota, dispatchers, leaderboard);
   return { config, dispatchers, quota, leaderboard, router };
 }

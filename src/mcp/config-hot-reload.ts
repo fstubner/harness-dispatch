@@ -74,7 +74,8 @@ export async function bootstrapRuntime(opts: {
   setJobRetentionDays(config.retention?.jobsDays);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = opts.leaderboard ?? new LeaderboardCache();
+  const leaderboard =
+    opts.leaderboard ?? new LeaderboardCache(undefined, { enabled: config.leaderboard?.enabled === true });
   const router = new Router(config, quota, dispatchers, leaderboard);
   const mtimeMs = await statMtime(opts.configPath);
   return {

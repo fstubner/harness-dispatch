@@ -152,6 +152,23 @@ export interface QualityScoreResult {
 }
 
 export class LeaderboardCache {
+  /**
+   * Whether to consult the Arena leaderboard at all. OFF by default.
+   *
+   * The router used to lean on public ELO scores to rank routes and to
+   * auto-derive tiers, which meant the default install made an outbound
+   * request to a third party before it could route, and let a benchmark
+   * nobody here controls reorder a user's own subscriptions. Neither is what
+   * the tool is for: the routing decision that matters is "which of the
+   * things I already pay for is available", and that is answered by the
+   * `tier` and `weight` a user sets in config.
+   *
+   * With this off, getQualityScore returns a neutral 1.0 (thinking-level
+   * multipliers still apply) and autoTier returns the configured tier, so
+   * scoring reduces to tier/weight/capability/quota and the router makes no
+   * network call at all. Turn it on with `leaderboard: { enabled: true }`.
+   */
+  private readonly enabled: boolean;
   private data: Record<string, number> = {};
   private fetchedAt = 0; // epoch ms
   private fetchFailed = false;
@@ -161,9 +178,15 @@ export class LeaderboardCache {
   private benchmarkLoadedFlag = false;
   private benchmarkPath: string;
 
-  constructor(benchmarkPath?: string) {
+  constructor(benchmarkPath?: string, opts: { enabled?: boolean } = {}) {
+    this.enabled = opts.enabled ?? false;
     this.benchmarkPath = benchmarkPath ?? resolveBenchmarkPath();
     this.loadBenchmarkFileSync();
+  }
+
+  /** True when Arena scores are consulted; false means tier/weight only. */
+  isEnabled(): boolean {
+    return this.enabled;
   }
 
   // ------------------------------------------------------------------
@@ -203,6 +226,18 @@ export class LeaderboardCache {
   ): Promise<QualityScoreResult> {
     const mult =
       (thinkingLevel && THINKING_MULTIPLIERS[thinkingLevel]) ?? 1.0;
+
+    // 0. Disabled: quality is neutral and ranking falls to tier/weight.
+    //
+    // This deliberately skips the BUNDLED benchmark file as well as the live
+    // fetch. Gating only the network call would swap a current third-party
+    // ranking for a stale shipped one — still a benchmark nobody here
+    // controls deciding the order of a user's own subscriptions, just an
+    // older one. thinkingLevel survives because it is a property of the route
+    // the user configured, not a score handed down from outside.
+    if (!this.enabled) {
+      return { qualityScore: mult, elo: null };
+    }
 
     // 1. Blended benchmark file
     if (leaderboardModel && this.benchmarkLoadedFlag) {
@@ -248,6 +283,10 @@ export class LeaderboardCache {
 
   /** Ensure a fresh fetch has happened (or is in-flight); safe to call concurrently. */
   private async ensureFetched(): Promise<void> {
+    // The one gate. Every consumer (getScores/getElo/getQualityScore/
+    // autoTier) funnels through here, so disabling is guaranteed to mean "no
+    // request", not "a request whose result is ignored".
+    if (!this.enabled) return;
     const age = Date.now() - this.fetchedAt;
     if (Object.keys(this.data).length > 0 && age < CACHE_TTL_MS) {
       return;
