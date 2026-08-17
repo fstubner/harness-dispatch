@@ -71,6 +71,7 @@ import { buildRouteBilling } from "./billing.js";
 import { logDispatch } from "./dispatch-log.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "./route-policy.js";
+import { acquireWorkspaceLock } from "./workspace-lock.js";
 import {
   prepareWorkspace,
   workspacePolicyFor,
@@ -86,7 +87,6 @@ const TASK_TYPES_WITH_CAPABILITY: ReadonlySet<TaskType> = new Set([
   "review",
 ]);
 
-const workspaceLocks = new Map<string, Promise<void>>();
 
 /**
  * `service` is a raw string from the caller — a near-miss ("codex" for
@@ -150,31 +150,6 @@ function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
   if (!TASK_TYPES_WITH_CAPABILITY.has(taskType)) return 1.0;
   const key = taskType as "execute" | "plan" | "review";
   return svc.capabilities[key] ?? 1.0;
-}
-
-function workspaceLockKey(workingDir: string): string {
-  const resolved = path.resolve(workingDir || process.cwd());
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-async function acquireWorkspaceLock(workingDir: string): Promise<() => void> {
-  const key = workspaceLockKey(workingDir);
-  const previous = workspaceLocks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const current = previous.catch(() => undefined).then(
-    () =>
-      new Promise<void>((resolve) => {
-        release = resolve;
-      }),
-  );
-  workspaceLocks.set(key, current);
-  await previous.catch(() => undefined);
-  return () => {
-    release();
-    if (workspaceLocks.get(key) === current) {
-      workspaceLocks.delete(key);
-    }
-  };
 }
 
 async function withWorkspacePolicy<T>(
