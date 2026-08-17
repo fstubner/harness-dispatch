@@ -5,9 +5,15 @@ import path from "node:path";
 
 // Mock `which` so we can control what the resolver sees without depending on
 // what's actually installed on the test machine.
-vi.mock("which", () => ({
-  default: vi.fn(),
-}));
+// `sync` is load-bearing: commandAvailable() uses which.sync(), and it now
+// fails CLOSED when that isn't a function. A bare vi.fn() with no .sync is
+// not what the real package looks like, and mocking it that way is what let
+// the fail-open branch sit unnoticed.
+vi.mock("which", () => {
+  const fn = vi.fn() as unknown as { sync: (cmd: string) => string | null };
+  fn.sync = () => "/usr/local/bin/stub";
+  return { default: fn };
+});
 
 import which from "which";
 import { resolveCliCommand } from "../src/dispatchers/shared/windows-cmd.js";

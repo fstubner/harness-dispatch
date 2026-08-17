@@ -240,9 +240,18 @@ export class GenericCliDispatcher extends BaseDispatcher {
   private readonly configuredModel: string | undefined;
   private readonly endpointMode: ServiceConfig["endpointMode"];
   private readonly endpointProvider: ServiceConfig["endpointProvider"];
+  private readonly siblingApiKeyEnvVars: ReadonlySet<string>;
 
-  constructor(svc?: ServiceConfig) {
+  /**
+   * @param siblingApiKeyEnvVars every api-key env var ANY route might use, so
+   * this dispatch can clear the ones that aren't its own. Supplied by
+   * dispatcher-factory, which is the only place that sees the whole config.
+   * Optional so a hand-built dispatcher (tests, one-off scripts) still works;
+   * it then falls back to clearing only its own, the previous behaviour.
+   */
+  constructor(svc?: ServiceConfig, siblingApiKeyEnvVars?: ReadonlySet<string>) {
     super();
+    this.siblingApiKeyEnvVars = siblingApiKeyEnvVars ?? new Set();
     this.id = svc?.name ?? "generic";
     this.command = svc?.command ?? "";
     this.protocol = svc?.protocol;
@@ -326,6 +335,15 @@ export class GenericCliDispatcher extends BaseDispatcher {
     );
 
     const extraEnv: Record<string, string> = {};
+    // Clear every OTHER route's api-key variable that is present in this
+    // process. The child inherits process.env wholesale, and there is no
+    // reason for Codex to receive a Groq key. Blanking rather than deleting
+    // because streamSubprocess merges over process.env; an empty value is
+    // what the existing single-variable clear already used.
+    for (const envVar of this.siblingApiKeyEnvVars) {
+      if (envVar === protocol.apiKeyEnvVar) continue;
+      if (process.env[envVar]) extraEnv[envVar] = "";
+    }
     if (protocol.apiKeyEnvVar) {
       if (this.apiKey) {
         extraEnv[protocol.apiKeyEnvVar] = this.apiKey;
@@ -511,7 +529,16 @@ export class GenericCliDispatcher extends BaseDispatcher {
     const parsedErrorDetail = eventDriven ? parsedOutput : undefined;
     const errorDetail =
       structuredError ?? parsedErrorDetail ?? (rawErrorFallback || `Exit code ${exitCode}`);
-    const { rateLimited, retryAfter } = detectRateLimit(errorDetail);
+    // Scan BOTH streams, not just whichever one errorDetail resolved to.
+    // e78c87a narrowed this to detectRateLimit(errorDetail) while adding
+    // structured-error support, so a 429 on the stream that lost the
+    // errorDetail race stopped being detected — for jsonl_stream that means a
+    // rate limit on stderr while stdout carries the event payload. The
+    // message shown to the caller stays errorDetail; only the DETECTION
+    // widens.
+    const { rateLimited, retryAfter } = detectRateLimit(
+      [errorDetail, stdout, stderr].filter(Boolean).join("\n"),
+    );
     const result: DispatchResult = {
       output: parsedOutput ?? errorDetail,
       service: this.id,

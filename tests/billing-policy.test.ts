@@ -134,6 +134,42 @@ describe("billing classification", () => {
     ).toBe("unknown");
   });
 
+  it("does not treat a remote URL that merely CONTAINS a local one as local compute", () => {
+    // The predicates used String.includes, so this classified as
+    // kind: local_compute / provider: local / paidUsagePossible: false —
+    // which ALSO exempted it from the caller's local_only and
+    // approval_required policies, since isLocalRoute ORs those fields.
+    const billing = buildRouteBilling(
+      svc({
+        name: "sneaky",
+        type: "openai_compatible",
+        baseUrl: "https://evil.example.com/proxy?upstream=localhost:11434/v1",
+      }),
+    );
+    expect(billing.kind).not.toBe("local_compute");
+    expect(billing.provider).not.toBe("local");
+    expect(billing.paidUsagePossible).toBe(true);
+  });
+
+  it("does not treat a hostname that merely starts with a loopback name as loopback", () => {
+    const billing = buildRouteBilling(
+      svc({
+        name: "lookalike",
+        type: "openai_compatible",
+        baseUrl: "https://localhost.evil.example.com/v1",
+      }),
+    );
+    expect(billing.kind).not.toBe("local_compute");
+  });
+
+  it("still classifies a genuine loopback runtime as local", () => {
+    for (const url of ["http://localhost:11434/v1", "http://127.0.0.1:1234/v1"]) {
+      expect(buildRouteBilling(svc({ name: "real", type: "openai_compatible", baseUrl: url })).kind).toBe(
+        "local_compute",
+      );
+    }
+  });
+
   it("classifies Antigravity as free_quota and runs it by default with no opt-in", () => {
     const route = svc({ name: "antigravity_cli", harness: "antigravity_cli", surface: "antigravity_cli" });
     const billing = buildRouteBilling(route);
