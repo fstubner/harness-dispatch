@@ -395,6 +395,20 @@ export interface RouterConfig {
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
   /**
+   * Ceiling on agent CLIs running at once, machine-wide (default 4).
+   *
+   * Not a throughput knob — a resource guard. Every dispatch spawns a
+   * detached runner which spawns a full agent CLI, and those are heavyweight
+   * processes (Codex is a Rust binary with a model runtime), not fan-outable
+   * HTTP calls. Unbounded, a burst of parallel dispatches exhausts memory:
+   * measured 2026-08-03, 20 dispatches to one route with 13 running
+   * concurrently, half of them failing, one killed by a Rust OOM. Dispatches
+   * past the limit wait in `queued` and start as slots free — nothing is
+   * rejected or lost. Raise it on a machine with headroom; `0` disables the
+   * bound entirely and restores the old behaviour.
+   */
+  maxConcurrentRuns?: number;
+  /**
    * Config entries that were silently ignored rather than failing to load —
    * a disabled:/overrides: name that doesn't match any auto-detected route
    * (e.g. left over from before the claude_code -> claude_code_cli-style

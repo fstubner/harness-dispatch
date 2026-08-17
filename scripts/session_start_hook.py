@@ -17,6 +17,13 @@ Claude Code hook protocol:
 import json
 import sys
 
+# The routing table below uses U+2192 (→). On Windows, Python's stdout
+# defaults to the locale codepage (cp1252), which cannot encode it, so the
+# hook died with UnicodeEncodeError and every session silently lost its
+# routing context. Force UTF-8 on stdout rather than downgrading the text.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROUTING_CONTEXT = """
 ## Active: harness-dispatch MCP
 
