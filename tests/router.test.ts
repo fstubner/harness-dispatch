@@ -6,7 +6,30 @@
  * not on those dependencies.
  */
 
+// Persistence only — NOT a re-implementation of CircuitBreaker.
+//
+// The real CircuitBreaker now runs in these suites (it previously had a
+// hand-written mock carrying a forceTrip() method production does not have,
+// so the tests could not be pointed at the real threshold logic at all).
+// BreakerStore stays stubbed because saving calls Date.now(), and several
+// tests below drive Date.now through an exact mocked call sequence to check
+// the whole-call timeout budget — real persistence silently consumes entries
+// from that sequence. Persistence has its own coverage in
+// breaker-store.test.ts and router-restart-survival.test.ts, both against the
+// real class.
+vi.mock("../src/breaker-store.js", () => ({
+  BreakerStore: class {
+    loadAll() {
+      return {};
+    }
+    save() {}
+  },
+}));
+
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { execFile as execFileCb } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -15,63 +38,7 @@ import { promisify } from "node:util";
 
 // ---- Mock dependency modules with minimal stand-ins ----------------------
 
-vi.mock("../src/circuit-breaker.js", () => {
-  class CircuitBreaker {
-    failures = 0;
-    private _tripped = false;
-    private _cooldown = 300;
-    get isTripped(): boolean {
-      return this._tripped;
-    }
-    recordFailure(): void {
-      this.failures += 1;
-    }
-    recordSuccess(): void {
-      this.failures = 0;
-      this._tripped = false;
-    }
-    trip(retryAfter?: number): void {
-      this._tripped = true;
-      if (retryAfter !== undefined && retryAfter > 0) this._cooldown = retryAfter;
-    }
-    forceTrip(): void {
-      // Test helper — bypass the threshold
-      this._tripped = true;
-    }
-    cooldownRemaining(): number {
-      return this._tripped ? this._cooldown : 0;
-    }
-    status(): { tripped: boolean; failures: number; cooldownRemainingSec?: number } {
-      if (this._tripped) {
-        return { tripped: true, failures: this.failures, cooldownRemainingSec: this._cooldown };
-      }
-      return { tripped: false, failures: this.failures };
-    }
-    snapshot(): { failures: number; blockedUntilMs: number | null } {
-      return { failures: this.failures, blockedUntilMs: this._tripped ? Date.now() + this._cooldown * 1000 : null };
-    }
-    restore(snapshot: { failures: number; blockedUntilMs: number | null }): void {
-      this.failures = snapshot.failures;
-      this._tripped = snapshot.blockedUntilMs !== null && snapshot.blockedUntilMs > Date.now();
-      if (this._tripped && snapshot.blockedUntilMs !== null) {
-        this._cooldown = (snapshot.blockedUntilMs - Date.now()) / 1000;
-      }
-    }
-  }
-  return { CircuitBreaker };
-});
 
-vi.mock("../src/breaker-store.js", () => {
-  class BreakerStore {
-    loadAll(): Record<string, unknown> {
-      return {};
-    }
-    save(): void {
-      /* no-op for tests */
-    }
-  }
-  return { BreakerStore };
-});
 
 vi.mock("../src/quota.js", () => {
   class QuotaCache {
@@ -125,6 +92,23 @@ import { LeaderboardCache } from "../src/leaderboard.js";
 import { CircuitBreaker } from "../src/circuit-breaker.js";
 import type { DispatchResult, RouterConfig, ServiceConfig, TaskType } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
+
+/**
+ * Fresh breaker state per test.
+ *
+ * These suites used to vi.mock CircuitBreaker and BreakerStore with
+ * hand-written stand-ins, so persistence was a no-op and tests could not
+ * interfere. Running the real classes exposed genuine pollution: a breaker
+ * tripped by one test was persisted and rehydrated by the next Router, which
+ * then skipped the route and failed unrelated assertions. Isolating the state
+ * directory per test is the fix; sharing it was never intended.
+ */
+beforeEach(() => {
+  process.env.HARNESS_DISPATCH_STATE_DIR = mkdtempSync(
+    path.join(tmpdir(), "hr-router-state-"),
+  );
+});
+
 
 const execFile = promisify(execFileCb);
 
@@ -409,7 +393,7 @@ describe("Router.pickService", () => {
     };
     const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
     const alphaBreaker = router.getBreaker("alpha");
-    (alphaBreaker as unknown as { forceTrip(): void }).forceTrip();
+    alphaBreaker!.trip();
     const decision = await router.pickService();
     expect(decision?.service).toBe("beta");
   });
@@ -444,7 +428,7 @@ describe("Router.pickService", () => {
       beta: new StubDispatcher("beta"),
     };
     const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
-    (router.getBreaker("alpha") as unknown as { forceTrip(): void }).forceTrip();
+    router.getBreaker("alpha")!.trip();
     const decision = await router.pickService();
     expect(decision?.service).toBe("beta");
     expect(decision?.reason).toMatch(/fallback/);
