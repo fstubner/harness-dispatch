@@ -429,6 +429,58 @@ function topLevelSettings(raw: Record<string, unknown>): Partial<RouterConfig> {
   return out;
 }
 
+/**
+ * Warn on any unrecognised value for an enum that FAILS OPEN.
+ *
+ * Every *From() validator returns undefined on a mismatch and the caller
+ * falls back to a default — silently. For most fields that is merely
+ * annoying, but for these three the default is LESS restrictive than what the
+ * operator asked for:
+ *
+ *   safety_profile: read_onlyy  -> undefined -> DEFAULT_SAFETY_PROFILE
+ *                                            -> workspace_edit (write access)
+ *   workspace_policy: coppy     -> undefined -> shared_locked
+ *                                            -> a SHARED workspace, not an
+ *                                               isolated copy
+ *
+ * A typo therefore quietly grants more than intended, which is the wrong
+ * direction for a safety control. The same parser already warns loudly for a
+ * malformed `protocol` block, so this is consistency as much as safety.
+ *
+ * Walks the raw tree rather than hooking each builder: the same keys appear
+ * under services:, clis:, endpoints: and overrides:, and a single walk cannot
+ * miss a format the way four separate call sites can.
+ */
+const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
+  safety_profile: ["read_only", "workspace_edit", "full_auto"],
+  effective_safety: ["read_only", "workspace_edit", "full_auto"],
+  workspace_policy: ["shared", "shared_locked", "git_worktree", "copy"],
+};
+
+function warnUnknownSafetyEnums(node: unknown, warnings: string[], where = ""): void {
+  if (Array.isArray(node)) {
+    for (const [i, v] of node.entries()) warnUnknownSafetyEnums(v, warnings, `${where}[${i}]`);
+    return;
+  }
+  if (node === null || typeof node !== "object") return;
+  const obj = node as Record<string, unknown>;
+  const label =
+    typeof obj.name === "string" && obj.name !== "" ? String(obj.name) : where || "config";
+  for (const [key, allowed] of Object.entries(FAIL_OPEN_ENUMS)) {
+    const value = obj[key];
+    if (value === undefined) continue;
+    if (typeof value === "string" && allowed.includes(value)) continue;
+    warnings.push(
+      `${label}: ${key}: ${JSON.stringify(value)} is not one of ${allowed.join(", ")} — ` +
+        `IGNORED, and the default applies instead, which is less restrictive than what ` +
+        `this looks like it was meant to set. Fix the value.`,
+    );
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    warnUnknownSafetyEnums(v, warnings, where ? `${where}.${k}` : k);
+  }
+}
+
 function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
   const out: Partial<ServiceConfig> = {};
   const provider = providerFrom(raw.provider);
@@ -1231,6 +1283,11 @@ export async function loadConfig(
   // Legacy full format: has a `services:` key -> use as-is.
   if (raw.services && typeof raw.services === "object") {
     const legacyCfg = buildLegacyConfig(raw);
+    const enumWarnings: string[] = [];
+    warnUnknownSafetyEnums(raw, enumWarnings);
+    if (enumWarnings.length > 0) {
+      legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
+    }
     const withRefs =
       envRefs.size > 0 ? { ...legacyCfg, envRefs } : legacyCfg;
     if (envVarWarning !== undefined) {
@@ -1269,6 +1326,7 @@ export async function loadConfig(
   addClis(services, raw, apiKeys, warnings);
   addEndpoints(services, raw);
 
+  warnUnknownSafetyEnums(raw, warnings);
   if (envVarWarning !== undefined) warnings.push(envVarWarning);
   const cfg: RouterConfig = {
     services,

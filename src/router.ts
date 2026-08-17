@@ -330,6 +330,18 @@ export interface RouterStreamEvent {
 // Router
 // ---------------------------------------------------------------------------
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/** True only when baseUrl's HOST is loopback — see billing.ts hostOf(). */
+function isLoopbackUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
   private lastSkippedRoutes: RouteSkip[] = [];
@@ -489,11 +501,10 @@ export class Router {
         if (maxIn >= 2_000_000) score += 0.3;
         else if (maxIn >= 1_000_000) score += 0.15;
       }
-      if (
-        taskType === "local" &&
-        svc.type === "openai_compatible" &&
-        (svc.baseUrl?.includes("localhost") || svc.baseUrl?.includes("127.0.0.1"))
-      ) {
+      // Exact host match, not substring — a remote URL merely CONTAINING
+      // "localhost" is not a local route. Same defect as billing.ts's two
+      // predicates; see hostOf() there.
+      if (taskType === "local" && svc.type === "openai_compatible" && isLoopbackUrl(svc.baseUrl)) {
         score += 0.3;
       }
 

@@ -14,6 +14,9 @@ import { loadConfig, watchConfig, type WhichFn } from "../src/config.js";
 
 // ---- fixture files -------------------------------------------------------
 
+/** Newline, as a named constant purely to keep long join() lines readable. */
+const NL = "\n";
+
 async function writeTmpYaml(name: string, text: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), `harness-dispatch-test-`));
   const p = path.join(dir, name);
@@ -880,6 +883,58 @@ overrides:
     // claude_code_cli route — proof presets aren't tied to route identity.
     expect(svc.protocol?.stdin).toBe(true);
     expect(svc.protocol?.args?.[0]).toBe("exec");
+  });
+});
+
+describe("loadConfig — safety enums that fail open", () => {
+  // The two typo cases the suite never covered, and the two that matter:
+  // unlike a typo'd placeholder or preset name (both already warned), an
+  // unrecognised safety_profile or workspace_policy silently resolves to a
+  // LESS restrictive default — write access, or a shared workspace where an
+  // isolated copy was asked for.
+  it("warns when safety_profile is misspelled instead of silently granting write access", async () => {
+    const yamlText = `
+clis:
+  - name: typo_route
+    harness: codex
+    safety_profile: read_onlyy
+`;
+    const p = await writeTmpYaml("clis-typo-safety-profile.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = (cfg.configWarnings ?? []).join(NL);
+    expect(warningText).toContain("safety_profile");
+    expect(warningText).toContain("read_onlyy");
+    // The value really was dropped, so the warning is not cosmetic.
+    expect(cfg.services["typo_route"]?.safetyProfile).toBeUndefined();
+  });
+
+  it("warns when workspace_policy is misspelled instead of silently sharing the workspace", async () => {
+    const yamlText = `
+clis:
+  - name: typo_ws
+    harness: codex
+    workspace_policy: coppy
+`;
+    const p = await writeTmpYaml("clis-typo-workspace-policy.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = (cfg.configWarnings ?? []).join(NL);
+    expect(warningText).toContain("workspace_policy");
+    expect(warningText).toContain("coppy");
+  });
+
+  it("stays quiet for valid values", async () => {
+    const yamlText = `
+clis:
+  - name: fine
+    harness: codex
+    safety_profile: read_only
+    workspace_policy: copy
+`;
+    const p = await writeTmpYaml("clis-valid-enums.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = (cfg.configWarnings ?? []).join(NL);
+    expect(warningText).not.toContain("safety_profile");
+    expect(warningText).not.toContain("workspace_policy");
   });
 });
 

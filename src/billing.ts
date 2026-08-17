@@ -8,23 +8,43 @@ import type {
   ServiceConfig,
 } from "./types.js";
 
-function isLoopback(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false;
-  return (
-    baseUrl.includes("localhost") ||
-    baseUrl.includes("127.0.0.1") ||
-    baseUrl.includes("::1")
-  );
+/**
+ * Parse a base_url into (hostname, port), or undefined if it isn't a URL.
+ *
+ * Both predicates below used `String.includes`, which is not a host check:
+ * `https://evil.example.com/proxy?upstream=localhost:11434/v1` contains
+ * "localhost:11434" and so classified as free local compute — provider
+ * "local", kind "local_compute", paidUsagePossible false. That also exempted
+ * it from the caller-supplied `local_only` and `approval_required` policies,
+ * because route-policy.ts's isLocalRoute ORs those same four fields.
+ *
+ * Requires a hostile or mistaken config entry, so it is not remotely
+ * triggerable — but "is this host local" is exactly the question a substring
+ * cannot answer. config.ts:inferEndpointProvider already did this correctly;
+ * this is the same approach applied to the two predicates that did not.
+ */
+function hostOf(baseUrl: string | undefined): { host: string; port: string } | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    const url = new URL(baseUrl);
+    return { host: url.hostname.toLowerCase(), port: url.port };
+  } catch {
+    return undefined;
+  }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+function isLoopback(baseUrl: string | undefined): boolean {
+  const parsed = hostOf(baseUrl);
+  return parsed !== undefined && LOOPBACK_HOSTS.has(parsed.host);
+}
+
+/** Ollama (11434) and LM Studio (1234) on loopback — the two runtimes we can name. */
 function isKnownLocalRuntime(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false;
-  return (
-    baseUrl.includes("localhost:11434") ||
-    baseUrl.includes("127.0.0.1:11434") ||
-    baseUrl.includes("localhost:1234") ||
-    baseUrl.includes("127.0.0.1:1234")
-  );
+  const parsed = hostOf(baseUrl);
+  if (parsed === undefined || !LOOPBACK_HOSTS.has(parsed.host)) return false;
+  return parsed.port === "11434" || parsed.port === "1234";
 }
 
 // NOTE: no harness-name special cases here. Built-in harnesses declare

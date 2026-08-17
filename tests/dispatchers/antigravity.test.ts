@@ -17,9 +17,15 @@ vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
 vi.mock("../../src/dispatchers/shared/which-available.js", () => ({
   commandAvailable: vi.fn(),
 }));
-vi.mock("which", () => ({
-  default: vi.fn(),
-}));
+// `sync` is load-bearing: commandAvailable() uses which.sync(), and it now
+// fails CLOSED when that isn't a function. A bare vi.fn() with no .sync is
+// not what the real package looks like, and mocking it that way is what let
+// the fail-open branch sit unnoticed.
+vi.mock("which", () => {
+  const fn = vi.fn() as unknown as { sync: (cmd: string) => string | null };
+  fn.sync = () => "/usr/local/bin/stub";
+  return { default: fn };
+});
 
 const { streamSubprocess } = await import(
   "../../src/dispatchers/shared/stream-subprocess.js"
