@@ -67,7 +67,11 @@ describe("orphaned job detection", () => {
     // Simulate the real incident: a server process died mid-run, leaving a
     // status.json frozen at "running" with no result and no further
     // heartbeats. Readers must stop telling callers to keep polling.
-    const jobId = "job-0000000000000-orphaned";
+    // Realistic id shape on purpose: getAsyncJob validates jobId against the
+    // format jobs.ts generates before touching the filesystem, so a
+    // human-readable placeholder like "job-0-orphaned" is now rejected as
+    // malformed and never reaches the orphan logic under test.
+    const jobId = "job-1786977300000-0f0aaaaa";
     const jobDir = path.join(tmpDir, jobId);
     await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
     const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -96,7 +100,7 @@ describe("orphaned job detection", () => {
   });
 
   it("keeps a freshly-heartbeated running job as running", async () => {
-    const jobId = "job-0000000000001-alive";
+    const jobId = "job-1786977300001-0f0bbbbb";
     const jobDir = path.join(tmpDir, jobId);
     await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
     const now = new Date().toISOString();

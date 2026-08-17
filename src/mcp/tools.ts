@@ -114,6 +114,17 @@ const workingDirDescription =
 /** Inline grace window: how long `dispatch` waits for the background run before returning a pollable jobId instead of the full result. */
 const DEFAULT_GRACE_SECONDS = 25;
 
+/**
+ * Cap on `files` per dispatch.
+ *
+ * Not a performance limit — each entry's parent directory becomes an
+ * `--add-dir` grant on CLI routes (generic-cli.ts includedDirectories ->
+ * {{file_dirs}}), so an unbounded list is an unbounded set of directories
+ * handed to a coding agent. 64 is far above any real prompt and low enough
+ * that a runaway caller is stopped at the boundary rather than at the CLI.
+ */
+const MAX_CONTEXT_FILES = 64;
+
 const dispatchInputShape = {
   prompt: z
     .string()
@@ -137,8 +148,15 @@ const dispatchInputShape = {
     ),
   files: z
     .array(z.string())
+    .max(MAX_CONTEXT_FILES)
     .optional()
-    .describe("Absolute file paths to snapshot and include as context."),
+    .describe(
+      `Absolute file paths to snapshot and include as context (max ` +
+        `${MAX_CONTEXT_FILES}). A path outside workingDir is still sent, but ` +
+        `for CLI routes its PARENT DIRECTORY is also granted to the agent via ` +
+        `--add-dir, so it escapes an isolated workspace — the response carries ` +
+        `a warning naming the directories when that happens.`,
+    ),
   workingDir: z.string().optional().describe(workingDirDescription),
   workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
   hints: publicHintsSchema.optional(),
@@ -175,9 +193,23 @@ const dispatchInputShape = {
     ),
 } as const;
 
+/**
+ * Exactly the shape jobs.ts:679 generates: `job-${Date.now()}-${8 hex}`.
+ *
+ * The schema was a bare z.string() and getAsyncJob does
+ * `path.join(jobsRoot(), jobId)` with no validation, so a caller could read
+ * manifest.json / status.json from anywhere on disk by passing `../..`
+ * segments. Constrained to three filenames, but an MCP server's threat model
+ * is "the calling agent may be steered by injected content", not "the caller
+ * is trustworthy" — validating the format is a one-liner and removes the
+ * question entirely.
+ */
+const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
+
 const jobStatusInputShape = {
   jobId: z
     .string()
+    .regex(JOB_ID_RE, "jobId must look like job-<timestamp>-<8 hex chars>")
     .optional()
     .describe(
       "Check a previously started dispatch: returns partialOutput while running and " +
