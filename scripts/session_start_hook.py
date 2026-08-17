@@ -30,9 +30,14 @@ ROUTING_CONTEXT = """
 The harness-dispatch MCP server is connected. For coding delegation, use the
 dispatch tool with the right taskType:
 
-  task_type=execute  → Codex/Cursor  (tests, patches, autonomous coding)
-  task_type=plan     → Claude Opus   (architecture, design, reasoning)
-  task_type=review   → Claude Opus   (code review, security, refactoring)
+  task_type=execute  (tests, patches, autonomous coding)
+  task_type=plan     (architecture, design, reasoning)
+  task_type=review   (code review, security, refactoring)
+
+Which route serves each is decided by config and live scoring, not by this
+hook — naming harnesses here contradicted the router's own design (it
+deliberately special-cases no harness by name, see billing.ts) and went stale
+the moment a route was added, renamed or disabled.
 
 A fast task returns its result inline (completed=true); a slow one returns a
 jobId — call job_status with that jobId to check on it. Nothing is lost to a timeout.

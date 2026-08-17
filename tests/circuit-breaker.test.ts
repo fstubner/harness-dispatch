@@ -4,6 +4,7 @@ import {
   CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC,
   CIRCUIT_BREAKER_THRESHOLD,
   CircuitBreaker,
+  FAILURE_DECAY_SEC,
   MAX_COOLDOWN_SEC,
 } from "../src/circuit-breaker.js";
 
@@ -120,6 +121,30 @@ describe("CircuitBreaker", () => {
     }
     expect(cb.isTripped).toBe(false);
     expect(cb.status().failures).toBe(CIRCUIT_BREAKER_THRESHOLD - 1);
+  });
+
+  it("restarts the failure count after a long gap instead of tripping on stale failures", () => {
+    // Five failures across a week are not the signal a breaker exists to
+    // catch, but the counter only ever reset on success, so a route that
+    // fails rarely tripped anyway.
+    const cb = new CircuitBreaker();
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD - 1; i += 1) cb.recordFailure();
+    expect(cb.status().failures).toBe(CIRCUIT_BREAKER_THRESHOLD - 1);
+
+    advanceSec(FAILURE_DECAY_SEC + 1);
+    cb.recordFailure();
+
+    expect(cb.isTripped).toBe(false);
+    expect(cb.status().failures).toBe(1);
+  });
+
+  it("still trips on failures inside the decay window", () => {
+    const cb = new CircuitBreaker();
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
+      advanceSec(1);
+      cb.recordFailure();
+    }
+    expect(cb.isTripped).toBe(true);
   });
 
   describe("cooldown ceiling", () => {

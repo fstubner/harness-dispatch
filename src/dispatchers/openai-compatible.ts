@@ -52,6 +52,14 @@ const DEFAULT_SYSTEM_PROMPT =
   "You are an expert software engineer. " +
   "Respond with clear, working code and concise explanations.";
 const _MAX_FILE_BYTES = 512 * 1024; // 512 KB per file
+/**
+ * Cap across ALL files in one prompt (2 MB).
+ *
+ * The per-file limit alone bounded nothing useful: 64 files just under 512 KB
+ * each is a 32 MB prompt posted to a metered endpoint. This is the total that
+ * actually reaches the wire.
+ */
+const _MAX_TOTAL_FILE_BYTES = 2 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // openai_chat_completions response shapes
@@ -737,6 +745,7 @@ async function buildPromptWithFiles(
   const parts: string[] = [prompt];
   const { stat, readFile } = await import("node:fs/promises");
   const { extname } = await import("node:path");
+  let totalBytes = 0;
   for (const filePath of files) {
     try {
       const info = await stat(filePath);

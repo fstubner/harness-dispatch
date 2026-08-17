@@ -1,12 +1,37 @@
 /**
  * Quota management for harness-dispatch.
  *
- * Ported from `coding_agent.quota`. Two-layer approach:
- *   1. Reactive — quota state is updated from every dispatch response
- *      (rate-limit headers on 429s, or usage headers on success).
- *   2. Proactive — each dispatcher can optionally implement `checkQuota()`
- *      for a live snapshot. Results are cached with a TTL to avoid
- *      hammering provider APIs.
+ * SCOPE, stated up front because the previous version of this comment
+ * overpromised: real quota numbers are available for `openai_compatible`
+ * ENDPOINT routes only. CLI routes — claude_code_cli, codex_cli, cursor_cli,
+ * antigravity_cli, i.e. the routes this product exists to arbitrate between —
+ * always report score 1.0 and source "unknown".
+ *
+ * Two layers were described here. Measured 2026-08-17, neither reaches a CLI
+ * route:
+ *   1. Reactive — state is updated from `rateLimitHeaders`, which only
+ *      OpenAICompatibleDispatcher ever sets. A CLI route's
+ *      `rateLimited: true` passes the early-return guard in recordResult()
+ *      and then updates nothing.
+ *   2. Proactive — `checkQuota()` is a stub returning source "unknown" in
+ *      BOTH dispatcher implementations, and maybeRefresh() discards
+ *      "unknown". There are only two dispatchers, so this layer is currently
+ *      unreachable in its entirety.
+ *
+ * Feeding 51 consecutive rate-limited CLI results through recordResult()
+ * leaves getQuotaScore at 1.0.
+ *
+ * This is a real gap but NOT an unhandled one: exhaustion of a CLI route is
+ * caught by the circuit breaker, which does trip on the CLI rate-limit
+ * signal. What is missing is GRADUATED preference — the router cannot lean
+ * toward the less-depleted of two working subscriptions, only avoid a route
+ * that has already failed. Binary, not proportional.
+ *
+ * Left as-is deliberately rather than papered over: the breaker already
+ * covers the safety-relevant case, and inventing a synthetic score from the
+ * one bit CLIs actually give us would make `usage` look informative while
+ * telling the reader nothing. Documented instead so the output can be read
+ * correctly.
  */
 
 import {
