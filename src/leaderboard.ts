@@ -10,7 +10,8 @@
  * Endpoint:      https://api.wulong.dev/arena-ai-leaderboards/v1/leaderboard?name=code
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -151,6 +152,69 @@ export interface QualityScoreResult {
   elo: number | null;
 }
 
+
+/**
+ * Disk cache for the fetched leaderboard.
+ *
+ * The 24h TTL lived only in process memory, and every detached supervisor
+ * bootstraps its own Router, so each one refetched. Sharing the cache on disk
+ * makes the TTL mean what it says: one request a day for the machine, not one
+ * per process. It also means a slow or down api.wulong.dev delays routing once
+ * rather than once per process — the fetch sits on the routing path with an
+ * 8s timeout.
+ *
+ * Single file, last-write-wins, and that is safe here in a way it was NOT for
+ * breaker state: this is one shared value rather than a map being merged, so
+ * concurrent writers write the same thing instead of clobbering each other's
+ * entries. Still written atomically, so a reader never sees a half file.
+ *
+ * Failures are cached too. Without that, an endpoint returning 500 is retried
+ * by every process on every dispatch, which is the worst behaviour precisely
+ * when the far end is already struggling.
+ */
+interface LeaderboardCacheFile {
+  fetchedAt: number;
+  failed: boolean;
+  data: Record<string, number>;
+}
+
+function cacheFilePath(): string {
+  const dir =
+    process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  return path.join(dir, "leaderboard_cache.json");
+}
+
+function readCacheFile(): LeaderboardCacheFile | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(cacheFilePath(), "utf8")) as Partial<LeaderboardCacheFile>;
+    if (typeof parsed?.fetchedAt !== "number") return undefined;
+    return {
+      fetchedAt: parsed.fetchedAt,
+      failed: parsed.failed === true,
+      data: parsed.data && typeof parsed.data === "object" ? parsed.data : {},
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCacheFile(payload: LeaderboardCacheFile): void {
+  const file = cacheFilePath();
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+    renameSync(tmp, file);
+  } catch {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Ignore cleanup failures.
+    }
+    // A cache miss costs one extra request; it must never fail routing.
+  }
+}
+
 export class LeaderboardCache {
   /**
    * Whether to consult the Arena leaderboard at all. OFF by default.
@@ -287,6 +351,17 @@ export class LeaderboardCache {
     // autoTier) funnels through here, so disabling is guaranteed to mean "no
     // request", not "a request whose result is ignored".
     if (!this.enabled) return;
+
+    // Adopt another process's recent fetch before considering our own state.
+    if (Date.now() - this.fetchedAt >= CACHE_TTL_MS) {
+      const cached = readCacheFile();
+      if (cached !== undefined && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+        this.data = cached.data;
+        this.fetchedAt = cached.fetchedAt;
+        this.fetchFailed = cached.failed;
+      }
+    }
+
     const age = Date.now() - this.fetchedAt;
     if (Object.keys(this.data).length > 0 && age < CACHE_TTL_MS) {
       return;
@@ -322,6 +397,7 @@ export class LeaderboardCache {
         this.fetchFailed = true;
         // Update fetchedAt so the failure-suppression window starts now.
         this.fetchedAt = Date.now();
+        this.persist();
         return;
       }
       const payload = (await response.json()) as {
@@ -342,11 +418,18 @@ export class LeaderboardCache {
         this.fetchFailed = true;
         this.fetchedAt = Date.now();
       }
+      this.persist();
     } catch {
       this.fetchFailed = true;
       this.fetchedAt = Date.now();
+      this.persist();
       // Return stale data rather than crashing routing.
     }
+  }
+
+  /** Share this process's result with every other process on the machine. */
+  private persist(): void {
+    writeCacheFile({ fetchedAt: this.fetchedAt, failed: this.fetchFailed, data: this.data });
   }
 
   // ------------------------------------------------------------------
