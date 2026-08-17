@@ -586,6 +586,23 @@ benchmark maintained elsewhere should not quietly reorder the subscriptions
 you are paying for, and because a routing tool should not need the network to
 decide which of your local CLIs to run.
 
+## Chaining delegated work
+
+Pass the jobIds of earlier dispatches as `contextJobs` and their prompts and
+outputs are rendered into the new prompt directly:
+
+```json
+{ "prompt": "Now write the migration.", "contextJobs": ["job-1786977300001-0f0aaaaa"] }
+```
+
+Without it, chaining means reading the first job's output into your own context
+and re-summarising it into the second prompt — which spends the context that
+delegating was meant to save, and loses detail in the retelling.
+
+Injected context is capped (24k characters total, 8k per job, 16 jobs) so it
+cannot crowd out the task itself, and a referenced job that is missing or still
+running is reported in the preamble rather than silently dropped.
+
 ## Development
 
 ```bash

@@ -123,7 +123,20 @@ const DEFAULT_GRACE_SECONDS = 25;
  * handed to a coding agent. 64 is far above any real prompt and low enough
  * that a runaway caller is stopped at the boundary rather than at the CLI.
  */
+/** The only jobId shape jobs.ts produces; shared by both tools. */
+const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
+
 const MAX_CONTEXT_FILES = 64;
+
+/**
+ * Cap on prior jobs referenced by one dispatch.
+ *
+ * Each one costs a disk read and a slice of the delegate's context window.
+ * jobs.ts caps the rendered TEXT as well; this bounds the work done to produce
+ * it, so a caller naming hundreds of jobs is stopped at the boundary rather
+ * than after the reads.
+ */
+const MAX_CONTEXT_JOBS = 16;
 
 const dispatchInputShape = {
   prompt: z
@@ -145,6 +158,16 @@ const dispatchInputShape = {
         "explicit `models` list. Write-capable fanout requires workspacePolicy 'copy' " +
         "or 'git_worktree'. Fanout results that outlive the grace window each return " +
         "their own jobId to poll individually.",
+    ),
+  contextJobs: z
+    .array(z.string().regex(JOB_ID_RE, "must look like job-<timestamp>-<8 hex chars>"))
+    .max(MAX_CONTEXT_JOBS)
+    .optional()
+    .describe(
+      "jobIds of earlier dispatches whose results this one should build on. Their " +
+        "prompts and outputs are rendered into this prompt directly, so a follow-up " +
+        "step can see what came before WITHOUT you reading it into your own context " +
+        "and re-summarising it. Use this to chain delegated work.",
     ),
   files: z
     .array(z.string())
@@ -204,7 +227,6 @@ const dispatchInputShape = {
  * is trustworthy" — validating the format is a one-liner and removes the
  * question entirely.
  */
-const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
 
 const jobStatusInputShape = {
   jobId: z
@@ -505,6 +527,7 @@ async function startSingle(
     {
       prompt: input.prompt,
       files: input.files ?? [],
+      ...(input.contextJobs !== undefined ? { contextJobs: input.contextJobs } : {}),
       ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
       hints,
       ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
