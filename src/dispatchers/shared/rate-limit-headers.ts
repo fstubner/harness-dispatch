@@ -95,7 +95,35 @@ export function parseLimit(headers: Record<string, string>): number | null {
  *
  * Returns null if no header is present or all are malformed.
  */
+/**
+ * Ceiling on any parsed retry-after, in seconds (24h).
+ *
+ * The epoch branch below assumes `x-ratelimit-reset` is in SECONDS. Providers
+ * that send MILLISECONDS yield delay = 1.7e12 - 1.7e9 ~= 1.8e12 seconds, and
+ * nothing downstream clamped it: parseRetryAfter -> result.retryAfter ->
+ * CircuitBreaker.trip() -> cooldown. Measured 2026-08-17, a millisecond-epoch
+ * header produced a 56,600-year cooldown, and since breaker state now
+ * persists to disk it survived a restart — one malformed header permanently
+ * removing a route. An RFC-7231 HTTP-date far in the future does the same.
+ *
+ * No real provider asks a client to wait longer than a day, so a value past
+ * this is malformed rather than authoritative. Clamping (not discarding) is
+ * deliberate: the route IS rate limited, so a long-but-sane backoff is the
+ * right reading of a broken header.
+ */
+export const MAX_RETRY_AFTER_SEC = 24 * 60 * 60;
+
+function clamp(seconds: number | null): number | null {
+  if (seconds === null) return null;
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(seconds, MAX_RETRY_AFTER_SEC);
+}
+
 export function parseRetryAfter(headers: Record<string, string>): number | null {
+  return clamp(parseRetryAfterRaw(headers));
+}
+
+function parseRetryAfterRaw(headers: Record<string, string>): number | null {
   const h = lower(headers);
 
   // 1. delta-seconds

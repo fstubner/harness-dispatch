@@ -4,6 +4,7 @@ import {
   CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC,
   CIRCUIT_BREAKER_THRESHOLD,
   CircuitBreaker,
+  MAX_COOLDOWN_SEC,
 } from "../src/circuit-breaker.js";
 
 /**
@@ -119,6 +120,41 @@ describe("CircuitBreaker", () => {
     }
     expect(cb.isTripped).toBe(false);
     expect(cb.status().failures).toBe(CIRCUIT_BREAKER_THRESHOLD - 1);
+  });
+
+  describe("cooldown ceiling", () => {
+    // An unbounded retryAfter reached trip() from dispatcher code generally,
+    // not just from the header parser, and a cooldown is now written to disk
+    // and rehydrated — so a bad value stopped being a per-process nuisance
+    // and became a permanent one. Clamped in three places: parser, class, and
+    // restore.
+    it("clamps trip() to 24h no matter how large retryAfter is", () => {
+      const cb = new CircuitBreaker();
+      cb.trip(1.785e12); // a millisecond epoch read as seconds
+      expect(cb.cooldownRemaining()).toBeLessThanOrEqual(MAX_COOLDOWN_SEC);
+      expect(cb.cooldownRemaining()).toBeGreaterThan(MAX_COOLDOWN_SEC - 5);
+    });
+
+    it("clamps recordFailure() at the threshold too", () => {
+      const cb = new CircuitBreaker();
+      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD - 1; i += 1) cb.recordFailure();
+      cb.recordFailure(1.785e12);
+      expect(cb.cooldownRemaining()).toBeLessThanOrEqual(MAX_COOLDOWN_SEC);
+    });
+
+    it("clamps a restored deadline, so persisted junk can't outlive the ceiling", () => {
+      const cb = new CircuitBreaker();
+      cb.restore({ failures: 5, blockedUntilMs: Date.now() + 1.785e15 });
+      expect(cb.isTripped).toBe(true);
+      expect(cb.cooldownRemaining()).toBeLessThanOrEqual(MAX_COOLDOWN_SEC);
+    });
+
+    it("leaves a plausible cooldown alone", () => {
+      const cb = new CircuitBreaker();
+      cb.trip(42);
+      expect(cb.cooldownRemaining()).toBeGreaterThan(41);
+      expect(cb.cooldownRemaining()).toBeLessThanOrEqual(42);
+    });
   });
 
   describe("snapshot()/restore() — wall-clock bridge for cross-process persistence", () => {
