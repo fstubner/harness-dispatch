@@ -1041,6 +1041,18 @@ function buildCliServiceConfig(
       return safetyProfile !== undefined ? { safetyProfile } : {};
     })(),
     ...(() => {
+      // `clis:` entries never read this. It was handled for `services:` and
+      // `endpoints:` (both go through billingFields, which this builder does
+      // not call), so `workspace_policy: copy` on the primary, documented way
+      // to define a route was silently dropped and the route fell back to
+      // shared_locked — the LESS isolated default, with no warning, because
+      // the value itself is perfectly valid. The fail-open enum check added
+      // earlier cannot catch this: the key is right and the value is right;
+      // nothing was reading it.
+      const workspacePolicy = workspacePolicyFrom(override.workspace_policy);
+      return workspacePolicy !== undefined ? { workspacePolicy } : {};
+    })(),
+    ...(() => {
       const effectiveSafety =
         normalizeSafetyProfile(override.effective_safety) ?? defaults.effectiveSafety;
       return effectiveSafety !== undefined ? { effectiveSafety } : {};

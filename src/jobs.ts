@@ -13,7 +13,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   chmod,
@@ -614,6 +614,181 @@ function countActiveRuns(statuses: Array<{ status: JobStatus }>): number {
   return active;
 }
 
+
+// ---------------------------------------------------------------------------
+// Supervisor pool
+// ---------------------------------------------------------------------------
+
+/**
+ * How many supervisor PROCESSES may exist, regardless of how many jobs run.
+ *
+ * Previously every job got its own detached Node process. Measured on Windows
+ * with Node 24: a bare node process is 52 MB RSS and one that has bootstrapped
+ * a runtime is 65 MB, against ~54 MB for the agent CLI it exists to supervise.
+ * So more than half the memory of a concurrent run was wrapper, and it scaled
+ * linearly — 13 concurrent jobs meant 845 MB of supervision before any agent
+ * had read a file. That is the concurrency ceiling.
+ *
+ * A supervisor is almost entirely idle: it waits on a child process and writes
+ * the result. One can watch several at once for the cost of async I/O, so
+ * wrapper memory becomes O(1) in the number of jobs instead of O(N), capped
+ * here at ~260 MB.
+ *
+ * Four rather than one purely to bound blast radius: a supervisor crash strands
+ * only the jobs it held. Those are recoverable anyway — the job directory is
+ * the source of truth and the heartbeat check already marks stranded jobs
+ * orphaned — but losing a quarter of in-flight work beats losing all of it.
+ */
+export const SUPERVISOR_POOL_SIZE = 4;
+
+/** Poll interval while a supervisor waits for claimable work. */
+const SUPERVISOR_POLL_MS = 250;
+
+/** How long a supervisor stays alive with nothing to do before exiting. */
+const SUPERVISOR_IDLE_EXIT_MS = 5_000;
+
+/** Jobs one supervisor may run at once, so the pool can reach the global limit. */
+function jobsPerSupervisor(limit: number): number {
+  return Math.max(1, Math.ceil(limit / SUPERVISOR_POOL_SIZE));
+}
+
+/**
+ * Take exclusive ownership of a job directory.
+ *
+ * `wx` fails if the file exists, atomically, on both Windows and POSIX — which
+ * is what stops two supervisors racing onto the same job. A claim left behind
+ * by a crashed supervisor is reclaimed once that job's heartbeat has gone
+ * stale, by the same ORPHAN_THRESHOLD_MS rule used everywhere else.
+ */
+async function claimJobDir(jobDir: string, status: JobStatus): Promise<boolean> {
+  const claimPath = path.join(jobDir, "claim.json");
+  try {
+    await writeFile(claimPath, JSON.stringify({ pid: process.pid, at: timestamp() }), {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    return true;
+  } catch {
+    const beat = Date.parse(status.updatedAt);
+    if (!Number.isFinite(beat) || Date.now() - beat <= ORPHAN_THRESHOLD_MS) return false;
+    try {
+      await writeFile(claimPath, JSON.stringify({ pid: process.pid, at: timestamp() }), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Oldest released-but-unstarted job this supervisor can take, or undefined.
+ *
+ * "Released" means drainSlotQueue already granted it a slot and cleared
+ * slotQueued; it is waiting for a supervisor rather than for capacity. A job
+ * that is still slotQueued is deliberately NOT claimable here — that would let
+ * a supervisor jump the FIFO order the drainer exists to enforce.
+ */
+async function claimNextJob(): Promise<string | undefined> {
+  const statuses = await readJobStatuses();
+  for (const { jobDir, status } of statuses) {
+    if (status.slotQueued) continue;
+    if (status.status !== "queued") continue;
+    if (!(await claimJobDir(jobDir, status))) continue;
+    return jobDir;
+  }
+  return undefined;
+}
+
+/**
+ * Supervisor main loop: claim work, run several jobs at once, exit when idle.
+ *
+ * Exiting on idle keeps the no-jobs steady state at zero processes, same as
+ * before — the pool is a way to share supervision cost while work exists, not
+ * a daemon.
+ */
+export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promise<void> {
+  const inflight = new Set<Promise<unknown>>();
+  let idleSince = Date.now();
+
+  // Heartbeat so drainSlotQueue can tell how many supervisors already exist
+  // and avoid piling on. Same staleness rule as jobs, so a killed supervisor
+  // stops being counted without anything having to clean up after it.
+  const beatDir = path.join(jobsRoot(), ".supervisors");
+  // Adopt the file the spawning process already created for this slot, so the
+  // slot is continuously accounted for rather than briefly disappearing
+  // between the parent's registration and the child's first beat.
+  const beatFile = path.join(beatDir, `${supervisorId ?? process.pid}.txt`);
+  await mkdir(beatDir, { recursive: true, mode: 0o700 });
+  const beat = async (): Promise<void> => {
+    try {
+      await writeFile(beatFile, timestamp(), { encoding: "utf8", mode: 0o600 });
+    } catch {
+      // A missing heartbeat only risks an extra supervisor, which exits idle.
+    }
+  };
+  await beat();
+  const beatTimer = setInterval(() => void beat(), SUPERVISOR_POLL_MS * 4);
+  const cleanup = async (): Promise<void> => {
+    clearInterval(beatTimer);
+    try {
+      await rm(beatFile, { force: true });
+    } catch {
+      // Stale file ages out of the liveness count on its own.
+    }
+  };
+
+  try {
+
+    for (;;) {
+      const limit = maxConcurrentRuns(deps.holder.state.config);
+      if (limit === 0) return;
+
+      // Exit at once if the jobs root has gone. A per-job runner died with its
+      // job, so a deleted jobs directory could never strand one; a pooled
+      // supervisor outlives individual jobs and would otherwise sit polling a
+      // path that no longer exists — spinning in the field, and in tests
+      // interfering with whatever creates the next jobs root.
+      if (!existsSync(jobsRoot())) return;
+
+      if (inflight.size < jobsPerSupervisor(limit)) {
+        // Promote waiting jobs into released ones first. The old per-job
+        // runner called drainSlotQueue as it exited, which is what kept the
+        // queue moving; a pooled supervisor outlives individual jobs, so it
+        // has to do the same thing on every pass or a slot freed by a job it
+        // just finished never reaches the next job in line.
+        try {
+          await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
+        } catch {
+          // Next pass retries; a drain failure must not kill the supervisor.
+        }
+        const jobDir = await claimNextJob();
+        if (jobDir !== undefined) {
+          idleSince = Date.now();
+          const run = executeJobDir(deps, jobDir)
+            .catch(() => undefined)
+            .finally(() => inflight.delete(run));
+          inflight.add(run);
+          continue; // Try to fill the remaining slots before waiting.
+        }
+      }
+
+      if (inflight.size === 0) {
+        if (Date.now() - idleSince > SUPERVISOR_IDLE_EXIT_MS) return;
+        await new Promise((r) => setTimeout(r, SUPERVISOR_POLL_MS));
+        continue;
+      }
+      idleSince = Date.now();
+      await Promise.race([...inflight, new Promise((r) => setTimeout(r, SUPERVISOR_POLL_MS))]);
+    }
+  } finally {
+    await cleanup();
+  }
+}
+
 /**
  * Start slot-queued jobs, oldest first, until the machine is at its limit.
  *
@@ -637,16 +812,105 @@ export async function drainSlotQueue(
   let active = countActiveRuns(statuses);
   const waiting = statuses.filter((s) => s.status.slotQueued);
 
+  // Release stays HERE, synchronously and oldest-first, even though a
+  // supervisor is what will actually run the job. Two reasons: the caller's
+  // returned status must still distinguish "got a slot" from "waiting", which
+  // it cannot if clearing the flag is deferred to whichever supervisor wakes
+  // first; and FIFO across concurrent dispatches is only guaranteed while one
+  // drainer decides the order. Supervisors then pick up released work.
+  let released = 0;
   for (const { jobDir, status } of waiting) {
-    if (active >= limit) return;
-    const { slotQueued: _dropped, ...released } = status;
+    if (active >= limit) break;
+    const { slotQueued: _dropped, ...cleared } = status;
     await updateStatus(jobDir, {
-      ...released,
+      ...cleared,
       updatedAt: timestamp(),
       instructions: pollInstructions(status.jobId),
     });
-    spawnDetachedRunner(runnerPath, jobDir, configPath);
     active += 1;
+    released += 1;
+  }
+  if (released === 0) return;
+
+  // Size the pool against ALL outstanding work, not just the jobs released on
+  // this call. Dispatches arrive one at a time, so `released` is usually 1;
+  // sizing on that gave a single supervisor for twelve jobs, which then ran
+  // them three at a time because each supervisor takes only
+  // jobsPerSupervisor(limit). The cap must come from the pool size, never from
+  // how the work happened to arrive.
+  const outstanding = active;
+  const wanted = Math.min(SUPERVISOR_POOL_SIZE, Math.ceil(outstanding / jobsPerSupervisor(limit)));
+  const running = await countLiveSupervisors();
+  for (let i = running; i < wanted; i += 1) {
+    spawnDetachedSupervisor(runnerPath, configPath);
+  }
+}
+
+/**
+ * Supervisors currently alive, counted from their heartbeat files.
+ *
+ * Approximate on purpose: over-counting briefly means the pool runs one short
+ * until the next drain, and under-counting means one extra supervisor that
+ * finds no work and exits within SUPERVISOR_IDLE_EXIT_MS. Neither warrants a
+ * lock, and both self-correct.
+ */
+async function countLiveSupervisors(): Promise<number> {
+  const dir = path.join(jobsRoot(), ".supervisors");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  let live = 0;
+  for (const entry of entries) {
+    try {
+      const beat = await readFile(path.join(dir, entry), "utf8");
+      if (Date.now() - Date.parse(beat) <= ORPHAN_THRESHOLD_MS) live += 1;
+    } catch {
+      // Vanished mid-read: it is not live.
+    }
+  }
+  return live;
+}
+
+/**
+ * Start one detached supervisor; it finds its own work.
+ *
+ * Output goes to a log beside the heartbeats, for the same reason the per-job
+ * runner logged to its job dir: a supervisor that dies during bootstrap (bad
+ * config, missing module) is otherwise completely silent, and the only symptom
+ * is jobs that never start.
+ */
+function spawnDetachedSupervisor(runnerPath: string, configPath: string | undefined): void {
+  const dir = path.join(jobsRoot(), ".supervisors");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+
+  // Register the slot HERE, before spawning, and hand the id to the child.
+  //
+  // Letting the supervisor write its own first heartbeat looks tidier and does
+  // not work: booting a Node process takes a few hundred ms, so a burst of
+  // dispatches all counted zero live supervisors and each spawned another.
+  // Measured at 12 concurrent jobs: 12 supervisors, 748 MB — the pool capping
+  // nothing at all. The parent claiming the slot synchronously is what makes
+  // the cap real.
+  writeFileSync(path.join(dir, `${id}.txt`), timestamp(), { encoding: "utf8", mode: 0o600 });
+
+  const logFd = openSync(path.join(dir, `spawn-${id}.log`), "a");
+  try {
+    const child = spawn(process.execPath, [runnerPath, "--supervisor", id], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
+      },
+    });
+    child.unref();
+  } finally {
+    closeSync(logFd);
   }
 }
 
