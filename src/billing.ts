@@ -91,7 +91,6 @@ function inferredKind(
   svc: ServiceConfig,
   surface: BillingSurface,
   authSource: AuthSource,
-  now: Date,
 ): BillingKind {
   if (svc.billingKind) return svc.billingKind;
   if (authSource === "api_key") return "metered_api";
@@ -187,7 +186,6 @@ function defaultNotes(
   svc: ServiceConfig,
   surface: BillingSurface,
   kind: BillingKind,
-  now: Date,
 ): string | undefined {
   if (svc.billingNotes) return svc.billingNotes;
   if (surface === "claude_agent_sdk" || surface === "claude_code") {
@@ -205,15 +203,20 @@ function defaultNotes(
   return undefined;
 }
 
-export function buildRouteBilling(
-  svc: ServiceConfig,
-  opts: { now?: Date } = {},
-): RouteBilling {
-  const now = opts.now ?? new Date();
+/**
+ * Classification is date-independent by construction.
+ *
+ * This took an `opts.now` that was threaded into inferredKind/defaultNotes
+ * and used by neither — a leftover from when the Agent SDK credit split was
+ * expected to change classification on 2026-06-15. Anthropic paused that on
+ * launch day, the date logic was removed, and the parameter stayed behind
+ * implying a time dependency that no longer exists.
+ */
+export function buildRouteBilling(svc: ServiceConfig): RouteBilling {
   const provider = providerFromService(svc);
   const surface = surfaceFromService(svc);
   const authSource = authSourceFromService(svc, surface);
-  const kind = inferredKind(svc, surface, authSource, now);
+  const kind = inferredKind(svc, surface, authSource);
   const confidence = inferredConfidence(svc, surface, kind);
   const paidUsagePossible = svc.paidUsagePossible ?? inferredPaidUsagePossible(kind);
   const billing: RouteBilling = {
@@ -226,7 +229,7 @@ export function buildRouteBilling(
     paidUsageRequiresOptIn: paidUsagePossible ? true : false,
     confidence,
   };
-  const notes = defaultNotes(svc, surface, kind, now);
+  const notes = defaultNotes(svc, surface, kind);
   if (notes !== undefined) billing.notes = notes;
   return billing;
 }

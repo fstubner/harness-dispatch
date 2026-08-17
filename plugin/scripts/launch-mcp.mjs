@@ -45,12 +45,32 @@ function resolveConfigArgs() {
   return [];
 }
 
+/**
+ * Quote one argument for cmd.exe.
+ *
+ * Only used on the Windows shell path below. Wrapping in double quotes is
+ * enough here because a Windows path cannot itself contain `"` — it is an
+ * illegal filename character — so there is no quote to escape out of.
+ */
+function quoteForCmd(arg) {
+  return /[\s&|<>^()"]/.test(arg) ? `"${arg}"` : arg;
+}
+
 const bin = resolveBin();
-const child = spawn(bin.command, [...bin.args, "mcp", ...resolveConfigArgs()], {
-  stdio: "inherit",
-  // npx.cmd on Windows requires shell resolution.
-  shell: process.platform === "win32" && bin.command.endsWith(".cmd"),
-});
+const argv = [...bin.args, "mcp", ...resolveConfigArgs()];
+const needsShell = process.platform === "win32" && bin.command.endsWith(".cmd");
+
+// npx.cmd on Windows needs shell resolution, but `shell: true` PLUS an args
+// array is deprecated (DEP0190) and, worse, silently mis-splits: a --config
+// path containing a space arrived as two arguments, so any Windows user whose
+// home directory has a space in it could not pass a config through the plugin
+// launcher at all. With a shell, Node wants one pre-quoted command string.
+const child = needsShell
+  ? spawn([bin.command, ...argv].map(quoteForCmd).join(" "), {
+      stdio: "inherit",
+      shell: true,
+    })
+  : spawn(bin.command, argv, { stdio: "inherit" });
 
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);

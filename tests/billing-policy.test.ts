@@ -43,12 +43,14 @@ class AvailableDispatcher implements Dispatcher {
 describe("billing classification", () => {
   it("classifies Claude Agent SDK billing as included plan usage — the announced June 2026 credit split was paused before taking effect", () => {
     const route = svc({ name: "claude_code", harness: "claude_code", surface: "claude_agent_sdk" });
-    expect(buildRouteBilling(route, { now: new Date("2026-05-25T00:00:00Z") }).kind).toBe(
-      "included_plan_usage",
-    );
+    expect(buildRouteBilling(route).kind).toBe("included_plan_usage");
     // Anthropic paused the 2026-06-15 Agent SDK credit split on launch day —
     // post-date classification must NOT flip to the credit kind.
-    const after = buildRouteBilling(route, { now: new Date("2026-07-23T00:00:00Z") });
+    // Classification carries no date logic at all now (buildRouteBilling's
+    // unused `now` option is gone), so date-independence is structural rather
+    // than something a fixed clock can demonstrate. Kept as a second
+    // assertion because the KIND is still the thing that must not drift.
+    const after = buildRouteBilling(route);
     expect(after.kind).toBe("included_plan_usage");
     expect(after.notes).toMatch(/same subscription usage pool/);
     // Not paidUsagePossible by default: Anthropic hard-stops at the plan's
@@ -57,10 +59,7 @@ describe("billing classification", () => {
     // in billing.ts. A user who HAS opted in can restore the block with an
     // explicit paid_usage_possible: true in that route's config.
     expect(after.paidUsagePossible).toBe(false);
-    const overrideEnabled = buildRouteBilling(
-      { ...route, paidUsagePossible: true },
-      { now: new Date("2026-06-15T00:00:00Z") },
-    );
+    const overrideEnabled = buildRouteBilling({ ...route, paidUsagePossible: true });
     expect(overrideEnabled.paidUsagePossible).toBe(true);
   });
 

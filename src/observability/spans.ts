@@ -18,8 +18,12 @@
 
 import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
 
+import { VERSION } from "../version.js";
+
 const TRACER_NAME = "harness-dispatch";
-const TRACER_VERSION = "1.0.0-alpha.0";
+// Was hardcoded "1.0.0-alpha.0" against a package at 0.4.x, so every emitted
+// span was tagged with a version that never existed.
+const TRACER_VERSION = VERSION;
 
 export interface SpanAttrs {
   [key: string]: string | number | boolean | undefined;
