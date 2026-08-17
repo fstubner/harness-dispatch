@@ -174,6 +174,19 @@ describe("streamSubprocess", () => {
       // process as ITS OWN child (a grandchild of this test process).
       // child.kill() only ever signalled the direct child (cmd.exe); on
       // timeout the real process was left running indefinitely.
+      //
+      // Uses bare `node` from PATH, NOT process.execPath. execPath is
+      // "C:\Program Files\nodejs\node.exe" on a default Windows install, and
+      // cmd.exe splits that on the space: the test failed deterministically
+      // with "'C:\Program' is not recognized" for every developer whose Node
+      // lives under a spaced path. CI never caught it because hosted runners
+      // use space-free tool-cache paths. Quoting is not the fix either —
+      // measured 2026-08-17, `cmd /c "C:\Program Files\...\node.exe" -e ...`
+      // through cross-spawn yields "The filename, directory name, or volume
+      // label syntax is incorrect". That cmd.exe quoting is unfixable by hand
+      // is precisely why production stopped building this invocation itself
+      // (see windows-cmd.ts); this test only needs *a* grandchild via cmd.exe,
+      // so it sidesteps the question entirely.
       const markerFile = path.join(
         os.tmpdir(),
         `hr-grandchild-pid-${randomUUID()}.txt`,
@@ -184,7 +197,7 @@ describe("streamSubprocess", () => {
 
       for await (const _evt of streamSubprocess(
         "cmd",
-        ["/c", NODE, "-e", grandchildScript],
+        ["/c", "node", "-e", grandchildScript],
         { timeoutMs: 800 },
       )) {
         // drain
