@@ -553,7 +553,19 @@ const TERMINAL_WATCH_INTERVAL_MS = 300;
 async function watchUntilTerminal(jobDir: string): Promise<void> {
   const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
   while (Date.now() < deadline) {
-    if (existsSync(path.join(jobDir, "output", "result.json"))) return;
+    // Waits for a terminal STATUS, deliberately not for result.json.
+    //
+    // runJob writes result.json and then updates the status, so returning on
+    // result.json alone let this resolve in the window between the two: a
+    // caller could `await` a job and then read `status: "running"` from the
+    // job it had just been told was finished. Observed on Windows CI as
+    // "expected 'running' to be 'completed'".
+    //
+    // Because the status write comes last, a terminal status implies the
+    // result is already on disk — the ordering does the synchronising, so no
+    // extra check is needed here. A runner that dies between the two writes
+    // is covered by withOrphanCheck below, which is the same exit path as any
+    // other dead runner.
     try {
       const status = withOrphanCheck(
         await readJson<JobStatus>(path.join(jobDir, "status.json")),
