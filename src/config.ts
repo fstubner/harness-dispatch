@@ -1223,6 +1223,7 @@ function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
 function addEndpoints(
   services: Record<string, ServiceConfig>,
   raw: Record<string, unknown>,
+  apiKeys: ApiKeys,
 ): void {
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
@@ -1240,7 +1241,17 @@ function addEndpoints(
       baseUrl,
       model,
       command: "",
-      ...(str(ep.api_key) !== undefined ? { apiKey: str(ep.api_key)! } : {}),
+      // The top-level `api_keys:` block was honoured for `clis:` (see
+      // buildCliServiceConfig) and silently ignored here, so an endpoint whose
+      // credential lived there had NO key at runtime — and `configure` could
+      // not round-trip a reference that had never reached the service. Same
+      // class as workspace_policy: a documented key read for one route shape
+      // and dropped for another.
+      ...(str(ep.api_key) !== undefined
+        ? { apiKey: str(ep.api_key)! }
+        : apiKeys[name]
+          ? { apiKey: apiKeys[name]! }
+          : {}),
       weight: num(ep.weight, 0.6),
       tier: int(ep.tier, 3),
       cliCapability: num(ep.cli_capability, 1.0),
@@ -1376,7 +1387,7 @@ export async function loadConfig(
   const apiKeys = collectApiKeys(raw);
   const services = await detectServices(disabled, apiKeys, overrides, whichFn);
   addClis(services, raw, apiKeys, warnings);
-  addEndpoints(services, raw);
+  addEndpoints(services, raw, apiKeys);
 
   warnUnknownSafetyEnums(raw, warnings);
   if (envVarWarning !== undefined) warnings.push(envVarWarning);
