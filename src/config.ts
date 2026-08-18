@@ -131,6 +131,20 @@ export const PROTOCOL_PRESETS: Record<string, CliProtocolConfig> = Object.fromEn
 // billing.ts/safety.ts/router.ts) and must not change. This mapping only
 // controls what shows up as the service/route name, so it can follow the
 // same `*_cli` convention `endpoints:` uses for `*_api` (e.g. gemini_api).
+/**
+ * Commands auto-detect probes on PATH, exported so `doctor` can name them.
+ *
+ * A zero-route install used to report "0 ready route(s)" and stop, which tells
+ * a new user nothing about what was looked for or what to install. Keyed the
+ * same way as AUTO_DETECT_NAME so the two cannot drift.
+ */
+export const AUTO_DETECT_COMMANDS: Record<string, string> = {
+  claude_code_cli: "claude",
+  codex_cli: "codex",
+  cursor_cli: "cursor-agent",
+  antigravity_cli: "agy",
+};
+
 const AUTO_DETECT_NAME: Record<string, string> = {
   claude_code: "claude_code_cli",
   codex: "codex_cli",

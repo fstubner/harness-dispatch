@@ -29,8 +29,16 @@ checkable: if it does not happen as written, that is a finding.
    - **Expected:** `dispatch`, `job_status`, `usage` appear. Exactly three
      tools.
 
-**Empty state:** no harnesses installed. `doctor` reports zero ready routes and
-names what it looked for. It does not pretend to be usable.
+**Empty state:** no harnesses installed. `doctor` fails the routes check with
+`0 ready route(s). Looked for these harness CLIs on PATH: claude, codex,
+cursor-agent, agy. Install one, or add a route to config.yaml (endpoints: need
+no CLI).` It does not pretend to be usable.
+
+> This previously read "names what it looked for" while the code printed only
+> the count — a claim written from intent rather than from a run. An
+> independent review caught it. The behaviour was the better one, so the code
+> was changed to match; verified 2026-08-18 by running `doctor` with only
+> `node` on PATH and every route disabled.
 
 ### Flow 2 — Delegating a task (agent)
 
@@ -109,7 +117,7 @@ Every surface has to be right in these, not just the happy one:
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |
 | `safety_profile: read_onlyy` | Ignored **and warned**, never silently downgraded to a looser default |
-| `${VAR}` in `config.yaml` | Survives `configure`; never rewritten to the literal secret |
+| `${VAR}` in `config.yaml` | Survives `configure` as a reference; never rewritten to the literal secret. Includes the top-level `api_keys:` block for `endpoints:`, which was silently dropped until 2026-08-18 |
 | Two dispatches, same `workingDir`, `shared_locked` | Serialized across processes, not just within one |
 
 ## Known gaps
