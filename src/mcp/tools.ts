@@ -141,6 +141,11 @@ const MAX_CONTEXT_JOBS = 16;
 const dispatchInputShape = {
   prompt: z
     .string()
+    // Rejected here rather than at the harness. An empty prompt used to reach
+    // a real CLI, which spawned, failed with its own usage message, and left a
+    // consumed route call behind — a wasted dispatch for something the schema
+    // can refuse for free.
+    .min(1, "prompt must not be empty")
     .describe(
       "The coding task or question. Every dispatch starts as a background job " +
         "immediately; if it finishes within the grace window you get the full result " +

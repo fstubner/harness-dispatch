@@ -105,8 +105,18 @@ function buildHolder(
   return new RuntimeHolder(state);
 }
 
+/**
+ * A real directory to dispatch against.
+ *
+ * These tests used the literal workDir, which never existed on any
+ * machine — fine while workingDir was unvalidated, and fictional the moment it
+ * was. A caller passes a directory that exists; the fixture should too.
+ */
+let workDir: string;
+
 beforeEach(() => {
   const jobsDir = mkdtempSync(path.join(tmpdir(), "harness-dispatch-jobs-"));
+  workDir = mkdtempSync(path.join(tmpdir(), "harness-dispatch-work-"));
   vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", jobsDir);
   vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
 });
@@ -484,7 +494,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { prompt: "hi", service: "a", workingDir: workDir },
       { holder },
     );
     const data = r.data as {
@@ -530,7 +540,7 @@ describe("MCP tools — dispatch", () => {
 
     const started = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: "/some/project" },
+      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir },
       { holder },
     );
     const startData = started.data as {
@@ -590,7 +600,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { prompt: "hi", service: "a", workingDir: workDir },
       { holder },
     );
     expect((r.data as { completed: boolean }).completed).toBe(true);
@@ -606,7 +616,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project", hints: { timeoutMs: 5_400_000 } },
+      { prompt: "hi", service: "a", workingDir: workDir, hints: { timeoutMs: 5_400_000 } },
       { holder },
     );
     expect((r.data as { completed: boolean }).completed).toBe(true);
@@ -631,7 +641,7 @@ describe("MCP tools — dispatch", () => {
       // has fully landed, so nothing keeps writing after the test moves on.
       const r = await invokeTool(
         "dispatch",
-        { prompt: "hi", service: "a", workingDir: "/some/project" },
+        { prompt: "hi", service: "a", workingDir: workDir },
         { holder },
       );
       expect((r.data as { completed: boolean }).completed).toBe(true);
@@ -655,7 +665,7 @@ describe("MCP tools — dispatch", () => {
 
     const withWorkingDir = await invokeTool(
       "dispatch",
-      { prompt: "hi", workingDir: "/some/project" },
+      { prompt: "hi", workingDir: workDir },
       { holder },
     );
     const withData = withWorkingDir.data as { warning?: string };
@@ -678,7 +688,7 @@ describe("MCP tools — dispatch", () => {
       {
         prompt: "hi",
         service: "a",
-        workingDir: "/some/project",
+        workingDir: workDir,
         hints: { taskType: "plan", model: "explicit-override" },
       },
       { holder },
@@ -712,7 +722,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { prompt: "hi", service: "a", workingDir: workDir },
       { holder },
     );
     const data = r.data as { jobId: string; completed: boolean; success: boolean; error?: string };
@@ -742,7 +752,7 @@ describe("MCP tools — job_status", () => {
 
     const started = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", workingDir: "/some/project" },
+      { prompt: "hi", service: "a", workingDir: workDir },
       { holder },
     );
     const startData = started.data as { jobId: string };
