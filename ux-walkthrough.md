@@ -66,7 +66,16 @@ the preamble as unavailable, not silently omitted.
    are `slotQueued` and start as slots free, oldest first.
 4. **Expected:** supervision costs at most 4 processes regardless of N.
 5. **Expected with `workspace_policy: copy`:** the tasks genuinely run in
-   parallel. Measured: 12 jobs of 9s finished in 11.7s against 108s serial.
+   parallel, up to `max_concurrent_runs`.
+   - At the shipped default (`max_concurrent_runs: 4`): 12 jobs of 9s finish
+     in **~31s** — three waves of four.
+   - With the bound raised to 12: **11.7s**, against 108s serial.
+
+   > The 11.7s figure was previously quoted without its precondition, which
+   > made it unreproducible — an independent review measured 30.7s at defaults
+   > and was right to call it. The default bound is 4 because agent CLIs are
+   > memory-heavy (see PRODUCT.md constraints), so raising it is a deliberate
+   > choice about your machine, not a hidden setting.
 6. **Expected with `shared_locked`:** they serialize, because that is what the
    policy promises.
 
