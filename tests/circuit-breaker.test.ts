@@ -194,12 +194,19 @@ describe("CircuitBreaker", () => {
       cb.trip(42);
       const before = Date.now();
       const snap = cb.snapshot();
+      const after = Date.now();
       expect(snap.failures).toBe(0);
       expect(snap.blockedUntilMs).not.toBeNull();
       // Should land ~42s out from real wall-clock time (independent of the
       // mocked performance.now() used for the breaker's own monotonic math).
+      //
+      // Bracketed by BOTH clock reads. The upper bound was `before + 42_000`,
+      // which silently assumed zero time elapsed between capturing `before`
+      // and snapshot() taking its own Date.now() — one millisecond of drift on
+      // a slower machine failed it by exactly 1. Observed on ubuntu CI:
+      // "expected 1787094938306 to be less than or equal to 1787094938305".
       expect(snap.blockedUntilMs!).toBeGreaterThan(before + 40_000);
-      expect(snap.blockedUntilMs!).toBeLessThanOrEqual(before + 42_000);
+      expect(snap.blockedUntilMs!).toBeLessThanOrEqual(after + 42_000);
     });
 
     it("restore() hydrates a still-active cooldown from a snapshot", () => {
