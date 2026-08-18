@@ -96,6 +96,7 @@ export interface RouteStatus {
     localCallCount?: number;
     localSuccessCount?: number;
     localFailureCount?: number;
+    localRateLimitedCount?: number;
     source?: string;
   };
   breaker: {
@@ -203,6 +204,8 @@ export async function buildStatus(
     if (q?.localCallCount !== undefined) route.quota.localCallCount = q.localCallCount;
     if (q?.localSuccessCount !== undefined) route.quota.localSuccessCount = q.localSuccessCount;
     if (q?.localFailureCount !== undefined) route.quota.localFailureCount = q.localFailureCount;
+    if (q?.localRateLimitedCount !== undefined)
+      route.quota.localRateLimitedCount = q.localRateLimitedCount;
     if (q?.source !== undefined) route.quota.source = q.source;
     route.quality = {
       score: Math.round(quality.qualityScore * 1000) / 1000,
@@ -248,6 +251,8 @@ export interface RouteUsage {
   callCount: number;
   successCount: number;
   failureCount: number;
+  /** Calls declined for rate limiting — busy, not broken. Kept out of failureCount. */
+  rateLimitedCount: number;
   quotaScore: number;
   quotaRemaining?: number;
   quotaLimit?: number;
@@ -279,6 +284,7 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
         callCount: route.quota.localCallCount ?? 0,
         successCount: route.quota.localSuccessCount ?? 0,
         failureCount: route.quota.localFailureCount ?? 0,
+        rateLimitedCount: route.quota.localRateLimitedCount ?? 0,
         quotaScore: route.quota.score,
         breakerTripped: route.breaker.tripped,
         breakerFailures: route.breaker.failures,
@@ -305,7 +311,9 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
         : `${Math.round(route.quotaScore * 100)}%`;
     lines.push(
       `${mark} ${route.id}${route.model ? ` (${route.model})` : ""} — calls=${route.callCount} ` +
-        `success=${route.successCount} failed=${route.failureCount} quota=${quota} ` +
+        `success=${route.successCount} failed=${route.failureCount}` +
+        (route.rateLimitedCount ? ` rate_limited=${route.rateLimitedCount}` : "") +
+        ` quota=${quota} ` +
         `billing=${route.billingKind} breaker=${route.breakerTripped ? "open" : "closed"}`,
     );
     if (route.modelHint) lines.push(`  models: ${route.modelHint}`);
@@ -343,7 +351,14 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     lines.push(
       `  calls=${route.quota.localCallCount ?? 0} success=${
         route.quota.localSuccessCount ?? 0
-      } failed=${route.quota.localFailureCount ?? 0}`,
+      } failed=${route.quota.localFailureCount ?? 0}` +
+        // Shown separately, and only when non-zero, because a busy route is
+        // not a broken one. Folding these into `failed` told a reader — and an
+        // orchestrating agent choosing where to delegate — that a healthy
+        // route was unreliable.
+        (route.quota.localRateLimitedCount
+          ? ` rate_limited=${route.quota.localRateLimitedCount}`
+          : ""),
     );
     lines.push(
       `  context=${fmtTokens(route.maxInputTokens)} output=${fmtTokens(route.maxOutputTokens)}`,
