@@ -167,7 +167,7 @@ function inferredConfidence(
  * (raw API keys bill from the first token, no included pool at all) and
  * unknown (no data to reason about) — are blocked by default here.
  */
-function inferredPaidUsagePossible(kind: BillingKind): boolean {
+export function inferredPaidUsagePossible(kind: BillingKind): boolean {
   switch (kind) {
     case "local_compute":
     case "included_plan_usage":
