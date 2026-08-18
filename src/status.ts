@@ -343,7 +343,13 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   lines.push("harness-dispatch status", "");
   for (const route of status.routes) {
     const mark = route.available && route.enabled ? "ok" : "off";
-    const model = route.model ?? route.leaderboardModel ?? "model unknown";
+    // `leaderboard_model` is a SCORING key, not what gets dispatched. Showing
+    // it bare as `model=` made status and usage disagree — against this repo's
+    // own config.yaml, status read `model=zzz-no-such-model-force-fallback-tier`
+    // while usage showed no model for the same route. Marked when it is the
+    // scoring key standing in, so the two surfaces no longer give two answers.
+    const model =
+      route.model ?? (route.leaderboardModel ? `${route.leaderboardModel} (scoring key; no model set)` : "not set");
     lines.push(`${mark} ${route.id} / ${route.harness}`);
     lines.push(
       `  billing=${route.billing.kind} provider=${route.billing.provider} auth=${route.billing.authSource}`,
@@ -393,6 +399,16 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     lines.push("");
   }
   lines.push(`Ready to route: ${status.ready.length ? status.ready.join(", ") : "none"}`);
+  if (status.routes.length === 0) {
+    // doctor has a good empty state; status had none, and status is the
+    // command people reach for first.
+    lines.push(
+      "",
+      "No routes configured. Install a harness CLI (claude, codex, cursor-agent, agy)",
+      "and they are detected automatically, or add one to config.yaml.",
+      "Run `harness-dispatch doctor` for a fuller check.",
+    );
+  }
   if (status.next) {
     lines.push(
       `Next pick: ${status.next.route} (tier ${status.next.tier}, score ${status.next.finalScore})`,

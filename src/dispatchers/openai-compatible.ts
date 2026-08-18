@@ -28,6 +28,7 @@
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { parseRetryAfter } from "./shared/rate-limit-headers.js";
+import { redactEndpointHost } from "../status.js";
 
 const CHAT_PATH = "/chat/completions";
 const MESSAGES_PATH = "/messages";
@@ -123,6 +124,34 @@ interface AnthropicStreamEvent {
 }
 
 type ParsedResponse = ChatCompletionResponse | AnthropicMessageResponse;
+
+/**
+ * Turn a fetch failure into something a reader can act on.
+ *
+ * Node's undici says exactly "fetch failed" for DNS failures, refused
+ * connections and TLS errors alike — no host, no port, no cause. For a router
+ * whose whole job is choosing between endpoints, "which endpoint, and what
+ * went wrong" is the entire content of the message. The host is redacted the
+ * same way the rest of the output redacts it, so this stays safe to paste into
+ * a bug report.
+ */
+function describeFetchFailure(err: unknown, baseUrl: string): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
+  const code = cause?.code;
+  const hint =
+    code === "ENOTFOUND"
+      ? "host does not resolve"
+      : code === "ECONNREFUSED"
+        ? "connection refused — is the server running on that port?"
+        : code === "ETIMEDOUT"
+          ? "connection timed out"
+          : code === "CERT_HAS_EXPIRED" || code === "DEPTH_ZERO_SELF_SIGNED_CERT"
+            ? "TLS certificate rejected"
+            : (cause?.message ?? undefined);
+  const where = redactEndpointHost(baseUrl);
+  return hint ? `${message} (${where}: ${hint})` : `${message} (${where})`;
+}
 
 export class OpenAICompatibleDispatcher extends BaseDispatcher {
   readonly id: string;
@@ -438,7 +467,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         output: "",
         service: this.id,
         success: false,
-        error: aborted ? `Timed out after ${timeoutMs}ms` : errMsg,
+        error: aborted
+            ? `Timed out after ${timeoutMs}ms`
+            : describeFetchFailure(err, this.baseUrl ?? ""),
         durationMs: Date.now() - start,
       };
     }
@@ -555,7 +586,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
           output: "",
           service: this.id,
           success: false,
-          error: aborted ? `Timed out after ${timeoutMs}ms` : errMsg,
+          error: aborted
+            ? `Timed out after ${timeoutMs}ms`
+            : describeFetchFailure(err, this.baseUrl ?? ""),
           durationMs: Date.now() - start,
         },
       };
