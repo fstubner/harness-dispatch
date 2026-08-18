@@ -84,6 +84,8 @@ export interface QuotaStateJSON {
   localCallCount: number;
   localSuccessCount: number;
   localFailureCount: number;
+  /** Calls the route declined because it was rate limited — busy, not broken. */
+  localRateLimitedCount: number;
 }
 
 /** Mutable quota snapshot for one service, updated reactively. */
@@ -119,7 +121,10 @@ export class QuotaState {
     this.updatedAtSec = monotonicSec();
   }
 
-  toJSON(): Omit<QuotaStateJSON, "localCallCount" | "localSuccessCount" | "localFailureCount"> {
+  toJSON(): Omit<
+    QuotaStateJSON,
+    "localCallCount" | "localSuccessCount" | "localFailureCount" | "localRateLimitedCount"
+  > {
     return {
       used: this.used,
       limit: this.limit,
@@ -151,6 +156,7 @@ export class QuotaCache {
   private localCounts: Record<string, number>;
   private localSuccessCounts: Record<string, number>;
   private localFailureCounts: Record<string, number>;
+  private localRateLimitedCounts: Record<string, number>;
   private persistCounter = 0;
 
   constructor(
@@ -168,6 +174,7 @@ export class QuotaCache {
     this.localCounts = loaded.calls;
     this.localSuccessCounts = loaded.success;
     this.localFailureCounts = loaded.failure;
+    this.localRateLimitedCounts = loaded.rateLimited;
   }
 
   // ------------------------------------------------------------------
@@ -184,6 +191,16 @@ export class QuotaCache {
     this.localCounts[service] = (this.localCounts[service] ?? 0) + 1;
     if (result.success) {
       this.localSuccessCounts[service] = (this.localSuccessCounts[service] ?? 0) + 1;
+    } else if (result.rateLimited) {
+      // Rate limiting is UNAVAILABILITY, not failure, and the difference is
+      // not cosmetic: `usage` is what an orchestrating agent is told to check
+      // before delegating, and these counts persist across restarts. Filing a
+      // busy route under `failed` leaves a permanent record that it is
+      // unreliable, so the agent routes away from a route that was never
+      // broken — a tool quietly destroying its own reputation. The circuit
+      // breaker already handles the routing consequence of a rate limit
+      // properly and separately; this is only about what the numbers say.
+      this.localRateLimitedCounts[service] = (this.localRateLimitedCounts[service] ?? 0) + 1;
     } else {
       this.localFailureCounts[service] = (this.localFailureCounts[service] ?? 0) + 1;
     }
@@ -241,6 +258,7 @@ export class QuotaCache {
         localCallCount: this.localCounts[service] ?? 0,
         localSuccessCount: this.localSuccessCounts[service] ?? 0,
         localFailureCount: this.localFailureCounts[service] ?? 0,
+        localRateLimitedCount: this.localRateLimitedCounts[service] ?? 0,
       };
     }
     return out;
@@ -292,28 +310,36 @@ export class QuotaCache {
     calls: Record<string, number>;
     success: Record<string, number>;
     failure: Record<string, number>;
+    rateLimited: Record<string, number>;
   } {
     if (!existsSync(this.stateFile)) {
-      return { calls: {}, success: {}, failure: {} };
+      return { calls: {}, success: {}, failure: {}, rateLimited: {} };
     }
     try {
       const raw = readFileSync(this.stateFile, "utf-8");
       const data = JSON.parse(raw) as Record<
         string,
-        { local_calls?: number; local_success?: number; local_failure?: number } | null
+        {
+          local_calls?: number;
+          local_success?: number;
+          local_failure?: number;
+          local_rate_limited?: number;
+        } | null
       >;
       const calls: Record<string, number> = {};
       const success: Record<string, number> = {};
       const failure: Record<string, number> = {};
+      const rateLimited: Record<string, number> = {};
       for (const [k, v] of Object.entries(data)) {
         if (!v) continue;
         if (typeof v.local_calls === "number") calls[k] = v.local_calls;
         if (typeof v.local_success === "number") success[k] = v.local_success;
         if (typeof v.local_failure === "number") failure[k] = v.local_failure;
+        if (typeof v.local_rate_limited === "number") rateLimited[k] = v.local_rate_limited;
       }
-      return { calls, success, failure };
+      return { calls, success, failure, rateLimited };
     } catch {
-      return { calls: {}, success: {}, failure: {} };
+      return { calls: {}, success: {}, failure: {}, rateLimited: {} };
     }
   }
 
@@ -360,6 +386,11 @@ export class QuotaCache {
     for (const [service, count] of Object.entries(this.localFailureCounts)) {
       const bucket = existing[service] ?? {};
       bucket["local_failure"] = count;
+      existing[service] = bucket;
+    }
+    for (const [service, count] of Object.entries(this.localRateLimitedCounts)) {
+      const bucket = existing[service] ?? {};
+      bucket["local_rate_limited"] = count;
       existing[service] = bucket;
     }
     return JSON.stringify(existing, null, 2);
