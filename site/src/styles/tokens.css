@@ -7,8 +7,21 @@
 :root {
   /* status colors: one meaning each, never reused for anything else */
   --ok: #3f7a53; /* success glyphs/rows only */
-  --busy: #8a7050; /* in-progress only */
-  /* text ramp below --muted, for de-emphasized keys and hints */
-  --faint: #888780;
-  --hint: #a8a698;
+  --busy: #7f6446; /* in-progress only */
+  /*
+   * Text ramp below --muted, for de-emphasised keys and hints.
+   *
+   * Every step clears WCAG AA 4.5:1 on --bg. The previous ramp did not:
+   * --faint was 3.45 and --hint 2.35, both used at 10-12px where AA's
+   * large-text allowance does not apply. An independent review measured them;
+   * nothing in CI was checking, because the frontend checker returns
+   * not_evaluated with no design-tokens.json (now added).
+   *
+   * Keeping three DISTINCT steps constrains this more than it looks. Nudging
+   * each old value just past 4.5 collapsed --faint and --hint onto nearly the
+   * same colour and destroyed the hierarchy they exist to express, so the ramp
+   * was redrawn as a whole: 6.50 / 5.55 / 4.53.
+   */
+  --faint: #67665a;
+  --hint: #757464;
 }

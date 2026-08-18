@@ -48,8 +48,8 @@ Consequences:
 
 ## Terminal surfaces
 
-**Colour is decoration, never meaning.** Output is piped, redirected to logs,
-and read in CI. Anything colour conveys must also be conveyed by the text —
+**Colour is decoration, never meaning.** This applies to the TERMINAL
+surfaces. Output is piped, redirected to logs, Anything colour conveys must also be conveyed by the text —
 `ok` / `off`, `open` / `closed`. This also settles the accessibility question:
 there is nothing to fail a contrast check on if colour is never load-bearing.
 
@@ -88,7 +88,12 @@ on Windows" — rather than burying them in qualifiers.
 
 ## Explicit non-goals
 
-- No colour theme, no design tokens: there is no styled UI to theme.
+- No colour theme for the *terminal* surfaces: the terminal's theme is the
+  user's. The documentation site does have tokens (`design-tokens.json`, two
+  themes: the light page and the dark code panel), because it is a styled
+  public page and its contrast has to be checkable by something other than a
+  person squinting at it.
 - No branding, logo, or visual identity work.
 - No interactive dashboard beyond the existing watch mode.
-- No dark/light variants — the terminal's theme is the user's, not ours.
+- No dark/light variants of the site. The two token themes are surfaces that
+  coexist on one page, not a user-selectable mode.

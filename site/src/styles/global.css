@@ -282,7 +282,7 @@ p {
 .code-head {
   padding: 10px 16px;
   border-bottom: 1px solid var(--panel-line);
-  color: #7d7c6c;
+  color: #95947f;
   font-family: var(--mono);
   font-size: 0.7rem;
   letter-spacing: 0.05em;
@@ -301,11 +301,13 @@ p {
 
 .code .prompt::before {
   content: "$ ";
-  color: #6f6e5e;
+  /* 5.21:1 on --panel; was #6f6e5e at 3.58:1. */
+  color: #8a8977;
 }
 
 .code .c {
-  color: #6f6e5e;
+  /* Comments, same ramp as the prompt glyph. */
+  color: #8a8977;
 }
 
 .two-col {

@@ -1,0 +1,22 @@
+{
+  "light": {
+    "surface-base": "#fbfaf6",
+    "surface-raised": "#ffffff",
+    "border": "#dedcd0",
+    "text-main": "#16160f",
+    "text-muted": "#5c5c4d",
+    "text-faint": "#67665a",
+    "text-hint": "#757464",
+    "accent": "#b8410f",
+    "accent-soft": "#f0e2d4",
+    "status-ok": "#3f7a53",
+    "status-busy": "#7f6446"
+  },
+  "panel": {
+    "surface-base": "#14140f",
+    "border": "#2c2c22",
+    "text-main": "#e4e3d6",
+    "text-muted": "#95947f",
+    "text-faint": "#8a8977"
+  }
+}
