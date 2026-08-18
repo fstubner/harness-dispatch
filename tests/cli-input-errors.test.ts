@@ -88,3 +88,77 @@ describe("config validation warnings", () => {
     expect(w).not.toMatch(/unknown top-level/);
   });
 });
+
+describe("per-route unknown keys — the root cause, not another instance", () => {
+  /**
+   * Three silent-drop defects were found in config.ts in one day and each was
+   * patched individually. Measured afterwards, a route carrying three
+   * misspelled keys still produced ZERO warnings and silently got none of
+   * them. The parser reads what it recognises and cannot tell a key it does
+   * not know from a key that is absent — so every future misspelling was
+   * guaranteed to fail the same silent way.
+   *
+   * These are safety and isolation controls, so "silently absent" means
+   * "silently less restrictive".
+   */
+  async function warn(body: string): Promise<string[]> {
+    const file = path.join(dir, `r-${Math.abs(body.length)}.yaml`);
+    await fs.writeFile(file, body, "utf8");
+    const cfg = await loadConfig(file, { whichFn: async () => null });
+    return (cfg.configWarnings ?? []).filter((w) => w.includes("unknown key"));
+  }
+
+  it("names every misspelled key on a clis: entry", async () => {
+    const w = await warn(
+      "clis:\n  - name: probe\n    harness: codex\n    workspace_polcy: copy\n    safety_profil: read_only\n",
+    );
+    expect(w.join(" ")).toContain("workspace_polcy");
+    expect(w.join(" ")).toContain("safety_profil");
+  });
+
+  it("names a misspelled key on an endpoints: entry too", async () => {
+    // The two entry shapes share one key list deliberately — parallel lists
+    // drifting is what produced the original defects.
+    const w = await warn(
+      "endpoints:\n  - name: e\n    base_url: https://x/v1\n    model: m\n    safety_profil: read_only\n",
+    );
+    expect(w.join(" ")).toContain("safety_profil");
+  });
+
+  it("says the setting is not in effect, not merely that it is unknown", async () => {
+    // A user who typo'd a safety control needs to know it is off, not just
+    // that a word was unrecognised.
+    const w = await warn("clis:\n  - name: probe\n    harness: codex\n    workspace_polcy: copy\n");
+    expect(w[0]).toMatch(/IGNORED/);
+    expect(w[0]).toMatch(/NOT in effect/);
+  });
+
+  it("stays silent on a fully-populated valid route", async () => {
+    // The risk of a positive list is false warnings on real configs. The
+    // shipped config.default.yaml and the repo's own config.yaml both produce
+    // zero; this pins a dense hand-written entry as well.
+    const w = await warn(
+      [
+        "clis:",
+        "  - name: probe",
+        "    harness: codex",
+        "    tier: 1",
+        "    weight: 1.2",
+        "    model: gpt-5.6-terra",
+        "    cli_capability: 1.0",
+        "    thinking_level: high",
+        "    leaderboard_model: gpt-5",
+        "    max_input_tokens: 400000",
+        "    max_output_tokens: 128000",
+        "    safety_profile: read_only",
+        "    workspace_policy: copy",
+        "    allow_paid_usage: false",
+        "    paid_usage_possible: false",
+        "    billing_kind: included_plan_usage",
+        "    capabilities: { execute: 1.0, plan: 0.9, review: 0.9 }",
+        "",
+      ].join("\n"),
+    );
+    expect(w).toEqual([]);
+  });
+});

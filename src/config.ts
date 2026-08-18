@@ -516,6 +516,52 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "protocol",
 ]);
 
+/**
+ * Every key a `clis:` or `endpoints:` entry may carry.
+ *
+ * ROOT-CAUSE FIX, not a fourth instance. Three separate silent-drop defects
+ * were found in this file in one day — workspace_policy ignored for `clis:`,
+ * api_keys ignored for `endpoints:`, unknown top-level keys unwarned — and
+ * each was patched individually. Measured afterwards: a route carrying
+ * `workspace_polcy`, `safety_profil` and `tierr` still produced ZERO warnings
+ * and silently got none of the three.
+ *
+ * The mechanism is that this parser reads what it recognises and cannot
+ * distinguish a key it does not know from a key that is absent. Nothing
+ * enumerated the legal surface, so every future misspelling was guaranteed to
+ * fail the same silent way — and these are safety and isolation controls, so
+ * "silently absent" means "silently less restrictive".
+ *
+ * Kept as one list for both entry shapes on purpose. Splitting it per shape
+ * would recreate the original defect, where two parallel field lists drifted
+ * and each was missing something the other had.
+ */
+const KNOWN_ROUTE_KEYS = new Set([
+  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
+  "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
+  "max_input_tokens", "max_output_tokens", "thinking_level",
+  "leaderboard_model", "escalate_model", "escalate_on",
+  "api_key", "base_url", "protocol", "filter",
+  "provider", "surface", "auth_source", "billing_kind", "billing_confidence",
+  "billing_notes", "paid_usage_possible", "allow_paid_usage",
+  "safety_profile", "effective_safety", "workspace_policy",
+  "endpoint_mode", "endpoint_provider", "wire_protocol",
+]);
+
+function warnUnknownRouteKeys(
+  entry: Record<string, unknown>,
+  label: string,
+  warnings: string[],
+): void {
+  for (const key of Object.keys(entry)) {
+    if (KNOWN_ROUTE_KEYS.has(key)) continue;
+    warnings.push(
+      `${label}: unknown key "${key}" — IGNORED. If this was meant to be a ` +
+        `safety or workspace setting, it is NOT in effect; check the spelling.`,
+    );
+  }
+}
+
 function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
   for (const key of Object.keys(raw)) {
     if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue;
@@ -1226,6 +1272,7 @@ function addClis(
       );
       continue;
     }
+    warnUnknownRouteKeys(entry, `clis[${index}] "${name}"`, warnings);
     const defaults = CLI_DEFAULTS[harness];
     if (!defaults) {
       warnings.push(
@@ -1289,12 +1336,14 @@ function addEndpoints(
   services: Record<string, ServiceConfig>,
   raw: Record<string, unknown>,
   apiKeys: ApiKeys,
+  warnings: string[] = [],
 ): void {
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
     : [];
-  for (const ep of endpoints) {
+  for (const [index, ep] of endpoints.entries()) {
     const name = str(ep.name);
+    warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);
     const baseUrl = str(ep.base_url);
     const model = str(ep.model);
     if (!name || !baseUrl || !model) continue;
@@ -1482,7 +1531,7 @@ export async function loadConfig(
   const apiKeys = collectApiKeys(raw);
   const services = await detectServices(disabled, apiKeys, overrides, whichFn);
   addClis(services, raw, apiKeys, warnings);
-  addEndpoints(services, raw, apiKeys);
+  addEndpoints(services, raw, apiKeys, warnings);
 
   warnUnknownSafetyEnums(raw, warnings);
   warnUnknownTopLevelKeys(raw, warnings);
