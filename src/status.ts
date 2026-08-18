@@ -124,6 +124,13 @@ export interface HarnessDispatchStatus {
   routes: RouteStatus[];
   ready: string[];
   skippedRoutes: RouteSkip[];
+  /**
+   * Config problems that change behaviour. `doctor` reported these and
+   * `status` did not, so a route with a typo'd safety_profile showed a plain
+   * `ok` line while silently running under the looser default — and `status`
+   * is the surface people actually run.
+   */
+  configWarnings?: readonly string[];
   next?: {
     route: string;
     tier: number;
@@ -224,6 +231,9 @@ export async function buildStatus(
     routes,
     ready,
     skippedRoutes,
+    ...(config.configWarnings && config.configWarnings.length > 0
+      ? { configWarnings: [...config.configWarnings] }
+      : {}),
   };
   if (decision) {
     status.next = {
@@ -373,6 +383,13 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     if (route.workspacePolicy) lines.push(`  workspace=${route.workspacePolicy}`);
     if (route.billing.notes) lines.push(`  note: ${route.billing.notes}`);
     if (route.skipped) lines.push(`  skipped=${route.skipped.code}: ${route.skipped.message}`);
+    lines.push("");
+  }
+  if (status.configWarnings && status.configWarnings.length > 0) {
+    lines.push(
+      `Config warnings (${status.configWarnings.length}) — these change behaviour:`,
+    );
+    for (const w of status.configWarnings) lines.push(`  ! ${w}`);
     lines.push("");
   }
   lines.push(`Ready to route: ${status.ready.length ? status.ready.join(", ") : "none"}`);

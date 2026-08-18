@@ -689,6 +689,23 @@ export async function main(argv: string[]): Promise<number> {
     strict: false,
   });
 
+  // parseArgs runs with strict:false so positionals and subcommand shapes stay
+  // flexible — the cost is that an unknown flag is silently accepted. `status
+  // --jsonn` printed human text and exited 0, so a cron job piping it to jq
+  // got garbage AND a success code. PRODUCT.md names automation as a user, and
+  // a wrong exit code is the one thing automation cannot recover from.
+  const knownFlags = new Set([
+    "help", "config", "json", "live", "allow-paid", "watch", "interval",
+    "port", "host", "print", "yes", "force", "http",
+  ]);
+  const unknownFlags = Object.keys(values).filter((k) => !knownFlags.has(k));
+  if (unknownFlags.length > 0) {
+    throw new UsageError(
+      `unknown option${unknownFlags.length > 1 ? "s" : ""}: ` +
+        `${unknownFlags.map((f) => `--${f}`).join(", ")}. Run --help for the list.`,
+    );
+  }
+
   if (values.help) {
     printUsage();
     return 0;

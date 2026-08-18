@@ -58,9 +58,18 @@ export function evaluateRoutePolicy(
     return skip(
       route,
       "paid_blocked",
+      // Two different fixes, and recommending only the permissive one is a
+      // steer in the wrong direction. If the route genuinely CANNOT cost money
+      // (a local runtime, a subscription CLI), the correct change is
+      // `paid_usage_possible: false` — saying so truthfully. `allow_paid_usage:
+      // true` means "yes, bill me", and offering it as the sole remedy invites
+      // switching off the safety net to fix a mislabelled route.
       "route can incur paid usage and paid usage is not allowed — this is a config-level " +
-        `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
-        `to '${route}' in config.yaml (or run \`harness-dispatch configure --allow-paid\`) to enable it`,
+        `block, not an availability problem. If '${route}' really can bill you, add ` +
+        `\`allow_paid_usage: true\` to it in config.yaml (or run ` +
+        `\`harness-dispatch configure --allow-paid\`). If it cannot — a local runtime, or a ` +
+        `route already covered by a subscription — the correct fix is ` +
+        `\`paid_usage_possible: false\` instead.`,
     );
   }
 

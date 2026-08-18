@@ -22,6 +22,7 @@ import which from "which";
 import {
   normalizeSafetyProfile,
 } from "./safety.js";
+import { inferredPaidUsagePossible } from "./billing.js";
 import type {
   AuthSource,
   BillingConfidence,
@@ -1172,12 +1173,28 @@ function buildCliServiceConfig(
       return billingKind !== undefined ? { billingKind } : {};
     })(),
     ...(() => {
+      // A DECLARED billing_kind beats the harness default.
+      //
+      // `harness: generic` defaults paidUsagePossible to true (correctly — an
+      // unknown command might cost money). But a route declaring
+      // `billing_kind: local_compute` has said it cannot, and the default
+      // still won: status showed `billing=local_compute paid=possible`, two
+      // fields of the same record contradicting each other, and the route was
+      // skipped by billing policy. Nothing about a declared non-paid kind
+      // should leave the paid flag set by a fallback.
+      //
+      // An explicit paid_usage_possible still wins over both, and an api_key
+      // still forces true — a key means a metered account exists regardless of
+      // what the kind claims.
+      const declaredKind = billingKindFrom(override.billing_kind);
       const paidUsagePossible =
         typeof override.paid_usage_possible === "boolean"
           ? override.paid_usage_possible
           : apiKey
             ? true
-            : defaults.paidUsagePossible;
+            : declaredKind !== undefined
+              ? inferredPaidUsagePossible(declaredKind)
+              : defaults.paidUsagePossible;
       return paidUsagePossible !== undefined ? { paidUsagePossible } : {};
     })(),
     ...(typeof override.allow_paid_usage === "boolean"
