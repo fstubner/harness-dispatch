@@ -40,7 +40,7 @@ import type {
   RoutingDecision,
   WorkspacePolicy,
 } from "./types.js";
-import { resolveWorkingDir, workingDirWarning } from "./working-dir.js";
+import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
 
 /**
  * Dispatcher error strings are unbounded (a corrupted downstream config once
@@ -1033,6 +1033,12 @@ export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promis
 }
 
 export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput): Promise<StartedJob> {
+  // Before anything is created on disk. Every dispatch path — MCP, HTTP,
+  // fanout — funnels through here, so this is the one place that catches a bad
+  // workingDir while the error can still name the real cause, and the only
+  // point at which failing leaves no half-built job directory behind.
+  const workingDirError = validateWorkingDir(input.workingDir);
+  if (workingDirError !== undefined) throw new Error(workingDirError);
   await pruneStaleJobs();
   const jobId = newJobId();
   const root = jobsRoot();
@@ -1154,6 +1160,17 @@ export async function getAsyncJob(jobId: string): Promise<{
 }> {
   assertValidJobId(jobId);
   const jobDir = path.join(jobsRoot(), jobId);
+  // A well-formed id for a job that is gone is the ORDINARY case, not an
+  // internal error: retention prunes finished jobs, so any caller holding an
+  // id long enough will hit this. It used to surface as a raw Node ENOENT
+  // quoting an absolute path inside the jobs directory, which tells the caller
+  // nothing actionable and leaks the layout.
+  if (!existsSync(path.join(jobDir, "manifest.json"))) {
+    throw new Error(
+      `No such job: ${jobId}. It may have been pruned by the retention window, ` +
+        `or it was never started on this machine.`,
+    );
+  }
   const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
   const status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
   const resultPath = path.join(jobDir, "output", "result.json");
