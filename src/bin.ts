@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 import yaml from "js-yaml";
 
 import { ensureHttpToken, maskToken, readHttpToken, rotateHttpToken, tokenPath } from "./auth.js";
-import { loadConfig } from "./config.js";
+import { AUTO_DETECT_COMMANDS, loadConfig } from "./config.js";
 import { LeaderboardCache } from "./leaderboard.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
@@ -412,7 +412,15 @@ async function cmdDoctor(
     {
       name: "routes",
       ok: status.ready.length > 0,
-      detail: `${status.ready.length} ready route(s)`,
+      // When nothing is ready, say what was looked for. "0 ready route(s)" on
+      // its own leaves a new user with no idea whether the tool is broken or
+      // simply has nothing to route to, and no hint what to install.
+      detail:
+        status.ready.length > 0
+          ? `${status.ready.length} ready route(s)`
+          : `0 ready route(s). Looked for these harness CLIs on PATH: ` +
+            `${Object.values(AUTO_DETECT_COMMANDS).join(", ")}. ` +
+            `Install one, or add a route to config.yaml (endpoints: need no CLI).`,
     },
     {
       name: "http-auth",
