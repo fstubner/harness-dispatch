@@ -652,6 +652,15 @@ function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
   const notes = str(raw.billing_notes);
   if (notes !== undefined) out.billingNotes = notes;
   if (safetyProfile !== undefined) out.safetyProfile = safetyProfile;
+  // effective_safety was handled by the `clis:` builder and the legacy
+  // `services:` path but not here, so an `endpoints:` entry declaring it was
+  // silently ignored — the fourth instance of this file's parallel-field-list
+  // defect, and the first one caught by a test rather than by a user or a
+  // reviewer. Practically fail-safe (openai_compatible routes are read_only by
+  // construction, so the ignored value could only have widened them), but the
+  // inconsistency is the bug.
+  const effectiveSafety = effectiveSafetyFrom(raw.effective_safety);
+  if (effectiveSafety !== undefined) out.effectiveSafety = effectiveSafety;
   const workspacePolicy = workspacePolicyFrom(raw.workspace_policy);
   if (workspacePolicy !== undefined) out.workspacePolicy = workspacePolicy;
   return out;
