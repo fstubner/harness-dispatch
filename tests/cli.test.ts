@@ -270,10 +270,30 @@ describe("CLI parser", () => {
 
     // Now exercise the real --yes write path against a not-yet-existing
     // target and check the printed MCP snippet points at it absolutely.
-    const writeResult = await capture(() => main(["configure", "--yes", "--config", target]));
+    //
+    // `target` was written above, so it EXISTS — this used to be run against
+    // it and passed only because the overwrite guard was skipped whenever
+    // --config was supplied. That was the bug; a genuinely fresh path is what
+    // the comment always claimed to be testing.
+    const freshTarget = path.join(dir, "fresh-config.yaml");
+    const writeResult = await capture(() =>
+      main(["configure", "--yes", "--config", freshTarget]),
+    );
     expect(writeResult.code).toBe(0);
-    expect(writeResult.stdout).toContain(`Wrote ${target}`);
-    expect(writeResult.stdout).toContain(JSON.stringify(path.resolve(target)));
+    expect(writeResult.stdout).toContain(`Wrote ${freshTarget}`);
+    expect(writeResult.stdout).toContain(JSON.stringify(path.resolve(freshTarget)));
+
+    // And an existing file is now refused rather than destroyed.
+    const clobber = await capture(() => main(["configure", "--yes", "--config", target]));
+    expect(clobber.code).toBe(1);
+    expect(clobber.stderr).toContain("already exists");
+    expect(await fs.readFile(target, "utf-8")).toBe(written);
+
+    // --force is the deliberate opt-in.
+    const forced = await capture(() =>
+      main(["configure", "--yes", "--force", "--config", target]),
+    );
+    expect(forced.code).toBe(0);
   });
 
   it("configure never emits a resolved api_key — ${VAR} round-trips, a literal is redacted", async () => {

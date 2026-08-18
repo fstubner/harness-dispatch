@@ -69,6 +69,7 @@ function printUsage(): void {
       "  --json                Print JSON where supported.",
       "  --print               configure: print generated config YAML without writing it.",
       "  --yes                 configure: write config.yaml instead of only previewing it.",
+      "  --force               configure: overwrite an existing config file.",
       "  --allow-paid          Allow doctor --live to probe paid or unknown-paid routes.",
       "  -h, --help            Show help.",
       "",
@@ -203,7 +204,7 @@ function configToYaml(config: RouterConfig, opts: YamlOpts): string {
 async function cmdConfigure(
   configPath: string | undefined,
   explicitConfigPath: string | undefined,
-  opts: { print: boolean; yes: boolean },
+  opts: { print: boolean; yes: boolean; force: boolean },
 ): Promise<number> {
   const config = await loadConfig(configPath);
   const routeCount = Object.keys(config.services).length;
@@ -273,9 +274,18 @@ async function cmdConfigure(
     return 0;
   }
 
-  if (existsSync(target) && explicitConfigPath === undefined) {
+  // Guard ANY existing file, however the path was supplied.
+  //
+  // This previously read `existsSync(target) && explicitConfigPath === undefined`,
+  // so passing --config skipped the protection entirely — and the message told
+  // you to pass --config, which is exactly what disabled it. Overwriting a
+  // hand-written config is not recoverable, so it now takes an explicit
+  // --force rather than an accident of which flag you happened to use.
+  if (existsSync(target) && !opts.force) {
     process.stderr.write(
-      "configure: config.yaml already exists. Pass --config <path> or --print to avoid overwriting it.\n",
+      `configure: ${target} already exists and would be overwritten.\n` +
+        "Use --print to inspect the generated YAML, --config <other-path> to write\n" +
+        "elsewhere, or --force to overwrite it deliberately.\n",
     );
     return 1;
   }
@@ -582,6 +592,7 @@ export async function main(argv: string[]): Promise<number> {
       host: { type: "string" },
       print: { type: "boolean" },
       yes: { type: "boolean" },
+      force: { type: "boolean" },
       http: { type: "string" },
     },
     allowPositionals: true,
@@ -623,6 +634,7 @@ export async function main(argv: string[]): Promise<number> {
       return cmdConfigure(configPath, explicitConfigPath, {
         print: Boolean(values.print),
         yes: Boolean(values.yes),
+        force: Boolean(values.force),
       });
     case "doctor":
       return cmdDoctor(configPath, {
