@@ -166,12 +166,35 @@ function cliEntryToYaml(
   config: RouterConfig,
   opts: YamlOpts,
 ): Record<string, unknown> {
+  // `harness: generic` has NO shipped preset behind it, so anything omitted
+  // here is not recoverable on reload — it is gone. Dropping `protocol:` was
+  // fatal: config.ts refuses a generic entry without one ("requires a
+  // protocol block — entry ignored"), so a round-trip deleted every
+  // user-added harness, and `configure --yes --force` wrote that over their
+  // file. This is the documented README#adding-a-harness path.
+  //
+  // Built-in harnesses keep the lean output: their preset supplies protocol
+  // and billing, and emitting a copy would freeze a snapshot that stops
+  // tracking future default changes — the same reasoning commonEntryFields
+  // gives for omitting billing fields generally.
+  const isGeneric = svc.harness === "generic";
   return {
     name: svc.name,
     harness: svc.harness,
     command: svc.command,
     api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
+    ...(isGeneric
+      ? {
+          provider: svc.provider,
+          surface: svc.surface,
+          auth_source: svc.authSource,
+          billing_kind: svc.billingKind,
+          paid_usage_possible: svc.paidUsagePossible,
+          billing_notes: svc.billingNotes,
+          protocol: svc.protocol,
+        }
+      : {}),
   };
 }
 
@@ -188,6 +211,31 @@ function endpointEntryToYaml(
   };
 }
 
+/**
+ * Top-level settings a user set and that have no defaults to track.
+ *
+ * These were silently dropped on every round-trip. Unlike the billing fields
+ * (see commonEntryFields — omitted deliberately so they keep following harness
+ * defaults), nothing recomputes these: a dropped `max_concurrent_runs` is
+ * simply gone, and `configure --yes --force` wrote the result over the user's
+ * file.
+ */
+function topLevelToYaml(config: RouterConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (config.disabled && config.disabled.length > 0) out.disabled = [...config.disabled];
+  if (config.maxConcurrentRuns !== undefined) out.max_concurrent_runs = config.maxConcurrentRuns;
+  if (config.retention?.jobsDays !== undefined) {
+    out.retention = { jobs_days: config.retention.jobsDays };
+  }
+  if (config.telemetry?.enabled !== undefined) {
+    out.telemetry = { enabled: config.telemetry.enabled };
+  }
+  if (config.leaderboard?.enabled !== undefined) {
+    out.leaderboard = { enabled: config.leaderboard.enabled };
+  }
+  return out;
+}
+
 function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   const clis: Record<string, unknown>[] = [];
   const endpoints: Record<string, unknown>[] = [];
@@ -195,7 +243,7 @@ function configToYaml(config: RouterConfig, opts: YamlOpts): string {
     if (svc.type === "cli") clis.push(cliEntryToYaml(svc, config, opts));
     else endpoints.push(endpointEntryToYaml(svc, config, opts));
   }
-  const doc: Record<string, unknown> = {};
+  const doc: Record<string, unknown> = { ...topLevelToYaml(config) };
   if (clis.length > 0) doc.clis = clis;
   if (endpoints.length > 0) doc.endpoints = endpoints;
   return yaml.dump(doc, { noRefs: true, lineWidth: 100 });
@@ -391,12 +439,25 @@ async function cmdDoctor(
     runtime.router,
     runtime.leaderboard,
   );
-  const nodeMajor = Number(process.versions.node.split(".")[0] ?? "0");
+  // Must agree with package.json engines (>=22.22.2) and the README. It said
+  // >= 24 while both of those said 22, so a user following the README's own
+  // install block hit `fail node` on the second command — on a runtime where
+  // dispatch works correctly. Three sources, two answers, and the one the
+  // user sees first was the wrong one.
+  const [nodeMajor, nodeMinor, nodePatch] = process.versions.node
+    .split(".")
+    .map((n) => Number(n) || 0);
+  const nodeOk =
+    (nodeMajor ?? 0) > 22 ||
+    ((nodeMajor ?? 0) === 22 &&
+      ((nodeMinor ?? 0) > 22 || ((nodeMinor ?? 0) === 22 && (nodePatch ?? 0) >= 2)));
   const checks: Array<{ name: string; ok: boolean; detail: string }> = [
     {
       name: "node",
-      ok: nodeMajor >= 24,
-      detail: `Node ${process.versions.node}`,
+      ok: nodeOk,
+      detail: nodeOk
+        ? `Node ${process.versions.node}`
+        : `Node ${process.versions.node} — harness-dispatch needs >=22.22.2`,
     },
     {
       name: "config",
