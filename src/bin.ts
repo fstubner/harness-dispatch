@@ -206,7 +206,9 @@ async function cmdConfigure(
   explicitConfigPath: string | undefined,
   opts: { print: boolean; yes: boolean; force: boolean },
 ): Promise<number> {
-  const config = await loadConfig(configPath);
+  // configure's --config names where it will WRITE, so a path that does not
+  // exist yet is the normal first-run case, not a typo.
+  const config = await loadConfig(configPath, { allowMissing: true });
   const routeCount = Object.keys(config.services).length;
 
   if (opts.print) {
@@ -578,9 +580,28 @@ function parsePositiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/**
+ * Thrown for a flag value the user typed wrong. main() turns it into a plain
+ * one-line message and exit 1 — never a stack trace, which tells a CLI user
+ * nothing they can act on.
+ */
+class UsageError extends Error {}
+
 function serveOpts(values: { port?: unknown; host?: unknown }): { port?: number; host?: string } {
   const out: { port?: number; host?: string } = {};
-  if (values.port !== undefined) out.port = parsePositiveInt(values.port, 0);
+  if (values.port !== undefined) {
+    // `--port abc` used to fall back to 0, which binds a RANDOM free port and
+    // prints it as though it were what was asked for. A typo'd port silently
+    // serving somewhere else is worse than refusing to start.
+    const port = parsePositiveInt(values.port, 0);
+    if (port === 0 || !Number.isInteger(port) || port > 65535) {
+      throw new UsageError(
+        `--port must be an integer between 1 and 65535 (got ${JSON.stringify(values.port)}). ` +
+          `Omit --port to bind a random free one.`,
+      );
+    }
+    out.port = port;
+  }
   if (typeof values.host === "string") out.host = values.host;
   return out;
 }
@@ -615,6 +636,11 @@ export async function main(argv: string[]): Promise<number> {
   await initObservability();
 
   const [command, ...rest] = positionals;
+  // `--config` with no value: parseArgs yields boolean true, which reached
+  // path.join and threw ERR_INVALID_ARG_TYPE as a raw Node stack trace.
+  if (values.config !== undefined && typeof values.config !== "string") {
+    throw new UsageError("--config needs a path, e.g. --config ./config.yaml");
+  }
   const explicitConfigPath = values.config as string | undefined;
   // If the caller didn't pass --config, fall back to ./config.yaml when it
   // exists, rather than silently ignoring it and running pure auto-detect.
@@ -681,7 +707,20 @@ export async function main(argv: string[]): Promise<number> {
 const entrypoint =
   typeof process !== "undefined" && Array.isArray(process.argv) ? process.argv[1] : "";
 if (entrypoint && (entrypoint.endsWith("bin.ts") || entrypoint.endsWith("bin.js"))) {
-  void main(process.argv.slice(2)).then((code) => {
-    process.exit(code);
-  });
+  void main(process.argv.slice(2))
+    .then((code) => {
+      process.exit(code);
+    })
+    .catch((err: unknown) => {
+      // A CLI user gets one actionable line, not a stack trace. UsageError and
+      // config-loading failures (missing file, bad YAML) are all things they
+      // typed or wrote and can fix; anything else keeps its stack because it
+      // is a bug worth reporting.
+      if (err instanceof UsageError || err instanceof Error) {
+        process.stderr.write(`harness-dispatch: ${err.message}
+`);
+        process.exit(1);
+      }
+      throw err;
+    });
 }

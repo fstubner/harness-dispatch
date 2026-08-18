@@ -426,7 +426,10 @@ function endpointFields(
  * `retention:`. Parsed once here so legacy `services:` configs and modern
  * `clis:`/`endpoints:` configs behave identically.
  */
-function topLevelSettings(raw: Record<string, unknown>): Partial<RouterConfig> {
+function topLevelSettings(
+  raw: Record<string, unknown>,
+  policyWarnings: string[] = [],
+): Partial<RouterConfig> {
   const out: Partial<RouterConfig> = {};
   const telemetryRaw = raw.telemetry;
   if (telemetryRaw !== null && typeof telemetryRaw === "object") {
@@ -445,6 +448,15 @@ function topLevelSettings(raw: Record<string, unknown>): Partial<RouterConfig> {
   }
   const maxRuns = num(raw.max_concurrent_runs, Number.NaN);
   if (Number.isFinite(maxRuns) && maxRuns >= 0) out.maxConcurrentRuns = Math.floor(maxRuns);
+  else if (raw.max_concurrent_runs !== undefined) {
+    // Present but unusable. Silently falling back to the default meant a
+    // caller who set a concurrency bound got a different one and was never
+    // told — and this value governs how many agent CLIs run at once.
+    policyWarnings.push(
+      `max_concurrent_runs: ${JSON.stringify(raw.max_concurrent_runs)} is not a ` +
+        `non-negative number — IGNORED, the default applies instead.`,
+    );
+  }
   return out;
 }
 
@@ -475,6 +487,45 @@ const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
   effective_safety: ["read_only", "workspace_edit", "full_auto"],
   workspace_policy: ["shared", "shared_locked", "git_worktree", "copy"],
 };
+
+/**
+ * Every key this parser understands at the top level of config.yaml.
+ *
+ * `doctor` reported "no unrecognized config entries" while a typo'd or
+ * invented top-level key produced no warning at all — the check's own name
+ * promised something it never did. A misspelled `max_concurrent_runs` is
+ * indistinguishable from not setting it, which is exactly the silent-default
+ * class that has bitten this file twice already.
+ */
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+  "version",
+  "clis",
+  "endpoints",
+  "services",
+  "disabled",
+  "overrides",
+  "api_keys",
+  "protocols",
+  "policy",
+  "telemetry",
+  "retention",
+  "leaderboard",
+  "max_concurrent_runs",
+  "default_safety_profile",
+  "workspace_policy",
+  "protocol",
+]);
+
+function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
+  for (const key of Object.keys(raw)) {
+    if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue;
+    if (key.endsWith("_api_key")) continue; // documented per-route shorthand
+    warnings.push(
+      `unknown top-level config key: ${key} — IGNORED. Check the spelling against ` +
+        `the documented keys (${[...KNOWN_TOP_LEVEL_KEYS].slice(0, 6).join(", ")}, ...).`,
+    );
+  }
+}
 
 function warnUnknownSafetyEnums(node: unknown, warnings: string[], where = ""): void {
   if (Array.isArray(node)) {
@@ -981,7 +1032,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     ...(Array.isArray(raw.disabled)
       ? { disabled: (raw.disabled as string[]).slice() }
       : {}),
-    ...topLevelSettings(raw),
+    ...topLevelSettings(raw, warnings),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;
@@ -1317,6 +1368,15 @@ function addEndpoints(
 export interface LoadConfigOptions {
   /** Override `which` for tests — return null when a CLI is "not found". */
   whichFn?: WhichFn;
+  /**
+   * Treat a missing explicit path as auto-detect rather than an error.
+   *
+   * Only `configure` sets this: the path it is given is its OUTPUT, which
+   * legitimately does not exist yet. For every other command an explicit
+   * --config that is not there is a typo, and silently auto-detecting printed
+   * a confident route table for a config that was never loaded.
+   */
+  allowMissing?: boolean;
 }
 
 /**
@@ -1345,9 +1405,30 @@ export async function loadConfig(
         raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
       }
     } catch (err: unknown) {
-      // File not found -> auto-detect mode. Any other error -> rethrow.
       const e = err as NodeJS.ErrnoException;
-      if (e.code !== "ENOENT") throw err;
+      if (e.code === "ENOENT") {
+        // configure names an OUTPUT path, so a file that is not there yet is
+        // its normal first run — it alone passes allowMissing.
+        if (opts.allowMissing === true) {
+          // Fall through to auto-detect with an empty `raw`.
+        } else {
+          // Otherwise an explicit --config that does not exist is a typo, not
+          // a request for auto-detection. Continuing printed a confident,
+          // healthy route table built from defaults, so a mistyped path looked
+          // like a working config. The implicit fallback (no path given at
+          // all) never reaches here and is unchanged.
+          throw new Error(
+            `config file not found: ${path}. Check the path, or omit --config to ` +
+              `auto-detect installed harness CLIs.`,
+          );
+        }
+      } else if (err instanceof yaml.YAMLException) {
+        // A YAML syntax error used to escape as a raw js-yaml stack trace that
+        // never named the file it came from.
+        throw new Error(`config file ${path} is not valid YAML: ${err.message}`);
+      } else {
+        throw err;
+      }
     }
   }
   const envVarWarning =
@@ -1404,11 +1485,12 @@ export async function loadConfig(
   addEndpoints(services, raw, apiKeys);
 
   warnUnknownSafetyEnums(raw, warnings);
+  warnUnknownTopLevelKeys(raw, warnings);
   if (envVarWarning !== undefined) warnings.push(envVarWarning);
   const cfg: RouterConfig = {
     services,
     disabled,
-    ...topLevelSettings(raw),
+    ...topLevelSettings(raw, warnings),
     ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
