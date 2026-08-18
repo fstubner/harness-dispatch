@@ -176,7 +176,13 @@ describe("Router restart survival — breaker state persists across process boun
         service: "flaky",
         success: false,
         rateLimited: true,
-        retryAfter: 0.05,
+        // 500ms, not 50ms. The first assertion below has to observe the
+        // breaker while it is STILL tripped, and a 50ms cooldown raced the
+        // test's own execution: on a slow Windows CI runner it had already
+        // elapsed by the time the expect ran, failing with "expected false to
+        // be true" on a breaker that had worked correctly. A cooldown short
+        // enough to wait out must still be long enough to see.
+        retryAfter: 0.5,
       }),
     };
 
@@ -184,7 +190,7 @@ describe("Router restart survival — breaker state persists across process boun
     await routerA.routeTo("flaky", "go", [], "/tmp");
     expect(routerA.getBreaker("flaky")!.isTripped).toBe(true);
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 700));
 
     const routerB = buildRouter(services, dispatchers);
     expect(routerB.getBreaker("flaky")!.isTripped).toBe(false);
