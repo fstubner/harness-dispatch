@@ -87,6 +87,10 @@ the preamble as unavailable, not silently omitted.
 2. Spend looks unexpected. Run `usage`.
    - **Expected:** per-route calls, successes, failures, and — only when
      non-zero — `rate_limited`, which is not folded into failures.
+   - **Including work done by detached job runners started by the running
+     server.** This did not hold until 2026-08-19: dispatches run in child
+     processes, and the server's counters were loaded at boot and never
+     re-read, so `usage` answered zero on the surface this step points at.
 3. A route looks unreliable.
    - **Expected:** a busy route shows `rate_limited=N failed=0`. Being busy
      never accumulates a reputation for being broken.
