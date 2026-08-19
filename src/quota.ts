@@ -248,7 +248,44 @@ export class QuotaCache {
     return info;
   }
 
+  /**
+   * Re-read the persisted counts before reporting them.
+   *
+   * Dispatches run in DETACHED child processes. Each child records its result
+   * and persists it, but the server's own QuotaCache loaded its counts at boot
+   * and never looked again — so `usage` inside the process that started the
+   * work reported calls=0 while the disk held calls=3. The numbers only ever
+   * appeared to a LATER process, which is the opposite of useful: the
+   * walkthrough tells a user to run `usage` when spend looks unexpected, and
+   * on the primary surface it answered zero.
+   *
+   * Max rather than adopt-disk: this process writes through on every
+   * recordResult, so disk is normally current, but the persist path is a
+   * documented read-modify-write race (counters are informational and never
+   * consulted by routing). Taking the larger value means a lost write shows a
+   * stale count rather than losing one this process definitely made.
+   */
+  private refreshLocalCounts(): void {
+    const disk = this.loadLocalCounts();
+    for (const [service, count] of Object.entries(disk.calls)) {
+      this.localCounts[service] = Math.max(this.localCounts[service] ?? 0, count);
+    }
+    for (const [service, count] of Object.entries(disk.success)) {
+      this.localSuccessCounts[service] = Math.max(this.localSuccessCounts[service] ?? 0, count);
+    }
+    for (const [service, count] of Object.entries(disk.failure)) {
+      this.localFailureCounts[service] = Math.max(this.localFailureCounts[service] ?? 0, count);
+    }
+    for (const [service, count] of Object.entries(disk.rateLimited)) {
+      this.localRateLimitedCounts[service] = Math.max(
+        this.localRateLimitedCounts[service] ?? 0,
+        count,
+      );
+    }
+  }
+
   async fullStatus(): Promise<Record<string, QuotaStateJSON>> {
+    this.refreshLocalCounts();
     const out: Record<string, QuotaStateJSON> = {};
     for (const service of Object.keys(this.dispatchers)) {
       await this.maybeRefresh(service);
