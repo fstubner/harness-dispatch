@@ -142,6 +142,11 @@ export interface DispatchResult {
   rateLimited?: boolean;
   retryAfter?: number;
   rateLimitHeaders?: Record<string, string>;
+  /**
+   * Milliseconds the HARNESS ATTEMPT took — the subprocess or HTTP call
+   * alone. A job's status.durationMs is the end-to-end figure (routing,
+   * workspace prep, lock waits); the two differ by design.
+   */
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
   skippedRoutes?: RouteSkip[];
