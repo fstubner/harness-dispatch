@@ -104,6 +104,18 @@ const publicHintsSchema = z
           "gives up, not how long the inline grace window waits (that's `graceSeconds`).",
       ),
   })
+  // STRICT, and this is a safety control, not tidiness.
+  //
+  // zod drops unknown keys by default. The same setting is spelled
+  // `safety_profile` in config.yaml and `safetyProfile` here, so the obvious
+  // slip was silently discarded — `hints: { safety_profile: "read_only" }` ran
+  // a full_auto route at full_auto, while the correctly-spelled key refused
+  // it. A caller asking to be restricted got no restriction and no warning.
+  //
+  // config.ts already treats this class as a root cause (it warns on ANY
+  // unrecognised route key). This is the same fix at the MCP boundary, which
+  // PRODUCT.md calls the actual product surface.
+  .strict()
   .describe("Public routing hints.");
 
 const workingDirDescription =

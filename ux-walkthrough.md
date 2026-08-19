@@ -130,7 +130,7 @@ Every surface has to be right in these, not just the happy one:
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |
 | `safety_profile: read_onlyy` | Ignored **and warned**, never silently downgraded to a looser default |
-| `${VAR}` in `config.yaml` | Survives `configure` as a reference; never rewritten to the literal secret. Includes the top-level `api_keys:` block for `endpoints:`, which was silently dropped until 2026-08-18 |
+| `${VAR}` in `config.yaml` | Survives `configure` as a reference; never rewritten to the literal secret. The reference is RELOCATED into the route's own `api_key:` — the top-level `api_keys:` block itself is not re-emitted. Functionally lossless (the key resolves identically on reload), but the block does not survive verbatim, and this row claimed it did until 2026-08-19 |
 | Two dispatches, same `workingDir`, `shared_locked` | Serialized across processes, not just within one |
 
 ## Known gaps

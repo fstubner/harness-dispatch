@@ -405,59 +405,7 @@ export class QuotaCache {
     }
   }
 
-  /**
-   * Build the on-disk payload, merging new counts over any existing state.
-   *
-   * Known limitation: this read-modify-write is not atomic across processes.
-   * Two `harness-dispatch` CLI invocations racing on the same stateFile can
-   * both read the same baseline and each write back only their own count,
-   * silently losing the other's increment. Left as-is deliberately —
-   * localCallCount/localSuccessCount/localFailureCount are purely
-   * informational (surfaced in `status`/`doctor`/`usage` output and the live
-   * dashboard; see status.ts, dashboard/live.ts), never consulted by
-   * QuotaState.score or any routing/billing decision — so an occasional
-   * undercount here doesn't affect what the router actually does, only what
-   * it reports. Not worth cross-process file locking for a display counter.
-   */
-  private buildStatePayload(): string {
-    let existing: Record<string, Record<string, unknown>> = {};
-    try {
-      if (existsSync(this.stateFile)) {
-        const raw = readFileSync(this.stateFile, "utf-8");
-        const parsed = JSON.parse(raw) as Record<
-          string,
-          Record<string, unknown>
-        > | null;
-        if (parsed && typeof parsed === "object") {
-          existing = parsed;
-        }
-      }
-    } catch {
-      existing = {};
-    }
-    for (const [service, count] of Object.entries(this.localCounts)) {
-      const bucket = existing[service] ?? {};
-      bucket["local_calls"] = count;
-      existing[service] = bucket;
-    }
-    for (const [service, count] of Object.entries(this.localSuccessCounts)) {
-      const bucket = existing[service] ?? {};
-      bucket["local_success"] = count;
-      existing[service] = bucket;
-    }
-    for (const [service, count] of Object.entries(this.localFailureCounts)) {
-      const bucket = existing[service] ?? {};
-      bucket["local_failure"] = count;
-      existing[service] = bucket;
-    }
-    for (const [service, count] of Object.entries(this.localRateLimitedCounts)) {
-      const bucket = existing[service] ?? {};
-      bucket["local_rate_limited"] = count;
-      existing[service] = bucket;
-    }
-    return JSON.stringify(existing, null, 2);
-  }
-
+  
   private nextTempStateFile(): string {
     this.persistCounter += 1;
     return `${this.stateFile}.${process.pid}.${Date.now()}.${this.persistCounter}.tmp`;
