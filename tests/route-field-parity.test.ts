@@ -57,6 +57,10 @@ const SHARED_FIELDS: Array<{
   { yaml: "max_output_tokens: 4096", field: "maxOutputTokens", expected: 4096 },
   { yaml: "thinking_level: high", field: "thinkingLevel", expected: "high" },
   { yaml: "leaderboard_model: some-model", field: "leaderboardModel", expected: "some-model" },
+  // Added after a review found escalate_model honoured on clis: and dropped on
+  // endpoints: — this list pinned 16 keys and missed it, so the gap it exists
+  // to catch went to a human instead.
+  { yaml: "escalate_model: big-model", field: "escalateModel", expected: "big-model" },
   { yaml: "safety_profile: read_only", field: "safetyProfile", expected: "read_only" },
   { yaml: "effective_safety: read_only", field: "effectiveSafety", expected: "read_only" },
   { yaml: "workspace_policy: copy", field: "workspacePolicy", expected: "copy" },

@@ -617,6 +617,29 @@ async function startFanout(
   const counter = { value: 0 };
   const skippedRoutes: RouteSkip[] = [];
 
+  // Every requested name must match SOMETHING. A name that matches nothing was
+  // silently dropped: `models: ["fake_fast", "ghost_route"]` fanned out to one
+  // arm with no skippedRoutes entry and no error, and
+  // `models: ["ghost_a", "ghost_b"]` returned
+  // `{ completed: true, results: [] }` — success-shaped, zero explanation,
+  // because `completed` is `every()` over an empty array. Single mode already
+  // rejects an unknown `service` by name; fanout should not be looser about
+  // the same mistake.
+  const matchedRequests = new Set<string>();
+  for (const [routeName, svc] of Object.entries(state.config.services)) {
+    for (const want of requested) {
+      if (matchesRequestedModel(routeName, svc, new Set([want]))) matchedRequests.add(want);
+    }
+  }
+  const unmatched = [...requested].filter((r) => !matchedRequests.has(r));
+  if (unmatched.length > 0) {
+    throw new Error(
+      `Unknown fanout target(s): ${unmatched.join(", ")}. ` +
+        `Valid route ids: ${Object.keys(state.config.services).join(", ")}. ` +
+        `models: accepts route ids or model names.`,
+    );
+  }
+
   const candidates: string[] = [];
   for (const [routeName, svc] of Object.entries(state.config.services)) {
     if (!matchesRequestedModel(routeName, svc, requested)) continue;

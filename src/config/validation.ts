@@ -39,6 +39,24 @@ import { normalizeSafetyProfile } from "../safety.js";
  * miss a format the way four separate call sites can.
  */
 export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
+  // Billing enums, added after a review found `billing_kind: metered-api`
+  // (hyphen, not underscore) silently resolving to the harness default of
+  // `included_plan_then_flexible_credits` with paidUsagePossible false and no
+  // warning. This block existed precisely for enums whose fallback is LESS
+  // restrictive than the value attempted, and billing is the other hard
+  // constraint the product states — a typo here silently marks a metered route
+  // as free.
+  billing_kind: [
+    "local_compute",
+    "included_plan_usage",
+    "included_plan_then_flexible_credits",
+    "included_credit_then_optional_overage",
+    "included_usage_then_on_demand",
+    "metered_api",
+    "free_quota",
+    "unknown",
+  ],
+  billing_confidence: ["documented", "inferred", "unknown", "unsupported"],
   safety_profile: ["read_only", "workspace_edit", "full_auto"],
   effective_safety: ["read_only", "workspace_edit", "full_auto"],
   workspace_policy: ["shared", "shared_locked", "git_worktree", "copy"],
@@ -118,8 +136,28 @@ export function warnUnknownRouteKeys(
   }
 }
 
+/**
+ * Keys the parser ACCEPTS and nothing reads.
+ *
+ * Silently allowing them is worse than rejecting them: `default_safety_profile`
+ * is a safety-control name that does nothing at all, which is the exact
+ * failure this module exists to prevent. They stay allow-listed (so they are
+ * not reported as typos) but say plainly that setting them has no effect.
+ *
+ * Verified read-nowhere in src/ at the time of writing; if one is implemented
+ * later, delete it from here and the warning goes away.
+ */
+const ACCEPTED_BUT_UNIMPLEMENTED = new Set(["protocols", "default_safety_profile"]);
+
 export function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
   for (const key of Object.keys(raw)) {
+    if (ACCEPTED_BUT_UNIMPLEMENTED.has(key)) {
+      warnings.push(
+        `${key}: recognised but NOT IMPLEMENTED — setting it has no effect. ` +
+          `Remove it, or track the gap; it is not a typo.`,
+      );
+      continue;
+    }
     if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue;
     if (key.endsWith("_api_key")) continue; // documented per-route shorthand
     warnings.push(
