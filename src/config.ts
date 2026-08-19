@@ -23,6 +23,30 @@ import {
   normalizeSafetyProfile,
 } from "./safety.js";
 import { inferredPaidUsagePossible } from "./billing.js";
+import {
+  authSourceFrom, billingKindFrom, bool, confidenceFrom, endpointModeFrom,
+  endpointProviderFrom, inferEndpointProvider, int, num, providerFrom, str,
+  surfaceFrom, thinkingFrom, wireProtocolFrom, workspacePolicyFrom,
+} from "./config/coercions.js";
+import {
+  warnUnknownRouteKeys,
+  warnUnknownSafetyEnums,
+  warnUnknownTopLevelKeys,
+} from "./config/validation.js";
+import { parseProtocolFields, protocolFrom, stringArrayFrom } from "./config/protocol.js";
+import { interpolateTree } from "./config/env-interpolation.js";
+
+/** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
+export type WhichFn = (cmd: string) => Promise<string | null>;
+
+const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
+  try {
+    const r = await which(cmd, { nothrow: true });
+    return r ?? null;
+  } catch {
+    return null;
+  }
+};
 import type {
   AuthSource,
   BillingConfidence,
@@ -56,15 +80,6 @@ import type {
 
 const SAFETY_PROFILES: readonly SafetyProfile[] = ["read_only", "workspace_edit", "full_auto"];
 
-/** The full set of `{{name}}` tokens expandToken() in generic-cli.ts understands. */
-const KNOWN_ARG_PLACEHOLDERS: ReadonlySet<string> = new Set([
-  "{{prompt}}",
-  "{{model}}",
-  "{{safety}}",
-  "{{working_dir}}",
-  "{{file_dirs}}",
-  "{{native_args}}",
-]);
 
 // NOTE: everything the module-load-time `CLI_DEFAULTS = loadDefaultHarnesses()`
 // call below touches must be declared ABOVE it (or be a hoisted function) —
@@ -157,246 +172,13 @@ const AUTO_DETECT_NAME: Record<string, string> = {
 // Env var interpolation (${VAR_NAME})
 // ---------------------------------------------------------------------------
 
-const ENV_VAR_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-/**
- * `unsetVars` collects the names of ${VAR} references that resolved to
- * nothing because the env var isn't set at all — distinct from a var
- * deliberately set to "". Without this, a typo'd or forgotten env var
- * (${ANTHROPIC_API_KEY} when the real name is ${ANTHROPIC_KEY}) silently
- * becomes an empty string: `str()` then drops the field entirely, a route
- * that needed an api_key loses it with zero feedback, and doctor reports
- * the route "ready" right up until the first real call 401s.
- */
-function interpolateEnv(
-  value: string,
-  unsetVars: Set<string>,
-  refs: Map<string, string>,
-): string {
-  const m = ENV_VAR_RE.exec(value);
-  if (!m) return value;
-  const name = m[1]!;
-  if (!(name in process.env)) unsetVars.add(name);
-  const resolved = process.env[name] ?? "";
-  // Remember which reference produced this value so `configure` can emit the
-  // ${VAR} back instead of the secret it resolved to. Keyed by resolved value
-  // rather than by config path because interpolation runs over the raw tree
-  // before any of it is shaped into routes. Two variables holding the same
-  // secret collide, but harmlessly: either reference resolves to that same
-  // value, so emitting either is correct. Empty resolutions are skipped —
-  // they carry no secret and would collide with every other unset var.
-  if (resolved !== "") refs.set(resolved, value);
-  return resolved;
-}
 
-/** Walk an object tree and replace any "${VAR}" string leaves with env values. */
-function interpolateTree<T>(node: T, unsetVars: Set<string>, refs: Map<string, string>): T {
-  if (typeof node === "string") {
-    return interpolateEnv(node, unsetVars, refs) as unknown as T;
-  }
-  if (Array.isArray(node)) {
-    return node.map((v) => interpolateTree(v, unsetVars, refs)) as unknown as T;
-  }
-  if (node !== null && typeof node === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-      out[k] = interpolateTree(v, unsetVars, refs);
-    }
-    return out as unknown as T;
-  }
-  return node;
-}
 
-// ---------------------------------------------------------------------------
-// `which` — pluggable for tests
-// ---------------------------------------------------------------------------
 
-/** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
-export type WhichFn = (cmd: string) => Promise<string | null>;
 
-const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
-  try {
-    const r = await which(cmd, { nothrow: true });
-    return r ?? null;
-  } catch {
-    return null;
-  }
-};
 
-// ---------------------------------------------------------------------------
-// Normalization helpers
-// ---------------------------------------------------------------------------
 
-function num(v: unknown, def: number): number {
-  if (typeof v === "number") return v;
-  if (typeof v === "string" && v !== "") {
-    const n = Number(v);
-    if (!Number.isNaN(n)) return n;
-  }
-  return def;
-}
-
-function int(v: unknown, def: number): number {
-  return Math.trunc(num(v, def));
-}
-
-function bool(v: unknown, def: boolean): boolean {
-  if (typeof v === "boolean") return v;
-  if (typeof v === "string") {
-    if (v === "true") return true;
-    if (v === "false") return false;
-  }
-  return def;
-}
-
-function str(v: unknown): string | undefined {
-  if (typeof v !== "string") return undefined;
-  if (v === "") return undefined;
-  return v;
-}
-
-function thinkingFrom(v: unknown): ThinkingLevel | undefined {
-  if (v === "low" || v === "medium" || v === "high") return v;
-  return undefined;
-}
-
-function providerFrom(v: unknown): BillingProvider | undefined {
-  if (
-    v === "anthropic" ||
-    v === "openai" ||
-    v === "cursor" ||
-    v === "google" ||
-    v === "local" ||
-    v === "custom"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function surfaceFrom(v: unknown): BillingSurface | undefined {
-  if (
-    v === "claude_code" ||
-    v === "claude_agent_sdk" ||
-    v === "anthropic_api" ||
-    v === "codex_cli" ||
-    v === "codex_sdk" ||
-    v === "openai_api" ||
-    v === "cursor_agent_cli" ||
-    v === "antigravity_cli" ||
-    v === "gemini_api" ||
-    v === "vertex_ai" ||
-    v === "openai_compatible" ||
-    v === "local_endpoint" ||
-    v === "custom"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function authSourceFrom(v: unknown): AuthSource | undefined {
-  if (
-    v === "product_login" ||
-    v === "api_key" ||
-    v === "oauth_session" ||
-    v === "local_network" ||
-    v === "configured_endpoint" ||
-    v === "unknown"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function billingKindFrom(v: unknown): BillingKind | undefined {
-  if (
-    v === "local_compute" ||
-    v === "included_plan_usage" ||
-    v === "included_plan_then_flexible_credits" ||
-    v === "included_credit_then_optional_overage" ||
-    v === "included_usage_then_on_demand" ||
-    v === "metered_api" ||
-    v === "free_quota" ||
-    v === "unknown"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function confidenceFrom(v: unknown): BillingConfidence | undefined {
-  if (v === "documented" || v === "inferred" || v === "unknown" || v === "unsupported") {
-    return v;
-  }
-  return undefined;
-}
-
-function endpointModeFrom(v: unknown): EndpointMode | undefined {
-  if (
-    v === "provider_cloud" ||
-    v === "direct_openai_compatible" ||
-    v === "harness_native_endpoint"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function endpointProviderFrom(v: unknown): EndpointProvider | undefined {
-  if (
-    v === "ollama" ||
-    v === "lmstudio" ||
-    v === "openai_compatible" ||
-    v === "anthropic_gateway" ||
-    v === "gemini_proxy" ||
-    v === "custom"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function wireProtocolFrom(v: unknown): WireProtocol | undefined {
-  if (
-    v === "openai_chat_completions" ||
-    v === "anthropic_messages" ||
-    v === "gemini_generate_content" ||
-    v === "provider_native" ||
-    v === "unknown"
-  ) {
-    return v;
-  }
-  return undefined;
-}
-
-function workspacePolicyFrom(v: unknown): WorkspacePolicy | undefined {
-  if (v === "shared" || v === "shared_locked" || v === "git_worktree" || v === "copy") {
-    return v;
-  }
-  return undefined;
-}
-
-function inferEndpointProvider(baseUrl: string | undefined): EndpointProvider {
-  if (!baseUrl) return "custom";
-  try {
-    const url = new URL(baseUrl);
-    const host = url.hostname.toLowerCase();
-    const port = url.port;
-    if ((host === "localhost" || host === "127.0.0.1" || host === "::1") && port === "11434") {
-      return "ollama";
-    }
-    if ((host === "localhost" || host === "127.0.0.1" || host === "::1") && port === "1234") {
-      return "lmstudio";
-    }
-  } catch {
-    // Fall through to substring checks for partial or nonstandard URLs.
-  }
-  const lower = baseUrl.toLowerCase();
-  if (lower.includes("ollama")) return "ollama";
-  if (lower.includes("lmstudio") || lower.includes("lm-studio")) return "lmstudio";
-  return "custom";
-}
 
 function endpointFields(
   raw: Record<string, unknown>,
@@ -461,157 +243,11 @@ function topLevelSettings(
   return out;
 }
 
-/**
- * Warn on any unrecognised value for an enum that FAILS OPEN.
- *
- * Every *From() validator returns undefined on a mismatch and the caller
- * falls back to a default — silently. For most fields that is merely
- * annoying, but for these three the default is LESS restrictive than what the
- * operator asked for:
- *
- *   safety_profile: read_onlyy  -> undefined -> DEFAULT_SAFETY_PROFILE
- *                                            -> workspace_edit (write access)
- *   workspace_policy: coppy     -> undefined -> shared_locked
- *                                            -> a SHARED workspace, not an
- *                                               isolated copy
- *
- * A typo therefore quietly grants more than intended, which is the wrong
- * direction for a safety control. The same parser already warns loudly for a
- * malformed `protocol` block, so this is consistency as much as safety.
- *
- * Walks the raw tree rather than hooking each builder: the same keys appear
- * under services:, clis:, endpoints: and overrides:, and a single walk cannot
- * miss a format the way four separate call sites can.
- */
-const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
-  safety_profile: ["read_only", "workspace_edit", "full_auto"],
-  effective_safety: ["read_only", "workspace_edit", "full_auto"],
-  workspace_policy: ["shared", "shared_locked", "git_worktree", "copy"],
-};
 
-/**
- * Every key this parser understands at the top level of config.yaml.
- *
- * `doctor` reported "no unrecognized config entries" while a typo'd or
- * invented top-level key produced no warning at all — the check's own name
- * promised something it never did. A misspelled `max_concurrent_runs` is
- * indistinguishable from not setting it, which is exactly the silent-default
- * class that has bitten this file twice already.
- */
-const KNOWN_TOP_LEVEL_KEYS = new Set([
-  "version",
-  "clis",
-  "endpoints",
-  "services",
-  "disabled",
-  "overrides",
-  "api_keys",
-  "protocols",
-  "policy",
-  "telemetry",
-  "retention",
-  "leaderboard",
-  "max_concurrent_runs",
-  "default_safety_profile",
-  "workspace_policy",
-  "protocol",
-]);
 
-/**
- * Every key a `clis:` or `endpoints:` entry may carry.
- *
- * ROOT-CAUSE FIX, not a fourth instance. Three separate silent-drop defects
- * were found in this file in one day — workspace_policy ignored for `clis:`,
- * api_keys ignored for `endpoints:`, unknown top-level keys unwarned — and
- * each was patched individually. Measured afterwards: a route carrying
- * `workspace_polcy`, `safety_profil` and `tierr` still produced ZERO warnings
- * and silently got none of the three.
- *
- * The mechanism is that this parser reads what it recognises and cannot
- * distinguish a key it does not know from a key that is absent. Nothing
- * enumerated the legal surface, so every future misspelling was guaranteed to
- * fail the same silent way — and these are safety and isolation controls, so
- * "silently absent" means "silently less restrictive".
- *
- * Kept as one list for both entry shapes on purpose. Splitting it per shape
- * would recreate the original defect, where two parallel field lists drifted
- * and each was missing something the other had.
- */
-const KNOWN_ROUTE_KEYS = new Set([
-  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
-  "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
-  "max_input_tokens", "max_output_tokens", "thinking_level",
-  "leaderboard_model", "escalate_model", "escalate_on",
-  "api_key", "base_url", "protocol", "filter",
-  "provider", "surface", "auth_source", "billing_kind", "billing_confidence",
-  "billing_notes", "paid_usage_possible", "allow_paid_usage",
-  "safety_profile", "effective_safety", "workspace_policy",
-  "endpoint_mode", "endpoint_provider", "wire_protocol",
-]);
 
-function warnUnknownRouteKeys(
-  entry: Record<string, unknown>,
-  label: string,
-  warnings: string[],
-): void {
-  for (const key of Object.keys(entry)) {
-    if (KNOWN_ROUTE_KEYS.has(key)) continue;
-    warnings.push(
-      `${label}: unknown key "${key}" — IGNORED. If this was meant to be a ` +
-        `safety or workspace setting, it is NOT in effect; check the spelling.`,
-    );
-  }
-}
 
-function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
-  for (const key of Object.keys(raw)) {
-    if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue;
-    if (key.endsWith("_api_key")) continue; // documented per-route shorthand
-    warnings.push(
-      `unknown top-level config key: ${key} — IGNORED. Check the spelling against ` +
-        `the documented keys (${[...KNOWN_TOP_LEVEL_KEYS].slice(0, 6).join(", ")}, ...).`,
-    );
-  }
-}
 
-function warnUnknownSafetyEnums(node: unknown, warnings: string[], where = ""): void {
-  if (Array.isArray(node)) {
-    for (const [i, v] of node.entries()) warnUnknownSafetyEnums(v, warnings, `${where}[${i}]`);
-    return;
-  }
-  if (node === null || typeof node !== "object") return;
-  const obj = node as Record<string, unknown>;
-  const label =
-    typeof obj.name === "string" && obj.name !== "" ? String(obj.name) : where || "config";
-  for (const [key, allowed] of Object.entries(FAIL_OPEN_ENUMS)) {
-    const value = obj[key];
-    if (value === undefined) continue;
-    if (typeof value === "string" && allowed.includes(value)) continue;
-    // effective_safety may also be a per-request map; validate it entry by
-    // entry so a typo in one key still warns without condemning the whole
-    // block. See effectiveSafetyFrom().
-    if (key === "effective_safety" && value !== null && typeof value === "object" && !Array.isArray(value)) {
-      const entries = Object.entries(value as Record<string, unknown>);
-      const bad = entries.filter(
-        ([k, v]) => !allowed.includes(k) || typeof v !== "string" || !allowed.includes(v),
-      );
-      if (bad.length === 0) continue;
-      warnings.push(
-        `${label}: effective_safety: ${bad.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ")} ` +
-          `is not a ${allowed.join("/")} pair — IGNORED for those requests.`,
-      );
-      continue;
-    }
-    warnings.push(
-      `${label}: ${key}: ${JSON.stringify(value)} is not one of ${allowed.join(", ")} — ` +
-        `IGNORED, and the default applies instead, which is less restrictive than what ` +
-        `this looks like it was meant to set. Fix the value.`,
-    );
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    warnUnknownSafetyEnums(v, warnings, where ? `${where}.${k}` : k);
-  }
-}
 
 /**
  * `effective_safety` as either one profile or a per-request map.
@@ -687,279 +323,9 @@ function escalateOnFrom(raw: unknown): TaskType[] {
   return out.length > 0 ? out : ["plan", "review"];
 }
 
-function stringArrayFrom(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const out = raw.filter((v): v is string => typeof v === "string");
-  return out.length > 0 ? out : undefined;
-}
 
-/**
- * Parse `protocol:` for any route (see CliProtocolConfig in types.ts).
- * Three shapes:
- *  - A string ("cursor", "codex", ...) — looked up in PROTOCOL_PRESETS by
- *    name. Lets a config select a known protocol without retyping it, and
- *    is the extension point for "others add further protocols" — a new
- *    named entry in the shipped config.default.yaml is immediately selectable here,
- *    no code changes.
- *  - An object with `extends: <preset name>` — starts from that preset and
- *    overrides only the fields present, for the common "95% the same, one
- *    flag different" case. safety merges per-profile (overriding just
- *    full_auto doesn't erase read_only/workspace_edit from the preset).
- *  - A plain object — the full protocol, no preset involved (unchanged
- *    behavior from before presets existed).
- *
- * Returns undefined — with a warning — for anything malformed, so a broken
- * block degrades to "route unusable" (isAvailable() checks for a missing
- * protocol) rather than a half-built dispatcher silently doing the wrong
- * thing.
- */
-function protocolFrom(raw: unknown, routeLabel: string, warnings: string[]): CliProtocolConfig | undefined {
-  if (typeof raw === "string") {
-    const preset = PROTOCOL_PRESETS[raw];
-    if (!preset) {
-      warnings.push(
-        `${routeLabel}: protocol "${raw}" is not a known preset (expected one of: ` +
-          `${Object.keys(PROTOCOL_PRESETS).join(", ")}) — entry ignored.`,
-      );
-      return undefined;
-    }
-    return preset;
-  }
-  if (raw === null || typeof raw !== "object") return undefined;
-  const r = raw as Record<string, unknown>;
 
-  let base: CliProtocolConfig | undefined;
-  if (typeof r.extends === "string") {
-    base = PROTOCOL_PRESETS[r.extends];
-    if (!base) {
-      warnings.push(
-        `${routeLabel}: protocol.extends "${r.extends}" is not a known preset (expected one of: ` +
-          `${Object.keys(PROTOCOL_PRESETS).join(", ")}) — entry ignored.`,
-      );
-      return undefined;
-    }
-  }
-  return parseProtocolFields(r, routeLabel, warnings, base);
-}
 
-function parseProtocolFields(
-  r: Record<string, unknown>,
-  routeLabel: string,
-  warnings: string[],
-  base: CliProtocolConfig | undefined,
-): CliProtocolConfig | undefined {
-  const args = stringArrayFrom(r.args) ?? base?.args;
-  if (args === undefined) {
-    warnings.push(`${routeLabel}: protocol.args is required — entry ignored.`);
-    return undefined;
-  }
-
-  const outputRaw = r.output;
-  let output: CliProtocolConfig["output"] | undefined = base?.output;
-  if (outputRaw !== undefined) {
-    if (outputRaw === null || typeof outputRaw !== "object") {
-      warnings.push(`${routeLabel}: protocol.output must be an object — entry ignored.`);
-      return undefined;
-    }
-    const o = outputRaw as Record<string, unknown>;
-    if (o.mode !== "text" && o.mode !== "json_field" && o.mode !== "jsonl_stream") {
-      warnings.push(
-        `${routeLabel}: protocol.output.mode must be one of text | json_field | jsonl_stream — entry ignored.`,
-      );
-      return undefined;
-    }
-    output = { mode: o.mode };
-    const fields = stringArrayFrom(o.fields);
-    if (fields !== undefined) output.fields = fields;
-    const usageRaw = o.usage;
-    if (usageRaw !== null && typeof usageRaw === "object") {
-      const u = usageRaw as Record<string, unknown>;
-      const input = stringArrayFrom(u.input);
-      const outputTokens = stringArrayFrom(u.output);
-      if (input !== undefined && outputTokens !== undefined) output.usage = { input, output: outputTokens };
-    }
-    const eventRulesRaw = o.event_rules;
-    if (Array.isArray(eventRulesRaw)) {
-      const eventRules: CliEventRule[] = [];
-      for (const [i, ruleRaw] of eventRulesRaw.entries()) {
-        const rule = eventRuleFrom(ruleRaw, `${routeLabel}: protocol.output.event_rules[${i}]`, warnings);
-        if (rule) eventRules.push(rule);
-      }
-      if (eventRules.length > 0) output.eventRules = eventRules;
-    }
-    const errorRaw = o.error;
-    if (errorRaw !== null && typeof errorRaw === "object") {
-      const e = errorRaw as Record<string, unknown>;
-      const field = str(e.field);
-      if (field !== undefined) {
-        const messageFields = stringArrayFrom(e.message_fields);
-        output.error = messageFields !== undefined ? { field, messageFields } : { field };
-      } else {
-        warnings.push(`${routeLabel}: protocol.output.error.field is required — error detection ignored.`);
-      }
-    }
-  }
-  if (output === undefined) {
-    warnings.push(`${routeLabel}: protocol.output is required — entry ignored.`);
-    return undefined;
-  }
-
-  const protocol: CliProtocolConfig = { args, output };
-
-  const stdin = typeof r.stdin === "boolean" ? r.stdin : base?.stdin;
-  if (stdin !== undefined) protocol.stdin = stdin;
-
-  const modelRaw = r.model;
-  if (modelRaw !== undefined && modelRaw !== null) {
-    const m = modelRaw as Record<string, unknown>;
-    if (typeof m.flag === "string" && m.flag) {
-      protocol.model = { flag: m.flag };
-    } else {
-      warnings.push(`${routeLabel}: protocol.model set but missing a "flag" string — ignored.`);
-    }
-  } else if (base?.model) {
-    protocol.model = base.model;
-  }
-
-  const workingDirRaw = r.working_dir;
-  if (workingDirRaw !== undefined && workingDirRaw !== null) {
-    const wd = workingDirRaw as Record<string, unknown>;
-    if (typeof wd.flag === "string" && wd.flag) {
-      protocol.workingDir = { flag: wd.flag };
-      const extraArgsWhenSet = stringArrayFrom(wd.extra_args_when_set);
-      if (extraArgsWhenSet !== undefined) protocol.workingDir.extraArgsWhenSet = extraArgsWhenSet;
-      if (wd.fallback === "home") protocol.workingDir.fallback = "home";
-    } else {
-      warnings.push(`${routeLabel}: protocol.working_dir set but missing a "flag" string — ignored.`);
-    }
-  } else if (base?.workingDir) {
-    protocol.workingDir = base.workingDir;
-  }
-
-  const fileDirsRaw = r.file_dirs;
-  if (fileDirsRaw !== undefined && fileDirsRaw !== null) {
-    const fd = fileDirsRaw as Record<string, unknown>;
-    if (typeof fd.flag === "string" && fd.flag) {
-      protocol.fileDirs = { flag: fd.flag };
-    } else {
-      warnings.push(`${routeLabel}: protocol.file_dirs set but missing a "flag" string — ignored.`);
-    }
-  } else if (base?.fileDirs) {
-    protocol.fileDirs = base.fileDirs;
-  }
-
-  const fileListHeader = str(r.file_list_header) ?? base?.fileListHeader;
-  if (fileListHeader !== undefined) protocol.fileListHeader = fileListHeader;
-  const fileListBullet =
-    (typeof r.file_list_bullet === "string" ? r.file_list_bullet : undefined) ?? base?.fileListBullet;
-  if (fileListBullet !== undefined) protocol.fileListBullet = fileListBullet;
-  const apiKeyEnvVar = str(r.api_key_env_var) ?? base?.apiKeyEnvVar;
-  if (apiKeyEnvVar !== undefined) protocol.apiKeyEnvVar = apiKeyEnvVar;
-
-  const safetyRaw = r.safety;
-  const safety: Partial<Record<SafetyProfile, string[]>> = { ...base?.safety };
-  if (safetyRaw !== null && typeof safetyRaw === "object") {
-    for (const profile of SAFETY_PROFILES) {
-      const profileArgs = stringArrayFrom((safetyRaw as Record<string, unknown>)[profile]);
-      if (profileArgs !== undefined) safety[profile] = profileArgs;
-    }
-  }
-  if (Object.keys(safety).length > 0) protocol.safety = safety;
-
-  if (typeof r.success_requires_output === "boolean") {
-    protocol.successRequiresOutput = r.success_requires_output;
-  } else if (base?.successRequiresOutput !== undefined) {
-    protocol.successRequiresOutput = base.successRequiresOutput;
-  }
-
-  const endpointNativeArgsRaw = r.endpoint_native_args;
-  if (endpointNativeArgsRaw !== null && typeof endpointNativeArgsRaw === "object") {
-    const ena: Partial<Record<EndpointProvider, string[]>> = {};
-    for (const [k, v] of Object.entries(endpointNativeArgsRaw as Record<string, unknown>)) {
-      const args2 = stringArrayFrom(v);
-      if (args2 !== undefined) ena[k as EndpointProvider] = args2;
-    }
-    if (Object.keys(ena).length > 0) protocol.endpointNativeArgs = ena;
-  } else if (base?.endpointNativeArgs) {
-    protocol.endpointNativeArgs = base.endpointNativeArgs;
-  }
-
-  // Placeholder sanity checks on the FINAL merged args (so `extends:` results
-  // are covered too). A typo'd placeholder is the most likely user error in a
-  // hand-written protocol, and without these warnings it doesn't just fail
-  // silently — it "succeeds": the CLI receives the literal "{{promt}}" token,
-  // never receives the prompt, exits 0, and the run reports ok.
-  // Matches embedded forms too ("--flag={{prompt}}"), not just whole-token
-  // typos — expansion only ever substitutes a token that IS a placeholder,
-  // so anything merely containing one goes through literally.
-  for (const token of protocol.args) {
-    if (token.includes("{{") && !KNOWN_ARG_PLACEHOLDERS.has(token)) {
-      warnings.push(
-        `${routeLabel}: protocol.args contains unrecognized placeholder "${token}" — it will be ` +
-          `passed to the CLI as a literal argument, not substituted. Placeholders only work as ` +
-          `a whole standalone argument. Known placeholders: ` +
-          `${[...KNOWN_ARG_PLACEHOLDERS].join(", ")}.`,
-      );
-    }
-  }
-  if (!protocol.stdin && !protocol.args.includes("{{prompt}}")) {
-    warnings.push(
-      `${routeLabel}: protocol.args has no {{prompt}} placeholder and stdin is not true — ` +
-        `the prompt is never sent to the CLI. Add "{{prompt}}" to args, or set stdin: true.`,
-    );
-  }
-
-  return protocol;
-}
-
-function eventRuleFrom(raw: unknown, label: string, warnings: string[]): CliEventRule | undefined {
-  if (raw === null || typeof raw !== "object") {
-    warnings.push(`${label}: must be an object — ignored.`);
-    return undefined;
-  }
-  const r = raw as Record<string, unknown>;
-  // "when" is optional — omitted or {} means "matches every line" (e.g. a
-  // usage rule that should fire regardless of event type, matching Codex's
-  // original unconditional `if (event.usage) {...}` check).
-  const whenRaw = r.when ?? {};
-  if (whenRaw === null || typeof whenRaw !== "object" || Array.isArray(whenRaw)) {
-    warnings.push(`${label}: "when" must be a {field: value} map — ignored.`);
-    return undefined;
-  }
-  const when: Record<string, string> = {};
-  for (const [k, v] of Object.entries(whenRaw as Record<string, unknown>)) {
-    if (typeof v === "string") when[k] = v;
-  }
-  const emit = r.emit;
-  if (
-    emit !== "text" &&
-    emit !== "tool_use" &&
-    emit !== "thinking" &&
-    emit !== "usage" &&
-    emit !== "error"
-  ) {
-    warnings.push(
-      `${label}: "emit" must be one of text | tool_use | thinking | usage | error — ignored.`,
-    );
-    return undefined;
-  }
-  const rule: CliEventRule = { when, emit };
-  const textField = str(r.text_field);
-  if (textField !== undefined) rule.textField = textField;
-  const nameField = str(r.name_field);
-  if (nameField !== undefined) rule.nameField = nameField;
-  const inputField = str(r.input_field);
-  if (inputField !== undefined) rule.inputField = inputField;
-  const chunkField = str(r.chunk_field);
-  if (chunkField !== undefined) rule.chunkField = chunkField;
-  const inputTokenFields = stringArrayFrom(r.input_token_fields);
-  if (inputTokenFields !== undefined) rule.inputTokenFields = inputTokenFields;
-  const outputTokenFields = stringArrayFrom(r.output_token_fields);
-  if (outputTokenFields !== undefined) rule.outputTokenFields = outputTokenFields;
-  const messageField = str(r.message_field);
-  if (messageField !== undefined) rule.messageField = messageField;
-  return rule;
-}
 
 // ---------------------------------------------------------------------------
 // Legacy full-format parser (YAML with top-level `services:` key)
@@ -1076,7 +442,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
         // works without repeating the whole protocol block.
         const harnessDefaults = CLI_DEFAULTS[str(svc.harness) ?? ""];
         const protocol =
-          protocolFrom(svc.protocol, `services "${name}"`, warnings) ?? harnessDefaults?.protocol;
+          protocolFrom(svc.protocol, `services "${name}"`, warnings, PROTOCOL_PRESETS) ?? harnessDefaults?.protocol;
         return protocol !== undefined ? { protocol } : {};
       })(),
     };
@@ -1244,7 +610,7 @@ function buildCliServiceConfig(
       // override is given, or when the override is malformed — protocolFrom
       // already warned in the latter case; failing the whole route over a
       // typo'd override would be worse than keeping the known-good default.
-      const protocol = protocolFrom(override.protocol, `clis "${name}"`, warnings) ?? defaults.protocol;
+      const protocol = protocolFrom(override.protocol, `clis "${name}"`, warnings, PROTOCOL_PRESETS) ?? defaults.protocol;
       return protocol !== undefined ? { protocol } : {};
     })(),
   };
@@ -1331,7 +697,7 @@ function addClis(
       // once, from here, since the entry gets skipped before that second
       // parse ever runs.
       const validation: string[] = [];
-      if (protocolFrom(entry.protocol, `clis[${index}] "${name}"`, validation) === undefined) {
+      if (protocolFrom(entry.protocol, `clis[${index}] "${name}"`, validation, PROTOCOL_PRESETS) === undefined) {
         warnings.push(...validation);
         continue;
       }
