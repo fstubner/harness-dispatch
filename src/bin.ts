@@ -5,7 +5,6 @@
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -24,6 +23,7 @@ import { startHttpServer } from "./http/server.js";
 import type { RouterConfig, ServiceConfig } from "./types.js";
 import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
+import { stateRoot } from "./state-dir.js";
 
 interface Runtime {
   config: RouterConfig;
@@ -446,8 +446,7 @@ async function cmdUsage(
  * that choice is silence, which is what this check buys back.
  */
 function stateDirWritable(): { ok: boolean; detail: string } {
-  const dir =
-    process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const dir = stateRoot();
   const probe = path.join(dir, `.write-probe-${process.pid}`);
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 });

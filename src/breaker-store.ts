@@ -39,14 +39,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import type { CircuitBreakerSnapshot } from "./circuit-breaker.js";
 import { withFileLock } from "./file-lock.js";
+import { stateRoot } from "./state-dir.js";
 
 function defaultStateDir(): string {
-  const dir = process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const dir = stateRoot();
   return path.join(dir, "breaker_state");
 }
 

@@ -43,8 +43,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { stateRoot } from "./state-dir.js";
 
 import type { DispatchResult, QuotaInfo } from "./types.js";
 import type { Dispatcher } from "./dispatchers/base.js";
@@ -66,7 +67,7 @@ export const PROACTIVE_CHECK_TIMEOUT_MS = 15_000;
  * root, in dev) since nothing points it elsewhere by default.
  */
 function defaultStateFile(): string {
-  const dir = process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const dir = stateRoot();
   return path.join(dir, "quota_state.json");
 }
 

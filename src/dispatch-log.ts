@@ -18,19 +18,16 @@
  */
 
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 
 import type { DispatchResult, RoutingDecision } from "./types.js";
+import { stateRoot } from "./state-dir.js";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_ERROR_CHARS = 300;
 
 function logDir(): string {
-  return (
-    process.env.HARNESS_DISPATCH_LOG_DIR ??
-    path.join(homedir(), ".harness-dispatch", "logs")
-  );
+  return process.env.HARNESS_DISPATCH_LOG_DIR ?? path.join(stateRoot(), "logs");
 }
 
 export function dispatchLogPath(): string {

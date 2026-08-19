@@ -26,7 +26,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -42,6 +41,7 @@ import type {
 } from "./types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
 import { acquireWorkspaceLock } from "./workspace-lock.js";
+import { stateRoot } from "./state-dir.js";
 
 /**
  * Dispatcher error strings are unbounded (a corrupted downstream config once
@@ -220,10 +220,7 @@ export interface JobResultPayload {
 }
 
 function jobsRoot(): string {
-  return (
-    process.env.HARNESS_DISPATCH_JOBS_DIR ??
-    path.join(homedir(), ".harness-dispatch", "jobs")
-  );
+  return process.env.HARNESS_DISPATCH_JOBS_DIR ?? path.join(stateRoot(), "jobs");
 }
 
 const DEFAULT_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
