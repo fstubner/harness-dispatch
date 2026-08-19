@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -20,6 +28,7 @@ import type {
 class FakeDispatcher implements Dispatcher {
   readonly id: string;
   lastOpts: { modelOverride?: string; timeoutMs?: number } | undefined;
+  lastPrompt: string | undefined;
   constructor(
     id: string,
     private readonly response: DispatchResult = {
@@ -35,11 +44,12 @@ class FakeDispatcher implements Dispatcher {
     return this.response;
   }
   async *stream(
-    _prompt?: string,
+    prompt?: string,
     _files?: string[],
     _workingDir?: string,
     opts?: { modelOverride?: string; timeoutMs?: number },
   ): AsyncIterable<DispatcherEvent> {
+    this.lastPrompt = prompt;
     this.lastOpts = opts;
     yield { type: "stdout", chunk: this.response.output };
     yield { type: "completion", result: this.response };
@@ -308,6 +318,42 @@ describe("MCP tools — dispatch", () => {
     expect(data.results).toHaveLength(2);
     expect(data.results[0]!.route).toBe("a");
     expect(data.results.map((item) => item.output).sort()).toEqual(["A", "B"]);
+  });
+
+  it("forwards contextJobs to every fanout arm", async () => {
+    // Fanout used to drop contextJobs silently, so a chained fanout ("get two
+    // opinions building on job A") ran every arm without the context and
+    // never said so — the exact incomplete-picture failure contextJobs exists
+    // to avoid. Single mode forwarded it; the arms must too.
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+    const prior = "job-1786977300001-0f0aaaaa";
+    mkdirSync(path.join(jobsDir, prior, "output"), { recursive: true });
+    writeFileSync(path.join(jobsDir, prior, "prompt.md"), "Design the schema", "utf8");
+    writeFileSync(
+      path.join(jobsDir, prior, "output", "result.json"),
+      JSON.stringify({
+        jobId: prior,
+        result: { output: "CREATE TABLE users", success: true },
+        decision: null,
+      }),
+      "utf8",
+    );
+
+    const fakeA = new FakeDispatcher("a", { output: "A", service: "a", success: true });
+    const fakeB = new FakeDispatcher("b", { output: "B", service: "b", success: true });
+    const holder = buildHolder(
+      { a: makeService("a"), b: makeService("b") },
+      { a: fakeA, b: fakeB },
+    );
+
+    await invokeTool(
+      "dispatch",
+      { mode: "fanout", prompt: "step 2", contextJobs: [prior], hints: { taskType: "plan" } },
+      { holder },
+    );
+
+    expect(fakeA.lastPrompt).toContain("CREATE TABLE users");
+    expect(fakeB.lastPrompt).toContain("CREATE TABLE users");
   });
 
   it("blocks explicit write-capable fanout without an isolated workspace policy", async () => {

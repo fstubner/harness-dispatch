@@ -31,7 +31,32 @@ import { commandAvailable } from "./shared/which-available.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
-function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: number | null } {
+/**
+ * "429" only counts next to HTTP context. A bare includes("429") flagged any
+ * failed run whose transcript mentioned the number at all — a port, a line
+ * number, a test count — and one flag trips the breaker with NO threshold,
+ * blocking the route for 300s and recording `rate_limited` in the counts the
+ * orchestrator is told to trust. The phrase list below covers limiters that
+ * spell it out; this pattern covers the ones that only send the status code.
+ */
+const HTTP_429_RE =
+  /\b(?:http|status(?:[_\s]?code)?|error|code)\b[^\d\n]{0,12}429\b|\b429\b[\s:-]{0,3}too many requests/i;
+
+/**
+ * Only the TAIL of each stream is scanned (per stream, before joining).
+ * Failed runs carry up to 10 MB of agent transcript, and a rate-limit
+ * message a CLI actually died from is at the end of its output; scanning the
+ * whole transcript mostly adds chances for an innocent mention of "rate
+ * limit" in the AGENT'S OWN WORK to block the route.
+ */
+const RATE_LIMIT_SCAN_TAIL_BYTES = 16 * 1024;
+
+export function rateLimitScanTail(text: string): string {
+  return text.length > RATE_LIMIT_SCAN_TAIL_BYTES ? text.slice(-RATE_LIMIT_SCAN_TAIL_BYTES) : text;
+}
+
+/** Exported for tests: the false-positive space here is what trips breakers. */
+export function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: number | null } {
   const lowered = text.toLowerCase();
   const flagged =
     lowered.includes("rate limit") ||
@@ -43,7 +68,7 @@ function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: numb
     // 2026 10:16 PM.") — none of the phrases above matched it, so a real
     // Codex exhaustion was silently NOT flagged as rate-limited.
     lowered.includes("usage limit") ||
-    text.includes("429");
+    HTTP_429_RE.test(text);
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
   const retryAfter = match?.[1] ? Number.parseFloat(match[1]) : null;
@@ -537,7 +562,9 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // message shown to the caller stays errorDetail; only the DETECTION
     // widens.
     const { rateLimited, retryAfter } = detectRateLimit(
-      [errorDetail, stdout, stderr].filter(Boolean).join("\n"),
+      [errorDetail, rateLimitScanTail(stdout), rateLimitScanTail(stderr)]
+        .filter(Boolean)
+        .join("\n"),
     );
     const result: DispatchResult = {
       output: parsedOutput ?? errorDetail,

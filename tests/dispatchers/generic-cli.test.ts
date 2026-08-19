@@ -21,7 +21,9 @@ vi.mock("which", () => {
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
 const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
-const { GenericCliDispatcher } = await import("../../src/dispatchers/generic-cli.js");
+const { GenericCliDispatcher, detectRateLimit } = await import(
+  "../../src/dispatchers/generic-cli.js"
+);
 
 const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<typeof vi.fn>;
@@ -721,5 +723,37 @@ describe("GenericCliDispatcher", () => {
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.success).toBe(false);
     });
+  });
+});
+
+describe("detectRateLimit — 429 needs HTTP context", () => {
+  // One flag trips the breaker with NO threshold and blocks the route for
+  // 300s, so the false-positive space here is a route-availability bug, not a
+  // cosmetic one. A failed run whose 10 MB transcript merely mentioned the
+  // number — a port, a line number, a test count — used to read as a rate
+  // limit.
+  it.each([
+    "listening on port 4290 then crashed",
+    "assertion failed at src/app.ts:429:17",
+    "429 tests passed, 1 failed",
+    "processed 429 files before the crash",
+  ])("does not flag innocent output: %s", (text) => {
+    expect(detectRateLimit(text).rateLimited).toBe(false);
+  });
+
+  it.each([
+    "HTTP 429 returned by upstream",
+    "status: 429",
+    "status_code=429",
+    'request failed with {"code": 429}',
+    "Error 429 from api.example.com",
+    "429 Too Many Requests",
+  ])("flags a real status signal: %s", (text) => {
+    expect(detectRateLimit(text).rateLimited).toBe(true);
+  });
+
+  it("still extracts retry-after next to a contextual 429", () => {
+    const r = detectRateLimit("HTTP 429: slow down. retry-after: 42");
+    expect(r).toEqual({ rateLimited: true, retryAfter: 42 });
   });
 });

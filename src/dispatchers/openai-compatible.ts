@@ -794,6 +794,18 @@ async function buildPromptWithFiles(
         );
         continue;
       }
+      if (totalBytes + info.size > _MAX_TOTAL_FILE_BYTES) {
+        // The per-file limit alone bounds nothing useful — this is the check
+        // that keeps 64 × ~500 KB from becoming a 32 MB post to a metered
+        // endpoint. Announced per skipped file so the delegate knows exactly
+        // which context it is missing.
+        parts.push(
+          `\n# Skipped ${filePath}: total file budget exhausted ` +
+            `(${_MAX_TOTAL_FILE_BYTES / 1024} KB across all files)`,
+        );
+        continue;
+      }
+      totalBytes += info.size;
       const content = await readFile(filePath, "utf8");
       const ext = extname(filePath).replace(/^\./, "");
       parts.push(`\n\n\`\`\`${ext}\n# ${filePath}\n${content}\n\`\`\``);
