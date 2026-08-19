@@ -37,9 +37,9 @@ const LOCK_TIMEOUT_MS = 2_000;
  * mkdir is the atomic test-and-set here: it fails if the directory exists, on
  * every platform, and unlike `writeFile` with `wx` it needs no cleanup path
  * distinct from the directory itself. Synchronous on purpose — the callers
- * (Router.persistBreaker, and CLI paths that exit immediately afterwards) are
- * sync, and making them async to acquire a lock would ripple through the whole
- * dispatch return path for no benefit.
+ * (BreakerStore.update via Router.handleResult, and CLI paths that exit
+ * immediately afterwards) are sync, and making them async to acquire a lock
+ * would ripple through the whole dispatch return path for no benefit.
  *
  * Failing to acquire runs `fn` anyway rather than dropping the update: an
  * un-serialised write is what we had before, so the fallback is no worse than

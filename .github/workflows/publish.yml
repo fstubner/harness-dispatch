@@ -31,6 +31,11 @@ jobs:
       - name: Typecheck and test
         run: npm run check
 
+      # ci.yml runs this on every push; the release gate must not check LESS
+      # than ordinary CI does.
+      - name: Smoke test
+        run: npm run smoke
+
       - name: Inspect package contents
         run: npm pack --dry-run
 

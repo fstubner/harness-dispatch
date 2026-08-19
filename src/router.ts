@@ -342,11 +342,6 @@ export class Router {
     }
   }
 
-  private persistBreaker(service: string): void {
-    const breaker = this.breakers.get(service);
-    if (breaker) this.breakerStore.save(service, breaker.snapshot());
-  }
-
   getBreaker(service: string): CircuitBreaker | undefined {
     return this.breakers.get(service);
   }

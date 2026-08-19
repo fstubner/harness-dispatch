@@ -41,6 +41,7 @@ import type {
   WorkspacePolicy,
 } from "./types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
+import { acquireWorkspaceLock } from "./workspace-lock.js";
 
 /**
  * Dispatcher error strings are unbounded (a corrupted downstream config once
@@ -401,12 +402,16 @@ async function runJob(
   // stale status file" (getAsyncJob reports the latter as "orphaned").
   // unref'd so an exiting process never lingers on it — which is exactly
   // the scenario the heartbeat exists to expose. The `finished` flag stops
-  // a beat that fires between the terminal status write and clearInterval
-  // from resurrecting "running".
+  // a beat that FIRES after the terminal write; `pendingBeat` covers the
+  // beat that fired BEFORE it and is still mid-write — updateStatus's rename
+  // can back off ~900ms on Windows EPERM, long enough to land after the
+  // terminal status and re-mark a completed job "running" (then "orphaned"
+  // forever in the list view). The terminal paths await it before writing.
   let finished = false;
+  let pendingBeat: Promise<unknown> = Promise.resolve();
   const heartbeat = setInterval(() => {
     if (finished) return;
-    void updateStatus(jobDir, runningStatus()).catch(() => undefined);
+    pendingBeat = updateStatus(jobDir, runningStatus()).catch(() => undefined);
   }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
 
@@ -475,6 +480,7 @@ async function runJob(
     };
 
     finished = true;
+    await pendingBeat;
     const payload: JobResultPayload = {
       jobId: manifest.jobId,
       result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
@@ -503,6 +509,7 @@ async function runJob(
     });
   } catch (err) {
     finished = true;
+    await pendingBeat;
     const message = err instanceof Error ? err.message : String(err);
     await writeFile(path.join(jobDir, "output", "stderr.log"), message, { encoding: "utf8", mode: 0o600 });
     await updateStatus(jobDir, {
@@ -881,6 +888,40 @@ export async function drainSlotQueue(
   const runnerPath = resolveRunnerPath();
   if (runnerPath === undefined) return;
 
+  // ONE drainer at a time, across processes. The body below is a
+  // read-count-release: two drainers (every dispatch AND every runner exit
+  // calls this) whose reads interleaved with each other's releases could
+  // each release a job at active = limit-1 and exceed the cap — the cap that
+  // exists because of a measured OOM. The FIFO comment below also assumes a
+  // single drainer decides the order; this is what enforces that assumption.
+  let releaseDrainLock: (() => void) | undefined;
+  try {
+    releaseDrainLock = await acquireWorkspaceLock(
+      path.join(jobsRoot(), ".slot-drain"),
+      DRAIN_LOCK_TIMEOUT_MS,
+    );
+  } catch {
+    // Another process is mid-drain and sees the same queue; this call's
+    // trigger is covered by that drain or by the next one (every dispatch and
+    // every runner exit re-runs this), so skipping is safe — waiting is not
+    // worth blocking a dispatch for.
+    return;
+  }
+  try {
+    await drainSlotQueueLocked(limit, runnerPath, configPath);
+  } finally {
+    releaseDrainLock();
+  }
+}
+
+/** How long a drain waits for a concurrent drainer before ceding to it. */
+const DRAIN_LOCK_TIMEOUT_MS = 5_000;
+
+async function drainSlotQueueLocked(
+  limit: number,
+  runnerPath: string,
+  configPath: string | undefined,
+): Promise<void> {
   const statuses = await readJobStatuses();
   let active = countActiveRuns(statuses);
   const waiting = statuses.filter((s) => s.status.slotQueued);
@@ -1229,17 +1270,29 @@ export async function getAsyncJob(jobId: string): Promise<{
   // id long enough will hit this. It used to surface as a raw Node ENOENT
   // quoting an absolute path inside the jobs directory, which tells the caller
   // nothing actionable and leaks the layout.
-  if (!existsSync(path.join(jobDir, "manifest.json"))) {
-    throw new Error(
+  const noSuchJob = () =>
+    new Error(
       `No such job: ${jobId}. It may have been pruned by the retention window, ` +
         `or it was never started on this machine.`,
     );
+  if (!existsSync(path.join(jobDir, "manifest.json"))) throw noSuchJob();
+  let manifest: JobManifest;
+  let status: JobStatus;
+  let result: JobResultPayload | undefined;
+  try {
+    manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
+    status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
+    const resultPath = path.join(jobDir, "output", "result.json");
+    result = existsSync(resultPath) ? await readJson<JobResultPayload>(resultPath) : undefined;
+  } catch (err) {
+    // existsSync-then-read is a TOCTOU window: retention pruning can delete
+    // the directory between the two calls, resurfacing the exact raw-ENOENT-
+    // with-an-absolute-path error this function's message exists to replace.
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") throw noSuchJob();
+    throw err;
   }
-  const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
-  const status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
-  const resultPath = path.join(jobDir, "output", "result.json");
-  if (existsSync(resultPath)) {
-    return { manifest, status, result: await readJson<JobResultPayload>(resultPath) };
+  if (result !== undefined) {
+    return { manifest, status, result };
   }
   if (status.status === "orphaned") {
     // Terminal: no poll guidance — polling will never resolve this job.

@@ -16,6 +16,9 @@
 
 export const ENV_VAR_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
+/** Every ${VAR} occurrence, not only a whole-string match. */
+const ENV_VAR_ANYWHERE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
 /**
  * `unsetVars` collects the names of ${VAR} references that resolved to
  * nothing because the env var isn't set at all — distinct from a var
@@ -24,23 +27,31 @@ export const ENV_VAR_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
  * becomes an empty string: `str()` then drops the field entirely, a route
  * that needed an api_key loses it with zero feedback, and doctor reports
  * the route "ready" right up until the first real call 401s.
+ *
+ * Replacement applies ANYWHERE in the string, matching what the shipped
+ * config's comment has promised all along ("anywhere in a string value").
+ * The implementation was anchored to whole-string matches, so
+ * `base_url: https://${HOST}/v1` stayed a literal, got no unset-var warning
+ * (unsetVars only tracked whole-string matches), and failed downstream with
+ * an error about a URL containing a dollar sign.
  */
 export function interpolateEnv(
   value: string,
   unsetVars: Set<string>,
   refs: Map<string, string>,
 ): string {
-  const m = ENV_VAR_RE.exec(value);
-  if (!m) return value;
-  const name = m[1]!;
-  if (!(name in process.env)) unsetVars.add(name);
-  const resolved = process.env[name] ?? "";
+  if (!value.includes("${")) return value;
+  const resolved = value.replace(ENV_VAR_ANYWHERE_RE, (_match, name: string) => {
+    if (!(name in process.env)) unsetVars.add(name);
+    return process.env[name] ?? "";
+  });
+  if (resolved === value) return value; // nothing legal to substitute
   // Remember which reference produced this value so `configure` can emit the
-  // ${VAR} back instead of the secret it resolved to. Keyed by resolved value
-  // rather than by config path because interpolation runs over the raw tree
-  // before any of it is shaped into routes. Two variables holding the same
-  // secret collide, but harmlessly: either reference resolves to that same
-  // value, so emitting either is correct. Empty resolutions are skipped —
+  // ${VAR} template back instead of the secret it resolved to. Keyed by
+  // resolved value rather than by config path because interpolation runs over
+  // the raw tree before any of it is shaped into routes. Two variables holding
+  // the same secret collide, but harmlessly: either reference resolves to that
+  // same value, so emitting either is correct. Empty resolutions are skipped —
   // they carry no secret and would collide with every other unset var.
   if (resolved !== "") refs.set(resolved, value);
   return resolved;
