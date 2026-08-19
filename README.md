@@ -473,6 +473,13 @@ curl http://127.0.0.1:3333/v1/chat/completions \
 The REST surface is OpenAI-compatible enough for local clients that can speak
 `/v1/chat/completions`. The `model` field is treated as a routing/model hint.
 
+Non-streaming completions are backed by the same persisted job pipeline as the
+MCP `dispatch` tool: the reply carries `harness_dispatch.jobId`, and the same id
+is sent early as an `x-harness-dispatch-job-id` response header. If your client
+times out mid-run (curl defaults, CI step limits), the run still finishes and
+the result persists — recover it with the `job_status` MCP tool or by reading
+`~/.harness-dispatch/jobs/<jobId>/output/`.
+
 ## Endpoint Modes
 
 harness-dispatch supports two local/custom endpoint patterns:
@@ -529,7 +536,7 @@ services:
 2. Verify configured routes without spending quota where possible.
 3. Classify auth and billing so paid or unknown-paid routes are not selected by accident.
 4. Choose routed harnesses, model priority, and safety profile.
-5. Write v0.4 config YAML.
+5. Write config YAML.
 6. Connect selected MCP agents or print snippets.
 
 The current command is conservative: it prints detected routes by default and writes
@@ -548,8 +555,10 @@ shape. Each route includes:
 - tier and model metadata
 - quota score and local call count
 - circuit breaker state — a tripped route's remaining cooldown is persisted to disk
-  (`~/.harness-dispatch/breaker_state.json`), so a server restart mid-cooldown still
-  excludes that route instead of retrying an exhausted one with a clean slate
+  (one file per route under `~/.harness-dispatch/breaker_state/`), so a server
+  restart mid-cooldown still excludes that route instead of retrying an exhausted
+  one with a clean slate; a pre-0.5 single-blob `breaker_state.json` is migrated
+  automatically on first read
 - skip reason when a route is disabled, unavailable, paid-blocked, unknown-billing,
   safety-incompatible, or circuit-broken
 - token limits when known
@@ -564,7 +573,9 @@ Workspace policy:
 
 - `shared`: run directly in the caller's `workingDir`.
 - `shared_locked`: run directly in `workingDir`, but serialize write-capable
-  dispatches for the same directory inside one router process.
+  dispatches for the same directory across ALL processes — concurrent dispatches
+  from separate server instances and detached job runners queue on a heartbeated
+  cross-process lock rather than editing the directory at the same time.
 - `copy`: copy the project into `.harness-dispatch/workspaces/...`, run the agent
   there, and return the isolated workspace path plus changed-file metadata.
 - `git_worktree`: create a detached git worktree for the route and return the
@@ -614,7 +625,8 @@ size-capped via single-file rotation, and never sent anywhere. Job artifacts
 `~/.harness-dispatch/jobs/<jobId>/` and are pruned after 7 days of inactivity by
 default — set `retention: { jobs_days: N }` in `config.yaml` (or
 `HARNESS_DISPATCH_JOB_MAX_AGE_MS` for a millisecond override) to change that
-window.
+window. `0` means keep forever, and a running or queued job with a live
+heartbeat is never pruned regardless of the window.
 
 At most **4 agent CLIs run at once**, machine-wide. Dispatches past that limit
 wait in `queued` and start as slots free — you still get a `jobId` back
