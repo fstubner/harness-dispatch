@@ -260,6 +260,14 @@ function jobMaxAgeMs(): number {
  * failure must never block starting the job that was actually requested.
  */
 async function pruneStaleJobs(): Promise<void> {
+  const maxAgeMs = jobMaxAgeMs();
+  // 0 means KEEP FOREVER, not "prune immediately". The same config file
+  // establishes `max_concurrent_runs: 0` as "disable the bound", inviting the
+  // same reading here — and the old behaviour deleted RUNNING jobs out from
+  // under their runners (a job dir's mtime only moves on a 15s heartbeat, so
+  // at age 0 every beat gap was fatal): the runner's next write failed and
+  // the caller's jobId turned into "No such job".
+  if (maxAgeMs === 0) return;
   const root = jobsRoot();
   let entries;
   try {
@@ -267,16 +275,34 @@ async function pruneStaleJobs(): Promise<void> {
   } catch {
     return;
   }
-  const maxAgeMs = jobMaxAgeMs();
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const jobDir = path.join(root, entry.name);
     try {
       const info = await stat(jobDir);
-      if (now - info.mtimeMs > maxAgeMs) {
-        await rm(jobDir, { recursive: true, force: true });
+      if (now - info.mtimeMs <= maxAgeMs) continue;
+      // mtime is a proxy for activity; never delete a job that is
+      // demonstrably in flight. A live runner heartbeats status.json inside
+      // the orphan window, so running/queued with a fresh beat means "working
+      // right now", whatever retention says. An unreadable status file falls
+      // through to the mtime rule — that is the abandoned case.
+      try {
+        const status = JSON.parse(
+          await readFile(path.join(jobDir, "status.json"), "utf8"),
+        ) as { status?: string; updatedAt?: string };
+        const beat = Date.parse(status.updatedAt ?? "");
+        if (
+          (status.status === "running" || status.status === "queued") &&
+          Number.isFinite(beat) &&
+          now - beat <= ORPHAN_THRESHOLD_MS
+        ) {
+          continue;
+        }
+      } catch {
+        // Fall through to the mtime rule.
       }
+      await rm(jobDir, { recursive: true, force: true });
     } catch {
       // best effort — a locked/already-gone/permission-denied entry is skipped
     }

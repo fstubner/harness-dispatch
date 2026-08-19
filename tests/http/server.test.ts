@@ -223,11 +223,19 @@ describe("HTTP server", () => {
     expect(chat.status).toBe(200);
     const body = (await chat.json()) as {
       choices: Array<{ message: { content: string } }>;
-      harness_dispatch: { route: string };
+      harness_dispatch: { route: string; jobId?: string };
     };
-    expect(body.choices[0]!.message.content).toBe("hello response");
+    // "hello stream", not "hello response": the non-streaming path is backed
+    // by the persisted job pipeline now (which streams the dispatch), so a
+    // client that times out mid-run no longer loses the finished result.
+    expect(body.choices[0]!.message.content).toBe("hello stream");
     expect(body.harness_dispatch.route).toBe("local");
     expect(body.harness_dispatch).toHaveProperty("skippedRoutes");
+    // The recovery contract for clients that gave up mid-run: the jobId is in
+    // the body AND in a header (headers arrive before the body, so even a
+    // caller that only captured headers can retrieve the result later).
+    expect(body.harness_dispatch.jobId).toMatch(/^job-\d+-[0-9a-f]{8}$/);
+    expect(chat.headers.get("x-harness-dispatch-job-id")).toBe(body.harness_dispatch.jobId);
   });
 
   it("surfaces skipped routes in REST chat completions", async () => {

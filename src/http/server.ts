@@ -15,8 +15,10 @@ import {
 import { buildStatus, buildUsage } from "../status.js";
 import type { RouteHints, RouteSkip, WorkspacePolicy } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
+import type { Router } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
+import { getAsyncJob, startAsyncJobTracked } from "../jobs.js";
 
 export interface HttpServerHandle extends McpHandle {
   port: number;
@@ -301,6 +303,56 @@ function parseChatRequest(raw: unknown): {
   };
 }
 
+/**
+ * Run fanout arms to completion INDEPENDENTLY of one another.
+ *
+ * Promise.all rejected the whole batch when one arm threw (workspace lock
+ * timeout, worktree setup failure), discarding every other arm's completed —
+ * and possibly billed — work behind a single 500. Each arm now settles on its
+ * own; a thrown arm becomes a failed row naming its route. One row shape for
+ * the streaming and non-streaming branches on purpose: they used to differ
+ * (streaming omitted success/error), the one-sibling-guarded pattern again.
+ */
+async function runFanoutArms(
+  router: Router,
+  routes: string[],
+  parsed: { prompt: string; files: string[]; workingDir: string; hints: RouteHints },
+): Promise<
+  Array<{ route: string; success: boolean; output: string; error?: string; workspace?: unknown }>
+> {
+  const settled = await Promise.allSettled(
+    routes.map((route) =>
+      router.routeTo(route, parsed.prompt, parsed.files, parsed.workingDir, {
+        ...(parsed.hints.safetyProfile !== undefined
+          ? { safetyProfile: parsed.hints.safetyProfile }
+          : {}),
+        ...(parsed.hints.workspacePolicy !== undefined
+          ? { workspacePolicy: parsed.hints.workspacePolicy }
+          : {}),
+        ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
+      }),
+    ),
+  );
+  return settled.map((s, i) => {
+    if (s.status === "fulfilled") {
+      const r = s.value.result;
+      return {
+        route: r.service,
+        success: r.success,
+        output: r.output,
+        ...(r.error !== undefined ? { error: r.error } : {}),
+        ...(r.workspace !== undefined ? { workspace: r.workspace } : {}),
+      };
+    }
+    return {
+      route: routes[i]!,
+      success: false,
+      output: "",
+      error: s.reason instanceof Error ? s.reason.message : String(s.reason),
+    };
+  });
+}
+
 function completionEnvelope(
   content: string,
   model: string,
@@ -346,9 +398,18 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     return false;
   };
 
+  // A bare IPv6 host must be bracketed to be legal inside a URL:
+  // new URL("/mcp", "http://::1") throws "Invalid URL", which turned EVERY
+  // request to a server bound on ::1 into a 500 — the bind succeeded and the
+  // loopback check blessed the address, so nothing else ever caught it.
+  const urlBase = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`;
+
   const http: NodeHttpServer = createServer(async (req, res) => {
+    // Tracks whether THIS request opened an SSE stream, so the catch below
+    // can end it with an error frame instead of a silent truncation.
+    let sseStarted = false;
     try {
-      const url = new URL(req.url ?? "/", `http://${host}`);
+      const url = new URL(req.url ?? "/", urlBase);
       if (url.pathname === "/v1/models" && req.method === "GET") {
         if (!requireAuth(req, res)) return;
         await reloader.maybeReload();
@@ -496,33 +557,16 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             "cache-control": "no-cache",
             connection: "keep-alive",
           });
+          sseStarted = true;
           if (parsed.mode === "fanout") {
             const selected = preSelected!;
-            const results = await Promise.all(
-              selected.routes.map((route) =>
-                state.router.routeTo(route, parsed.prompt, parsed.files, parsed.workingDir, {
-                  ...(parsed.hints.safetyProfile !== undefined
-                    ? { safetyProfile: parsed.hints.safetyProfile }
-                    : {}),
-                  ...(parsed.hints.workspacePolicy !== undefined
-                    ? { workspacePolicy: parsed.hints.workspacePolicy }
-                    : {}),
-                  ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
-                }),
-              ),
-            );
+            const rows = await runFanoutArms(state.router, selected.routes, parsed);
             writeSse(res, {
               choices: [
                 {
                   index: 0,
                   delta: {
-                    content: JSON.stringify(
-                      results.map((r) => ({
-                        route: r.result.service,
-                        output: r.result.output,
-                        workspace: r.result.workspace,
-                      })),
-                    ),
+                    content: JSON.stringify(rows),
                   },
                   finish_reason: null,
                 },
@@ -577,34 +621,12 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
               ? parsed.models
               : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
           const selected = eligibleRoutes(routes);
-          const results = await Promise.all(
-            selected.routes.map((route) =>
-              state.router.routeTo(route, parsed.prompt, parsed.files, parsed.workingDir, {
-                ...(parsed.hints.safetyProfile !== undefined
-                  ? { safetyProfile: parsed.hints.safetyProfile }
-                  : {}),
-                ...(parsed.hints.workspacePolicy !== undefined
-                  ? { workspacePolicy: parsed.hints.workspacePolicy }
-                  : {}),
-                ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
-              }),
-            ),
-          );
+          const rows = await runFanoutArms(state.router, selected.routes, parsed);
           sendJson(
             res,
             200,
             completionEnvelope(
-              JSON.stringify(
-                results.map((r) => ({
-                  route: r.result.service,
-                  success: r.result.success,
-                  output: r.result.output,
-                  error: r.result.error,
-                  workspace: r.result.workspace,
-                })),
-                null,
-                2,
-              ),
+              JSON.stringify(rows, null, 2),
               typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-dispatch",
               {
                 harness_dispatch: {
@@ -620,17 +642,44 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           return;
         }
 
-        const { result, decision } = await state.router.route(
-          parsed.prompt,
-          parsed.files,
-          parsed.workingDir,
-          { hints: parsed.hints, maxFallbacks: 2 },
+        // Backed by a persisted job, not a bare in-process await. This
+        // surface's users are curl/CI/cron — exactly the clients that enforce
+        // their own request timeouts — and a direct await meant a client that
+        // gave up mid-run lost the finished result with no way to retrieve
+        // it. The job survives (it runs detached and lands on disk); the
+        // jobId is exposed in the response AND in a header so even a caller
+        // that only captured headers before timing out can recover the
+        // result via `job_status`.
+        const { status: jobStatus, completion } = await startAsyncJobTracked(
+          { holder },
+          {
+            prompt: parsed.prompt,
+            files: parsed.files,
+            workingDir: parsed.workingDir,
+            hints: parsed.hints,
+          },
         );
+        res.setHeader("x-harness-dispatch-job-id", jobStatus.jobId);
+        await completion;
+        const job = await getAsyncJob(jobStatus.jobId);
+        const result = job.result?.result;
+        const decision = job.result?.decision ?? undefined;
+        if (result === undefined) {
+          // Terminal without a result payload: the runner died or was
+          // orphaned. The job dir still names what happened.
+          sendJson(res, 500, {
+            error: `job ${jobStatus.jobId} ended without a result (status: ${job.status.status}); ` +
+              `check job_status for details`,
+            jobId: jobStatus.jobId,
+          });
+          return;
+        }
         sendJson(
           res,
           200,
           completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
             harness_dispatch: {
+              jobId: jobStatus.jobId,
               route: result.service,
               success: result.success,
               error: result.error,
@@ -681,7 +730,19 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
       sendText(res, 404, "not found");
     } catch (err) {
-      if (!res.headersSent) {
+      if (sseStarted) {
+        // Mid-stream failure: the client already holds a 200 and possibly
+        // partial frames, and a bare end() made a truncated stream
+        // indistinguishable from a complete one. Emit an error frame and the
+        // stream terminator so the caller can tell.
+        try {
+          writeSse(res, { error: { message: err instanceof Error ? err.message : String(err) } });
+          res.write("data: [DONE]\n\n");
+        } catch {
+          // Socket already gone; nothing left to tell it.
+        }
+        res.end();
+      } else if (!res.headersSent) {
         if (err instanceof PayloadTooLargeError) {
           sendJson(res, 413, { error: err.message });
         } else if (err instanceof BadRequestError) {
