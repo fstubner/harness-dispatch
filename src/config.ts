@@ -764,6 +764,13 @@ function addEndpoints(
       ...(str(ep.leaderboard_model) !== undefined
         ? { leaderboardModel: str(ep.leaderboard_model)! }
         : {}),
+      // escalate_on was honoured here and escalate_model was not — the fifth
+      // instance of this file's parallel-field-list defect, and the second
+      // found by review rather than by the parity test, which pins 16 shared
+      // keys and did not include this one. It does now.
+      ...(str(ep.escalate_model) !== undefined
+        ? { escalateModel: str(ep.escalate_model)! }
+        : {}),
       escalateOn: escalateOnFrom(ep.escalate_on),
       capabilities: capsFrom(ep.capabilities),
       ...billingFields({
