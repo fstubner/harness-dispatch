@@ -1,5 +1,10 @@
 /**
- * Findings 1 and 2 of the third independent acceptance review.
+ * Breaker-store filename round-tripping (finding 2 of the third review).
+ *
+ * This header previously claimed to cover findings 1 AND 2. It covered only
+ * this one — the `.strict()` change shipped with no test at all, which a
+ * reviewer noticed before any user did. Boundary-strictness cases now live in
+ * surface-parity.test.ts; this file is about filenames.
  *
  * Both are the same family as everything else this codebase has produced: an
  * input that is accepted, does nothing, and is never reported. These two are
@@ -67,5 +72,31 @@ describe("BreakerStore filenames round-trip", () => {
     store.update("codex_cli", () => ({ failures: 2, blockedUntilMs: null }));
     expect(() => store.loadAll()).not.toThrow();
     expect(store.loadAll()["codex_cli"]?.failures).toBe(2);
+  });
+});
+
+describe("filenames survive a case-insensitive filesystem", () => {
+  it("keeps routes that differ only by case as separate records", () => {
+    // NTFS is case-insensitive: `A.json` and `a.json` are one file, so the
+    // second save clobbered the first and loadAll() returned one route. Linux
+    // kept both, so the same config behaved differently per platform.
+    const store = new BreakerStore(dir);
+    store.update("A", () => ({ failures: 1, blockedUntilMs: null }));
+    store.update("a", () => ({ failures: 2, blockedUntilMs: null }));
+    const all = store.loadAll();
+    expect(all["A"]?.failures).toBe(1);
+    expect(all["a"]?.failures).toBe(2);
+  });
+
+  it("round-trips a name containing the escape character itself", () => {
+    const store = new BreakerStore(dir);
+    store.update("x~y", () => ({ failures: 7, blockedUntilMs: null }));
+    expect(store.loadAll()["x~y"]?.failures).toBe(7);
+  });
+
+  it("round-trips mixed case with non-ASCII", () => {
+    const store = new BreakerStore(dir);
+    store.update("Café_CLI", () => ({ failures: 4, blockedUntilMs: null }));
+    expect(store.loadAll()["Café_CLI"]?.failures).toBe(4);
   });
 });

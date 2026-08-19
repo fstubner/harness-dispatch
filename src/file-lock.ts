@@ -25,10 +25,10 @@ import path from "node:path";
  */
 const LOCK_STALE_MS = 10_000;
 
-/** Give up rather than block a dispatch indefinitely. */
-/** Pause between acquisition attempts, instead of spinning. */
+/** Pause between acquisition attempts, so waiting costs no CPU. */
 const RETRY_MS = 25;
 
+/** Give up rather than block a dispatch indefinitely. */
 const LOCK_TIMEOUT_MS = 2_000;
 
 /**
@@ -90,20 +90,21 @@ export function withFileLock<T>(file: string, fn: () => T): T {
           continue;
         }
       } catch {
-        // Either the lock vanished between the two calls (retry immediately is
-        // right), or mkdir failed for a reason that is not "already exists" —
-        // most usefully a missing parent directory, where statSync fails the
-        // same way forever. The deadline check MUST happen on this path too:
-        // without it this loop spun forever the first time a caller locked
-        // inside a directory that did not exist yet, hanging the whole test
-        // suite rather than failing.
+        // mkdir failed for a reason that is not "already exists": the lock
+        // vanished between the two calls, or the directory is unwritable, or
+        // the name is too long. Retrying can only help in the first case.
+        //
+        // This branch previously `continue`d with NO sleep, so the loop spun a
+        // full CPU for the whole timeout — measured at 1968ms of CPU per call
+        // on an existing-but-unwritable state directory, after every dispatch
+        // result. The earlier fix added a sleep to the contended branch only
+        // and its commit claimed the whole defect was gone; it was not. Every
+        // retry path sleeps now, and there is a test per branch.
         if (Date.now() >= deadline) break;
+        sleepSync(RETRY_MS);
         continue;
       }
       if (Date.now() >= deadline) break;
-      // Sleep rather than spin. This was a tight synchronous loop that burned
-      // a full CPU for up to 2s under contention, on a path that runs after
-      // every dispatch result.
       sleepSync(RETRY_MS);
     }
   }

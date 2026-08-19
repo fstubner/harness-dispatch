@@ -89,6 +89,9 @@ const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
  */
 export class BadRequestError extends Error {}
 
+/** Mirrors MAX_CONTEXT_FILES in mcp/tools.ts — the two surfaces must agree. */
+const MAX_CONTEXT_FILES_HTTP = 64;
+
 class PayloadTooLargeError extends Error {}
 
 async function readJson(
@@ -189,6 +192,41 @@ function parseHints(body: ChatRequest): RouteHints {
     ) {
       hints.workspacePolicy = raw.workspacePolicy;
     }
+    // routePolicy was never read here at all. evaluateRoutePolicy implements
+    // local_only, approval_required and blocked in full, and on this surface
+    // they were wired to nothing: POST {"hints":{"routePolicy":"blocked"}}
+    // returned 200 and dispatched. PRODUCT.md names CI and cron as this
+    // surface's consumers, and calls a guarantee that reads correctly and does
+    // nothing at runtime its own counter-signal.
+    if (
+      raw.routePolicy === "local_only" ||
+      raw.routePolicy === "approval_required" ||
+      raw.routePolicy === "blocked"
+    ) {
+      hints.routePolicy = raw.routePolicy;
+    }
+    if (typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs)) {
+      hints.timeoutMs = raw.timeoutMs;
+    }
+    // Unknown keys are REJECTED, matching the MCP surface. The whole point of
+    // making hints strict there was that `safety_profile` (the config
+    // spelling) silently disabled a safety limit; accepting it here left the
+    // identical typo failing open on the other surface.
+    const known = new Set([
+      "model",
+      "taskType",
+      "preferLargeContext",
+      "safetyProfile",
+      "workspacePolicy",
+      "routePolicy",
+      "timeoutMs",
+    ]);
+    const unknown = Object.keys(raw).filter((k) => !known.has(k));
+    if (unknown.length > 0) {
+      throw new BadRequestError(
+        `unknown hints key(s): ${unknown.join(", ")}. Valid: ${[...known].join(", ")}.`,
+      );
+    }
   }
   if (
     body.workspacePolicy === "shared" ||
@@ -211,8 +249,11 @@ function parseChatRequest(raw: unknown): {
   models: string[];
   hints: RouteHints;
 } {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("request body must be a JSON object");
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    // Was a plain Error, so `null`, `"hello"` and `42` all returned 500. The
+    // BadRequestError mapping was added for JSON PARSE failures only — same
+    // fix, one of two paths, which is the pattern this file keeps repeating.
+    throw new BadRequestError("request body must be a JSON object");
   }
   const body = raw as ChatRequest;
   const prompt =
@@ -229,6 +270,15 @@ function parseChatRequest(raw: unknown): {
       : undefined,
   );
   if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
+  // Same cap as the MCP surface, and for the same reason: each file's parent
+  // directory becomes an --add-dir grant on CLI routes, so an unbounded list
+  // is an unbounded set of directories handed to a coding agent. The cap was
+  // added at the MCP boundary only; this surface accepted 500.
+  if (Array.isArray(body.files) && body.files.length > MAX_CONTEXT_FILES_HTTP) {
+    throw new BadRequestError(
+      `files: ${body.files.length} entries exceeds the maximum of ${MAX_CONTEXT_FILES_HTTP}.`,
+    );
+  }
   const files = Array.isArray(body.files)
     ? body.files.filter((v): v is string => typeof v === "string")
     : [];
@@ -419,13 +469,35 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           return { routes, skippedRoutes };
         };
         if (parsed.stream) {
+          // Resolve fanout targets BEFORE writing SSE headers.
+          //
+          // eligibleRoutes throws BadRequestError for an unknown route, but it
+          // was called after writeHead — so headersSent was true, the error
+          // handler could only res.end(), and the caller got HTTP 200 with a
+          // zero-byte body. The non-streaming path returns a proper 400 with
+          // the valid ids. Same input, two answers, again.
+          // Default to every dispatchable route when `models` is omitted,
+          // exactly as the non-streaming branch does. Streaming passed
+          // parsed.models straight through, so {"mode":"fanout","stream":true}
+          // with no models fanned out to ZERO routes and reported success —
+          // content "[]", empty skippedRoutes, HTTP 200.
+          const preSelected =
+            parsed.mode === "fanout"
+              ? eligibleRoutes(
+                  parsed.models.length > 0
+                    ? parsed.models
+                    : Object.keys(state.config.services).filter(
+                        (route) => route in state.dispatchers,
+                      ),
+                )
+              : undefined;
           res.writeHead(200, {
             "content-type": "text/event-stream; charset=utf-8",
             "cache-control": "no-cache",
             connection: "keep-alive",
           });
           if (parsed.mode === "fanout") {
-            const selected = eligibleRoutes(parsed.models);
+            const selected = preSelected!;
             const results = await Promise.all(
               selected.routes.map((route) =>
                 state.router.routeTo(route, parsed.prompt, parsed.files, parsed.workingDir, {

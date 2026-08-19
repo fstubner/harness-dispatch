@@ -71,16 +71,43 @@ function defaultStateDir(): string {
  * are unchanged, so `codex_cli.json` stays readable to a human debugging it.
  */
 function fileNameFor(service: string): string {
-  const encoded = encodeURIComponent(service).replace(
+  // Case is encoded explicitly, because NTFS is case-INSENSITIVE: routes `A`
+  // and `a` produced A.json and a.json, which are one file on Windows — the
+  // second save clobbered the first and loadAll() returned only one of them.
+  // Linux kept both, so the same config behaved differently per platform on a
+  // product that calls Windows first-class. An uppercase letter becomes
+  // `~<lower>`, and `~` itself is escaped first so the mapping stays
+  // reversible.
+  const caseFolded = service.replace(/~/g, "~~").replace(/[A-Z]/g, (c) => `~${c.toLowerCase()}`);
+  const encoded = encodeURIComponent(caseFolded).replace(
     /[!*'()]/g,
     (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
   );
   return `${encoded}.json`;
 }
 
+function unfoldCase(name: string): string {
+  let out = "";
+  for (let i = 0; i < name.length; i += 1) {
+    if (name[i] !== "~") {
+      out += name[i];
+      continue;
+    }
+    const next = name[i + 1];
+    if (next === "~") {
+      out += "~";
+      i += 1;
+    } else if (next !== undefined) {
+      out += next.toUpperCase();
+      i += 1;
+    }
+  }
+  return out;
+}
+
 function serviceFromFileName(entry: string): string | undefined {
   try {
-    return decodeURIComponent(entry.slice(0, -".json".length));
+    return unfoldCase(decodeURIComponent(entry.slice(0, -".json".length)));
   } catch {
     // A file this module did not write, or wrote under the old broken scheme.
     // Skipping it is right: loading breaker state is best-effort, and throwing
