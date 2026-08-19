@@ -34,6 +34,7 @@
  * correctly.
  */
 
+import { withFileLock } from "./file-lock.js";
 import {
   existsSync,
   mkdirSync,
@@ -157,6 +158,21 @@ export class QuotaCache {
   private localSuccessCounts: Record<string, number>;
   private localFailureCounts: Record<string, number>;
   private localRateLimitedCounts: Record<string, number>;
+  /**
+   * Increments made since the last successful persist.
+   *
+   * The counters above are this process's ABSOLUTE view, used for local
+   * reporting. They cannot be written to a shared file directly: every
+   * dispatch runs in its own detached runner that booted from the same
+   * baseline, so a wave of them all write "baseline + 1" and all but one
+   * increment is lost. Measured at the shipped default of
+   * max_concurrent_runs: 4 — 8 dispatches were recorded as 2.
+   *
+   * Persisting the DELTA under a lock is what makes the count additive across
+   * processes. Cleared only after a write succeeds, so a failed write is
+   * retried on the next call rather than dropped.
+   */
+  private pendingDelta: Record<string, { calls: number; success: number; failure: number; rateLimited: number }> = {};
   private persistCounter = 0;
 
   constructor(
@@ -187,10 +203,17 @@ export class QuotaCache {
     return state ? state.score : 1.0;
   }
 
+  private bumpDelta(service: string, field: "calls" | "success" | "failure" | "rateLimited"): void {
+    const d = (this.pendingDelta[service] ??= { calls: 0, success: 0, failure: 0, rateLimited: 0 });
+    d[field] += 1;
+  }
+
   recordResult(service: string, result: DispatchResult): void {
     this.localCounts[service] = (this.localCounts[service] ?? 0) + 1;
+    this.bumpDelta(service, "calls");
     if (result.success) {
       this.localSuccessCounts[service] = (this.localSuccessCounts[service] ?? 0) + 1;
+      this.bumpDelta(service, "success");
     } else if (result.rateLimited) {
       // Rate limiting is UNAVAILABILITY, not failure, and the difference is
       // not cosmetic: `usage` is what an orchestrating agent is told to check
@@ -201,8 +224,10 @@ export class QuotaCache {
       // breaker already handles the routing consequence of a rate limit
       // properly and separately; this is only about what the numbers say.
       this.localRateLimitedCounts[service] = (this.localRateLimitedCounts[service] ?? 0) + 1;
+      this.bumpDelta(service, "rateLimited");
     } else {
       this.localFailureCounts[service] = (this.localFailureCounts[service] ?? 0) + 1;
+      this.bumpDelta(service, "failure");
     }
 
     // CLI commands often exit immediately after a route. Use the synchronous
@@ -460,11 +485,62 @@ export class QuotaCache {
    * cross-process caveat). Synchronous so a CLI invocation that exits
    * immediately after a route can't leave a temp file behind.
    */
+  /**
+   * Persist this process's increments, additively and under a lock.
+   *
+   * buildStatePayload() writes this process's ABSOLUTE counts over whatever it
+   * read. With a detached runner per dispatch that is lossy by construction:
+   * every runner boots from the same baseline, so a concurrent wave all write
+   * "baseline + 1" and all but one increment disappears. Measured at the
+   * shipped default of max_concurrent_runs: 4 — 8 successful dispatches were
+   * recorded as 2, deterministically.
+   *
+   * The earlier Math.max merge on read could not fix this: it recovers a value
+   * that was written, and these were never written at all.
+   *
+   * So the delta is applied to whatever is on disk INSIDE the lock. The lock
+   * alone would not have been enough either — serialised writers each holding
+   * an absolute value simply take turns writing the same number.
+   */
   saveLocalCountsSync(): void {
+    const pending = this.pendingDelta;
+    if (Object.keys(pending).length === 0) return;
     try {
-      this.writeStatePayloadAtomicSync(this.buildStatePayload());
+      withFileLock(this.stateFile, () => {
+        const existing = this.readStateFile();
+        for (const [service, delta] of Object.entries(pending)) {
+          const bucket = existing[service] ?? {};
+          const add = (key: string, by: number): void => {
+            if (by === 0) return;
+            bucket[key] = (typeof bucket[key] === "number" ? (bucket[key] as number) : 0) + by;
+          };
+          add("local_calls", delta.calls);
+          add("local_success", delta.success);
+          add("local_failure", delta.failure);
+          add("local_rate_limited", delta.rateLimited);
+          existing[service] = bucket;
+        }
+        this.writeStatePayloadAtomicSync(JSON.stringify(existing, null, 2));
+      });
+      // Only cleared once the write succeeded, so a failure is retried rather
+      // than silently dropped.
+      this.pendingDelta = {};
     } catch {
-      // Ignore.
+      // Ignore — counters are informational and must never fail a dispatch.
+    }
+  }
+
+  /** Current on-disk state, or {} if unreadable. */
+  private readStateFile(): Record<string, Record<string, unknown>> {
+    try {
+      if (!existsSync(this.stateFile)) return {};
+      const parsed = JSON.parse(readFileSync(this.stateFile, "utf-8")) as Record<
+        string,
+        Record<string, unknown>
+      > | null;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
     }
   }
 }

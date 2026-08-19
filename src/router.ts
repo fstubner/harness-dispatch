@@ -60,7 +60,7 @@ import type {
   TaskType,
 } from "./types.js";
 import path from "node:path";
-import { CircuitBreaker } from "./circuit-breaker.js";
+import { CircuitBreaker, type CircuitBreakerSnapshot } from "./circuit-breaker.js";
 import { BreakerStore } from "./breaker-store.js";
 import { QuotaCache } from "./quota.js";
 import { LeaderboardCache } from "./leaderboard.js";
@@ -1125,10 +1125,47 @@ export class Router {
     breaker.restore(merged);
   }
 
+  /**
+   * Re-hydrate from the persisted store before reporting.
+   *
+   * Dispatches run in DETACHED child processes, and handleResult now merges
+   * each failure into the shared store — so the authority for breaker state
+   * lives on disk, while this Router hydrates its in-memory breakers once, in
+   * its constructor. Without a refresh here the two surfaces an agent is told
+   * to consult went stale for the life of the server process:
+   *
+   *   status  -> breaker=closed failures=0, route listed in "Ready to route"
+   *   dispatch-> "all are disabled, exhausted, or circuit-broken"
+   *              {"fail_cli":{"tripped":true,"failures":5}}
+   *
+   * That contradiction was introduced by moving the authority to disk without
+   * moving the readers with it. This is the readers catching up.
+   */
   circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {
+    this.refreshBreakersFromStore();
     const out: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
     for (const [name, b] of this.breakers) out[name] = b.status();
     return out;
+  }
+
+  /**
+   * Adopt any breaker state written by another process.
+   *
+   * Only ever restores — a persisted snapshot already encodes the cooldown as
+   * a wall-clock deadline, so a stale one expires on read rather than needing
+   * to be aged out here.
+   */
+  private refreshBreakersFromStore(): void {
+    let persisted: Record<string, CircuitBreakerSnapshot>;
+    try {
+      persisted = this.breakerStore.loadAll();
+    } catch {
+      return; // Reporting must not fail because the store is unreadable.
+    }
+    for (const [name, snapshot] of Object.entries(persisted)) {
+      const breaker = this.breakers.get(name);
+      if (breaker) breaker.restore(snapshot);
+    }
   }
 }
 
