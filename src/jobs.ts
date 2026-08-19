@@ -686,8 +686,11 @@ function jobsPerSupervisor(limit: number): number {
  * is what stops two supervisors racing onto the same job. A claim left behind
  * by a crashed supervisor is reclaimed once that job's heartbeat has gone
  * stale, by the same ORPHAN_THRESHOLD_MS rule used everywhere else.
+ *
+ * Exported for tests: the one-winner property under concurrent reclaim is the
+ * invariant, and it is only checkable by calling this directly.
  */
-async function claimJobDir(jobDir: string, status: JobStatus): Promise<boolean> {
+export async function claimJobDir(jobDir: string, status: JobStatus): Promise<boolean> {
   const claimPath = path.join(jobDir, "claim.json");
   try {
     await writeFile(claimPath, JSON.stringify({ pid: process.pid, at: timestamp() }), {
@@ -699,10 +702,27 @@ async function claimJobDir(jobDir: string, status: JobStatus): Promise<boolean> 
   } catch {
     const beat = Date.parse(status.updatedAt);
     if (!Number.isFinite(beat) || Date.now() - beat <= ORPHAN_THRESHOLD_MS) return false;
+    // Reclaiming a crashed supervisor's claim must pick exactly ONE winner.
+    // This path used to rewrite claim.json WITHOUT `wx`, so two supervisors
+    // deciding "stale" in the same window both succeeded — the job ran twice,
+    // a duplicate CLI execution billed twice. Renaming the stale claim aside
+    // is atomic: the loser gets ENOENT and leaves the job alone, and the
+    // winner still has to win the `wx` create below like any first claimant.
+    const tomb = path.join(
+      path.dirname(claimPath),
+      `claim.stale-${process.pid}-${Date.now().toString(36)}`,
+    );
+    try {
+      await rename(claimPath, tomb);
+    } catch {
+      return false; // Another supervisor reclaimed it first.
+    }
+    await rm(tomb, { force: true }).catch(() => undefined);
     try {
       await writeFile(claimPath, JSON.stringify({ pid: process.pid, at: timestamp() }), {
         encoding: "utf8",
         mode: 0o600,
+        flag: "wx",
       });
       return true;
     } catch {

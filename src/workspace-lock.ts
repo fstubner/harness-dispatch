@@ -29,7 +29,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -41,6 +41,18 @@ const HEARTBEAT_MS = 15_000;
 
 /** Gap between attempts when another process holds the lock. */
 const RETRY_MS = 100;
+
+/**
+ * How long an EXISTING-but-unreadable lock file is given before it is treated
+ * as stealable. An unreadable record used to be stolen on sight, which made a
+ * torn read of a mid-rewrite heartbeat sufficient to take a LIVE holder's lock
+ * — two dispatches then edited the same workspace, the exact outcome
+ * `shared_locked` exists to prevent. Heartbeats are written atomically now, so
+ * within one build a torn read cannot happen; the grace keeps the steal honest
+ * against writers from older builds (in-place heartbeat rewrites during a
+ * rolling upgrade) and external interference.
+ */
+const UNREADABLE_GRACE_MS = 1_000;
 
 const inProcessLocks = new Map<string, Promise<void>>();
 
@@ -102,23 +114,56 @@ function tryCreate(file: string, key: string): boolean {
   }
 }
 
+/**
+ * Take a stale lock out of the way — by RENAME, not delete.
+ *
+ * Delete-then-recreate let two waiters both decide the same record was stale:
+ * the slower one's delete then removed the FASTER one's freshly created lock,
+ * and both ended up holding the directory. Rename is atomic and names a
+ * specific victim — whoever loses the rename gets ENOENT and simply goes
+ * round the acquire loop again. Returns true if this process performed the
+ * steal (the caller still has to win the `wx` create; a third waiter may get
+ * there first, which is an honest race, not a double hold).
+ */
+function stealLock(file: string): boolean {
+  const tomb = `${file}.stolen-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    renameSync(file, tomb);
+  } catch {
+    return false; // Another waiter stole it, or the holder released it first.
+  }
+  try {
+    rmSync(tomb, { force: true });
+  } catch {
+    // A leftover tombstone is inert: nothing reads `*.stolen-*` names.
+  }
+  return true;
+}
+
 async function acquireFileLock(key: string, timeoutMs: number): Promise<() => void> {
   const file = lockFileFor(key);
   const deadline = Date.now() + timeoutMs;
+  let unreadableSince: number | undefined;
 
   for (;;) {
     if (tryCreate(file, key)) break;
 
     const record = readRecord(file);
-    if (record === undefined || isDead(record)) {
-      // Steal it. Deleting then re-creating with `wx` keeps the race honest:
-      // if another waiter wins the gap, this loop simply goes round again.
-      try {
-        rmSync(file, { force: true });
-      } catch {
-        // Someone else removed it first, which is the outcome we wanted.
+    if (record === undefined) {
+      // Exists but unreadable (or vanished between the two calls). Give it a
+      // grace window rather than stealing on sight — see UNREADABLE_GRACE_MS.
+      unreadableSince ??= Date.now();
+      if (Date.now() - unreadableSince >= UNREADABLE_GRACE_MS) {
+        unreadableSince = undefined;
+        stealLock(file);
+        continue;
       }
-      continue;
+    } else {
+      unreadableSince = undefined;
+      if (isDead(record)) {
+        stealLock(file);
+        continue;
+      }
     }
 
     if (Date.now() >= deadline) {
@@ -126,22 +171,47 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       // asked for, so this is an error rather than a warning.
       throw new Error(
         `workspace lock timed out after ${Math.round(timeoutMs / 1000)}s waiting for ` +
-          `pid ${record.pid} to release ${key}. Another dispatch is still using this ` +
-          `workspace; use workspace_policy: copy to run them concurrently.`,
+          `pid ${record?.pid ?? "unknown"} to release ${key}. Another dispatch is still ` +
+          `using this workspace; use workspace_policy: copy to run them concurrently.`,
       );
     }
     await new Promise((r) => setTimeout(r, RETRY_MS));
   }
 
   const beat = setInterval(() => {
+    // Refresh ATOMICALLY (tmp + rename), never by rewriting in place: an
+    // in-place rewrite truncates first, and a waiter reading in that window
+    // saw an empty record — grounds, under the old rules, to steal a lock
+    // whose holder was alive and mid-write.
+    //
+    // Ownership is checked first: if the record is no longer ours, this
+    // process froze past the stale window and was legitimately stolen.
+    // Overwriting would clobber the thief's record — and worse, make our own
+    // release() believe it still held the lock and delete it under the thief.
     try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid, key, beatMs: Date.now() }), {
+      const current = readRecord(file);
+      if (current !== undefined && current.pid !== process.pid) {
+        clearInterval(beat);
+        return;
+      }
+      if (current === undefined) {
+        // Missing or unreadable while we believe we hold it: a steal may be
+        // mid-flight. Recreating it could re-take a lock someone else now
+        // owns, so stop refreshing and let release()'s ownership check
+        // decide what to delete.
+        clearInterval(beat);
+        return;
+      }
+      const tmp = `${file}.${process.pid}.beat`;
+      writeFileSync(tmp, JSON.stringify({ pid: process.pid, key, beatMs: Date.now() }), {
         encoding: "utf8",
         mode: 0o600,
       });
+      renameSync(tmp, file);
     } catch {
       // A failed refresh only risks the lock being stolen as stale, which is
-      // the correct outcome if this process really is in trouble.
+      // the correct outcome if this process really is in trouble. The next
+      // beat retries; a leftover .beat tmp file is inert.
     }
   }, HEARTBEAT_MS);
   beat.unref?.();

@@ -14,7 +14,7 @@
  * attempt at each of these fixes ineffective.
  */
 
-import { mkdirSync, rmdirSync, statSync } from "node:fs";
+import { mkdirSync, renameSync, rmdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -86,7 +86,23 @@ export function withFileLock<T>(file: string, fn: () => T): T {
       try {
         const age = Date.now() - statSync(lockDir).mtimeMs;
         if (age > LOCK_STALE_MS) {
-          rmdirSync(lockDir);
+          // Steal by RENAME, not delete. stat-then-rmdir let two waiters both
+          // judge the same lock stale — the slower one's rmdir then removed
+          // the faster one's FRESHLY CREATED lock, and both entered the
+          // critical section, recreating the unserialised read-modify-write
+          // this lock exists to prevent. Rename is atomic: exactly one waiter
+          // wins it, the loser gets ENOENT and goes round the loop again.
+          const tomb = `${lockDir}.stale-${process.pid}-${Date.now().toString(36)}`;
+          try {
+            renameSync(lockDir, tomb);
+            try {
+              rmdirSync(tomb);
+            } catch {
+              // Leftover tombstone; nothing reads `*.stale-*` names.
+            }
+          } catch {
+            // Lost the steal race to another waiter; retry normally.
+          }
           continue;
         }
       } catch {

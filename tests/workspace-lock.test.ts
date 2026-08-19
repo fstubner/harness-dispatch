@@ -166,12 +166,40 @@ describe("acquireWorkspaceLock — recovery", () => {
     expect(true).toBe(true);
   });
 
-  it("treats a corrupt lock file as absent rather than wedging", async () => {
+  it("steals a corrupt lock file after a grace rather than wedging", async () => {
     mkdirSync(lockDir(), { recursive: true });
     writeFileSync(path.join(lockDir(), readdirSyncSafeName(workDir)), "{ not json", "utf8");
     const release = await acquireWorkspaceLock(workDir, 3000);
     release();
     expect(true).toBe(true);
+  });
+
+  it("does NOT steal an unreadable lock on sight", async () => {
+    // The heartbeat used to rewrite the lock file in place, so a waiter could
+    // read it half-written — an empty parse — and the old rule stole such a
+    // lock immediately. That handed the directory to a second dispatch while
+    // the holder was ALIVE and mid-write: the exact double-edit
+    // `shared_locked` exists to prevent. An unreadable record now gets a
+    // grace window; a waiter whose deadline is inside it must time out, not
+    // acquire.
+    mkdirSync(lockDir(), { recursive: true });
+    writeFileSync(path.join(lockDir(), readdirSyncSafeName(workDir)), "", "utf8");
+    await expect(acquireWorkspaceLock(workDir, 300)).rejects.toThrow(/timed out/);
+  });
+
+  it("leaves no tombstones behind after stealing a dead holder's lock", async () => {
+    // Steals go through an atomic rename to a unique name (so two waiters can
+    // never both win); the renamed file must not accumulate.
+    mkdirSync(lockDir(), { recursive: true });
+    const file = path.join(lockDir(), readdirSyncSafeName(workDir));
+    writeFileSync(
+      file,
+      JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
+      "utf8",
+    );
+    const release = await acquireWorkspaceLock(workDir, 3000);
+    release();
+    expect(readdirSync(lockDir())).toEqual([]);
   });
 });
 
