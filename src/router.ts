@@ -1098,14 +1098,31 @@ export class Router {
     this.quota.recordResult(service, result);
     const breaker = this.breakers.get(service);
     if (!breaker) return;
-    if (result.success) {
-      breaker.recordSuccess();
-    } else if (result.rateLimited) {
-      breaker.trip(result.retryAfter);
-    } else {
-      breaker.recordFailure(result.retryAfter);
-    }
-    this.persistBreaker(service);
+
+    // Apply the event to the PERSISTED state, then adopt the result.
+    //
+    // Mutating the in-memory breaker and writing its snapshot loses events
+    // across processes: every dispatch runs in a detached child that loaded
+    // its own breaker at boot, so two concurrent failures both read 0 and both
+    // write 1. Measured: 8 concurrent failures persisted as `failures: 1` and
+    // the breaker never tripped, leaving a dead route selectable.
+    //
+    // update() serialises the read-modify-write, so each process contributes
+    // exactly one event; restoring afterwards keeps this process's routing
+    // decisions consistent with what is now on disk.
+    const merged = this.breakerStore.update(service, (current) => {
+      const shared = new CircuitBreaker();
+      if (current) shared.restore(current);
+      if (result.success) {
+        shared.recordSuccess();
+      } else if (result.rateLimited) {
+        shared.trip(result.retryAfter);
+      } else {
+        shared.recordFailure(result.retryAfter);
+      }
+      return shared.snapshot();
+    });
+    breaker.restore(merged);
   }
 
   circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {

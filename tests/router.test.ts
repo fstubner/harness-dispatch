@@ -50,10 +50,20 @@ vi.mock("../src/workspace-lock.js", () => {
 // real class.
 vi.mock("../src/breaker-store.js", () => ({
   BreakerStore: class {
+    // In-memory, but FAITHFUL. update() is the read-modify-write the router
+    // relies on to accumulate failures across dispatches; a stub that dropped
+    // the previous value would make every failure the first one and quietly
+    // disable the threshold these tests exercise.
+    private readonly mem = new Map<string, unknown>();
     loadAll() {
       return {};
     }
     save() {}
+    update(service: string, mutate: (cur: unknown) => unknown) {
+      const next = mutate(this.mem.get(service));
+      this.mem.set(service, next);
+      return next;
+    }
   },
 }));
 

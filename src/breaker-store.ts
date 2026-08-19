@@ -32,6 +32,8 @@
 import {
   existsSync,
   mkdirSync,
+  rmdirSync,
+  statSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -58,6 +60,67 @@ function defaultStateDir(): string {
  */
 function fileNameFor(service: string): string {
   return `${service.replace(/[^A-Za-z0-9_.-]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}.json`;
+}
+
+
+/**
+ * How long a held lock may go unrefreshed before another process steals it.
+ *
+ * A crashed holder must not wedge a route's breaker file forever. Short,
+ * because the critical section is one read and one write.
+ */
+const LOCK_STALE_MS = 10_000;
+
+/** Give up rather than block a dispatch indefinitely. */
+const LOCK_TIMEOUT_MS = 2_000;
+
+/**
+ * Run `fn` holding an exclusive cross-process lock on one route's file.
+ *
+ * mkdir is the atomic test-and-set here: it fails if the directory exists, on
+ * every platform, and unlike `writeFile` with `wx` it needs no cleanup path
+ * distinct from the directory itself. Synchronous on purpose — the callers
+ * (Router.persistBreaker, and CLI paths that exit immediately afterwards) are
+ * sync, and making them async to acquire a lock would ripple through the whole
+ * dispatch return path for no benefit.
+ *
+ * Failing to acquire runs `fn` anyway rather than dropping the update: an
+ * un-serialised write is what we had before, so the fallback is no worse than
+ * the old behaviour, while a dropped failure would be strictly worse.
+ */
+function withRouteLock<T>(file: string, fn: () => T): T {
+  const lockDir = `${file}.lock`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let held = false;
+  for (;;) {
+    try {
+      mkdirSync(lockDir);
+      held = true;
+      break;
+    } catch {
+      try {
+        const age = Date.now() - statSync(lockDir).mtimeMs;
+        if (age > LOCK_STALE_MS) {
+          rmdirSync(lockDir);
+          continue;
+        }
+      } catch {
+        continue; // vanished between the two calls — retry immediately
+      }
+      if (Date.now() >= deadline) break;
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    if (held) {
+      try {
+        rmdirSync(lockDir);
+      } catch {
+        // Already stolen as stale; the next acquirer owns it.
+      }
+    }
+  }
 }
 
 export class BreakerStore {
@@ -114,6 +177,38 @@ export class BreakerStore {
     } catch {
       // Best-effort — persistence failure shouldn't fail the dispatch.
     }
+  }
+
+  /**
+   * Apply `mutate` to a route's PERSISTED snapshot, atomically across
+   * processes.
+   *
+   * save() alone was not enough and the reason is worth stating: each process
+   * holds its own in-memory CircuitBreaker loaded at boot, mutates it, and
+   * writes the result. Two concurrent failures therefore both read 0, both
+   * write 1, and one is lost. Measured before this fix: 8 concurrent failures
+   * on one route persisted as `failures: 1` and the breaker never tripped, so
+   * a dead route kept being selected.
+   *
+   * That is exactly the defect the per-route file split was meant to remove,
+   * and it did not — splitting removed contention BETWEEN routes while leaving
+   * the read-modify-write inside each file untouched. The probe that "proved"
+   * the split wrote to 800 distinct routes and so could never have caught it.
+   *
+   * Passing the on-disk value into `mutate` makes the persisted count the
+   * authority, so each process contributes exactly one event.
+   */
+  update(
+    service: string,
+    mutate: (current: CircuitBreakerSnapshot | undefined) => CircuitBreakerSnapshot,
+  ): CircuitBreakerSnapshot {
+    const file = path.join(this.stateDir, fileNameFor(service));
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    return withRouteLock(file, () => {
+      const merged = mutate(this.readOne(file));
+      this.save(service, merged);
+      return merged;
+    });
   }
 
   private readOne(file: string): CircuitBreakerSnapshot | undefined {
