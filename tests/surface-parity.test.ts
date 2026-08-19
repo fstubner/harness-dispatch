@@ -116,10 +116,14 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     //
     // This call fails later for an unrelated reason (no configured routes);
     // what matters is only that it is not turned away at the boundary.
+    //
+    // Default grace on purpose (NOT graceSeconds: 0): the reply must not
+    // arrive until the background run has fully landed. Fire-and-forget left
+    // a failing job still writing while this file's teardown deleted the
+    // jobs dir under it — an unhandled rejection on the POSIX CI legs.
     const err = await dispatchError({
       prompt: "hi",
       hints: { safetyProfile: "read_only" },
-      graceSeconds: 0,
     });
     expect(err ?? "").not.toMatch(/belongs inside `hints`/);
   });
