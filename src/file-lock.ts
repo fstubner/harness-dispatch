@@ -26,6 +26,9 @@ import path from "node:path";
 const LOCK_STALE_MS = 10_000;
 
 /** Give up rather than block a dispatch indefinitely. */
+/** Pause between acquisition attempts, instead of spinning. */
+const RETRY_MS = 25;
+
 const LOCK_TIMEOUT_MS = 2_000;
 
 /**
@@ -42,15 +45,35 @@ const LOCK_TIMEOUT_MS = 2_000;
  * un-serialised write is what we had before, so the fallback is no worse than
  * the old behaviour, while a dropped failure would be strictly worse.
  */
+/**
+ * Block this thread briefly without spinning.
+ *
+ * Atomics.wait on a throwaway buffer is the only synchronous sleep Node
+ * offers. The lock has to stay synchronous (its callers are), so the choice is
+ * this or a busy loop.
+ */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // Environments without SharedArrayBuffer fall back to returning
+    // immediately; the deadline still bounds the loop.
+  }
+}
+
 export function withFileLock<T>(file: string, fn: () => T): T {
   const lockDir = `${file}.lock`;
   // Ensure the parent exists before trying to lock inside it: a caller whose
   // state directory has not been created yet would otherwise spin against an
   // ENOENT that no amount of retrying resolves.
+  // If the parent cannot be created there is nothing to lock against and
+  // retrying cannot help — spinning the full timeout on EVERY call was
+  // measured at 2005ms per call, forever, on an unwritable state directory.
+  // Run unlocked immediately instead; the caller already tolerates that.
   try {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   } catch {
-    // If this fails the mkdir below fails too, and the deadline handles it.
+    return fn();
   }
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   let held = false;
@@ -78,6 +101,10 @@ export function withFileLock<T>(file: string, fn: () => T): T {
         continue;
       }
       if (Date.now() >= deadline) break;
+      // Sleep rather than spin. This was a tight synchronous loop that burned
+      // a full CPU for up to 2s under contention, on a path that runs after
+      // every dispatch result.
+      sleepSync(RETRY_MS);
     }
   }
   try {

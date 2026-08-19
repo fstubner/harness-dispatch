@@ -32,8 +32,6 @@
 import {
   existsSync,
   mkdirSync,
-  rmdirSync,
-  statSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -53,16 +51,43 @@ function defaultStateDir(): string {
 }
 
 /**
- * Route names come from config keys, so they are operator-authored rather
- * than attacker-controlled — but they still land in a filename, and a route
- * called `../../etc/passwd` should not escape the state directory. Anything
- * outside [A-Za-z0-9_.-] is percent-escaped, which is reversible and keeps
- * the common case (`codex_cli.json`) readable by a human debugging it.
+ * Route name -> filename, reversibly.
+ *
+ * Route names are operator-authored rather than attacker-controlled, but they
+ * still land in a filename, and a route called `../../etc/passwd` must not
+ * escape the state directory.
+ *
+ * The encode and decode MUST be inverses. They were not: encoding used
+ * `%${charCodeAt(0).toString(16)}` while decoding used decodeURIComponent,
+ * which agree only for ASCII. A route named `café_cli` wrote `caf%e9_cli.json`
+ * — `%e9` is not valid UTF-8 percent-encoding — and reading it threw
+ * `URIError: URI malformed` out of loadAll(), which the Router constructor
+ * calls unguarded. One such route took down `status`, `doctor` and the MCP
+ * server itself.
+ *
+ * encodeURIComponent produces UTF-8 percent-encoding that decodeURIComponent
+ * reverses exactly. The extra replace covers the handful of characters it
+ * leaves alone that are still illegal in a Windows filename. ASCII route names
+ * are unchanged, so `codex_cli.json` stays readable to a human debugging it.
  */
 function fileNameFor(service: string): string {
-  return `${service.replace(/[^A-Za-z0-9_.-]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}.json`;
+  const encoded = encodeURIComponent(service).replace(
+    /[!*'()]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${encoded}.json`;
 }
 
+function serviceFromFileName(entry: string): string | undefined {
+  try {
+    return decodeURIComponent(entry.slice(0, -".json".length));
+  } catch {
+    // A file this module did not write, or wrote under the old broken scheme.
+    // Skipping it is right: loading breaker state is best-effort, and throwing
+    // here bricked every entry point in the tool.
+    return undefined;
+  }
+}
 
 export class BreakerStore {
   private readonly stateDir: string;
@@ -89,7 +114,8 @@ export class BreakerStore {
     }
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
-      const service = decodeURIComponent(entry.slice(0, -".json".length));
+      const service = serviceFromFileName(entry);
+      if (service === undefined) continue;
       const snapshot = this.readOne(path.join(this.stateDir, entry));
       if (snapshot) out[service] = snapshot;
     }
@@ -144,7 +170,18 @@ export class BreakerStore {
     mutate: (current: CircuitBreakerSnapshot | undefined) => CircuitBreakerSnapshot,
   ): CircuitBreakerSnapshot {
     const file = path.join(this.stateDir, fileNameFor(service));
-    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    } catch {
+      // Unwritable state directory. save() and QuotaCache.saveLocalCountsSync()
+      // both swallow persistence failures deliberately; this did not, so the
+      // throw propagated out of Router.handleResult and discarded a COMPLETED
+      // dispatch's result. The job then sat "running" until the 90s heartbeat
+      // window and reported "the dispatch server exited before the run
+      // finished" — which never happened. Losing breaker state is survivable;
+      // losing the user's finished work to report a false cause is not.
+      return mutate(undefined);
+    }
     return withFileLock(file, () => {
       const merged = mutate(this.readOne(file));
       this.save(service, merged);

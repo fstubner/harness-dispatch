@@ -1110,7 +1110,10 @@ export class Router {
     // update() serialises the read-modify-write, so each process contributes
     // exactly one event; restoring afterwards keeps this process's routing
     // decisions consistent with what is now on disk.
-    const merged = this.breakerStore.update(service, (current) => {
+    // Persistence must never fail a completed dispatch. The store guards its
+    // own writes, but handleResult runs on the result path and a throw here
+    // would discard work the user already paid for.
+    const merged = this.safeBreakerUpdate(service, (current) => {
       const shared = new CircuitBreaker();
       if (current) shared.restore(current);
       if (result.success) {
@@ -1155,6 +1158,18 @@ export class Router {
    * a wall-clock deadline, so a stale one expires on read rather than needing
    * to be aged out here.
    */
+  private safeBreakerUpdate(
+    service: string,
+    mutate: (current: CircuitBreakerSnapshot | undefined) => CircuitBreakerSnapshot,
+  ): CircuitBreakerSnapshot {
+    try {
+      return this.breakerStore.update(service, mutate);
+    } catch {
+      // Fall back to this process's own view rather than losing the result.
+      return mutate(this.breakers.get(service)?.snapshot());
+    }
+  }
+
   private refreshBreakersFromStore(): void {
     let persisted: Record<string, CircuitBreakerSnapshot>;
     try {

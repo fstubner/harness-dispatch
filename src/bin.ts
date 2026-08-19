@@ -3,8 +3,9 @@
  * harness-dispatch CLI entrypoint.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -107,6 +108,7 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
     escalate_on: svc.escalateOn.length > 0 ? svc.escalateOn : undefined,
     capabilities:
       Object.keys(svc.capabilities).length > 0 ? svc.capabilities : undefined,
+    timeout_ms: svc.timeoutMs,
     max_output_tokens: svc.maxOutputTokens,
     max_input_tokens: svc.maxInputTokens,
     allow_paid_usage: svc.allowPaidUsage ? true : undefined,
@@ -208,6 +210,21 @@ function endpointEntryToYaml(
     base_url: svc.baseUrl,
     api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
+    // Endpoints have no shipped preset behind them, so an omitted billing
+    // field is not recomputed on reload — it is lost. Verified: an endpoint
+    // declaring `billing_kind: local_compute` and `paid_usage_possible: false`
+    // came back undefined, flipping it to paid=possible and getting it skipped
+    // by billing policy.
+    //
+    // This is the same reasoning already applied to `harness: generic` CLI
+    // routes, and it should have been applied here at the same time. Built-in
+    // harnesses still keep the lean output because their preset supplies these.
+    provider: svc.provider,
+    surface: svc.surface,
+    auth_source: svc.authSource,
+    billing_kind: svc.billingKind,
+    paid_usage_possible: svc.paidUsagePossible,
+    billing_notes: svc.billingNotes,
   };
 }
 
@@ -422,6 +439,32 @@ async function cmdUsage(
   return 0;
 }
 
+/**
+ * Can we actually persist state? Breaker cooldowns, quota counters and job
+ * records all live here, and every write path deliberately swallows its own
+ * failures so a dispatch is never lost to a bookkeeping problem. The cost of
+ * that choice is silence, which is what this check buys back.
+ */
+function stateDirWritable(): { ok: boolean; detail: string } {
+  const dir =
+    process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const probe = path.join(dir, `.write-probe-${process.pid}`);
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(probe, "", { mode: 0o600 });
+    rmSync(probe, { force: true });
+    return { ok: true, detail: `writable: ${dir}` };
+  } catch (err) {
+    return {
+      ok: false,
+      detail:
+        `NOT writable: ${dir} (${err instanceof Error ? err.message : String(err)}). ` +
+        `Breaker cooldowns and usage counters will not persist, and jobs may be ` +
+        `reported as orphaned after they have actually succeeded.`,
+    };
+  }
+}
+
 async function cmdDoctor(
   configPath: string | undefined,
   opts: { json: boolean; live: boolean; allowPaid: boolean },
@@ -484,6 +527,15 @@ async function cmdDoctor(
           : `0 ready route(s). Looked for these harness CLIs on PATH: ` +
             `${Object.values(AUTO_DETECT_COMMANDS).join(", ")}. ` +
             `Install one, or add a route to config.yaml (endpoints: need no CLI).`,
+    },
+    {
+      // Nothing checked this, so an unwritable state directory surfaced only
+      // as jobs mysteriously reported "the dispatch server exited before the
+      // run finished" — a false cause, 90s after the work had actually
+      // succeeded.
+      name: "state-dir",
+      ok: stateDirWritable().ok,
+      detail: stateDirWritable().detail,
     },
     {
       name: "http-auth",

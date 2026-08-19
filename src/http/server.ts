@@ -16,7 +16,7 @@ import { buildStatus, buildUsage } from "../status.js";
 import type { RouteHints, RouteSkip, WorkspacePolicy } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { resolveWorkingDir, workingDirWarning } from "../working-dir.js";
+import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 
 export interface HttpServerHandle extends McpHandle {
   port: number;
@@ -78,6 +78,17 @@ function isLoopbackHost(host: string): boolean {
 // caller exhaust process memory with one oversized POST.
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 
+/**
+ * A request the CALLER can fix — malformed JSON, a missing required field, a
+ * working directory that does not exist.
+ *
+ * Everything except the 413 was returned as 500. PRODUCT.md names CI and cron
+ * as consumers of this surface, and retry-on-5xx will happily retry a request
+ * that can never succeed. A 4xx says "stop and fix the request", which is the
+ * true statement.
+ */
+export class BadRequestError extends Error {}
+
 class PayloadTooLargeError extends Error {}
 
 async function readJson(
@@ -99,7 +110,14 @@ async function readJson(
     chunks.push(buf);
   }
   const text = Buffer.concat(chunks).toString("utf-8");
-  return text.trim() ? JSON.parse(text) : {};
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new BadRequestError(
+      `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 function contentToText(content: unknown): string {
@@ -201,7 +219,16 @@ function parseChatRequest(raw: unknown): {
     typeof body.prompt === "string" && body.prompt.trim()
       ? body.prompt
       : messagesToPrompt(body.messages);
-  if (!prompt.trim()) throw new Error("messages or prompt is required");
+  if (!prompt.trim()) throw new BadRequestError("messages or prompt is required");
+  // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
+  // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
+  // exists to prevent, on the surface CI uses.
+  const workingDirError = validateWorkingDir(
+    typeof (body as { workingDir?: unknown }).workingDir === "string"
+      ? ((body as { workingDir?: string }).workingDir as string)
+      : undefined,
+  );
+  if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
   const files = Array.isArray(body.files)
     ? body.files.filter((v): v is string => typeof v === "string")
     : [];
@@ -368,7 +395,15 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           const skippedRoutes: RouteSkip[] = [];
           for (const route of requestedRoutes) {
             const svc = state.config.services[route];
-            if (!svc) continue;
+            if (!svc) {
+              // The MCP tool rejects unknown fanout targets by name; this
+              // surface silently skipped them, returning 200 with fewer arms
+              // and an empty skippedRoutes. Same input, two answers.
+              throw new BadRequestError(
+                `Unknown fanout target: ${route}. Valid route ids: ` +
+                  `${Object.keys(state.config.services).join(", ")}.`,
+              );
+            }
             const dispatcher = state.dispatchers[route];
             const breaker = state.router.getBreaker(route);
             const policy = evaluateRoutePolicy(route, svc, {
@@ -577,6 +612,8 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
       if (!res.headersSent) {
         if (err instanceof PayloadTooLargeError) {
           sendJson(res, 413, { error: err.message });
+        } else if (err instanceof BadRequestError) {
+          sendJson(res, 400, { error: err.message });
         } else {
           sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }

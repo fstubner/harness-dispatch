@@ -364,7 +364,7 @@ function escapeNote(files: string[], originalWorkingDir: string): string[] {
   if (dirs.length === 0) return [];
   return [
     `ISOLATION WIDENED: ${dirs.length} director${dirs.length === 1 ? "y" : "ies"} outside ` +
-      `the workspace were granted to the agent because \`files\` referenced them — ` +
+      `the workspace ${dirs.length === 1 ? "was" : "were"} granted to the agent because \`files\` referenced them — ` +
       `${dirs.join(", ")}. Those paths are NOT isolated; edits there hit the real filesystem.`,
   ];
 }
@@ -397,7 +397,7 @@ async function prepareSharedWorkspace(
         securityBoundary: "none",
         notes:
           policy === "shared_locked"
-            ? ["Write-capable shared workspace dispatches are serialized within this router process."]
+            ? ["Write-capable shared workspace dispatches are serialized across ALL processes (see workspace-lock.ts; this was per-process until 304a1b5)."]
             : ["Shared workspace dispatches run directly in the caller's working directory."],
       });
     },
