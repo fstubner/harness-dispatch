@@ -39,13 +39,34 @@ import { interpolateTree } from "./config/env-interpolation.js";
 /** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
 export type WhichFn = (cmd: string) => Promise<string | null>;
 
+/**
+ * PATH lookups, memoised for the life of the process.
+ *
+ * loadConfig() runs on every CLI invocation and on every config reload, and
+ * each lookup is a real filesystem walk — ~2-3s per harness on Windows. A CLI
+ * that resolves once will resolve the same way a second later, and a
+ * long-running server re-reads config on hot reload where re-probing bought
+ * nothing.
+ *
+ * Deliberately NOT persisted across processes: installing a harness should
+ * take effect on the next command, not after a cache expiry someone has to
+ * discover.
+ */
+const whichCache = new Map<string, Promise<string | null>>();
+
 const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
-  try {
-    const r = await which(cmd, { nothrow: true });
-    return r ?? null;
-  } catch {
-    return null;
-  }
+  const cached = whichCache.get(cmd);
+  if (cached !== undefined) return cached;
+  const lookup = (async (): Promise<string | null> => {
+    try {
+      const r = await which(cmd, { nothrow: true });
+      return r ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  whichCache.set(cmd, lookup);
+  return lookup;
 };
 import type {
   AuthSource,
@@ -624,17 +645,36 @@ async function detectServices(
 ): Promise<Record<string, ServiceConfig>> {
   const services: Record<string, ServiceConfig> = {};
   const disabledSet = new Set(disabled);
-  for (const [harness, defaults] of Object.entries(CLI_DEFAULTS)) {
+
+  // Probe every harness AT ONCE.
+  //
+  // This was a sequential await per harness. Each `which` costs real time on
+  // Windows — measured 2.8s / 3.3s / 2.7s / 2.1s for claude / codex /
+  // cursor-agent / agy on a machine where all four are installed, so ~11s per
+  // loadConfig() call, and loadConfig runs on every CLI invocation. `status`
+  // and `doctor` took ~17s, and the test suite went red with timeouts on any
+  // developer machine that actually has the harnesses installed — it passed in
+  // CI only because CI is bare. The probes are independent, so there was never
+  // a reason to serialise them.
+  const candidates = Object.entries(CLI_DEFAULTS)
     // "generic" has no installable binary of its own — it exists only for
     // explicit clis: entries (addClis), never auto-detection.
-    if (harness === "generic") continue;
-    const name = AUTO_DETECT_NAME[harness] ?? harness;
-    if (disabledSet.has(name)) continue;
-    const found = await whichFn(defaults.command);
-    if (!found) continue;
+    .filter(([harness]) => harness !== "generic")
+    .map(([harness, defaults]) => ({
+      harness,
+      defaults,
+      name: AUTO_DETECT_NAME[harness] ?? harness,
+    }))
+    .filter(({ name }) => !disabledSet.has(name));
 
-    const override = overrides[name] ?? {};
-    services[name] = buildCliServiceConfig(name, defaults, override, apiKeys);
+  const found = await Promise.all(
+    candidates.map(async (c) => ((await whichFn(c.defaults.command)) ? c : undefined)),
+  );
+
+  for (const c of found) {
+    if (!c) continue;
+    const override = overrides[c.name] ?? {};
+    services[c.name] = buildCliServiceConfig(c.name, c.defaults, override, apiKeys);
   }
   return services;
 }
