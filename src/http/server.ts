@@ -19,6 +19,7 @@ import type { Router } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { getAsyncJob, startAsyncJobTracked } from "../jobs.js";
+import type { RuntimeHolder } from "../mcp/config-hot-reload.js";
 
 export interface HttpServerHandle extends McpHandle {
   port: number;
@@ -353,6 +354,239 @@ async function runFanoutArms(
   });
 }
 
+/**
+ * One request's SSE state, shared with the top-level catch so a mid-stream
+ * failure ends with an error frame instead of a silent truncation.
+ */
+interface SseState {
+  started: boolean;
+}
+
+/**
+ * POST /v1/chat/completions — extracted from the request callback, where
+ * this logic sat eleven brace-levels deep (the smell checker's worst
+ * finding for the whole repo). Behaviour is unchanged; only the nesting
+ * moved.
+ */
+async function handleChatCompletions(
+  holder: RuntimeHolder,
+  parsed: ReturnType<typeof parseChatRequest>,
+  res: ServerResponse,
+  sse: SseState,
+): Promise<void> {
+  const state = holder.state;
+  if (parsed.mode === "fanout") {
+    const fanoutSafetyProfile = parsed.hints.safetyProfile ?? "read_only";
+    if (
+      fanoutSafetyProfile !== "read_only" &&
+      (parsed.hints.workspacePolicy === undefined ||
+        !isIsolatedWorkspacePolicy(parsed.hints.workspacePolicy))
+    ) {
+      sendJson(res, 400, {
+        error: {
+          message:
+            "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; use read_only fanout or run single-route workspace_edit",
+          code: "workspace_isolation_required",
+        },
+      });
+      return;
+    }
+    parsed.hints.safetyProfile = fanoutSafetyProfile;
+  }
+  const eligibleRoutes = (requestedRoutes: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
+    const routes: string[] = [];
+    const skippedRoutes: RouteSkip[] = [];
+    for (const route of requestedRoutes) {
+      const svc = state.config.services[route];
+      if (!svc) {
+        // The MCP tool rejects unknown fanout targets by name; this
+        // surface silently skipped them, returning 200 with fewer arms
+        // and an empty skippedRoutes. Same input, two answers.
+        throw new BadRequestError(
+          `Unknown fanout target: ${route}. Valid route ids: ` +
+            `${Object.keys(state.config.services).join(", ")}.`,
+        );
+      }
+      const dispatcher = state.dispatchers[route];
+      const breaker = state.router.getBreaker(route);
+      const policy = evaluateRoutePolicy(route, svc, {
+        ...(dispatcher !== undefined ? { dispatcher } : {}),
+        circuitBroken: Boolean(breaker?.isTripped),
+        ...(parsed.hints.safetyProfile !== undefined
+          ? { requestedSafetyProfile: parsed.hints.safetyProfile }
+          : {}),
+      });
+      if (policy.skipped) skippedRoutes.push(policy.skipped);
+      if (!policy.blocked) routes.push(route);
+    }
+    return { routes, skippedRoutes };
+  };
+  if (parsed.stream) {
+    // Resolve fanout targets BEFORE writing SSE headers.
+    //
+    // eligibleRoutes throws BadRequestError for an unknown route, but it
+    // was called after writeHead — so headersSent was true, the error
+    // handler could only res.end(), and the caller got HTTP 200 with a
+    // zero-byte body. The non-streaming path returns a proper 400 with
+    // the valid ids. Same input, two answers, again.
+    // Default to every dispatchable route when `models` is omitted,
+    // exactly as the non-streaming branch does. Streaming passed
+    // parsed.models straight through, so {"mode":"fanout","stream":true}
+    // with no models fanned out to ZERO routes and reported success —
+    // content "[]", empty skippedRoutes, HTTP 200.
+    const preSelected =
+      parsed.mode === "fanout"
+        ? eligibleRoutes(
+            parsed.models.length > 0
+              ? parsed.models
+              : Object.keys(state.config.services).filter(
+                  (route) => route in state.dispatchers,
+                ),
+          )
+        : undefined;
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    sse.started = true;
+    if (parsed.mode === "fanout") {
+      const selected = preSelected!;
+      const rows = await runFanoutArms(state.router, selected.routes, parsed);
+      writeSse(res, {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: JSON.stringify(rows),
+            },
+            finish_reason: null,
+          },
+        ],
+        harness_dispatch: {
+          mode: "fanout",
+          skippedRoutes: selected.skippedRoutes,
+          ...(parsed.workingDirWarning !== undefined
+            ? { warning: parsed.workingDirWarning }
+            : {}),
+        },
+      });
+    } else {
+      for await (const { event, decision } of state.router.stream(
+        parsed.prompt,
+        parsed.files,
+        parsed.workingDir,
+        { hints: parsed.hints, maxFallbacks: 2 },
+      )) {
+        if (event.type === "stdout") {
+          writeSse(res, {
+            choices: [
+              {
+                index: 0,
+                delta: { content: event.chunk },
+                finish_reason: null,
+              },
+            ],
+            harness_dispatch: decision ? { route: decision.service } : undefined,
+          });
+        } else if (event.type === "completion" && !event.result.success) {
+          writeSse(res, {
+            error: {
+              message: event.result.error ?? "routing failed",
+              route: event.result.service,
+            },
+          });
+        }
+      }
+    }
+    writeSse(res, {
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+    });
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
+  if (parsed.mode === "fanout") {
+    const routes =
+      parsed.models.length > 0
+        ? parsed.models
+        : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
+    const selected = eligibleRoutes(routes);
+    const rows = await runFanoutArms(state.router, selected.routes, parsed);
+    sendJson(
+      res,
+      200,
+      completionEnvelope(
+        JSON.stringify(rows, null, 2),
+        typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-dispatch",
+        {
+          harness_dispatch: {
+            mode: "fanout",
+            skippedRoutes: selected.skippedRoutes,
+            ...(parsed.workingDirWarning !== undefined
+              ? { warning: parsed.workingDirWarning }
+              : {}),
+          },
+        },
+      ),
+    );
+    return;
+  }
+
+  // Backed by a persisted job, not a bare in-process await. This
+  // surface's users are curl/CI/cron — exactly the clients that enforce
+  // their own request timeouts — and a direct await meant a client that
+  // gave up mid-run lost the finished result with no way to retrieve
+  // it. The job survives (it runs detached and lands on disk); the
+  // jobId is exposed in the response AND in a header so even a caller
+  // that only captured headers before timing out can recover the
+  // result via `job_status`.
+  const { status: jobStatus, completion } = await startAsyncJobTracked(
+    { holder },
+    {
+      prompt: parsed.prompt,
+      files: parsed.files,
+      workingDir: parsed.workingDir,
+      hints: parsed.hints,
+    },
+  );
+  res.setHeader("x-harness-dispatch-job-id", jobStatus.jobId);
+  await completion;
+  const job = await getAsyncJob(jobStatus.jobId);
+  const result = job.result?.result;
+  const decision = job.result?.decision ?? undefined;
+  if (result === undefined) {
+    // Terminal without a result payload: the runner died or was
+    // orphaned. The job dir still names what happened.
+    sendJson(res, 500, {
+      error: `job ${jobStatus.jobId} ended without a result (status: ${job.status.status}); ` +
+        `check job_status for details`,
+      jobId: jobStatus.jobId,
+    });
+    return;
+  }
+  sendJson(
+    res,
+    200,
+    completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
+      harness_dispatch: {
+        jobId: jobStatus.jobId,
+        route: result.service,
+        success: result.success,
+        error: result.error,
+        workspace: result.workspace,
+        routing: decision,
+        skippedRoutes: decision?.skippedRoutes ?? result.skippedRoutes,
+        ...(parsed.workingDirWarning !== undefined
+          ? { warning: parsed.workingDirWarning }
+          : {}),
+      },
+    }),
+  );
+  return;
+}
+
 function completionEnvelope(
   content: string,
   model: string,
@@ -405,9 +639,8 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   const urlBase = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`;
 
   const http: NodeHttpServer = createServer(async (req, res) => {
-    // Tracks whether THIS request opened an SSE stream, so the catch below
-    // can end it with an error frame instead of a silent truncation.
-    let sseStarted = false;
+    // Shared with handleChatCompletions, read by the catch below.
+    const sse: SseState = { started: false };
     try {
       const url = new URL(req.url ?? "/", urlBase);
       if (url.pathname === "/v1/models" && req.method === "GET") {
@@ -482,216 +715,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         if (!requireAuth(req, res)) return;
         await reloader.maybeReload();
         const parsed = parseChatRequest(await readJson(req));
-        const state = holder.state;
-        if (parsed.mode === "fanout") {
-          const fanoutSafetyProfile = parsed.hints.safetyProfile ?? "read_only";
-          if (
-            fanoutSafetyProfile !== "read_only" &&
-            (parsed.hints.workspacePolicy === undefined ||
-              !isIsolatedWorkspacePolicy(parsed.hints.workspacePolicy))
-          ) {
-            sendJson(res, 400, {
-              error: {
-                message:
-                  "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; use read_only fanout or run single-route workspace_edit",
-                code: "workspace_isolation_required",
-              },
-            });
-            return;
-          }
-          parsed.hints.safetyProfile = fanoutSafetyProfile;
-        }
-        const eligibleRoutes = (requestedRoutes: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
-          const routes: string[] = [];
-          const skippedRoutes: RouteSkip[] = [];
-          for (const route of requestedRoutes) {
-            const svc = state.config.services[route];
-            if (!svc) {
-              // The MCP tool rejects unknown fanout targets by name; this
-              // surface silently skipped them, returning 200 with fewer arms
-              // and an empty skippedRoutes. Same input, two answers.
-              throw new BadRequestError(
-                `Unknown fanout target: ${route}. Valid route ids: ` +
-                  `${Object.keys(state.config.services).join(", ")}.`,
-              );
-            }
-            const dispatcher = state.dispatchers[route];
-            const breaker = state.router.getBreaker(route);
-            const policy = evaluateRoutePolicy(route, svc, {
-              ...(dispatcher !== undefined ? { dispatcher } : {}),
-              circuitBroken: Boolean(breaker?.isTripped),
-              ...(parsed.hints.safetyProfile !== undefined
-                ? { requestedSafetyProfile: parsed.hints.safetyProfile }
-                : {}),
-            });
-            if (policy.skipped) skippedRoutes.push(policy.skipped);
-            if (!policy.blocked) routes.push(route);
-          }
-          return { routes, skippedRoutes };
-        };
-        if (parsed.stream) {
-          // Resolve fanout targets BEFORE writing SSE headers.
-          //
-          // eligibleRoutes throws BadRequestError for an unknown route, but it
-          // was called after writeHead — so headersSent was true, the error
-          // handler could only res.end(), and the caller got HTTP 200 with a
-          // zero-byte body. The non-streaming path returns a proper 400 with
-          // the valid ids. Same input, two answers, again.
-          // Default to every dispatchable route when `models` is omitted,
-          // exactly as the non-streaming branch does. Streaming passed
-          // parsed.models straight through, so {"mode":"fanout","stream":true}
-          // with no models fanned out to ZERO routes and reported success —
-          // content "[]", empty skippedRoutes, HTTP 200.
-          const preSelected =
-            parsed.mode === "fanout"
-              ? eligibleRoutes(
-                  parsed.models.length > 0
-                    ? parsed.models
-                    : Object.keys(state.config.services).filter(
-                        (route) => route in state.dispatchers,
-                      ),
-                )
-              : undefined;
-          res.writeHead(200, {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          });
-          sseStarted = true;
-          if (parsed.mode === "fanout") {
-            const selected = preSelected!;
-            const rows = await runFanoutArms(state.router, selected.routes, parsed);
-            writeSse(res, {
-              choices: [
-                {
-                  index: 0,
-                  delta: {
-                    content: JSON.stringify(rows),
-                  },
-                  finish_reason: null,
-                },
-              ],
-              harness_dispatch: {
-                mode: "fanout",
-                skippedRoutes: selected.skippedRoutes,
-                ...(parsed.workingDirWarning !== undefined
-                  ? { warning: parsed.workingDirWarning }
-                  : {}),
-              },
-            });
-          } else {
-            for await (const { event, decision } of state.router.stream(
-              parsed.prompt,
-              parsed.files,
-              parsed.workingDir,
-              { hints: parsed.hints, maxFallbacks: 2 },
-            )) {
-              if (event.type === "stdout") {
-                writeSse(res, {
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { content: event.chunk },
-                      finish_reason: null,
-                    },
-                  ],
-                  harness_dispatch: decision ? { route: decision.service } : undefined,
-                });
-              } else if (event.type === "completion" && !event.result.success) {
-                writeSse(res, {
-                  error: {
-                    message: event.result.error ?? "routing failed",
-                    route: event.result.service,
-                  },
-                });
-              }
-            }
-          }
-          writeSse(res, {
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          });
-          res.write("data: [DONE]\n\n");
-          res.end();
-          return;
-        }
-
-        if (parsed.mode === "fanout") {
-          const routes =
-            parsed.models.length > 0
-              ? parsed.models
-              : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
-          const selected = eligibleRoutes(routes);
-          const rows = await runFanoutArms(state.router, selected.routes, parsed);
-          sendJson(
-            res,
-            200,
-            completionEnvelope(
-              JSON.stringify(rows, null, 2),
-              typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-dispatch",
-              {
-                harness_dispatch: {
-                  mode: "fanout",
-                  skippedRoutes: selected.skippedRoutes,
-                  ...(parsed.workingDirWarning !== undefined
-                    ? { warning: parsed.workingDirWarning }
-                    : {}),
-                },
-              },
-            ),
-          );
-          return;
-        }
-
-        // Backed by a persisted job, not a bare in-process await. This
-        // surface's users are curl/CI/cron — exactly the clients that enforce
-        // their own request timeouts — and a direct await meant a client that
-        // gave up mid-run lost the finished result with no way to retrieve
-        // it. The job survives (it runs detached and lands on disk); the
-        // jobId is exposed in the response AND in a header so even a caller
-        // that only captured headers before timing out can recover the
-        // result via `job_status`.
-        const { status: jobStatus, completion } = await startAsyncJobTracked(
-          { holder },
-          {
-            prompt: parsed.prompt,
-            files: parsed.files,
-            workingDir: parsed.workingDir,
-            hints: parsed.hints,
-          },
-        );
-        res.setHeader("x-harness-dispatch-job-id", jobStatus.jobId);
-        await completion;
-        const job = await getAsyncJob(jobStatus.jobId);
-        const result = job.result?.result;
-        const decision = job.result?.decision ?? undefined;
-        if (result === undefined) {
-          // Terminal without a result payload: the runner died or was
-          // orphaned. The job dir still names what happened.
-          sendJson(res, 500, {
-            error: `job ${jobStatus.jobId} ended without a result (status: ${job.status.status}); ` +
-              `check job_status for details`,
-            jobId: jobStatus.jobId,
-          });
-          return;
-        }
-        sendJson(
-          res,
-          200,
-          completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
-            harness_dispatch: {
-              jobId: jobStatus.jobId,
-              route: result.service,
-              success: result.success,
-              error: result.error,
-              workspace: result.workspace,
-              routing: decision,
-              skippedRoutes: decision?.skippedRoutes ?? result.skippedRoutes,
-              ...(parsed.workingDirWarning !== undefined
-                ? { warning: parsed.workingDirWarning }
-                : {}),
-            },
-          }),
-        );
+        await handleChatCompletions(holder, parsed, res, sse);
         return;
       }
 
@@ -730,7 +754,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
       sendText(res, 404, "not found");
     } catch (err) {
-      if (sseStarted) {
+      if (sse.started) {
         // Mid-stream failure: the client already holds a 200 and possibly
         // partial frames, and a bare end() made a truncated stream
         // indistinguishable from a complete one. Emit an error frame and the

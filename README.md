@@ -77,7 +77,9 @@ No global install needed either: `npx harness-dispatch configure`.
 
 The `plugin/` directory packages the MCP server plus a delegation skill and
 `/route` + `/jobs` commands for one-step installs — see
-[plugin/README.md](./plugin/README.md). Claude Code:
+[plugin/README.md](https://github.com/fstubner/harness-dispatch/blob/main/plugin/README.md)
+(absolute link on purpose: `plugin/` is not shipped in the npm tarball, so a
+relative link is dead on npmjs.com). Claude Code:
 `/plugin marketplace add <repo path or URL>` then
 `/plugin install harness-dispatch@harness-dispatch`. Codex:
 `node plugin/scripts/install-codex.mjs`.
@@ -355,7 +357,8 @@ harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
 Hidden compatibility aliases currently map old alpha commands to the new surface:
-`dashboard` and `list-services` map to `status`, and `mcp --http <port>` maps to `serve`.
+`dashboard` and `list-services` map to `status`, `route <prompt>` runs a one-off
+routed dispatch, and `mcp --http <port>` maps to `serve`.
 They are not part of the public v0.4.0 vocabulary.
 
 ## MCP Surface
@@ -472,9 +475,9 @@ The REST surface is OpenAI-compatible enough for local clients that can speak
 
 ## Endpoint Modes
 
-Harness Router supports two local/custom endpoint patterns:
+harness-dispatch supports two local/custom endpoint patterns:
 
-- `direct_openai_compatible`: Harness Router calls an OpenAI-compatible
+- `direct_openai_compatible`: harness-dispatch calls an OpenAI-compatible
   `/v1/chat/completions` endpoint directly. This is the right mode for Ollama,
   LM Studio, vLLM, LiteLLM, and private local HTTP model servers.
 - `harness_native_endpoint`: a downstream CLI keeps its agent scaffold but is

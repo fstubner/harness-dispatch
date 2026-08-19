@@ -178,6 +178,13 @@ export interface JobStatus {
   success?: boolean;
   /** Bounded copy — full text in output/stderr.log. */
   error?: string;
+  /**
+   * END-TO-END milliseconds for the run: routing, workspace preparation and
+   * any workspace-lock wait included. Deliberately NOT the same number as
+   * result.durationMs, which times the harness attempt alone — one job
+   * legitimately reports 116ms there and 15s here when it queued behind a
+   * shared_locked workspace. Both are real; they answer different questions.
+   */
   durationMs?: number;
   /** Suggested seconds to wait before polling action=get again. */
   nextPollSeconds?: number;
