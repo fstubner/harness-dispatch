@@ -1050,11 +1050,25 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     // callStart=0; attempt 0 (alpha) sees the full budget; by the time
     // attempt 1 (beta) starts, 3,599,900ms have "elapsed" so only 100ms of
     // budget remains; by attempt 2 the budget is already spent.
-    const dateSpy = vi.spyOn(Date, "now");
-    dateSpy.mockReturnValueOnce(0); // callStart
-    dateSpy.mockReturnValueOnce(0); // attempt 0 remaining calc
-    dateSpy.mockReturnValueOnce(3_599_900); // attempt 1 remaining calc
-    dateSpy.mockReturnValue(3_600_100); // attempt 2 remaining calc (budget exhausted)
+    //
+    // The clock is a VARIABLE advanced when each dispatcher runs, not a
+    // mockReturnValueOnce sequence: internal code (breaker snapshots) also
+    // calls Date.now(), so a positional sequence breaks whenever an unrelated
+    // call is added or removed.
+    let simulatedNow = 0;
+    const dateSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNow);
+    const alphaStream = alphaD.stream.bind(alphaD);
+    alphaD.stream = (...args: Parameters<typeof alphaStream>) => {
+      const it = alphaStream(...args);
+      simulatedNow = 3_599_900; // alpha "takes" almost the whole budget
+      return it;
+    };
+    const betaStream = betaD.stream.bind(betaD);
+    betaD.stream = (...args: Parameters<typeof betaStream>) => {
+      const it = betaStream(...args);
+      simulatedNow = 3_600_100; // beta overruns what was left
+      return it;
+    };
 
     for await (const _ of router.stream("hi", [], "/tmp", {
       maxFallbacks: 2,

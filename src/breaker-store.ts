@@ -221,11 +221,16 @@ export class BreakerStore {
       const v = JSON.parse(readFileSync(file, "utf-8")) as {
         failures?: number;
         blockedUntilMs?: number | null;
+        lastFailureAtMs?: number | null;
       } | null;
       if (!v || typeof v !== "object") return undefined;
       return {
         failures: typeof v.failures === "number" ? v.failures : 0,
         blockedUntilMs: typeof v.blockedUntilMs === "number" ? v.blockedUntilMs : null,
+        // Round-tripped so FAILURE_DECAY_SEC works across processes; omitted
+        // (not nulled) when absent, so files written by older builds read
+        // back exactly as they were written.
+        ...(typeof v.lastFailureAtMs === "number" ? { lastFailureAtMs: v.lastFailureAtMs } : {}),
       };
     } catch {
       return undefined;
@@ -244,6 +249,13 @@ export class BreakerStore {
       ? this.stateDir
       : path.join(path.dirname(this.stateDir), "breaker_state.json");
     if (!existsSync(legacy)) return;
+    // The blob is only deleted once everything in it is durably on disk in
+    // the per-route format. The first version of this migration merged into
+    // MEMORY and deleted the blob — no caller ever persisted the result, so
+    // the first process to call loadAll() after an upgrade (even a plain
+    // `status`) consumed every live cooldown: the exact failure the comment
+    // above it claimed to prevent.
+    let persistedAll = true;
     try {
       const data = JSON.parse(readFileSync(legacy, "utf-8")) as Record<
         string,
@@ -251,14 +263,27 @@ export class BreakerStore {
       >;
       for (const [service, v] of Object.entries(data)) {
         if (!v || typeof v !== "object") continue;
-        out[service] = {
+        const snapshot: CircuitBreakerSnapshot = {
           failures: typeof v.failures === "number" ? v.failures : 0,
           blockedUntilMs: typeof v.blockedUntilMs === "number" ? v.blockedUntilMs : null,
         };
+        out[service] = snapshot;
+        const file = path.join(this.stateDir, fileNameFor(service));
+        // Per-route files win on conflict: they are newer by construction.
+        if (existsSync(file)) continue;
+        // Healthy records are represented by absence in the new format.
+        if (snapshot.blockedUntilMs === null && snapshot.failures === 0) continue;
+        try {
+          this.writeAtomicSync(file, JSON.stringify(snapshot, null, 2));
+        } catch {
+          persistedAll = false;
+        }
       }
     } catch {
-      // Corrupt legacy blob — nothing to migrate.
+      // Corrupt legacy blob — nothing to migrate, and nothing lost by
+      // deleting it below.
     }
+    if (!persistedAll) return; // Keep the blob; the migration re-runs next read.
     try {
       rmSync(legacy, { force: true });
     } catch {

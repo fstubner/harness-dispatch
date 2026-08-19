@@ -186,7 +186,7 @@ describe("CircuitBreaker", () => {
     it("snapshot() returns blockedUntilMs: null when not tripped", () => {
       const cb = new CircuitBreaker();
       cb.recordFailure();
-      expect(cb.snapshot()).toEqual({ failures: 1, blockedUntilMs: null });
+      expect(cb.snapshot()).toMatchObject({ failures: 1, blockedUntilMs: null });
     });
 
     it("snapshot() converts a live cooldown into a wall-clock deadline", () => {
@@ -244,5 +244,51 @@ describe("CircuitBreaker", () => {
       expect(remaining).toBeGreaterThan(40);
       expect(remaining).toBeLessThanOrEqual(42);
     });
+  });
+});
+
+describe("CircuitBreaker — failure decay across snapshot/restore", () => {
+  // Every real dispatch runs in a detached child that rebuilds a breaker from
+  // the persisted snapshot PER EVENT (router.handleResult), so decay only
+  // exists at all if the failure clock survives the round trip. It did not:
+  // the snapshot carried failures + blockedUntilMs only, restore left
+  // lastFailureAt null, and five failures spread over weeks tripped the
+  // breaker as readily as five in a burst — on the only path that matters.
+  it("a failure older than the decay window resets the count on the next failure", () => {
+    const cb = new CircuitBreaker();
+    cb.restore({
+      failures: CIRCUIT_BREAKER_THRESHOLD - 1,
+      blockedUntilMs: null,
+      lastFailureAtMs: Date.now() - (FAILURE_DECAY_SEC + 60) * 1000,
+    });
+    cb.recordFailure();
+    expect(cb.isTripped).toBe(false);
+    expect(cb.status().failures).toBe(1);
+  });
+
+  it("a recent failure keeps counting toward the threshold", () => {
+    const cb = new CircuitBreaker();
+    cb.restore({
+      failures: CIRCUIT_BREAKER_THRESHOLD - 1,
+      blockedUntilMs: null,
+      lastFailureAtMs: Date.now() - 1000,
+    });
+    cb.recordFailure();
+    expect(cb.isTripped).toBe(true);
+  });
+
+  it("round-trips the failure clock through snapshot()", () => {
+    const cb = new CircuitBreaker();
+    cb.recordFailure();
+    const snap = cb.snapshot();
+    expect(typeof snap.lastFailureAtMs).toBe("number");
+    expect(Math.abs((snap.lastFailureAtMs as number) - Date.now())).toBeLessThan(5000);
+  });
+
+  it("tolerates snapshots from older builds that lack the field", () => {
+    const cb = new CircuitBreaker();
+    cb.restore({ failures: 2, blockedUntilMs: null });
+    cb.recordFailure();
+    expect(cb.status().failures).toBe(3);
   });
 });
