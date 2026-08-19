@@ -746,6 +746,10 @@ async function startFanout(
         {
           prompt,
           files,
+          // Forwarded per arm, same as single mode. It used to be dropped
+          // here silently, so a chained fanout ("get three opinions building
+          // on job A") ran every arm WITHOUT the context and never said so.
+          ...(input.contextJobs !== undefined ? { contextJobs: input.contextJobs } : {}),
           ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
           hints,
           service: routeName,

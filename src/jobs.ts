@@ -1083,7 +1083,8 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // runner, the manifest and any later inspection all see exactly what the
   // delegate was given.
   const preamble = await buildContextPreamble(input.contextJobs ?? []);
-  await writeFile(promptPath, preamble + input.prompt, { encoding: "utf8", mode: 0o600 });
+  const effectivePrompt = preamble + input.prompt;
+  await writeFile(promptPath, effectivePrompt, { encoding: "utf8", mode: 0o600 });
   const fileSnapshots = await snapshotFiles(jobDir, input.files ?? []);
   const createdAt = timestamp();
   const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
@@ -1127,7 +1128,12 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
           "running the job in-process; it will not survive a server restart.",
       );
     }
-    const completion = runJob(deps, jobDir, manifest, input);
+    // The DETACHED runner re-reads prompt.md, which carries the context
+    // preamble — so the in-process run must dispatch the same frozen prompt,
+    // not input.prompt. Passing the raw prompt here silently dropped
+    // contextJobs for every in-process run (unit tests with injected fakes,
+    // and the unbuilt-checkout fallback).
+    const completion = runJob(deps, jobDir, manifest, { ...input, prompt: effectivePrompt });
     return { status, completion };
   }
 
