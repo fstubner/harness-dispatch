@@ -18,8 +18,9 @@ checkable: if it does not happen as written, that is a finding.
 2. Run `harness-dispatch status` in any directory.
    - **Expected:** every installed harness CLI is detected and listed with
      billing, safety, tier, model, quota, and capacity. No config file needed.
-   - Verified 2026-08-18 from an empty directory: four routes detected with
-     correct models and billing classification.
+   - Verified 2026-08-18 on a machine with all four harness CLIs installed.
+     The count depends on what is installed, so a reader seeing fewer routes
+     is not seeing a failure.
 3. Run `harness-dispatch doctor`.
    - **Expected:** node version, config, routes, HTTP auth, billing policy,
      safety policy, and live-probe checks, each `ok` or `fail` with a reason.
@@ -114,7 +115,7 @@ Every surface has to be right in these, not just the happy one:
 | Empty — no harnesses installed | `doctor` reports zero ready routes and names what it looked for; it does not pretend to be usable |
 | Empty — no jobs yet | `job_status` with no id returns an empty list, not an error |
 | Loading — job running | `partialOutput` streams; status is `running` with a fresh heartbeat |
-| Waiting — at concurrency limit | `slotQueued`, reported as queued and never as orphaned |
+| Waiting — at concurrency limit | status reads `queued`; `slotQueued` is a separate boolean on the job record, not the status string. Never reported as orphaned |
 | Partial — some routes unusable | Usable routes still route; unusable ones say why on their own line |
 | Error — dispatch failed | Failure recorded with a parsed message, not raw JSONL |
 | Busy — route rate limited | `rate_limited=N`, breaker cools down, `failed` stays 0 |
@@ -126,7 +127,7 @@ Every surface has to be right in these, not just the happy one:
 | Input | Expected |
 |---|---|
 | `jobId: "../../etc/passwd"` | Rejected; nothing read outside the jobs root |
-| 500 entries in `files` | Rejected at the boundary (cap 64) |
+| 500 entries in `files` | Rejected at the boundary (cap 64) on BOTH the MCP and HTTP surfaces. HTTP accepted unbounded lists until 2026-08-19 |
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |
 | `safety_profile: read_onlyy` | Ignored **and warned**, never silently downgraded to a looser default |

@@ -778,7 +778,22 @@ function addEndpoints(
     warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);
     const baseUrl = str(ep.base_url);
     const model = str(ep.model);
-    if (!name || !baseUrl || !model) continue;
+    if (!name || !baseUrl || !model) {
+      // Silently dropping the entry was the same class this file keeps
+      // producing: the equivalent `clis:` mistake warns loudly, this one left
+      // `doctor` reporting "ok config-warnings" while three endpoints had
+      // vanished.
+      const missing = [
+        !name ? "name" : undefined,
+        !baseUrl ? "base_url" : undefined,
+        !model ? "model" : undefined,
+      ].filter((v): v is string => v !== undefined);
+      warnings.push(
+        `endpoints[${index}]${name ? ` "${name}"` : ""}: missing required ` +
+          `${missing.join(", ")} — entry ignored.`,
+      );
+      continue;
+    }
 
     const svc: ServiceConfig = {
       name,
