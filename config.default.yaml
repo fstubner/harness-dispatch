@@ -405,7 +405,7 @@ endpoints:
 # The dispatch log (~/.harness-dispatch/logs/dispatches.jsonl) is size-capped
 # at ~5MB with one rotation instead of time-based.
 # retention:
-#   jobs_days: 7
+#   jobs_days: 7        # 0 = keep forever (same convention as max_concurrent_runs: 0)
 
 # Per-route knobs worth knowing (all optional, all shown in the entries above
 # or README.md): enabled, weight, timeout_ms, safety_profile, effective_safety,

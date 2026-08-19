@@ -699,6 +699,67 @@ describe("MCP tools — dispatch", () => {
     expect(existsSync(staleJobDir)).toBe(false);
   });
 
+  it("treats a retention of 0 as keep-forever, not prune-everything", async () => {
+    // The same config file establishes max_concurrent_runs: 0 as "disable the
+    // bound"; reading retention 0 as "prune immediately" deleted RUNNING jobs
+    // out from under their runners (a job dir's mtime only moves on a 15s
+    // heartbeat, so at age 0 every beat gap was fatal).
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+    const oldJobDir = path.join(jobsDir, "job-old-0000000-bbbbbbbb");
+    mkdirSync(oldJobDir, { recursive: true });
+    const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(oldJobDir, staleTime, staleTime);
+
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
+    );
+
+    vi.stubEnv("HARNESS_DISPATCH_JOB_MAX_AGE_MS", "0");
+    try {
+      await invokeTool("dispatch", { prompt: "hi", service: "a", workingDir: workDir }, { holder });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", jobsDir);
+    }
+
+    expect(existsSync(oldJobDir)).toBe(true);
+  });
+
+  it("never prunes a running job with a fresh heartbeat, whatever retention says", async () => {
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+    const runningJobDir = path.join(jobsDir, "job-live-0000000-cccccccc");
+    mkdirSync(runningJobDir, { recursive: true });
+    writeFileSync(
+      path.join(runningJobDir, "status.json"),
+      JSON.stringify({
+        jobId: "job-live-0000000-cccccccc",
+        status: "running",
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+    // Age the DIRECTORY past any plausible retention; the fresh heartbeat in
+    // status.json is what must save it.
+    const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    utimesSync(runningJobDir, staleTime, staleTime);
+
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
+    );
+
+    vi.stubEnv("HARNESS_DISPATCH_JOB_MAX_AGE_MS", "1000");
+    try {
+      await invokeTool("dispatch", { prompt: "hi", service: "a", workingDir: workDir }, { holder });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", jobsDir);
+    }
+
+    expect(existsSync(runningJobDir)).toBe(true);
+  });
+
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
     const holder = buildHolder(
       { a: makeService("a", { leaderboardModel: "a-model" }) },
