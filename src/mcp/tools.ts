@@ -151,46 +151,58 @@ const MAX_CONTEXT_FILES = 64;
 const MAX_CONTEXT_JOBS = 16;
 
 /**
- * Keys that belong inside `hints` and mean nothing at the top level.
+ * Keys that mean nothing at the top level, trapped IN THE SCHEMA.
  *
- * `hints` is .strict(), so `hints: { safety_profile: ... }` is now rejected —
- * but the OUTER object was still permissive, so moving the same key up one
- * level made it vanish silently instead:
+ * `hints` is .strict(), so `hints: { safety_profile: ... }` is rejected — but
+ * the OUTER object was still permissive, so moving the same key up one level
+ * made it vanish silently instead:
  *
  *   hints.safetyProfile = read_only      -> honoured
  *   TOP-LEVEL safetyProfile = read_only  -> dropped, ran with write access
  *
- * That is a sharper trap than the one the strict fix closed: a caller who hits
- * the new error and "corrects" it by promoting the key lands in a silent
- * fail-open. It is also a live confusion rather than a hypothetical one — the
- * HTTP surface reads `safetyProfile` at the top level, so the same key means
- * different things depending on which surface you are on.
+ * WHY SCHEMA FIELDS AND NOT A GUARD FUNCTION. The MCP SDK validates arguments
+ * against this shape in strip mode BEFORE the registered handler runs, so no
+ * code inside a handler can ever see a misplaced key — it is already gone. A
+ * previous version of this trap was a guard function, and it guarded a path
+ * nothing shipped: the registered tools stripped the key silently while only
+ * the test-only entry point rejected it. z.never() fields make the SDK's own
+ * validation throw the guidance message on every surface that parses this
+ * shape, and advertise as {"not":{}} in the tool's JSON schema, so a client
+ * reading the schema sees the key as unacceptable rather than merely absent.
  *
  * Full .strict() on the outer object is deliberately NOT used: MCP clients may
  * attach their own fields (_meta and similar) and rejecting those would break
  * legitimate callers. Naming the specific misplaced keys closes the trap
  * without guessing at what else may legitimately arrive.
  */
-const HINT_KEYS_AT_TOP_LEVEL = [
-  "safetyProfile",
-  "routePolicy",
-  "taskType",
-  "preferLargeContext",
-  "timeoutMs",
-  "escalate",
-] as const;
+function misplacedKeyTrap(message: string) {
+  return z.never({ error: message }).optional().describe(message);
+}
 
-function rejectMisplacedHints(args: unknown): void {
-  if (args === null || typeof args !== "object") return;
-  const misplaced = HINT_KEYS_AT_TOP_LEVEL.filter((k) => k in (args as Record<string, unknown>));
-  if (misplaced.length === 0) return;
-  throw new Error(
-    `${misplaced.join(", ")} ${misplaced.length === 1 ? "belongs" : "belong"} inside \`hints\`, ` +
-      `not at the top level — e.g. hints: { ${misplaced[0]}: ... }. ` +
-      `Placed here ${misplaced.length === 1 ? "it is" : "they are"} ignored, which for a safety ` +
-      `setting means the dispatch runs with MORE access than you asked for.`,
+function hintKeyTrap(key: string) {
+  return misplacedKeyTrap(
+    `${key} belongs inside \`hints\`, not at the top level — e.g. hints: { ${key}: ... }. ` +
+      `At the top level it does nothing, which for a safety setting means the dispatch ` +
+      `runs with MORE access than you asked for.`,
   );
 }
+
+const misplacedTopLevelKeys = {
+  safetyProfile: hintKeyTrap("safetyProfile"),
+  routePolicy: hintKeyTrap("routePolicy"),
+  taskType: hintKeyTrap("taskType"),
+  preferLargeContext: hintKeyTrap("preferLargeContext"),
+  timeoutMs: hintKeyTrap("timeoutMs"),
+  model: misplacedKeyTrap(
+    "model belongs inside `hints` for single mode — hints: { model: ... }. " +
+      "In fanout mode use the top-level `models` array instead. At the top " +
+      "level it does nothing.",
+  ),
+  escalate: misplacedKeyTrap(
+    "escalate is not a dispatch field — escalation is configured per route in " +
+      "config.yaml (escalate_model / escalate_on), not per call.",
+  ),
+};
 
 const dispatchInputShape = {
   prompt: z
@@ -247,6 +259,7 @@ const dispatchInputShape = {
   workingDir: z.string().optional().describe(workingDirDescription),
   workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
   hints: publicHintsSchema.optional(),
+  ...misplacedTopLevelKeys,
   models: z
     .array(z.string())
     .optional()
@@ -1001,7 +1014,6 @@ export async function invokeTool(
   deps: ToolDeps,
 ): Promise<InvokeResult> {
   if (name === "dispatch") {
-    rejectMisplacedHints(args);
     const parsed = z.object(dispatchInputShape).parse(args);
     return { kind: "json", data: await handleDispatch(deps, parsed) };
   }
