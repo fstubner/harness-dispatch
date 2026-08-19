@@ -105,6 +105,43 @@ describe("BreakerStore", () => {
     expect(readdirSync(dir)).not.toContain("breaker_state.json");
   });
 
+  it("migration survives the migrating process: a SECOND reader still sees the cooldown", () => {
+    // The first version of this migration merged into memory and deleted the
+    // blob — nothing ever persisted the result, so the first process to call
+    // loadAll() after an upgrade (even a plain `status`) consumed every live
+    // cooldown. Detached runners and later processes started clean.
+    const legacy = path.join(dir, "breaker_state.json");
+    writeFileSync(
+      legacy,
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+    );
+    new BreakerStore(stateDir).loadAll(); // the migrating process
+    // A different process (fresh store), after the blob is gone:
+    expect(new BreakerStore(stateDir).loadAll()).toEqual({
+      codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+    });
+  });
+
+  it("migration does not clobber a newer per-route file with blob state", () => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      path.join(stateDir, "codex_cli.json"),
+      JSON.stringify({ failures: 1, blockedUntilMs: null }),
+    );
+    writeFileSync(
+      path.join(dir, "breaker_state.json"),
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+    );
+    // Per-route files are newer by construction; the blob must lose both in
+    // the returned map and on disk.
+    expect(new BreakerStore(stateDir).loadAll()).toEqual({
+      codex_cli: { failures: 1, blockedUntilMs: null },
+    });
+    expect(new BreakerStore(stateDir).loadAll()).toEqual({
+      codex_cli: { failures: 1, blockedUntilMs: null },
+    });
+  });
+
   it("leaves no .tmp files behind after a save()", () => {
     // The previous version of this test was named for this guarantee and
     // asserted neither half of it — it only re-read the state file. Now it

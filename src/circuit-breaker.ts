@@ -51,6 +51,19 @@ export interface CircuitBreakerSnapshot {
   failures: number;
   /** Wall-clock epoch ms when the current cooldown ends; null when not tripped. */
   blockedUntilMs: number | null;
+  /**
+   * Wall-clock epoch ms of the most recent failure; null when none recorded.
+   * Optional because snapshots written by older builds lack it — restoring
+   * one of those just means decay cannot apply until the next failure, the
+   * same behaviour those builds had.
+   *
+   * This field is what makes FAILURE_DECAY_SEC real across processes: every
+   * dispatch runs in a detached child that rebuilds a breaker from the
+   * persisted snapshot per event, so without persisting the failure time,
+   * recordFailure never saw a prior one and the decay was dead code on the
+   * only path that matters — five failures spread over weeks still tripped.
+   */
+  lastFailureAtMs?: number | null;
 }
 
 export class CircuitBreaker {
@@ -123,10 +136,27 @@ export class CircuitBreaker {
    * a restart) can compare against its own Date.now().
    */
   snapshot(): CircuitBreakerSnapshot {
+    // Order matters: the isTripped getter auto-resets on expiry, which also
+    // clears lastFailureAt — evaluate it first so the snapshot reflects the
+    // post-expiry state.
     if (!this.isTripped) {
-      return { failures: this.failures, blockedUntilMs: null };
+      return {
+        failures: this.failures,
+        blockedUntilMs: null,
+        lastFailureAtMs: this.lastFailureWallMs(),
+      };
     }
-    return { failures: this.failures, blockedUntilMs: Date.now() + this.cooldownRemaining() * 1000 };
+    return {
+      failures: this.failures,
+      blockedUntilMs: Date.now() + this.cooldownRemaining() * 1000,
+      lastFailureAtMs: this.lastFailureWallMs(),
+    };
+  }
+
+  /** The monotonic lastFailureAt as a wall-clock epoch, for persistence. */
+  private lastFailureWallMs(): number | null {
+    if (this.lastFailureAt === null) return null;
+    return Date.now() - (monotonicSec() - this.lastFailureAt) * 1000;
   }
 
   /**
@@ -136,6 +166,13 @@ export class CircuitBreaker {
    */
   restore(snapshot: CircuitBreakerSnapshot): void {
     this.failures = snapshot.failures;
+    // Rehydrate the failure clock so FAILURE_DECAY_SEC keeps working across
+    // processes (a failure age in the future, from clock skew, clamps to 0
+    // rather than extending the decay window).
+    this.lastFailureAt =
+      typeof snapshot.lastFailureAtMs === "number"
+        ? monotonicSec() - Math.max(0, (Date.now() - snapshot.lastFailureAtMs) / 1000)
+        : null;
     if (snapshot.blockedUntilMs === null) {
       this.trippedAt = null;
       return;
