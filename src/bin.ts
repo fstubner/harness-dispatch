@@ -842,10 +842,12 @@ if (entrypoint && (entrypoint.endsWith("bin.ts") || entrypoint.endsWith("bin.js"
       process.exit(code);
     })
     .catch((err: unknown) => {
-      // A CLI user gets one actionable line, not a stack trace. UsageError and
-      // config-loading failures (missing file, bad YAML) are all things they
-      // typed or wrote and can fix; anything else keeps its stack because it
-      // is a bug worth reporting.
+      // A CLI user gets one actionable line, not a stack trace. Every Error is
+      // flattened to its message — UsageError and config-loading failures
+      // (missing file, bad YAML) are things the user typed and can fix, and
+      // the codebase throws user-facing Errors by convention, so there is no
+      // reliable way to tell "bug" from "bad input" by class here. Only a
+      // non-Error throw (a genuine programming error) keeps its stack.
       if (err instanceof UsageError || err instanceof Error) {
         process.stderr.write(`harness-dispatch: ${err.message}
 `);

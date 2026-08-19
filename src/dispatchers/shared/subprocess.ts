@@ -45,6 +45,9 @@ export function runSubprocess(
     const spawnOpts: SpawnOptions = {
       stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
+      // POSIX: own process group, so killTree can signal the agent CLI's
+      // whole tree — see stream-subprocess.ts for the full rationale.
+      detached: process.platform !== "win32",
       env: opts.env ? { ...process.env, ...opts.env } : process.env,
     };
     if (opts.cwd !== undefined) spawnOpts.cwd = opts.cwd;

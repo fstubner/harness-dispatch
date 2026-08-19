@@ -444,6 +444,35 @@ overrides:
     const cfg = await loadConfig(p, { whichFn: allCliFound });
     expect(cfg.services.claude_code_cli!.model).toBe("custom-model-1");
   });
+
+  it("interpolates a reference EMBEDDED in a longer string, as the shipped config promises", async () => {
+    // config.default.yaml has said "anywhere in a string value" all along; the
+    // implementation was anchored to whole-string matches, so
+    // `base_url: https://\${HOST}/v1` stayed a literal dollar-brace and failed
+    // downstream with an error that never mentioned the env var.
+    process.env.HR_TEST_HOST = "inference.local:8080";
+    const yamlText = `
+endpoints:
+  - name: local_inference
+    base_url: https://\${HR_TEST_HOST}/v1
+    model: m
+`;
+    const p = await writeTmpYaml("embedded.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.local_inference!.baseUrl).toBe("https://inference.local:8080/v1");
+  });
+
+  it("warns about an unset var even when the reference is embedded", async () => {
+    const yamlText = `
+endpoints:
+  - name: local_inference
+    base_url: https://\${HR_TEST_DEFINITELY_UNSET_VAR}/v1
+    model: m
+`;
+    const p = await writeTmpYaml("embedded-unset.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect((cfg.configWarnings ?? []).join(" ")).toContain("HR_TEST_DEFINITELY_UNSET_VAR");
+  });
 });
 
 describe("loadConfig — clis: (explicit, endpoints-style CLI declarations)", () => {
