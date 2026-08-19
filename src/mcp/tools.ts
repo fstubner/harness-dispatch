@@ -591,6 +591,17 @@ async function startSingle(
   extra?: ToolExtra,
 ): Promise<DispatchResponse> {
   await ensureFreshConfig(deps.reloader);
+  // Reject an unknown forced route BEFORE a job directory exists. Fanout
+  // rejects unknown `models` at the boundary; single mode let the same
+  // mistake through, burned a job dir, and returned a success-shaped
+  // completed:true / success:false — one input, two behaviours.
+  if (input.service !== undefined && !(input.service in deps.holder.state.config.services)) {
+    throw new Error(
+      `Unknown service: ${input.service}. Valid route ids: ` +
+        `${Object.keys(deps.holder.state.config.services).join(", ")}. ` +
+        `Call the \`usage\` tool to see each route's current model and quota.`,
+    );
+  }
   const hints = toHints(input.hints);
   const workspacePolicy = workspacePolicyFromInput(input);
   if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
@@ -660,19 +671,15 @@ async function startFanout(
     fanoutSafetyProfile !== "read_only" &&
     (hints.workspacePolicy === undefined || !isIsolatedWorkspacePolicy(hints.workspacePolicy))
   ) {
-    return {
-      mode: "fanout",
-      completed: true,
-      results: [],
-      skippedRoutes: [
-        {
-          route: "fanout",
-          code: "workspace_isolation_required",
-          message:
-            "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; use read_only fanout or run single-route workspace_edit",
-        },
-      ],
-    };
+    // A refusal must not be success-shaped. This used to return
+    // completed:true with empty results and the reason tucked into
+    // skippedRoutes, so an agent skimming for `completed` read "done". The
+    // HTTP surface has returned 400 for the same input all along; the two
+    // must agree.
+    throw new Error(
+      "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; " +
+        "use read_only fanout or run single-route workspace_edit (workspace_isolation_required)",
+    );
   }
   hints.safetyProfile = fanoutSafetyProfile;
   // Contract: hints.model is ignored entirely in fanout mode — `models` is

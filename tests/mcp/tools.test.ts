@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
@@ -320,6 +321,24 @@ describe("MCP tools — dispatch", () => {
     expect(data.results.map((item) => item.output).sort()).toEqual(["A", "B"]);
   });
 
+  it("rejects an unknown forced service at the boundary, without creating a job", async () => {
+    // Fanout rejects unknown `models` by name; single mode let the same
+    // mistake through, burned a job directory, and returned a success-shaped
+    // completed:true / success:false the caller had to dig into.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
+    );
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", service: "ghost", workingDir: workDir }, { holder }),
+    ).rejects.toThrow(/Unknown service: ghost.*Valid route ids: a/s);
+
+    const jobDirs = readdirSync(jobsDir).filter((e) => e.startsWith("job-"));
+    expect(jobDirs).toEqual([]);
+  });
+
   it("forwards contextJobs to every fanout arm", async () => {
     // Fanout used to drop contextJobs silently, so a chained fanout ("get two
     // opinions building on job A") ran every arm without the context and
@@ -368,24 +387,20 @@ describe("MCP tools — dispatch", () => {
       },
     );
 
-    const r = await invokeTool(
-      "dispatch",
-      {
-        mode: "fanout",
-        prompt: "edit files",
-        hints: { safetyProfile: "workspace_edit" },
-      },
-      { holder },
-    );
-    const data = r.data as {
-      mode: "fanout";
-      results: Array<{ route: string }>;
-      skippedRoutes?: Array<{ route: string; code: string }>;
-    };
-    expect(data.results).toEqual([]);
-    expect(data.skippedRoutes).toEqual([
-      expect.objectContaining({ route: "fanout", code: "workspace_isolation_required" }),
-    ]);
+    // An error, not a completed:true with empty results — a refusal that
+    // looks like success is exactly what an agent skimming for `completed`
+    // misreads. The HTTP surface 400s the same input.
+    await expect(
+      invokeTool(
+        "dispatch",
+        {
+          mode: "fanout",
+          prompt: "edit files",
+          hints: { safetyProfile: "workspace_edit" },
+        },
+        { holder },
+      ),
+    ).rejects.toThrow(/workspacePolicy=copy or workspacePolicy=git_worktree/);
   });
 
   it("allows explicit write-capable fanout with copy-isolated workspaces", async () => {

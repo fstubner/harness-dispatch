@@ -11,8 +11,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { stateRoot } from "./state-dir.js";
 import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "./types.js";
@@ -179,8 +180,7 @@ interface LeaderboardCacheFile {
 }
 
 function cacheFilePath(): string {
-  const dir =
-    process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const dir = stateRoot();
   return path.join(dir, "leaderboard_cache.json");
 }
 

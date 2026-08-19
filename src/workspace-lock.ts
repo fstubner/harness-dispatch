@@ -30,8 +30,9 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { stateRoot } from "./state-dir.js";
 
 /** Matches ORPHAN_THRESHOLD_MS in jobs.ts: one notion of "the holder is gone". */
 export const LOCK_STALE_MS = 90_000;
@@ -62,8 +63,7 @@ function lockKey(workingDir: string): string {
 }
 
 function lockFileFor(key: string): string {
-  const dir =
-    process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  const dir = stateRoot();
   const digest = createHash("sha256").update(key).digest("hex").slice(0, 16);
   return path.join(dir, "workspace-locks", `${digest}.json`);
 }
