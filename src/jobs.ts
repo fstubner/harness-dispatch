@@ -515,19 +515,30 @@ async function runJob(
     finished = true;
     await pendingBeat;
     const message = err instanceof Error ? err.message : String(err);
-    await writeFile(path.join(jobDir, "output", "stderr.log"), message, { encoding: "utf8", mode: 0o600 });
-    await updateStatus(jobDir, {
-      jobId: manifest.jobId,
-      status: "failed",
-      createdAt: manifest.createdAt,
-      updatedAt: timestamp(),
-      jobDir,
-      ...(input.service !== undefined ? { service: input.service } : {}),
-      success: false,
-      error: boundedError(message)!,
-      ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
-      durationMs: Date.now() - started,
-    });
+    try {
+      await writeFile(path.join(jobDir, "output", "stderr.log"), message, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      await updateStatus(jobDir, {
+        jobId: manifest.jobId,
+        status: "failed",
+        createdAt: manifest.createdAt,
+        updatedAt: timestamp(),
+        jobDir,
+        ...(input.service !== undefined ? { service: input.service } : {}),
+        success: false,
+        error: boundedError(message)!,
+        ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
+        durationMs: Date.now() - started,
+      });
+    } catch {
+      // The job directory can be GONE by the time a failure is recorded —
+      // retention pruning, or a caller that tore down its state mid-run.
+      // There is nowhere to write and no reader left to care; throwing here
+      // would reject `completion`, which is documented to never reject (and
+      // surfaced in CI as an unhandled rejection out of a finished test).
+    }
   } finally {
     clearInterval(heartbeat);
   }
