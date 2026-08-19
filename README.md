@@ -359,7 +359,7 @@ harness-dispatch auth rotate             # rotate HTTP bearer token
 Hidden compatibility aliases currently map old alpha commands to the new surface:
 `dashboard` and `list-services` map to `status`, `route <prompt>` runs a one-off
 routed dispatch, and `mcp --http <port>` maps to `serve`.
-They are not part of the public v0.4.0 vocabulary.
+They are not part of the public v0.5.0 vocabulary.
 
 ## MCP Surface
 
