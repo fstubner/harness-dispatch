@@ -8,6 +8,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- **`retry_job`** — run a finished job's task again from its own record: the same
+  prompt the delegate actually saw (context preamble included), files, working
+  directory, hints and workspace policy. Pass `service` to send the retry to a
+  DIFFERENT route, which is the usual reason to retry — the task was fine and the
+  route was not. Returns a new jobId; the original is untouched, and retrying a
+  still-running job is refused so two attempts cannot race on one directory.
+- **Token totals in `usage`** — `inputTokens` and `outputTokens` per route, summed
+  from what harnesses actually report. Deliberately not money: subscription CLIs have
+  no per-call price, and pricing tokens would mean shipping a rate card that goes
+  stale silently. Zero means the harness reported nothing, not that nothing was spent.
 - **`workspace`** — inspect, keep or discard the isolated result of a job. `copy` and
   `git_worktree` dispatches already ran the agent in isolation and never touched your
   project, but there was no way to see the actual change, no way to keep it, and no

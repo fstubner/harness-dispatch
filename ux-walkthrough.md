@@ -27,8 +27,8 @@ checkable: if it does not happen as written, that is a finding.
    - **Expected:** the live probe is *skipped* by default and says so, because
      running it costs quota.
 4. Register the MCP server with the calling agent.
-   - **Expected:** `dispatch`, `job_status`, `cancel_job`, `workspace`,
-     `usage` appear. Exactly five tools.
+   - **Expected:** `dispatch`, `job_status`, `cancel_job`, `retry_job`,
+     `workspace`, `usage` appear. Exactly six tools.
 
 **Empty state:** no harnesses installed. `doctor` fails the routes check with
 `0 ready route(s). Looked for these harness CLIs on PATH: claude, codex,

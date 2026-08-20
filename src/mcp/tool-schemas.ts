@@ -352,3 +352,19 @@ export const workspaceInputShape = {
         "applying over newer work can conflict with or overwrite it.",
     ),
 } as const;
+
+/** `retry_job` — run a finished job's task again, optionally on another route. */
+export const retryJobInputShape = {
+  jobId: z
+    .string()
+    .regex(JOB_ID_RE, "must look like job-<timestamp>-<8 hex chars>")
+    .describe("The finished job whose task should be attempted again."),
+  service: z
+    .string()
+    .optional()
+    .describe(
+      "Route the retry somewhere else (e.g. the original hit its usage limit). " +
+        "Omit to reuse the original route, or to let the router pick again if it " +
+        "had none. Get valid ids from `usage`.",
+    ),
+} as const;

@@ -38,6 +38,14 @@ export interface StartJobInput {
   workspacePolicy?: WorkspacePolicy;
   service?: string;
   /**
+   * The job this one is a retry of.
+   *
+   * Recorded so a chain of attempts is traceable after the fact — without it,
+   * three attempts at the same task look like three unrelated jobs, and the
+   * one that finally worked cannot be connected to the two that did not.
+   */
+  retryOf?: string;
+  /**
    * Live dispatcher-event tap, used by the `dispatch` tool to forward MCP
    * progress notifications during its inline grace window. Never serialized
    * (the manifest lists its fields explicitly), never awaited, and a throw
@@ -108,6 +116,8 @@ export interface JobManifest {
   hints?: RouteHints;
   workspacePolicy?: WorkspacePolicy;
   service?: string;
+  /** The job this one retries — see StartJobInput.retryOf. */
+  retryOf?: string;
   /** Set when workingDir was omitted and defaulted to the router's own cwd. */
   warning?: string;
 }

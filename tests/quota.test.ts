@@ -376,3 +376,47 @@ describe("QuotaCache default stateFile", () => {
     expect(readFileSync(path.join(nested, "quota_state.json"), "utf-8")).toContain('"svc"');
   });
 });
+
+describe("token totals — the honest answer to 'what has this cost me'", () => {
+  /**
+   * `usage` reported call counts and nothing about volume. Dispatchers were
+   * already returning tokensUsed on every result and it was being discarded.
+   *
+   * Deliberately NOT money. Subscription CLIs have no per-call price at all,
+   * and converting tokens to currency would mean shipping a per-model rate
+   * card that goes stale silently — a confident wrong number, which is the
+   * one thing this tool's billing policy refuses to produce. Tokens are
+   * measured, so tokens are what gets reported.
+   */
+  it("accumulates reported tokens per route", async () => {
+    const { QuotaCache } = await import("../src/quota.js");
+    const stub = (id: string) => ({
+      id,
+      async dispatch() { return { output: "", service: id, success: true }; },
+      async *stream() {},
+      async checkQuota() { return { service: id, source: "unknown" as const }; },
+      isAvailable: () => true,
+    });
+    const q = new QuotaCache(
+      { alpha: stub("alpha"), beta: stub("beta") } as never,
+      { stateFile: ":memory-tokens:" },
+    );
+
+    q.recordResult("alpha", {
+      output: "x", service: "alpha", success: true,
+      tokensUsed: { input: 100, output: 20 },
+    });
+    q.recordResult("alpha", {
+      output: "y", service: "alpha", success: true,
+      tokensUsed: { input: 5, output: 3 },
+    });
+    q.recordResult("beta", { output: "z", service: "beta", success: true });
+
+    const snap = await q.fullStatus();
+    expect(snap.alpha!.localInputTokens).toBe(105);
+    expect(snap.alpha!.localOutputTokens).toBe(23);
+    // A harness that reports nothing reads as zero, not as a guess.
+    expect(snap.beta!.localInputTokens).toBe(0);
+    expect(snap.beta!.localOutputTokens).toBe(0);
+  });
+});

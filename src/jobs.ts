@@ -912,6 +912,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.hints !== undefined ? { hints: input.hints } : {}),
     ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
     ...(input.service !== undefined ? { service: input.service } : {}),
+    ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
     ...(warning !== undefined ? { warning } : {}),
   };
   await writeJson(path.join(jobDir, "manifest.json"), manifest);
@@ -1184,4 +1185,84 @@ export async function resolveJobWorkspace(
   if (action === "diff") return workspaceDiff(jobId, jobDir, run);
   if (action === "apply") return applyWorkspace(jobId, jobDir, run, opts);
   return discardWorkspace(jobId, run);
+}
+
+export interface RetryOutcome {
+  jobId: string;
+  retryOf: string;
+  service?: string;
+  reusedFrom: { prompt: boolean; files: number; workingDir: string };
+  message: string;
+}
+
+/**
+ * Run a finished job's task again.
+ *
+ * The last verb missing from the job lifecycle: you could start work, watch
+ * it, stop it, and resolve its workspace — but if it failed, reproducing it
+ * meant reconstructing the prompt, the file list, the working directory and
+ * the hints by hand, from a job record that already holds all four. The
+ * machinery to execute a job bundle existed (executeJobDir) and simply was
+ * not reachable from outside.
+ *
+ * The prompt is taken from prompt.md, which is the FROZEN prompt — including
+ * any context preamble the original dispatch rendered in. A retry therefore
+ * reproduces what the delegate actually saw, not what the caller typed.
+ *
+ * `service` retargets the attempt, which is the common case rather than an
+ * afterthought: the reason a run failed is often the route, not the task
+ * ("codex hit its usage limit — try claude"). Omit it to reuse the original
+ * route, or to let the router pick again if the original had none.
+ */
+export async function retryJob(
+  jobId: string,
+  deps: JobDeps,
+  opts: { service?: string } = {},
+): Promise<RetryOutcome> {
+  const prior = await getAsyncJob(jobId); // friendly "No such job" for a stranger
+  const state = prior.status.status;
+  if (state === "running" || state === "queued") {
+    throw new Error(
+      `Job ${jobId} is still ${state}. Let it finish, or cancel it first with ` +
+        `cancel_job — retrying a live run would leave two attempts racing on the ` +
+        `same working directory.`,
+    );
+  }
+
+  const manifest = prior.manifest;
+  const prompt = await readFile(manifest.promptPath, "utf8");
+  if (opts.service !== undefined && !(opts.service in deps.holder.state.config.services)) {
+    throw new Error(
+      `Unknown service: ${opts.service}. Valid route ids: ` +
+        `${Object.keys(deps.holder.state.config.services).join(", ")}.`,
+    );
+  }
+  const service = opts.service ?? manifest.service;
+
+  const { status } = await startAsyncJobTracked(deps, {
+    prompt,
+    files: manifest.files.map((f) => f.originalPath),
+    workingDir: manifest.workingDir,
+    retryOf: jobId,
+    ...(manifest.hints !== undefined ? { hints: manifest.hints } : {}),
+    ...(manifest.workspacePolicy !== undefined
+      ? { workspacePolicy: manifest.workspacePolicy }
+      : {}),
+    ...(service !== undefined ? { service } : {}),
+  });
+
+  return {
+    jobId: status.jobId,
+    retryOf: jobId,
+    ...(service !== undefined ? { service } : {}),
+    reusedFrom: {
+      prompt: true,
+      files: manifest.files.length,
+      workingDir: manifest.workingDir,
+    },
+    message:
+      `Started ${status.jobId} from ${jobId}'s prompt, files and working directory` +
+      `${opts.service !== undefined ? `, retargeted to ${opts.service}` : ""}. ` +
+      `Check it with job_status; the original job is untouched.`,
+  };
 }
