@@ -32,9 +32,38 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 function flagValue(flag) {
   const i = args.indexOf(flag);
-  return i !== -1 && args[i + 1] ? args[i + 1] : undefined;
+  if (i === -1) return undefined;
+  const value = args[i + 1];
+  // `--config --dry-run` used to persist the literal "--dry-run" as the config
+  // path. Take a value only when it is one.
+  if (value === undefined || value.startsWith("--")) {
+    console.error(`${flag} needs a value, e.g. ${flag} /path/to/config.yaml`);
+    process.exit(1);
+  }
+  return value;
 }
-const configOverride = flagValue("--config");
+const rawConfigOverride = flagValue("--config");
+
+/**
+ * Resolved to an ABSOLUTE path and checked here, at install time.
+ *
+ * This value is persisted into Codex's MCP entry as HARNESS_DISPATCH_CONFIG
+ * and read much later by launch-mcp.mjs, in a process whose working directory
+ * is Codex's, not the one this installer ran in. A relative
+ * `--config ./config.yaml` therefore resolved to nothing at launch and the
+ * server quietly started on auto-detected defaults — none of the operator's
+ * routes, safety floors or workspace policies in effect, no error anywhere.
+ * Install time is also the only moment the person who typed the path is still
+ * present to fix a typo.
+ */
+let configOverride;
+if (rawConfigOverride !== undefined) {
+  configOverride = path.resolve(rawConfigOverride);
+  if (!existsSync(configOverride)) {
+    console.error(`--config path does not exist: ${configOverride}`);
+    process.exit(1);
+  }
+}
 
 /** Quote one argument for cmd.exe, doubling any embedded quote. */
 function quoteForCmd(arg) {
