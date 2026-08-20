@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  BreakerStore,
   buildDispatchers,
   buildStatus,
   evaluateRoutePolicy,
@@ -351,7 +353,15 @@ async function main() {
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers, { stateFile: ":memory-smoke:" });
   const leaderboard = new LeaderboardCache();
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  // Breaker state is isolated for the same reason the quota counters above
+  // are, and it was NOT: Router defaults to a BreakerStore pointed at the
+  // user's real state directory, so a smoke run wrote real cooldowns. Observed
+  // 2026-08-20 — a codex quota limit hit during a smoke run left codex_cli
+  // circuit-broken in the actual install. Accurate that time, but a smoke
+  // failure for any unrelated reason would block a healthy route for real
+  // dispatches, and a test harness must not do that to the thing it tests.
+  const breakerDir = await mkdtemp(path.join(tmpdir(), "harness-dispatch-smoke-breaker-"));
+  const router = new Router(config, quota, dispatchers, leaderboard, new BreakerStore(breakerDir));
   const runtime = { config, dispatchers, quota, leaderboard, router };
 
   const status = await buildStatus(config, dispatchers, quota, router, leaderboard);

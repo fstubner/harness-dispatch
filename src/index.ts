@@ -7,6 +7,9 @@
 export { Router } from "./router.js";
 export type { RouterStreamEvent } from "./router.js";
 export { CircuitBreaker } from "./circuit-breaker.js";
+// Exported so a caller that must not touch the user's real breaker state —
+// the live agent smoke script, chiefly — can hand Router an isolated store.
+export { BreakerStore } from "./breaker-store.js";
 export { QuotaCache, QuotaState } from "./quota.js";
 export { LeaderboardCache } from "./leaderboard.js";
 export { loadConfig, watchConfig } from "./config.js";
