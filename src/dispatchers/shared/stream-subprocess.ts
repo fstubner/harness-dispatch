@@ -294,39 +294,59 @@ function realStreamSubprocess(
     finish();
   });
 
+  // The three iterator methods, named rather than written inline.
+  //
+  // They used to sit three object/function literals deep inside
+  // buildIterable, which put the ordinary queue check at brace depth 8 — the
+  // deepest point in the codebase, for logic that is not complicated. None of
+  // them uses `this`, so they lift straight out and the nesting was pure
+  // syntax.
+
+  /** Next buffered event, the terminal state, or a promise a writer resolves. */
+  function nextEvent(): Promise<IteratorResult<SubprocessStreamEvent>> {
+    if (queue.length > 0) {
+      const evt = queue.shift()!;
+      return Promise.resolve({ value: evt, done: false });
+    }
+    if (done) {
+      if (errored) return Promise.reject(errored);
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve, reject) => {
+      waiters.push({ resolve, reject });
+    });
+  }
+
+  /**
+   * Consumer abandoned the stream (a `break` in a for-await). Kill the child
+   * and release every waiter — leaving one pending would hang the caller.
+   */
+  function stopIteration(): Promise<IteratorResult<SubprocessStreamEvent>> {
+    if (!settled) terminateChild("SIGTERM");
+    done = true;
+    while (waiters.length > 0) {
+      const w = waiters.shift();
+      if (w) w.resolve({ value: undefined, done: true });
+    }
+    return Promise.resolve({ value: undefined, done: true });
+  }
+
+  /** Consumer threw into the stream: same teardown, propagate the error. */
+  function failIteration(err?: unknown): Promise<IteratorResult<SubprocessStreamEvent>> {
+    if (!settled) terminateChild("SIGTERM");
+    done = true;
+    return Promise.reject(err);
+  }
+
   function buildIterable(): AsyncIterable<SubprocessStreamEvent> {
+    // A fresh iterator object per call, as before — they share the one queue
+    // either way, so this stream has always been single-consumer.
     return {
-      [Symbol.asyncIterator](): AsyncIterator<SubprocessStreamEvent> {
-        return {
-          next(): Promise<IteratorResult<SubprocessStreamEvent>> {
-            if (queue.length > 0) {
-              const evt = queue.shift()!;
-              return Promise.resolve({ value: evt, done: false });
-            }
-            if (done) {
-              if (errored) return Promise.reject(errored);
-              return Promise.resolve({ value: undefined, done: true });
-            }
-            return new Promise((resolve, reject) => {
-              waiters.push({ resolve, reject });
-            });
-          },
-          return(): Promise<IteratorResult<SubprocessStreamEvent>> {
-            if (!settled) terminateChild("SIGTERM");
-            done = true;
-            while (waiters.length > 0) {
-              const w = waiters.shift();
-              if (w) w.resolve({ value: undefined, done: true });
-            }
-            return Promise.resolve({ value: undefined, done: true });
-          },
-          throw(err): Promise<IteratorResult<SubprocessStreamEvent>> {
-            if (!settled) terminateChild("SIGTERM");
-            done = true;
-            return Promise.reject(err);
-          },
-        };
-      },
+      [Symbol.asyncIterator]: (): AsyncIterator<SubprocessStreamEvent> => ({
+        next: nextEvent,
+        return: stopIteration,
+        throw: failIteration,
+      }),
     };
   }
 
