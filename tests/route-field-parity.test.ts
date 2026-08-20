@@ -1,28 +1,27 @@
 /**
- * `clis:` and `endpoints:` must honour the same shared keys.
+ * `clis:`, `endpoints:` and `services:` must honour the same shared keys.
  *
- * This file has produced three silent-drop defects: workspace_policy read for
- * `services:`/`endpoints:` but not `clis:`, api_keys read for `clis:` but not
- * `endpoints:`, and unknown top-level keys unwarned. The cause is two field
- * lists maintained in parallel — buildCliServiceConfig resolves each field
- * inline against harness defaults, while addEndpoints routes through
- * billingFields() — so a key added to one is easy to forget in the other.
+ * This file produced five silent-drop defects, all one shape: a
+ * correctly-spelled, correctly-valued setting read by one route shape and
+ * ignored by another (workspace_policy, api_keys, effective_safety,
+ * escalate_model, plus unwarned unknown keys). KNOWN_ROUTE_KEYS cannot catch
+ * it — that catches a MISSPELLED key, not a valid key nobody reads.
  *
- * WHY A TEST RATHER THAN A REFACTOR. The obvious unification (make the CLI
- * path call billingFields) is wrong: the CLI path resolves
- * `override.X ?? defaults.X` against harness defaults from
- * config.default.yaml, and billingFields(raw) has no defaults layer at all.
- * Collapsing them would silently drop the fallback that every built-in
- * harness relies on. The correct unification is a table-driven resolver —
- * a real refactor of the file that governs safety controls.
+ * THE REFACTOR THIS TEST ASKED FOR NOW EXISTS. The header used to say the
+ * correct fix was a table-driven resolver and that this test pinned the
+ * invariant until someone wrote it; src/config/route-fields.ts is that
+ * resolver, and all three builders call it. So the job here changed:
  *
- * KNOWN_ROUTE_KEYS does not cover this case either: it catches a MISSPELLED
- * key, not a correctly-spelled key that one builder happens not to read.
+ *   1. It still proves each key survives every shape end-to-end, because a
+ *      table nothing is wired to would pass a unit test and fail a user.
+ *   2. It now DERIVES the key list from the resolver's own table, so the list
+ *      cannot fall behind the implementation. That mattered: the previous
+ *      hand-written version pinned 16 keys, missed escalate_model, and the
+ *      gap it existed to catch went to a human reviewer instead.
  *
- * So this pins the invariant instead. If the two paths drift, a test fails
- * naming the key — which is the part that was actually dangerous, since these
- * include safety and isolation controls where "silently absent" means
- * "silently less restrictive".
+ * The legacy `services:` shape is covered too. It had none, which is how a
+ * refactor of billingFields() silently stripped five of its fields — the same
+ * defect class, produced while removing it.
  */
 
 import { promises as fs } from "node:fs";
@@ -70,35 +69,66 @@ const SHARED_FIELDS: Array<{
   { yaml: "allow_paid_usage: true", field: "allowPaidUsage", expected: true },
   { yaml: "provider: openai", field: "provider", expected: "openai" },
   { yaml: 'model_hint: "hint text"', field: "modelHint", expected: "hint text" },
+  // Added when this file started deriving its list from the resolver's table:
+  // these three were in neither the old hand-written list nor any other test,
+  // so nothing proved any shape read them.
+  { yaml: "timeout_ms: 900000", field: "timeoutMs", expected: 900000 },
+  { yaml: "billing_confidence: documented", field: "billingConfidence", expected: "documented" },
+  { yaml: 'models: ["m-one", "m-two"]', field: "models", expected: ["m-one", "m-two"] },
 ];
 
-async function routeFrom(shape: "clis" | "endpoints", fragment: string): Promise<ServiceConfig> {
+type Shape = "clis" | "endpoints" | "services";
+
+async function routeFrom(shape: Shape, fragment: string): Promise<ServiceConfig> {
   const body =
     shape === "clis"
       ? ["clis:", "  - name: probe", "    harness: codex", `    ${fragment}`, ""].join("\n")
-      : [
-          "endpoints:",
-          "  - name: probe",
-          "    base_url: https://example.test/v1",
-          "    model: m",
-          `    ${fragment}`,
-          "",
-        ].join("\n");
+      : shape === "endpoints"
+        ? [
+            "endpoints:",
+            "  - name: probe",
+            "    base_url: https://example.test/v1",
+            "    model: m",
+            `    ${fragment}`,
+            "",
+          ].join("\n")
+        : [
+            "services:",
+            "  probe:",
+            "    type: cli",
+            "    harness: codex",
+            "    command: codex",
+            `    ${fragment}`,
+            "",
+          ].join("\n");
   const file = path.join(dir, `p-${Buffer.from(fragment + shape).toString("hex").slice(0, 12)}.yaml`);
   await fs.writeFile(file, body, "utf8");
   const cfg = await loadConfig(file, { whichFn: async () => null });
   return cfg.services["probe"]!;
 }
 
-describe("shared route keys are honoured by both entry shapes", () => {
-  it.each(SHARED_FIELDS)("$yaml", async ({ yaml, field, expected }) => {
-    const viaClis = await routeFrom("clis", yaml);
-    const viaEndpoints = await routeFrom("endpoints", yaml);
+const SHAPES: Shape[] = ["clis", "endpoints", "services"];
 
-    expect(viaClis, `clis: dropped "${yaml}"`).toBeDefined();
-    expect(viaEndpoints, `endpoints: dropped "${yaml}"`).toBeDefined();
-    expect(viaClis[field], `clis: did not honour "${yaml}"`).toBe(expected);
-    expect(viaEndpoints[field], `endpoints: did not honour "${yaml}"`).toBe(expected);
+describe("shared route keys are honoured by every entry shape", () => {
+  it.each(SHARED_FIELDS)("$yaml", async ({ yaml, field, expected }) => {
+    for (const shape of SHAPES) {
+      const svc = await routeFrom(shape, yaml);
+      expect(svc, `${shape}: dropped "${yaml}" entirely`).toBeDefined();
+      // toEqual, not toBe: `models` is an array.
+      expect(svc[field], `${shape}: did not honour "${yaml}"`).toEqual(expected);
+    }
+  });
+
+  it("covers every key the shared resolver owns", async () => {
+    // The guard against this test decaying. The resolver's table is the
+    // implementation's own list of shared keys; if a row is added there
+    // without a case here, the new field ships with no proof that all three
+    // shapes read it — which is exactly how escalate_model slipped through
+    // the previous hand-maintained version of this file.
+    const { SHARED_ROUTE_FIELD_KEYS } = await import("../src/config/route-fields.js");
+    const covered = new Set(SHARED_FIELDS.map((f) => f.yaml.split(":")[0]!.trim()));
+    const missing = SHARED_ROUTE_FIELD_KEYS.filter((k) => !covered.has(k));
+    expect(missing, `shared resolver keys with no parity case: ${missing.join(", ")}`).toEqual([]);
   });
 
   it("every shared key under test is in KNOWN_ROUTE_KEYS", async () => {

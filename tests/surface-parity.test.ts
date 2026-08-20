@@ -126,7 +126,12 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
       hints: { safetyProfile: "read_only" },
     });
     expect(err ?? "").not.toMatch(/belongs inside `hints`/);
-  });
+    // Explicit timeout: this is the one case here that waits on a real
+    // detached job runner (spawned from dist/) rather than being rejected at
+    // the boundary, and it exceeded vitest's 15s default under full-suite
+    // parallel load. Waiting is deliberate — abandoning the run mid-write is
+    // what caused the CI unhandled rejection this file already fixed once.
+  }, 45_000);
 
   it("rejects an unknown key inside hints", async () => {
     // `safety_profile` is the config.yaml spelling. Accepting it silently
