@@ -30,6 +30,12 @@ import type {
 } from "./types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
 import { acquireWorkspaceLock } from "./workspace-lock.js";
+import {
+  applyWorkspace,
+  discardWorkspace,
+  isResolvable,
+  workspaceDiff,
+} from "./workspace-resolve.js";
 import { buildContextPreamble } from "./jobs/context.js";
 import {
   assertValidJobId,
@@ -1144,4 +1150,38 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
       `Cancellation requested for ${jobId}. The run stops within a second or so — poll ` +
       `job_status to confirm. Any files the agent already changed are NOT reverted.`,
   };
+}
+
+/**
+ * Inspect or resolve the isolated workspace a finished job left behind.
+ *
+ * Looks the job up the same way job_status does, then hands off to
+ * workspace-resolve.ts. Kept here so the caller only ever needs a jobId —
+ * where the workspace lives, and which policy produced it, are details
+ * recorded in the job's own result.
+ */
+export async function resolveJobWorkspace(
+  jobId: string,
+  action: "diff" | "apply" | "discard",
+  opts: { force?: boolean } = {},
+): Promise<unknown> {
+  const job = await getAsyncJob(jobId);
+  const run = job.result?.result?.workspace;
+  if (!isResolvable(run)) {
+    // Read through a separate binding: the type guard narrows `run` to never
+    // on this branch, which would make the diagnostic unable to say WHICH
+    // policy the caller actually got.
+    const raw = job.result?.result?.workspace;
+    const policy = raw?.policy ?? "shared";
+    throw new Error(
+      `Job ${jobId} has no isolated workspace to ${action} (workspace policy: ${policy}). ` +
+        `Only 'copy' and 'git_worktree' dispatches produce one — a 'shared' or ` +
+        `'shared_locked' run edited ${raw?.originalWorkingDir ?? "the working directory"} ` +
+        `directly, so there is nothing separate to inspect, apply or throw away.`,
+    );
+  }
+  const jobDir = path.join(jobsRoot(), jobId);
+  if (action === "diff") return workspaceDiff(jobId, jobDir, run);
+  if (action === "apply") return applyWorkspace(jobId, jobDir, run, opts);
+  return discardWorkspace(jobId, run);
 }

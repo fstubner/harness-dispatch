@@ -25,7 +25,7 @@ import type {
 
 const execFile = promisify(execFileCb);
 
-const EXCLUDED_DIRS = new Set([
+export const EXCLUDED_DIRS = new Set([
   ".git",
   "node_modules",
   "dist",
@@ -471,7 +471,8 @@ async function prepareGitWorktreeWorkspace(
   const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   await mkdir(workspaceRoot, { recursive: true });
-  await git(["worktree", "add", "--detach", worktreeRoot, "HEAD"], gitRoot);
+  const baseCommit = await git(["rev-parse", "HEAD"], gitRoot);
+  await git(["worktree", "add", "--detach", worktreeRoot, baseCommit], gitRoot);
   const effectiveWorkingDir = prefix ? path.join(worktreeRoot, prefix) : worktreeRoot;
   await stat(effectiveWorkingDir);
   const before = await fingerprintTree(worktreeRoot);
@@ -490,6 +491,7 @@ async function prepareGitWorktreeWorkspace(
         originalWorkingDir,
         effectiveWorkingDir,
         workspaceRoot,
+        baseCommit,
         isolated: true,
         securityBoundary: "project_state_and_process_cwd",
         changedFiles,

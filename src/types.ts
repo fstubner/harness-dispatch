@@ -100,6 +100,16 @@ export interface WorkspaceRun {
     | "project_state"
     | "project_state_and_process_cwd";
   workspaceRoot?: string;
+  /**
+   * For `git_worktree`: the commit the worktree was created from.
+   *
+   * Load-bearing for producing a correct patch. A worktree starts at HEAD,
+   * NOT at the caller's working tree, so diffing the worktree against the
+   * original directory of a dirty project reports the user's own uncommitted
+   * work as deletions — and applying that patch would destroy it. The agent's
+   * changes are worktree-vs-this-commit, and nothing else.
+   */
+  baseCommit?: string;
   changedFiles?: WorkspaceFileChange[];
   diffSummary?: string;
   cleanupHint?: string;

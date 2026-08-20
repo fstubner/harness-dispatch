@@ -363,13 +363,14 @@ They are not part of the public v0.5.0 vocabulary.
 
 ## MCP Surface
 
-`tools/list` returns four tools:
+`tools/list` returns five tools:
 
 | Tool | Purpose |
 | --- | --- |
 | `dispatch` | Always starts new routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to check on. Nothing is ever lost to a timeout — including the MCP call's own. |
 | `job_status` | Checks work started by `dispatch`. Pass the `jobId` it returned to get a `partialOutput` tail while running and the full `result` once done; omit `jobId` to list recent background dispatches (compact, newest first). |
 | `cancel_job` | Stops work started by `dispatch` — a wrong turn, a wrong directory, a superseded run. A job still waiting for a slot stops outright; a running one tears down within about a second (poll `job_status` to see it land), killing the agent CLI and its children. Files it already changed are **not** reverted, and a cancelled run is not counted as a route failure. |
+| `workspace` | For a job that ran with `workspacePolicy: "copy"` or `"git_worktree"`, the agent's changes live in an isolated workspace and were **never** applied to your project. `action: "diff"` returns the real patch; `"apply"` applies it (refusing when your project has uncommitted changes, since the patch was built against a clean base — `force: true` overrides); `"discard"` deletes the workspace. The full patch is always written to the job directory, so `git apply` by hand is available either way. |
 | `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value, since those are not validated. Pass `listModels: <route id>` to fetch that `openai_compatible` route's live `GET /models` catalog instead of (or alongside) the summary. |
 
 `workingDir` is effectively required when starting work: if you omit it, the task runs

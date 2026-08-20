@@ -31,13 +31,21 @@ import { setTimeout as delay } from "node:timers/promises";
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
-import { cancelJob, getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobStatus } from "../jobs.js";
+import {
+  cancelJob,
+  getAsyncJob,
+  listAsyncJobs,
+  resolveJobWorkspace,
+  startAsyncJobTracked,
+  type JobStatus,
+} from "../jobs.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { buildStatus, buildUsage, redactEndpointHost } from "../status.js";
 import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 import {
   cancelJobInputShape,
+  workspaceInputShape,
   DEFAULT_GRACE_SECONDS,
   dispatchInputShape,
   JOB_ID_RE,
@@ -72,7 +80,7 @@ import {
  */
 
 
-export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "usage"] as const;
+export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "workspace", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
@@ -605,6 +613,14 @@ export async function handleCancelJob(args: { jobId: string; reason?: string | u
   return cancelJob(args.jobId, args.reason);
 }
 
+export async function handleWorkspace(args: {
+  jobId: string;
+  action: "diff" | "apply" | "discard";
+  force?: boolean | undefined;
+}) {
+  return resolveJobWorkspace(args.jobId, args.action, args.force !== undefined ? { force: args.force } : {});
+}
+
 export async function handleJobStatus(
   input: z.infer<z.ZodObject<typeof jobStatusInputShape>>,
 ): Promise<unknown> {
@@ -759,6 +775,25 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   );
 
   server.registerTool(
+    "workspace",
+    {
+      title: "Inspect, keep or discard isolated work",
+      description:
+        "For a job that ran with workspacePolicy 'copy' or 'git_worktree', the agent's " +
+        "changes live in an isolated workspace and were NEVER applied to your project. " +
+        "This is how you deal with them. 'diff' returns the real patch of what changed " +
+        "(review this before keeping it). 'apply' applies that patch to the original " +
+        "project — it refuses when the project has uncommitted changes, since the patch " +
+        "was built against a clean base, and force: true overrides. 'discard' deletes " +
+        "the workspace and leaves the project untouched. The full patch is always " +
+        "written to the job directory, so `git apply` by hand is available even when " +
+        "the automatic apply declines.",
+      inputSchema: workspaceInputShape,
+    },
+    async (args) => jsonText(await handleWorkspace(args)),
+  );
+
+  server.registerTool(
     "usage",
     {
       title: "Check current usage",
@@ -790,6 +825,10 @@ export async function invokeTool(
   if (name === "dispatch") {
     const parsed = z.object(dispatchInputShape).parse(args);
     return { kind: "json", data: await handleDispatch(deps, parsed) };
+  }
+  if (name === "workspace") {
+    const parsed = z.object(workspaceInputShape).parse(args ?? {});
+    return { kind: "json", data: await handleWorkspace(parsed) };
   }
   if (name === "cancel_job") {
     const parsed = z.object(cancelJobInputShape).parse(args ?? {});
