@@ -94,6 +94,7 @@ Out of scope:
 | Limit | Why it stands |
 |---|---|
 | Cursor cannot serve `workspace_edit` on Windows | Its editing mode grants shell too; `--sandbox` is POSIX-only |
+| `usage` reports tokens, never money | Subscription CLIs have no per-call price, and pricing tokens needs a rate card that goes stale silently |
 | No graduated quota preference for CLI routes | CLIs do not emit usage signals; the breaker catches exhaustion, but the router cannot prefer the less-depleted subscription |
 | Context transfer carries prior *outputs*, not understanding | Transmitting an orchestrator's accumulated reasoning is not tool-shaped |
 

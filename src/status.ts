@@ -97,6 +97,8 @@ export interface RouteStatus {
     localSuccessCount?: number;
     localFailureCount?: number;
     localRateLimitedCount?: number;
+    localInputTokens?: number;
+    localOutputTokens?: number;
     source?: string;
   };
   breaker: {
@@ -213,6 +215,8 @@ export async function buildStatus(
     if (q?.localFailureCount !== undefined) route.quota.localFailureCount = q.localFailureCount;
     if (q?.localRateLimitedCount !== undefined)
       route.quota.localRateLimitedCount = q.localRateLimitedCount;
+    if (q?.localInputTokens !== undefined) route.quota.localInputTokens = q.localInputTokens;
+    if (q?.localOutputTokens !== undefined) route.quota.localOutputTokens = q.localOutputTokens;
     if (q?.source !== undefined) route.quota.source = q.source;
     route.quality = {
       score: Math.round(quality.qualityScore * 1000) / 1000,
@@ -263,6 +267,17 @@ export interface RouteUsage {
   failureCount: number;
   /** Calls declined for rate limiting — busy, not broken. Kept out of failureCount. */
   rateLimitedCount: number;
+  /**
+   * Tokens the harness reported, summed across this route's calls.
+   *
+   * The honest answer to "what has this cost me": a measured quantity rather
+   * than a currency figure. Money is NOT derivable — subscription CLIs have no
+   * per-call price, and pricing tokens would mean shipping a rate card that
+   * goes stale silently. Zero means the harness reported nothing, not that
+   * nothing was spent.
+   */
+  inputTokens: number;
+  outputTokens: number;
   quotaScore: number;
   quotaRemaining?: number;
   quotaLimit?: number;
@@ -295,6 +310,8 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
         successCount: route.quota.localSuccessCount ?? 0,
         failureCount: route.quota.localFailureCount ?? 0,
         rateLimitedCount: route.quota.localRateLimitedCount ?? 0,
+        inputTokens: route.quota.localInputTokens ?? 0,
+        outputTokens: route.quota.localOutputTokens ?? 0,
         quotaScore: route.quota.score,
         breakerTripped: route.breaker.tripped,
         breakerFailures: route.breaker.failures,

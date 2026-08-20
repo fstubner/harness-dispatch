@@ -88,6 +88,12 @@ export interface QuotaStateJSON {
   localFailureCount: number;
   /** Calls the route declined because it was rate limited — busy, not broken. */
   localRateLimitedCount: number;
+  /**
+   * Tokens reported by the harness, summed. Deliberately not money: see
+   * QuotaCache.localInputTokens for why a price cannot be stated honestly.
+   */
+  localInputTokens: number;
+  localOutputTokens: number;
 }
 
 /** Mutable quota snapshot for one service, updated reactively. */
@@ -125,7 +131,12 @@ export class QuotaState {
 
   toJSON(): Omit<
     QuotaStateJSON,
-    "localCallCount" | "localSuccessCount" | "localFailureCount" | "localRateLimitedCount"
+    | "localCallCount"
+    | "localSuccessCount"
+    | "localFailureCount"
+    | "localRateLimitedCount"
+    | "localInputTokens"
+    | "localOutputTokens"
   > {
     return {
       used: this.used,
@@ -160,6 +171,18 @@ export class QuotaCache {
   private localFailureCounts: Record<string, number>;
   private localRateLimitedCounts: Record<string, number>;
   /**
+   * Tokens actually reported by dispatchers, summed per route.
+   *
+   * The honest answer to "what has this cost me". Real spend in money is NOT
+   * derivable here: subscription CLIs have no per-call price at all, and
+   * putting a price on tokens would mean hardcoding a per-model rate card
+   * that goes stale silently — the exact kind of confident-but-wrong number
+   * this tool's billing policy refuses to invent. Tokens are measured, so
+   * tokens are what gets reported.
+   */
+  private localInputTokens: Record<string, number>;
+  private localOutputTokens: Record<string, number>;
+  /**
    * Increments made since the last successful persist.
    *
    * The counters above are this process's ABSOLUTE view, used for local
@@ -173,7 +196,7 @@ export class QuotaCache {
    * processes. Cleared only after a write succeeds, so a failed write is
    * retried on the next call rather than dropped.
    */
-  private pendingDelta: Record<string, { calls: number; success: number; failure: number; rateLimited: number }> = {};
+  private pendingDelta: Record<string, { calls: number; success: number; failure: number; rateLimited: number; inputTokens: number; outputTokens: number }> = {};
   private persistCounter = 0;
 
   constructor(
@@ -192,6 +215,8 @@ export class QuotaCache {
     this.localSuccessCounts = loaded.success;
     this.localFailureCounts = loaded.failure;
     this.localRateLimitedCounts = loaded.rateLimited;
+    this.localInputTokens = loaded.inputTokens;
+    this.localOutputTokens = loaded.outputTokens;
   }
 
   // ------------------------------------------------------------------
@@ -205,7 +230,7 @@ export class QuotaCache {
   }
 
   private bumpDelta(service: string, field: "calls" | "success" | "failure" | "rateLimited"): void {
-    const d = (this.pendingDelta[service] ??= { calls: 0, success: 0, failure: 0, rateLimited: 0 });
+    const d = (this.pendingDelta[service] ??= { calls: 0, success: 0, failure: 0, rateLimited: 0, inputTokens: 0, outputTokens: 0 });
     d[field] += 1;
   }
 
@@ -229,6 +254,17 @@ export class QuotaCache {
     } else {
       this.localFailureCounts[service] = (this.localFailureCounts[service] ?? 0) + 1;
       this.bumpDelta(service, "failure");
+    }
+
+    if (result.tokensUsed) {
+      const { input, output } = result.tokensUsed;
+      this.localInputTokens[service] = (this.localInputTokens[service] ?? 0) + input;
+      this.localOutputTokens[service] = (this.localOutputTokens[service] ?? 0) + output;
+      const d = (this.pendingDelta[service] ??= {
+        calls: 0, success: 0, failure: 0, rateLimited: 0, inputTokens: 0, outputTokens: 0,
+      });
+      d.inputTokens += input;
+      d.outputTokens += output;
     }
 
     // CLI commands often exit immediately after a route. Use the synchronous
@@ -322,6 +358,8 @@ export class QuotaCache {
         localSuccessCount: this.localSuccessCounts[service] ?? 0,
         localFailureCount: this.localFailureCounts[service] ?? 0,
         localRateLimitedCount: this.localRateLimitedCounts[service] ?? 0,
+        localInputTokens: this.localInputTokens[service] ?? 0,
+        localOutputTokens: this.localOutputTokens[service] ?? 0,
       };
     }
     return out;
@@ -374,9 +412,12 @@ export class QuotaCache {
     success: Record<string, number>;
     failure: Record<string, number>;
     rateLimited: Record<string, number>;
+    inputTokens: Record<string, number>;
+    outputTokens: Record<string, number>;
   } {
+    const empty = { calls: {}, success: {}, failure: {}, rateLimited: {}, inputTokens: {}, outputTokens: {} };
     if (!existsSync(this.stateFile)) {
-      return { calls: {}, success: {}, failure: {}, rateLimited: {} };
+      return empty;
     }
     try {
       const raw = readFileSync(this.stateFile, "utf-8");
@@ -387,22 +428,28 @@ export class QuotaCache {
           local_success?: number;
           local_failure?: number;
           local_rate_limited?: number;
+          local_input_tokens?: number;
+          local_output_tokens?: number;
         } | null
       >;
       const calls: Record<string, number> = {};
       const success: Record<string, number> = {};
       const failure: Record<string, number> = {};
       const rateLimited: Record<string, number> = {};
+      const inputTokens: Record<string, number> = {};
+      const outputTokens: Record<string, number> = {};
       for (const [k, v] of Object.entries(data)) {
         if (!v) continue;
         if (typeof v.local_calls === "number") calls[k] = v.local_calls;
         if (typeof v.local_success === "number") success[k] = v.local_success;
         if (typeof v.local_failure === "number") failure[k] = v.local_failure;
         if (typeof v.local_rate_limited === "number") rateLimited[k] = v.local_rate_limited;
+        if (typeof v.local_input_tokens === "number") inputTokens[k] = v.local_input_tokens;
+        if (typeof v.local_output_tokens === "number") outputTokens[k] = v.local_output_tokens;
       }
-      return { calls, success, failure, rateLimited };
+      return { calls, success, failure, rateLimited, inputTokens, outputTokens };
     } catch {
-      return { calls: {}, success: {}, failure: {}, rateLimited: {} };
+      return empty;
     }
   }
 
@@ -467,6 +514,8 @@ export class QuotaCache {
           add("local_success", delta.success);
           add("local_failure", delta.failure);
           add("local_rate_limited", delta.rateLimited);
+          add("local_input_tokens", delta.inputTokens);
+          add("local_output_tokens", delta.outputTokens);
           existing[service] = bucket;
         }
         this.writeStatePayloadAtomicSync(JSON.stringify(existing, null, 2));

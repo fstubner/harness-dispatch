@@ -36,6 +36,7 @@ import {
   getAsyncJob,
   listAsyncJobs,
   resolveJobWorkspace,
+  retryJob,
   startAsyncJobTracked,
   type JobStatus,
 } from "../jobs.js";
@@ -45,6 +46,7 @@ import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 import {
   cancelJobInputShape,
+  retryJobInputShape,
   workspaceInputShape,
   DEFAULT_GRACE_SECONDS,
   dispatchInputShape,
@@ -80,7 +82,7 @@ import {
  */
 
 
-export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "workspace", "usage"] as const;
+export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "retry_job", "workspace", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
@@ -613,6 +615,14 @@ export async function handleCancelJob(args: { jobId: string; reason?: string | u
   return cancelJob(args.jobId, args.reason);
 }
 
+export async function handleRetryJob(
+  deps: ToolDeps,
+  args: { jobId: string; service?: string | undefined },
+) {
+  await ensureFreshConfig(deps.reloader);
+  return retryJob(args.jobId, { holder: deps.holder }, args.service !== undefined ? { service: args.service } : {});
+}
+
 export async function handleWorkspace(args: {
   jobId: string;
   action: "diff" | "apply" | "discard";
@@ -775,6 +785,24 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   );
 
   server.registerTool(
+    "retry_job",
+    {
+      title: "Run a finished job's task again",
+      description:
+        "Re-runs a finished job's task from its own record — the same prompt (as the " +
+        "delegate actually saw it, context preamble included), files, working " +
+        "directory, hints and workspace policy — so you do not have to reconstruct " +
+        "any of it. Pass `service` to send the retry to a DIFFERENT route, which is " +
+        "the usual reason to retry: the task was fine and the route was not (quota " +
+        "limit, a harness that got stuck). Returns a NEW jobId; the original job and " +
+        "its workspace are left untouched. Refuses while the original is still " +
+        "running — cancel it first, or two attempts race on one directory.",
+      inputSchema: retryJobInputShape,
+    },
+    async (args) => jsonText(await handleRetryJob(deps, args)),
+  );
+
+  server.registerTool(
     "workspace",
     {
       title: "Inspect, keep or discard isolated work",
@@ -825,6 +853,10 @@ export async function invokeTool(
   if (name === "dispatch") {
     const parsed = z.object(dispatchInputShape).parse(args);
     return { kind: "json", data: await handleDispatch(deps, parsed) };
+  }
+  if (name === "retry_job") {
+    const parsed = z.object(retryJobInputShape).parse(args ?? {});
+    return { kind: "json", data: await handleRetryJob(deps, parsed) };
   }
   if (name === "workspace") {
     const parsed = z.object(workspaceInputShape).parse(args ?? {});
