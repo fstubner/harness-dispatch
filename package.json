@@ -32,7 +32,8 @@
     "dist/",
     "data/",
     "config.default.yaml",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=22.22.2"
