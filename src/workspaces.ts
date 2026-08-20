@@ -237,6 +237,7 @@ async function copyTree(
   destRoot: string,
   rel = "",
   skipped: string[] = [],
+  vanished: string[] = [],
 ): Promise<void> {
   const sourceDir = rel ? path.join(sourceRoot, rel) : sourceRoot;
   const destDir = rel ? path.join(destRoot, rel) : destRoot;
@@ -244,17 +245,35 @@ async function copyTree(
   const entries = await readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
     const childRel = rel ? path.join(rel, entry.name) : entry.name;
-    if (entry.isDirectory()) {
-      if (shouldExclude(childRel, entry.name)) continue;
-      await copyTree(sourceRoot, destRoot, childRel, skipped);
-      continue;
-    }
-    if (entry.isFile()) {
-      await copyFile(path.join(sourceRoot, childRel), path.join(destRoot, childRel));
-      continue;
-    }
-    if (entry.isSymbolicLink()) {
-      await copyLink(sourceRoot, destRoot, childRel, skipped);
+    try {
+      if (entry.isDirectory()) {
+        if (shouldExclude(childRel, entry.name)) continue;
+        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished);
+        continue;
+      }
+      if (entry.isFile()) {
+        await copyFile(path.join(sourceRoot, childRel), path.join(destRoot, childRel));
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        await copyLink(sourceRoot, destRoot, childRel, skipped);
+      }
+    } catch (err) {
+      // A working directory is LIVE while it is being copied. readdir gives a
+      // listing, and by the time each entry is read it may be gone — an editor
+      // saving over a temp file, a build watcher cleaning output, another
+      // fanout arm writing into the same tree (write-capable fanout REQUIRES
+      // copy, so concurrent copies of one directory are the documented case,
+      // not an edge one). Failing the whole dispatch on a raw ENOENT because
+      // one incidental file blinked out is the wrong trade: the caller loses
+      // real work over a file they did not care about.
+      //
+      // Only "it disappeared" is tolerated. A permission error or a full disk
+      // still fails loudly, because those mean the copy is not the snapshot it
+      // claims to be for reasons that will not have fixed themselves.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT") throw err;
+      vanished.push(childRel.split(path.sep).join("/"));
     }
   }
 }
@@ -278,7 +297,14 @@ async function fingerprintTree(root: string, rel = "", out: FingerprintMap = new
       continue;
     }
     if (!entry.isFile()) continue;
-    out.set(childRel.split(path.sep).join("/"), await fingerprintFile(path.join(root, childRel)));
+    try {
+      out.set(childRel.split(path.sep).join("/"), await fingerprintFile(path.join(root, childRel)));
+    } catch (err) {
+      // Same race, other end: a file listed a moment ago can be gone before it
+      // is hashed. An absent file simply does not appear in the fingerprint,
+      // which diffFingerprints already reads as "deleted" — the truth.
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+    }
   }
   return out;
 }
@@ -415,7 +441,8 @@ async function prepareCopyWorkspace(
   const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
-  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks);
+  const vanishedFiles: string[] = [];
+  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks, vanishedFiles);
   const before = await fingerprintTree(effectiveWorkingDir);
   return {
     policy: "copy",
@@ -440,6 +467,14 @@ async function prepareCopyWorkspace(
         notes: [
           "The source workspace was copied before dispatch, so edits in the agent workspace are not applied automatically.",
           "This isolates project state, but it is not a hardened OS sandbox for commands with host filesystem access.",
+          ...(vanishedFiles.length > 0
+            ? [
+                `${vanishedFiles.length} file(s) disappeared while the workspace was being ` +
+                  `copied and are absent from it: ${vanishedFiles.slice(0, 5).join(", ")}` +
+                  `${vanishedFiles.length > 5 ? ", …" : ""}. The copy is a snapshot of a ` +
+                  `directory that was being written to.`,
+              ]
+            : []),
           ...(skippedLinks.length > 0
             ? [
                 `Dropped ${skippedLinks.length} symlink(s) pointing outside the workspace, which would ` +
