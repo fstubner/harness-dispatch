@@ -36,3 +36,33 @@ describe("live agent smoke task brief", () => {
     }
   });
 });
+
+describe("live agent smoke isolates the state it writes", () => {
+  /**
+   * The smoke script isolated quota counters (stateFile: ":memory-smoke:")
+   * and NOT breaker state — Router falls back to a BreakerStore pointed at
+   * the user's real state directory. Observed live 2026-08-20: a codex quota
+   * limit hit during a smoke run left codex_cli circuit-broken in the actual
+   * install. Accurate that time, but a smoke failure for any unrelated reason
+   * would block a healthy route for real dispatches.
+   *
+   * Asserted against the SOURCE because this script only runs behind a live
+   * opt-in with real harness CLIs installed, so no CI job can exercise it.
+   * Crude, but it fails against the old code, which is what a regression test
+   * has to do.
+   */
+  it("hands Router an isolated BreakerStore, not the default one", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const src = await readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "smoke-agents.mjs"),
+      "utf8",
+    );
+    const routerCall = /new Router\([^)]*\)/s.exec(src)?.[0] ?? "";
+    expect(routerCall, "smoke script constructs Router").not.toBe("");
+    expect(routerCall, "Router built without an explicit BreakerStore").toContain("BreakerStore");
+    // And the store it builds must be a throwaway directory, never the default.
+    expect(src).toMatch(/new BreakerStore\(\s*breakerDir\s*\)/);
+    expect(src).toMatch(/mkdtemp\(/);
+  });
+});
