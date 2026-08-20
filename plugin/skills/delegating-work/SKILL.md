@@ -1,6 +1,6 @@
 ---
 name: delegating-work
-description: Use when a coding task could run on another AI harness instead of consuming your own context/quota — implementing, fixing, reviewing, or planning work in a project via the harness-dispatch MCP server (dispatch/job_status/cancel_job/usage tools). Covers when to delegate, required arguments, and how the inline-or-check grace window works.
+description: Use when a coding task could run on another AI harness instead of consuming your own context/quota — implementing, fixing, reviewing, or planning work in a project via the harness-dispatch MCP server (dispatch/job_status/cancel_job/workspace/usage tools). Covers when to delegate, required arguments, and how the inline-or-check grace window works.
 metadata:
   short-description: Delegate coding tasks via harness-dispatch
 ---

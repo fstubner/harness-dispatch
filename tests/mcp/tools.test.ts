@@ -133,10 +133,10 @@ beforeEach(() => {
 });
 
 describe("MCP tools — public surface", () => {
-  it("exports the public dispatch, job_status, cancel_job and usage tools", () => {
+  it("exports the public dispatch, job_status, cancel_job, workspace and usage tools", () => {
     // cancel_job joined the surface once the product could start a 60-minute
     // detached run with no way to stop it.
-    expect(TOOL_NAMES).toEqual(["dispatch", "job_status", "cancel_job", "usage"]);
+    expect(TOOL_NAMES).toEqual(["dispatch", "job_status", "cancel_job", "workspace", "usage"]);
   });
 });
 

@@ -8,6 +8,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- **`workspace`** — inspect, keep or discard the isolated result of a job. `copy` and
+  `git_worktree` dispatches already ran the agent in isolation and never touched your
+  project, but there was no way to see the actual change, no way to keep it, and no
+  cleanup but by hand — so isolated runs were effectively write-only. `action: "diff"`
+  returns the real patch, `"apply"` applies it to your project (refusing when the
+  project has uncommitted changes, because the patch was built against a clean base),
+  and `"discard"` removes the workspace. The patch is always written to the job
+  directory, so applying it by hand is available even when the automatic path declines.
 - **`cancel_job`** — stop a dispatch you already started. Until now the product could
   start a 60-minute detached run and offer no way to stop it, so a misdirected agent
   kept spending subscription quota and editing a workspace until it finished or timed

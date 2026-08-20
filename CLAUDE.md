@@ -4,7 +4,7 @@ Use `harness-dispatch` as a local dispatcher for coding work when it is configur
 
 Public MCP surface:
 
-- Tools: `dispatch`, `job_status`, `cancel_job`, `usage`
+- Tools: `dispatch`, `job_status`, `cancel_job`, `workspace`, `usage`
 - Resources: `harness-dispatch://status`, `harness-dispatch://status.json`
 
 For most work, call `dispatch` with a `prompt`, the caller's `workingDir`, and an

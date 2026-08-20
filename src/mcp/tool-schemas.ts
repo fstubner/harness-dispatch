@@ -320,3 +320,35 @@ export const cancelJobInputShape = {
         "it was stopped deliberately (e.g. 'superseded by job-...', 'wrong directory').",
     ),
 } as const;
+
+/**
+ * `workspace` — inspect or resolve the isolated result of a finished job.
+ *
+ * One tool with an action rather than three tools, because all three operate
+ * on the SAME object (one job's workspace) with the same parameters. That is
+ * the opposite of the dispatch/job_status split, where one tool covering both
+ * "start work" and "check work" needed runtime guards against
+ * mutually-exclusive params — a sign the boundary was wrong. Here the actions
+ * are three verbs on one noun, and nothing is mutually exclusive.
+ */
+export const workspaceInputShape = {
+  jobId: z
+    .string()
+    .regex(JOB_ID_RE, "must look like job-<timestamp>-<8 hex chars>")
+    .describe("A finished job that ran with workspacePolicy 'copy' or 'git_worktree'."),
+  action: z
+    .enum(["diff", "apply", "discard"])
+    .describe(
+      "'diff' returns the actual patch of what the agent changed (and writes it to " +
+        "the job directory). 'apply' applies that patch to the ORIGINAL project. " +
+        "'discard' deletes the isolated workspace, leaving the project untouched.",
+    ),
+  force: z
+    .boolean()
+    .optional()
+    .describe(
+      "apply only: apply even when the target project has uncommitted changes. " +
+        "Off by default because the patch was built against a clean base, so " +
+        "applying over newer work can conflict with or overwrite it.",
+    ),
+} as const;
