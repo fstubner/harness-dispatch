@@ -4,7 +4,7 @@ if (!VERSION || typeof VERSION !== "string") {
   throw new Error("VERSION export is missing");
 }
 
-if (JSON.stringify(TOOL_NAMES) !== JSON.stringify(["dispatch", "job_status", "usage"])) {
+if (JSON.stringify(TOOL_NAMES) !== JSON.stringify(["dispatch", "job_status", "cancel_job", "usage"])) {
   throw new Error(`Unexpected MCP tools: ${JSON.stringify(TOOL_NAMES)}`);
 }
 
