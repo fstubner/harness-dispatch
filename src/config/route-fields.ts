@@ -130,6 +130,7 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "max_output_tokens", field: "maxOutputTokens", parse: numberOnly, fromDefaults: (d) => d.maxOutputTokens },
   { key: "max_input_tokens", field: "maxInputTokens", parse: numberOnly, fromDefaults: (d) => d.maxInputTokens },
   { key: "timeout_ms", field: "timeoutMs", parse: numberOnly },
+  { key: "resource_weight", field: "resourceWeight", parse: numberOnly },
   // Safety and isolation. Four of the five original silent drops were here.
   { key: "safety_profile", field: "safetyProfile", parse: normalizeSafetyProfile },
   { key: "effective_safety", field: "effectiveSafety", parse: effectiveSafetyFrom, fromDefaults: (d) => d.effectiveSafety },

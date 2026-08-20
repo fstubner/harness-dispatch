@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -252,7 +253,22 @@ async function copyTree(
         continue;
       }
       if (entry.isFile()) {
-        await copyFile(path.join(sourceRoot, childRel), path.join(destRoot, childRel));
+        // COPYFILE_FICLONE asks the filesystem for a copy-on-write reflink:
+        // the new file shares the original's blocks until one of them is
+        // written to. On APFS, Btrfs/XFS and ReFS/Dev Drive that makes a
+        // workspace clone near-instant and free of duplicate allocation,
+        // which matters because `copy` duplicates a whole project per
+        // dispatch and fanout does it per arm.
+        //
+        // FICLONE, deliberately NOT FICLONE_FORCE: the plain flag falls back
+        // to an ordinary copy when the filesystem cannot reflink (plain NTFS,
+        // ext4, or a cross-device copy), while FORCE fails outright. A
+        // best-effort speedup must never turn a working copy into an error.
+        await copyFile(
+          path.join(sourceRoot, childRel),
+          path.join(destRoot, childRel),
+          fsConstants.COPYFILE_FICLONE,
+        );
         continue;
       }
       if (entry.isSymbolicLink()) {

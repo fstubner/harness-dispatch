@@ -450,6 +450,10 @@ async function watchUntilTerminal(jobDir: string): Promise<void> {
  */
 const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
+/** A CLI harness is a whole agent process; an endpoint call is one HTTP request. */
+const DEFAULT_CLI_WEIGHT = 1.0;
+const DEFAULT_ENDPOINT_WEIGHT = 0.1;
+
 function maxConcurrentRuns(config: RouterConfig | undefined): number {
   const configured = config?.maxConcurrentRuns;
   if (configured !== undefined && Number.isFinite(configured) && configured >= 0) {
@@ -483,14 +487,54 @@ async function readJobStatuses(): Promise<Array<{ jobDir: string; status: JobSta
  * ORPHAN_THRESHOLD_MS rule that already frees its status. Slot-queued jobs
  * are waiting for a slot, not holding one.
  */
-function countActiveRuns(statuses: Array<{ status: JobStatus }>): number {
+/**
+ * What one run of a route costs against the concurrency budget.
+ *
+ * Unknown routes count as a full 1.0 on purpose. A job that has not been
+ * routed yet (no forced `service`) has no weight to look up, and this bound
+ * exists because a measured burst of 13 concurrent CLIs exhausted memory —
+ * so the safe assumption for "might be anything" is "might be heavy".
+ */
+export function resourceWeightFor(status: JobStatus, config: RouterConfig | undefined): number {
+  const routeId = status.route ?? status.service;
+  const svc = routeId !== undefined ? config?.services?.[routeId] : undefined;
+  if (svc?.resourceWeight !== undefined && Number.isFinite(svc.resourceWeight) && svc.resourceWeight >= 0) {
+    return svc.resourceWeight;
+  }
+  if (svc?.type === "openai_compatible") return DEFAULT_ENDPOINT_WEIGHT;
+  return DEFAULT_CLI_WEIGHT;
+}
+
+/** In-flight jobs, counted. Used for supervisor pool sizing, not for the budget. */
+function countActiveJobs(statuses: Array<{ status: JobStatus }>): number {
+  let n = 0;
+  for (const { status } of statuses) {
+    if (status.slotQueued) continue;
+    if (status.status !== "running" && status.status !== "queued") continue;
+    const beat = Date.parse(status.updatedAt);
+    if (Number.isFinite(beat) && Date.now() - beat > ORPHAN_THRESHOLD_MS) continue;
+    n += 1;
+  }
+  return n;
+}
+
+/**
+ * Capacity currently in use, as a weighted sum rather than a job count.
+ *
+ * With every weight at 1.0 this is exactly the old count, so an existing
+ * `max_concurrent_runs` keeps its previous meaning.
+ */
+export function activeCapacity(
+  statuses: Array<{ status: JobStatus }>,
+  config: RouterConfig | undefined,
+): number {
   let active = 0;
   for (const { status } of statuses) {
     if (status.slotQueued) continue;
     if (status.status !== "running" && status.status !== "queued") continue;
     const beat = Date.parse(status.updatedAt);
     if (Number.isFinite(beat) && Date.now() - beat > ORPHAN_THRESHOLD_MS) continue;
-    active += 1;
+    active += resourceWeightFor(status, config);
   }
   return active;
 }
@@ -732,7 +776,7 @@ export async function drainSlotQueue(
     return;
   }
   try {
-    await drainSlotQueueLocked(limit, runnerPath, configPath);
+    await drainSlotQueueLocked(limit, runnerPath, configPath, config);
   } finally {
     releaseDrainLock();
   }
@@ -745,9 +789,16 @@ async function drainSlotQueueLocked(
   limit: number,
   runnerPath: string,
   configPath: string | undefined,
+  config: RouterConfig | undefined,
 ): Promise<void> {
   const statuses = await readJobStatuses();
-  let active = countActiveRuns(statuses);
+  let active = activeCapacity(statuses, config);
+  // Supervisors are sized by how many JOBS there are, not by how much budget
+  // they consume. Once `active` became a weighted sum these had to part
+  // company: ten endpoint calls are 1.0 of capacity but still ten jobs, and
+  // sizing the pool off the weight would hand all ten to one supervisor that
+  // runs them a few at a time.
+  let activeJobs = countActiveJobs(statuses);
   const waiting = statuses.filter((s) => s.status.slotQueued);
 
   // Release stays HERE, synchronously and oldest-first, even though a
@@ -758,14 +809,22 @@ async function drainSlotQueueLocked(
   // drainer decides the order. Supervisors then pick up released work.
   let released = 0;
   for (const { jobDir, status } of waiting) {
-    if (active >= limit) break;
+    const weight = resourceWeightFor(status, config);
+    // The `active > 0` guard prevents a deadlock the plain count could not
+    // produce: a single job heavier than the whole budget (weight 1.0 against
+    // a capacity of 0.5) would otherwise wait forever for room that can never
+    // exist. When nothing is running, the next job always goes — the same
+    // reasoning as the earlier fix for a job whose own queued status counted
+    // against its own admission.
+    if (active > 0 && active + weight > limit) break;
     const { slotQueued: _dropped, ...cleared } = status;
     await updateStatus(jobDir, {
       ...cleared,
       updatedAt: timestamp(),
       instructions: pollInstructions(status.jobId),
     });
-    active += 1;
+    active += weight;
+    activeJobs += 1;
     released += 1;
   }
   if (released === 0) return;
@@ -776,7 +835,7 @@ async function drainSlotQueueLocked(
   // them three at a time because each supervisor takes only
   // jobsPerSupervisor(limit). The cap must come from the pool size, never from
   // how the work happened to arrive.
-  const outstanding = active;
+  const outstanding = activeJobs;
   const wanted = Math.min(SUPERVISOR_POOL_SIZE, Math.ceil(outstanding / jobsPerSupervisor(limit)));
   const running = await countLiveSupervisors();
   for (let i = running; i < wanted; i += 1) {
