@@ -1,6 +1,6 @@
 ---
 name: delegating-work
-description: Use when a coding task could run on another AI harness instead of consuming your own context/quota — implementing, fixing, reviewing, or planning work in a project via the harness-dispatch MCP server (dispatch/job_status/usage tools). Covers when to delegate, required arguments, and how the inline-or-check grace window works.
+description: Use when a coding task could run on another AI harness instead of consuming your own context/quota — implementing, fixing, reviewing, or planning work in a project via the harness-dispatch MCP server (dispatch/job_status/cancel_job/usage tools). Covers when to delegate, required arguments, and how the inline-or-check grace window works.
 metadata:
   short-description: Delegate coding tasks via harness-dispatch
 ---
@@ -52,6 +52,27 @@ a short grace window (default 25s, tune with `graceSeconds`):
 CLI harnesses take 3–15 minutes, so expect the check-later path for real
 work. `graceSeconds: 0` on `dispatch` skips the inline wait entirely;
 `job_status` with no `jobId` shows every known background dispatch.
+
+## Stopping work
+
+Call `cancel_job` with the `jobId` when a run is going the wrong way, went to
+the wrong directory, or has been superseded. Give a `reason` — it is recorded
+on the job, so whoever reads it later (often you, after a restart) can tell a
+deliberate stop from a mysterious death.
+
+A job still waiting for a slot stops outright. A running one tears down within
+about a second, killing the harness CLI and its child processes; poll
+`job_status` to see it land.
+
+Two things cancelling does NOT do, and both matter before you rely on it:
+
+- **It does not undo work.** An agent that already edited files leaves those
+  edits behind. Cancelling stops further work; it is not a rollback. If the
+  edits are unwanted, revert them yourself (or dispatch with
+  `workspacePolicy: "copy"` next time, so the work lands in an isolated
+  workspace you can discard).
+- **It does not count against the route.** A cancelled run is not recorded as
+  a failure, so cancelling freely costs the route nothing.
 
 ## Picking a route or model
 

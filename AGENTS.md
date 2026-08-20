@@ -3,7 +3,7 @@
 For coding tasks in this project, use the harness-dispatch MCP server when it is
 available. The public MCP surface is intentionally small:
 
-- Tools: `dispatch`, `job_status`, `usage`
+- Tools: `dispatch`, `job_status`, `cancel_job`, `usage`
 - Resources: `harness-dispatch://status`, `harness-dispatch://status.json`
 
 ## Routing
