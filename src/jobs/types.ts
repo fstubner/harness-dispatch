@@ -55,7 +55,13 @@ export interface JobStatus {
    * exited (session restart, crash) and the run died with it. Reporting it
    * as still "running" forever is a lie that makes callers poll a corpse.
    */
-  status: "queued" | "running" | "completed" | "failed" | "orphaned";
+  /**
+   * "cancelled" is terminal and deliberate: someone asked for this run to
+   * stop. It is distinct from "failed" because the run did not go wrong —
+   * treating a cancellation as a failure would charge the route's breaker and
+   * failure count for the caller changing their mind.
+   */
+  status: "queued" | "running" | "completed" | "failed" | "orphaned" | "cancelled";
   createdAt: string;
   updatedAt: string;
   jobDir: string;

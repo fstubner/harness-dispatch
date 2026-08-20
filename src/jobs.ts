@@ -34,6 +34,9 @@ import { buildContextPreamble } from "./jobs/context.js";
 import {
   assertValidJobId,
   boundedError,
+  cancelReason,
+  cancelRequested,
+  requestCancel,
   JOB_ID_RE,
   jobsRoot,
   newJobId,
@@ -160,6 +163,12 @@ async function runJob(
     // Stream the dispatch so agents polling action=get can watch progress in
     // stdout.partial.log instead of waiting blind for the final result.
     const partialPath = path.join(jobDir, "output", "stdout.partial.log");
+    // Cancellation travels DOWN to the child process, not up through the
+    // iterator. Returning from an async generator that is suspended at an
+    // `await` does not take effect until that await settles — which for an
+    // agent CLI gone quiet is never — so the only thing that reliably stops a
+    // silent run is aborting the subprocess (or fetch) directly.
+    const cancelController = new AbortController();
     const events = input.service
       ? state.router.streamTo(input.service, input.prompt, files, workingDir, {
           ...(hints.safetyProfile !== undefined
@@ -175,16 +184,66 @@ async function runJob(
           ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
           ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
+          signal: cancelController.signal,
         })
       : state.router.stream(input.prompt, files, workingDir, {
           hints,
           maxFallbacks: 2,
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
+          signal: cancelController.signal,
         });
 
     let finalResult: DispatchResult | null = null;
     let finalDecision: RoutingDecision | null = null;
-    for await (const { event, decision } of events) {
+    let cancelled = false;
+
+    // Driven through an explicit iterator rather than `for await`, so a
+    // cancellation can interrupt a stream that is producing NOTHING. A
+    // for-await body only runs when an event arrives, and the case that most
+    // needs cancelling is the agent that has gone quiet for twenty minutes.
+    // Racing next() against a poll lets us stop either way, and calling
+    // return() on the iterator is what tears the child process down —
+    // stream-subprocess's return() runs killTree, which on POSIX now signals
+    // the whole process group.
+    const iterator = events[Symbol.asyncIterator]();
+    const CANCEL_POLL_MS = 1_000;
+    // The in-flight next() is held ACROSS polls rather than re-issued.
+    // Racing a fresh iterator.next() each time round drops events: when the
+    // poll wins, the previous next() is still pending, and calling next()
+    // again queues a second pull whose result is the one we read — the first
+    // event resolves into nothing. Losing a `completion` that way leaves a
+    // finished run with no result.json, so the job never reaches a terminal
+    // state and the caller polls a corpse. Caught by the slot-queue test,
+    // which waits for a queued job to actually complete.
+    let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
+    for (;;) {
+      pending ??= iterator.next() as Promise<
+        IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
+      >;
+      const winner = await Promise.race([
+        pending.then((r) => ({ kind: "event" as const, r })),
+        delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
+      ]);
+      if (winner.kind === "poll") {
+        if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
+        cancelled = true;
+        cancelController.abort();
+        // Not awaited: the generator is parked on an await that only settles
+        // once the abort above kills the child, so awaiting return() here
+        // would deadlock on the very thing it is trying to stop.
+        void iterator.return?.().catch(() => undefined);
+        break;
+      }
+      pending = undefined;
+      const next = winner.r;
+      if (next.done) break;
+      if (cancelRequested(jobDir)) {
+        cancelled = true;
+        cancelController.abort();
+        void iterator.return?.().catch(() => undefined);
+        break;
+      }
+      const { event, decision } = next.value;
       if (decision) finalDecision = decision;
       if (input.onEvent) {
         try {
@@ -204,6 +263,29 @@ async function runJob(
         finalResult = event.result;
       }
     }
+    if (cancelled) {
+      // Terminal, and deliberately NOT routed through the result/failure path:
+      // no result.json is written and the router never sees a failure, so a
+      // cancellation cannot charge the route's breaker or failure count for
+      // the caller changing their mind.
+      finished = true;
+      await pendingBeat;
+      const reason = await cancelReason(jobDir);
+      await updateStatus(jobDir, {
+        jobId: manifest.jobId,
+        status: "cancelled",
+        createdAt: manifest.createdAt,
+        updatedAt: timestamp(),
+        jobDir,
+        ...(input.service !== undefined ? { service: input.service } : {}),
+        success: false,
+        error: reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it finished.",
+        ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
+        durationMs: Date.now() - started,
+      });
+      return;
+    }
+
     const result: DispatchResult = finalResult ?? {
       output: "",
       service: input.service ?? "none",
@@ -338,7 +420,8 @@ async function watchUntilTerminal(jobDir: string): Promise<void> {
       if (
         status.status === "completed" ||
         status.status === "failed" ||
-        status.status === "orphaned"
+        status.status === "orphaned" ||
+        status.status === "cancelled"
       ) {
         return;
       }
@@ -509,6 +592,9 @@ async function claimNextJob(): Promise<string | undefined> {
   for (const { jobDir, status } of statuses) {
     if (status.slotQueued) continue;
     if (status.status !== "queued") continue;
+    // Cancelled before a supervisor ever picked it up: claiming it would
+    // start work someone has already asked not to happen.
+    if (cancelRequested(jobDir)) continue;
     if (!(await claimJobDir(jobDir, status))) continue;
     return jobDir;
   }
@@ -970,4 +1056,92 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
     }
   }
   return statuses.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** What a cancel request actually did — the caller needs to tell these apart. */
+export interface CancelOutcome {
+  jobId: string;
+  /**
+   * `cancelled`  — it was queued and never started; stopped outright.
+   * `cancelling` — it is running; teardown requested and lands shortly.
+   * `already_finished` — it had already reached a terminal state; nothing done.
+   */
+  outcome: "cancelled" | "cancelling" | "already_finished";
+  status: JobStatus["status"];
+  message: string;
+}
+
+/**
+ * Ask a job to stop.
+ *
+ * Cancellation cannot be a signal here: jobs run inside POOLED supervisors,
+ * and the only pid recorded against a job belongs to a process that is also
+ * running other jobs, so signalling it would cancel work nobody asked to
+ * cancel. Instead this writes a marker the run itself honours — it drops out
+ * of its event stream, which triggers the dispatcher's teardown (killTree on
+ * the agent CLI and its children) and releases the workspace lock through the
+ * same path a normal finish uses.
+ *
+ * Two consequences worth stating plainly, because a caller who assumes
+ * otherwise will be surprised:
+ *
+ *   1. It is not instantaneous. A running job stops within about a second;
+ *      `cancelling` means requested, not done. Poll job_status to see it land.
+ *   2. Work already done is NOT undone. A cancelled agent may have already
+ *      edited files in the workspace, and those edits stay. Cancelling stops
+ *      further work; it is not a rollback.
+ *
+ * A cancelled run is deliberately not recorded as a failure: the route's
+ * circuit breaker and failure count never see it, because the caller changing
+ * their mind says nothing about whether the route works.
+ */
+export async function cancelJob(jobId: string, reason?: string): Promise<CancelOutcome> {
+  const job = await getAsyncJob(jobId); // throws the friendly "No such job" for a stranger
+  const current = job.status.status;
+
+  if (current === "completed" || current === "failed" || current === "orphaned" || current === "cancelled") {
+    return {
+      jobId,
+      outcome: "already_finished",
+      status: current,
+      message: `Job ${jobId} had already finished (${current}); nothing to cancel.`,
+    };
+  }
+
+  const jobDir = path.join(jobsRoot(), jobId);
+  await requestCancel(jobDir, reason);
+
+  // A job still waiting for a slot has no runner to notice the marker, so
+  // stop it here. claimNextJob also refuses to claim a marked job, which
+  // closes the window where a supervisor picks it up between these two steps.
+  if (current === "queued") {
+    await updateStatus(jobDir, {
+      ...job.status,
+      status: "cancelled",
+      updatedAt: timestamp(),
+      success: false,
+      error: reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it started.",
+    });
+    // Deliberately NOT draining the slot queue here. Freeing this job's slot
+    // makes room for a waiting one, but drainSlotQueue can SPAWN supervisor
+    // processes, and a cancel — the operation whose whole point is to stop
+    // work — must not start any. Every dispatch and every runner exit already
+    // drains, which is the same "resumes on the next event" contract the
+    // queue documents elsewhere.
+    return {
+      jobId,
+      outcome: "cancelled",
+      status: "cancelled",
+      message: `Job ${jobId} was waiting for a slot and has been cancelled; it never started.`,
+    };
+  }
+
+  return {
+    jobId,
+    outcome: "cancelling",
+    status: current,
+    message:
+      `Cancellation requested for ${jobId}. The run stops within a second or so — poll ` +
+      `job_status to confirm. Any files the agent already changed are NOT reverted.`,
+  };
 }

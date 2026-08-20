@@ -297,3 +297,26 @@ export const usageInputShape = {
         "harness routes don't support this; use their modelHint instead.",
     ),
 };
+
+/**
+ * `cancel_job` takes the jobId and, optionally, why.
+ *
+ * The reason is not decoration: a cancelled run's status carries it, so
+ * whoever finds the job later — often a different agent, or the same one
+ * after a restart — learns it was stopped on purpose rather than that it
+ * mysteriously died.
+ */
+export const cancelJobInputShape = {
+  jobId: z
+    .string()
+    .regex(JOB_ID_RE, "must look like job-<timestamp>-<8 hex chars>")
+    .describe("The jobId returned by `dispatch`."),
+  reason: z
+    .string()
+    .max(500)
+    .optional()
+    .describe(
+      "Why it is being cancelled, recorded on the job so a later reader knows " +
+        "it was stopped deliberately (e.g. 'superseded by job-...', 'wrong directory').",
+    ),
+} as const;

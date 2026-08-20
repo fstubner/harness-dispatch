@@ -265,3 +265,44 @@ export function assertValidJobId(jobId: string): void {
     );
   }
 }
+
+/**
+ * Cancellation is COOPERATIVE, by a marker file rather than a signal.
+ *
+ * Killing a pid is not available here: jobs run inside pooled supervisors
+ * (SUPERVISOR_POOL_SIZE), and one supervisor runs several jobs at once, so
+ * the only pid recorded against a job belongs to a process that is also
+ * running other people's work. Signalling it would cancel jobs nobody asked
+ * to cancel.
+ *
+ * So the canceller writes a marker and the RUN tears itself down: it drops
+ * out of its event stream, which triggers the dispatcher's own teardown
+ * (killTree on the agent CLI and its children) and releases the workspace
+ * lock through the same path a normal finish uses. The cost is that
+ * cancellation is not instant — it lands within one poll interval.
+ */
+const CANCEL_MARKER = "cancel.json";
+
+export async function requestCancel(jobDir: string, reason?: string): Promise<void> {
+  await writeFile(
+    path.join(jobDir, CANCEL_MARKER),
+    JSON.stringify({ at: timestamp(), ...(reason !== undefined ? { reason } : {}) }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+/** True once a cancel has been requested for this job. Cheap enough to poll. */
+export function cancelRequested(jobDir: string): boolean {
+  return existsSync(path.join(jobDir, CANCEL_MARKER));
+}
+
+/** The reason recorded with a cancel request, if one was given. */
+export async function cancelReason(jobDir: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(path.join(jobDir, CANCEL_MARKER), "utf8");
+    const parsed = JSON.parse(raw) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : undefined;
+  } catch {
+    return undefined;
+  }
+}

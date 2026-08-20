@@ -6,6 +6,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`cancel_job`** — stop a dispatch you already started. Until now the product could
+  start a 60-minute detached run and offer no way to stop it, so a misdirected agent
+  kept spending subscription quota and editing a workspace until it finished or timed
+  out. A queued job stops outright; a running one tears down within about a second,
+  killing the agent CLI and its child processes. Two things it does not do: it does
+  not revert files the agent already changed, and it does not count as a route
+  failure — the caller changing their mind says nothing about whether the route works.
+
 ### Changed
 
 - All three route shapes (`clis:`, `endpoints:`, `services:`) resolve their shared

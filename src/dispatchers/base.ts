@@ -18,6 +18,9 @@ export interface DispatchOpts {
   modelOverride?: string;
   timeoutMs?: number;
   safetyProfile?: SafetyProfile;
+  /** Abort an in-flight run — see StreamSubprocessOpts.signal for why this
+   * cannot be done by returning from the iterator. */
+  signal?: AbortSignal;
 }
 
 export interface Dispatcher {

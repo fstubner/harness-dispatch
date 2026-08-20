@@ -46,6 +46,17 @@ export interface SubprocessEnd {
 export type SubprocessStreamEvent = SubprocessChunk | SubprocessEnd;
 
 export interface StreamSubprocessOpts {
+  /**
+   * Abort the run and kill the child (and its process group) on demand.
+   *
+   * This is the ONLY reliable way to stop a silent child. Calling return() on
+   * the iterator does not work when the consumer is an async generator
+   * suspended at an `await`: the return lands after that await settles, which
+   * for an agent CLI that has gone quiet is never. Cancellation therefore has
+   * to reach terminateChild directly rather than travelling back up the
+   * iterator chain.
+   */
+  signal?: AbortSignal;
   cwd?: string;
   env?: Record<string, string>;
   stdin?: string;
@@ -236,6 +247,11 @@ function realStreamSubprocess(
     terminateChild("SIGTERM");
   }, timeoutMs);
   timer.unref();
+
+  if (opts.signal) {
+    if (opts.signal.aborted) terminateChild("SIGTERM");
+    else opts.signal.addEventListener("abort", () => terminateChild("SIGTERM"), { once: true });
+  }
 
   child.stdout?.on("data", (buf: Buffer) => {
     if (truncated) return;
