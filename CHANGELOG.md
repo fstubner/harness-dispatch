@@ -60,8 +60,9 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [0.5.0] — 2026-08-20
 
-Tagged, and **not yet on npm** — the registry still serves 0.4.0 pending a
-trusted-publisher configuration. Everything below is available from the repository.
+Published to npm on 2026-08-21, with a signed provenance attestation from GitHub
+Actions. Anyone on 0.4.0 should upgrade: that release writes resolved API keys into
+`configure` output and can destroy a hand-written config.
 
 ### Security
 
