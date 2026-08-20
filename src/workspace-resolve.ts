@@ -159,7 +159,7 @@ function toPosix(p: string): string {
  * b/<rel> makes the patch portable and applicable with -p1, which is what
  * every other git patch in the world expects.
  */
-function normaliseNoIndexPaths(patch: string, origRoot: string, isoRoot: string): string {
+export function normaliseNoIndexPaths(patch: string, origRoot: string, isoRoot: string): string {
   if (!patch) return patch;
   // Longest first: when one root is a prefix of the other, stripping the
   // shorter one first would leave a fragment of the longer behind.
@@ -168,7 +168,18 @@ function normaliseNoIndexPaths(patch: string, origRoot: string, isoRoot: string)
     .split("\n")
     .map((line) => {
       let out = line;
-      for (const r of roots) out = out.split(`${r}/`).join("");
+      for (const r of roots) {
+        // The a/ and b/ prefixes are rebuilt explicitly rather than left to a
+        // blanket strip, because a POSIX root already starts with "/": git
+        // emits `a//tmp/proj/app.js`, and removing "/tmp/proj/" from that
+        // leaves "aapp.js" — the prefix eaten, the patch unusable. A Windows
+        // root starts with a drive letter, so the blanket version worked
+        // there and this only failed on POSIX, in CI.
+        out = out.split(`a${r}/`).join("a/").split(`b${r}/`).join("b/");
+        out = out.split(`a/${r}/`).join("a/").split(`b/${r}/`).join("b/");
+        // Anything left over (e.g. a bare path in a "similarity index" line).
+        out = out.split(`${r}/`).join("");
+      }
       return out;
     })
     .join("\n");
