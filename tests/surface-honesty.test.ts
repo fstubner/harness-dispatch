@@ -97,3 +97,40 @@ describe("unknown CLI flags", () => {
     expect(await run(["--help"])).toBe(0);
   });
 });
+
+describe("the docs a user reads must name the tools that actually exist", () => {
+  /**
+   * Adding cancel_job left FIVE documents claiming a three-tool surface:
+   * AGENTS.md, CLAUDE.md, README.md, ux-walkthrough.md and the plugin skill
+   * whose whole job is telling another agent what it can call. Nothing failed
+   * — every test passed with the docs describing a surface that no longer
+   * existed, and the CI smoke check only caught it because it happened to
+   * pin the list too.
+   *
+   * A doc that lists the tools is a promise about the surface, so it is
+   * checked against TOOL_NAMES rather than against a copy of the list.
+   */
+  const docs = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "plugin/skills/delegating-work/SKILL.md",
+  ];
+
+  it.each(docs)("%s names every registered tool", async (rel) => {
+    const { TOOL_NAMES } = await import("../src/mcp/tools.js");
+    const text = await fs.readFile(path.join(process.cwd(), rel), "utf8");
+    const missing = TOOL_NAMES.filter((name) => !text.includes(name));
+    expect(missing, `${rel} does not mention: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("ux-walkthrough states the right tool count", async () => {
+    const { TOOL_NAMES } = await import("../src/mcp/tools.js");
+    const text = await fs.readFile(path.join(process.cwd(), "ux-walkthrough.md"), "utf8");
+    const words = ["zero", "one", "two", "three", "four", "five", "six"];
+    // The walkthrough is what an acceptance reviewer follows literally, so a
+    // stale count sends them looking for a tool that is not there — or worse,
+    // to tick off a surface they did not actually check.
+    expect(text).toContain(`Exactly ${words[TOOL_NAMES.length]}`);
+  });
+});
