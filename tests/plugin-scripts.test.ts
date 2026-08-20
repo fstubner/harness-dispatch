@@ -26,7 +26,12 @@ const installCodex = path.join(repoRoot, "plugin", "scripts", "install-codex.mjs
 let dir: string;
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "hr-plugin-"));
+  // realpath, because macOS hands out /var/folders/... while a spawned
+  // process reports its cwd as the resolved /private/var/folders/... — the
+  // installer prints an absolute path built from ITS cwd, so the expected
+  // value has to be resolved the same way or the assertion only passes on
+  // Linux and Windows.
+  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "hr-plugin-")));
 });
 
 afterEach(async () => {
