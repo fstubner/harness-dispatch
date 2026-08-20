@@ -266,3 +266,45 @@ describe("the copy patch must never touch what the copy excluded", () => {
     expect(await readNorm(path.join(repo, "app.js"))).toBe("const a = 7;\n");
   });
 });
+
+describe("patch path normalisation across platforms", () => {
+  /**
+   * The bug CI found and a Windows machine cannot: on POSIX an absolute root
+   * already starts with "/", so git emits `a//tmp/proj/app.js`. Stripping
+   * "/tmp/proj/" from that ate the `a/` prefix and produced `aapp.js` —
+   * "git diff header lacks filename information". A Windows root starts with
+   * a drive letter, so the same code was fine locally and broken on both
+   * Linux legs and macOS.
+   *
+   * Fed as strings so it pins both shapes wherever the suite runs.
+   */
+  it("rewrites POSIX roots without eating the a/ and b/ prefixes", async () => {
+    const { normaliseNoIndexPaths } = await import("../src/workspace-resolve.js");
+    const patch = [
+      "diff --git a//tmp/run/proj/app.js b//tmp/run/ws/workspace/app.js",
+      "--- a//tmp/run/proj/app.js",
+      "+++ b//tmp/run/ws/workspace/app.js",
+    ].join("\n");
+
+    const out = normaliseNoIndexPaths(patch, "/tmp/run/proj", "/tmp/run/ws/workspace");
+
+    expect(out).toBe(
+      ["diff --git a/app.js b/app.js", "--- a/app.js", "+++ b/app.js"].join("\n"),
+    );
+  });
+
+  it("rewrites Windows roots the same way", async () => {
+    const { normaliseNoIndexPaths } = await import("../src/workspace-resolve.js");
+    const patch = [
+      "diff --git a/C:/run/proj/app.js b/C:/run/ws/workspace/app.js",
+      "--- a/C:/run/proj/app.js",
+      "+++ b/C:/run/ws/workspace/app.js",
+    ].join("\n");
+
+    const out = normaliseNoIndexPaths(patch, "C:/run/proj", "C:/run/ws/workspace");
+
+    expect(out).toBe(
+      ["diff --git a/app.js b/app.js", "--- a/app.js", "+++ b/app.js"].join("\n"),
+    );
+  });
+});
