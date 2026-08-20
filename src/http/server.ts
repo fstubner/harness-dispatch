@@ -228,24 +228,18 @@ async function handleChatCompletions(
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
       const rows = await runFanoutArms(state.router, selected.routes, parsed);
-      writeSse(res, {
-        choices: [
-          {
-            index: 0,
-            delta: {
-              content: JSON.stringify(rows),
-            },
-            finish_reason: null,
+      writeSse(
+        res,
+        sseContent(JSON.stringify(rows), {
+          harness_dispatch: {
+            mode: "fanout",
+            skippedRoutes: selected.skippedRoutes,
+            ...(parsed.workingDirWarning !== undefined
+              ? { warning: parsed.workingDirWarning }
+              : {}),
           },
-        ],
-        harness_dispatch: {
-          mode: "fanout",
-          skippedRoutes: selected.skippedRoutes,
-          ...(parsed.workingDirWarning !== undefined
-            ? { warning: parsed.workingDirWarning }
-            : {}),
-        },
-      });
+        }),
+      );
     } else {
       for await (const { event, decision } of state.router.stream(
         parsed.prompt,
@@ -254,16 +248,12 @@ async function handleChatCompletions(
         { hints: parsed.hints, maxFallbacks: 2 },
       )) {
         if (event.type === "stdout") {
-          writeSse(res, {
-            choices: [
-              {
-                index: 0,
-                delta: { content: event.chunk },
-                finish_reason: null,
-              },
-            ],
-            harness_dispatch: decision ? { route: decision.service } : undefined,
-          });
+          writeSse(
+            res,
+            sseContent(event.chunk, {
+              harness_dispatch: decision ? { route: decision.service } : undefined,
+            }),
+          );
         } else if (event.type === "completion" && !event.result.success) {
           writeSse(res, {
             error: {
@@ -274,9 +264,7 @@ async function handleChatCompletions(
         }
       }
     }
-    writeSse(res, {
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    });
+    writeSse(res, sseStop());
     res.write("data: [DONE]\n\n");
     res.end();
     return;
@@ -362,6 +350,27 @@ async function handleChatCompletions(
   return;
 }
 
+
+/**
+ * One SSE content frame.
+ *
+ * The `choices[0].delta` envelope is what an OpenAI-compatible client parses,
+ * and it was written out as a literal at three call sites — which is both how
+ * the deepest nesting in this file appeared (a data shape indented under a
+ * loop inside a branch) and how the streaming and non-streaming fanout
+ * replies drifted apart in the first place. Built in one place now.
+ */
+function sseContent(content: string, extra?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    choices: [{ index: 0, delta: { content }, finish_reason: null }],
+    ...(extra ?? {}),
+  };
+}
+
+/** The terminal frame every stream ends with, before `[DONE]`. */
+function sseStop(): Record<string, unknown> {
+  return { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+}
 
 function writeSse(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
