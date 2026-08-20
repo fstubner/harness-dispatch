@@ -308,3 +308,67 @@ describe("patch path normalisation across platforms", () => {
     );
   });
 });
+
+describe("a copy workspace that lives INSIDE the project", () => {
+  /**
+   * Both bugs in this block were invisible to the other tests in this file
+   * because their fixtures put the copy in a sibling directory. The product
+   * puts it at <project>/.harness-dispatch/workspaces/..., inside the project
+   * it is isolating from — and that changes two behaviours. Found by running
+   * the tool against a real harness, not by review.
+   */
+  async function nestedCopyRun(): Promise<WorkspaceRun> {
+    const repo = await makeRepo("nested");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    // copyTree omits .harness-dispatch, so the copy holds source files only.
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "app.js"), "const a = 5;\n", "utf8");
+    return {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+  }
+
+  it("does not emit a spurious deletion of the file it is editing", async () => {
+    // git diff --no-index walks into the copy while scanning the project, so
+    // the copy's own app.js is reported as a project file with no counterpart
+    // — a deletion. After path normalisation it collapsed onto the SAME name
+    // as the real change, giving a patch with two conflicting sections:
+    // "delete app.js" followed by "modify app.js". Applying that deleted the
+    // file it was supposed to update.
+    const run = await nestedCopyRun();
+    const patch = await buildWorkspacePatch(run);
+
+    const deletions = patch.split("\n").filter((l) => l.startsWith("+++ /dev/null"));
+    expect(deletions, `patch contained a deletion:\n${patch}`).toEqual([]);
+    expect(patch).toContain("+const a = 5;");
+  });
+
+  it("does not count its own workspace directory as the user's uncommitted work", async () => {
+    // The workspace is created inside the project, so `git status` is never
+    // empty once a copy dispatch has run — and apply refused every time with
+    // "1 uncommitted change": the feature blocked by its own scratch space.
+    const run = await nestedCopyRun();
+    const out = await applyWorkspace("job-1700000000010-aabbccdd", jobDir, run);
+
+    expect(out.applied, out.message).toBe(true);
+    expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe("const a = 5;\n");
+  });
+
+  it("still refuses when the user really does have uncommitted work", async () => {
+    // The fix must not have turned the safety check off.
+    const run = await nestedCopyRun();
+    await fs.writeFile(path.join(run.originalWorkingDir, "mine.js"), "// mine\n", "utf8");
+
+    const out = await applyWorkspace("job-1700000000011-bbccddee", jobDir, run);
+
+    expect(out.applied).toBe(false);
+    expect(out.message).toMatch(/uncommitted/);
+  });
+});
