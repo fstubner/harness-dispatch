@@ -13,12 +13,24 @@ import {
   type McpHandle,
 } from "../mcp/server.js";
 import { buildStatus, buildUsage } from "../status.js";
-import type { RouteHints, RouteSkip, WorkspacePolicy } from "../types.js";
+import type { RouteHints, RouteSkip } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
 import type { Router } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
+import { workingDirWarning } from "../working-dir.js";
 import { getAsyncJob, startAsyncJobTracked } from "../jobs.js";
+import {
+  BadRequestError,
+  completionEnvelope,
+  parseChatRequest,
+  PayloadTooLargeError,
+  readJson,
+} from "./parse.js";
+
+// Re-exported: BadRequestError is part of this module's public surface
+// (tests and the CLI import it from here) and moving its definition should
+// not move where callers get it from.
+export { BadRequestError };
 import type { RuntimeHolder } from "../mcp/config-hot-reload.js";
 
 export interface HttpServerHandle extends McpHandle {
@@ -34,24 +46,7 @@ export interface StartHttpOptions extends BuildMcpOptions {
   token?: string | null;
 }
 
-interface ChatMessage {
-  role?: unknown;
-  content?: unknown;
-}
 
-interface ChatRequest {
-  model?: unknown;
-  messages?: unknown;
-  prompt?: unknown;
-  stream?: unknown;
-  workingDir?: unknown;
-  files?: unknown;
-  mode?: unknown;
-  models?: unknown;
-  hints?: unknown;
-  safetyProfile?: unknown;
-  workspacePolicy?: unknown;
-}
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
   const text = JSON.stringify(body, null, 2);
@@ -76,233 +71,13 @@ function isLoopbackHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
-// Local-only server, but still worth bounding: an unbounded body read lets
-// any authorized (or, if --host is opened beyond loopback, network-adjacent)
-// caller exhaust process memory with one oversized POST.
-const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
 
-/**
- * A request the CALLER can fix — malformed JSON, a missing required field, a
- * working directory that does not exist.
- *
- * Everything except the 413 was returned as 500. PRODUCT.md names CI and cron
- * as consumers of this surface, and retry-on-5xx will happily retry a request
- * that can never succeed. A 4xx says "stop and fix the request", which is the
- * true statement.
- */
-export class BadRequestError extends Error {}
 
-/** Mirrors MAX_CONTEXT_FILES in mcp/tools.ts — the two surfaces must agree. */
-const MAX_CONTEXT_FILES_HTTP = 64;
 
-class PayloadTooLargeError extends Error {}
 
-async function readJson(
-  req: IncomingMessage,
-  maxBytes: number = MAX_REQUEST_BODY_BYTES,
-): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.length;
-    if (total > maxBytes) {
-      // Don't destroy() the socket here — that races with the 413 response
-      // write and the client sees a connection reset instead of a clean
-      // status code. Just stop buffering (the memory-exhaustion risk this
-      // guards against) and let the normal response path write the 413.
-      throw new PayloadTooLargeError(`request body exceeds ${maxBytes} bytes`);
-    }
-    chunks.push(buf);
-  }
-  const text = Buffer.concat(chunks).toString("utf-8");
-  if (!text.trim()) return {};
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    throw new BadRequestError(
-      `request body is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
 
-function contentToText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") return part;
-        if (part && typeof part === "object" && "text" in part) {
-          const text = (part as { text?: unknown }).text;
-          return typeof text === "string" ? text : "";
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
-  return "";
-}
 
-function messagesToPrompt(messages: unknown): string {
-  if (!Array.isArray(messages)) return "";
-  return (messages as ChatMessage[])
-    .map((message) => {
-      const role = typeof message.role === "string" ? message.role : "user";
-      const text = contentToText(message.content);
-      return text ? `${role}: ${text}` : "";
-    })
-    .filter(Boolean)
-    .join("\n\n");
-}
 
-function parseHints(body: ChatRequest): RouteHints {
-  const hints: RouteHints = {};
-  if (typeof body.model === "string" && body.model !== "") hints.model = body.model;
-  if (
-    body.safetyProfile === "read_only" ||
-    body.safetyProfile === "workspace_edit" ||
-    body.safetyProfile === "full_auto"
-  ) {
-    hints.safetyProfile = body.safetyProfile;
-  }
-  if (body.hints && typeof body.hints === "object") {
-    const raw = body.hints as Record<string, unknown>;
-    if (typeof raw.model === "string") hints.model = raw.model;
-    if (
-      raw.taskType === "execute" ||
-      raw.taskType === "plan" ||
-      raw.taskType === "review" ||
-      raw.taskType === "local"
-    ) {
-      hints.taskType = raw.taskType;
-    }
-    if (typeof raw.preferLargeContext === "boolean") {
-      hints.preferLargeContext = raw.preferLargeContext;
-    }
-    if (
-      raw.safetyProfile === "read_only" ||
-      raw.safetyProfile === "workspace_edit" ||
-      raw.safetyProfile === "full_auto"
-    ) {
-      hints.safetyProfile = raw.safetyProfile;
-    }
-    if (
-      raw.workspacePolicy === "shared" ||
-      raw.workspacePolicy === "shared_locked" ||
-      raw.workspacePolicy === "copy" ||
-      raw.workspacePolicy === "git_worktree"
-    ) {
-      hints.workspacePolicy = raw.workspacePolicy;
-    }
-    // routePolicy was never read here at all. evaluateRoutePolicy implements
-    // local_only, approval_required and blocked in full, and on this surface
-    // they were wired to nothing: POST {"hints":{"routePolicy":"blocked"}}
-    // returned 200 and dispatched. PRODUCT.md names CI and cron as this
-    // surface's consumers, and calls a guarantee that reads correctly and does
-    // nothing at runtime its own counter-signal.
-    if (
-      raw.routePolicy === "local_only" ||
-      raw.routePolicy === "approval_required" ||
-      raw.routePolicy === "blocked"
-    ) {
-      hints.routePolicy = raw.routePolicy;
-    }
-    if (typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs)) {
-      hints.timeoutMs = raw.timeoutMs;
-    }
-    // Unknown keys are REJECTED, matching the MCP surface. The whole point of
-    // making hints strict there was that `safety_profile` (the config
-    // spelling) silently disabled a safety limit; accepting it here left the
-    // identical typo failing open on the other surface.
-    const known = new Set([
-      "model",
-      "taskType",
-      "preferLargeContext",
-      "safetyProfile",
-      "workspacePolicy",
-      "routePolicy",
-      "timeoutMs",
-    ]);
-    const unknown = Object.keys(raw).filter((k) => !known.has(k));
-    if (unknown.length > 0) {
-      throw new BadRequestError(
-        `unknown hints key(s): ${unknown.join(", ")}. Valid: ${[...known].join(", ")}.`,
-      );
-    }
-  }
-  if (
-    body.workspacePolicy === "shared" ||
-    body.workspacePolicy === "shared_locked" ||
-    body.workspacePolicy === "copy" ||
-    body.workspacePolicy === "git_worktree"
-  ) {
-    hints.workspacePolicy = body.workspacePolicy;
-  }
-  return hints;
-}
-
-function parseChatRequest(raw: unknown): {
-  prompt: string;
-  files: string[];
-  workingDir: string;
-  workingDirWarning?: string;
-  stream: boolean;
-  mode: "single" | "fanout";
-  models: string[];
-  hints: RouteHints;
-} {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    // Was a plain Error, so `null`, `"hello"` and `42` all returned 500. The
-    // BadRequestError mapping was added for JSON PARSE failures only — same
-    // fix, one of two paths, which is the pattern this file keeps repeating.
-    throw new BadRequestError("request body must be a JSON object");
-  }
-  const body = raw as ChatRequest;
-  const prompt =
-    typeof body.prompt === "string" && body.prompt.trim()
-      ? body.prompt
-      : messagesToPrompt(body.messages);
-  if (!prompt.trim()) throw new BadRequestError("messages or prompt is required");
-  // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
-  // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
-  // exists to prevent, on the surface CI uses.
-  const workingDirError = validateWorkingDir(
-    typeof (body as { workingDir?: unknown }).workingDir === "string"
-      ? ((body as { workingDir?: string }).workingDir as string)
-      : undefined,
-  );
-  if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
-  // Same cap as the MCP surface, and for the same reason: each file's parent
-  // directory becomes an --add-dir grant on CLI routes, so an unbounded list
-  // is an unbounded set of directories handed to a coding agent. The cap was
-  // added at the MCP boundary only; this surface accepted 500.
-  if (Array.isArray(body.files) && body.files.length > MAX_CONTEXT_FILES_HTTP) {
-    throw new BadRequestError(
-      `files: ${body.files.length} entries exceeds the maximum of ${MAX_CONTEXT_FILES_HTTP}.`,
-    );
-  }
-  const files = Array.isArray(body.files)
-    ? body.files.filter((v): v is string => typeof v === "string")
-    : [];
-  const models = Array.isArray(body.models)
-    ? body.models.filter((v): v is string => typeof v === "string")
-    : [];
-  const resolvedWorkingDir = resolveWorkingDir(
-    typeof body.workingDir === "string" ? body.workingDir : undefined,
-  );
-  const warning = workingDirWarning(resolvedWorkingDir);
-  return {
-    prompt,
-    files,
-    workingDir: resolvedWorkingDir.workingDir,
-    ...(warning !== undefined ? { workingDirWarning: warning } : {}),
-    stream: body.stream === true,
-    mode: body.mode === "fanout" ? "fanout" : "single",
-    models,
-    hints: parseHints(body),
-  };
-}
 
 /**
  * Run fanout arms to completion INDEPENDENTLY of one another.
@@ -587,26 +362,6 @@ async function handleChatCompletions(
   return;
 }
 
-function completionEnvelope(
-  content: string,
-  model: string,
-  extra: Record<string, unknown>,
-): Record<string, unknown> {
-  return {
-    id: `chatcmpl-${randomUUID()}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content },
-        finish_reason: "stop",
-      },
-    ],
-    ...extra,
-  };
-}
 
 function writeSse(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
