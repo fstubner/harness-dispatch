@@ -117,7 +117,60 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     ["diff", "--no-index", "--binary", "--", origPosix, isoPosix],
     path.dirname(run.originalWorkingDir),
   );
-  return dropExcludedSections(normaliseNoIndexPaths(raw, origPosix, isoPosix));
+  // Order matters: the workspace itself is filtered out on ABSOLUTE paths,
+  // before normalisation collapses them.
+  const withoutWorkspace = dropSectionsUnder(raw, toPosix(run.workspaceRoot ?? ""));
+  return dropExcludedSections(normaliseNoIndexPaths(withoutWorkspace, origPosix, isoPosix));
+}
+
+/**
+ * Drop patch sections for files inside the workspace directory itself.
+ *
+ * A `copy` workspace lives INSIDE the project (.harness-dispatch/workspaces/),
+ * so `git diff --no-index <project> <copy>` walks into the copy while
+ * scanning the project and reports the copy's own files as project files.
+ * Normalisation then rewrites those paths — they contain the isolated root as
+ * a substring — down to the same names as the real ones, producing a patch
+ * with two conflicting sections per file: a spurious deletion of the copy's
+ * version, and the genuine edit.
+ *
+ * Observed live: `app.js` appeared twice, once "deleted file mode" and once
+ * modified. Applying that would have deleted the file it was meant to update.
+ * It never showed up in unit tests because the fixtures put the copy outside
+ * the project, which is not where the product puts it.
+ */
+function dropSectionsUnder(patch: string, absRoot: string): string {
+  if (!patch || !absRoot) return patch;
+  const lines = patch.split("\n");
+
+  // Section-wise, because the leaked entries cannot be told from legitimate
+  // ones by their header alone. A file the agent ADDED and a copy-of-the-copy
+  // artefact both carry the isolated root on BOTH sides of `diff --git` — the
+  // difference is direction. The artefacts are always deletions (the file
+  // exists under the workspace while scanning the project, and has no
+  // counterpart inside the copy, which excludes its own workspace directory),
+  // and a real addition is always `--- /dev/null`. Filtering on the header
+  // alone dropped every genuine change too, and produced an empty patch.
+  const sections: string[][] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("diff --git ") && current.length > 0) {
+      sections.push(current);
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) sections.push(current);
+
+  const kept = sections.filter((section) => {
+    const header = section[0] ?? "";
+    if (!header.startsWith("diff --git ")) return true;
+    const underWorkspace = header.includes(`${absRoot}/`);
+    if (!underWorkspace) return true;
+    const isDeletion = section.some((l) => l.startsWith("+++ /dev/null"));
+    return !isDeletion;
+  });
+  return kept.map((s) => s.join("\n")).join("\n");
 }
 
 /**
@@ -221,11 +274,27 @@ export async function workspaceDiff(
   };
 }
 
-/** Uncommitted changes in the target, or undefined when it is not a repo. */
+/**
+ * Uncommitted changes in the target, or undefined when it is not a repo.
+ *
+ * The tool's OWN directory is not the user's work. A `copy` workspace is
+ * created at <project>/.harness-dispatch/workspaces/..., so its mere existence
+ * made `git status` non-empty and apply refused every single time with "1
+ * uncommitted change" — the feature blocking itself with its own scratch
+ * space. Only real changes count toward the dirty check.
+ */
 async function dirtyPaths(dir: string): Promise<string[] | undefined> {
   try {
     const out = await git(["status", "--porcelain"], dir);
-    return out.split("\n").map((l) => l.trim()).filter(Boolean);
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((line) => {
+        // Porcelain lines are "XY path"; the path may be quoted.
+        const p = line.slice(2).trim().replace(/^"|"$/g, "").replace(/\\/g, "/");
+        return !(p === ".harness-dispatch" || p.startsWith(".harness-dispatch/"));
+      });
   } catch {
     return undefined;
   }
