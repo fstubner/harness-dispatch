@@ -58,7 +58,5 @@ export {
   type SpanAttrs,
 } from "./observability/index.js";
 
-// Live dashboard (R3)
-export { renderDashboard, type DashboardState } from "./dashboard/live.js";
 
 export { VERSION } from "./version.js";
