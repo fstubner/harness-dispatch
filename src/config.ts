@@ -34,6 +34,10 @@ import {
   warnUnknownTopLevelKeys,
 } from "./config/validation.js";
 import { parseProtocolFields, protocolFrom, stringArrayFrom } from "./config/protocol.js";
+import {
+  effectiveSafetyFrom,
+  resolveSharedRouteFields,
+} from "./config/route-fields.js";
 import { interpolateTree } from "./config/env-interpolation.js";
 
 /** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
@@ -277,50 +281,29 @@ function topLevelSettings(
  * KEY or value inside the map is dropped individually — a typo must not
  * silently widen the floor for a request it was meant to restrict.
  */
-function effectiveSafetyFrom(raw: unknown): SafetyProfile | Partial<Record<SafetyProfile, SafetyProfile>> | undefined {
-  const single = normalizeSafetyProfile(raw);
-  if (single !== undefined) return single;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const out: Partial<Record<SafetyProfile, SafetyProfile>> = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    const requested = normalizeSafetyProfile(key);
-    const floor = normalizeSafetyProfile(value);
-    if (requested !== undefined && floor !== undefined) out[requested] = floor;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
+/**
+ * Billing IDENTITY for a route — the part that genuinely differs per shape.
+ *
+ * Everything that means the same thing everywhere (safety_profile,
+ * effective_safety, workspace_policy, billing_notes, models, …) now comes from
+ * resolveSharedRouteFields instead. What is left here is the set the caller
+ * has already inferred per shape: endpoints derive provider/surface/kind from
+ * the base URL, CLI routes derive them from whether an api_key is present.
+ * This function only reads what it is handed.
+ */
 function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
   const out: Partial<ServiceConfig> = {};
   const provider = providerFrom(raw.provider);
   const surface = surfaceFrom(raw.surface);
   const authSource = authSourceFrom(raw.auth_source);
   const billingKind = billingKindFrom(raw.billing_kind);
-  const billingConfidence = confidenceFrom(raw.billing_confidence);
-  const safetyProfile = normalizeSafetyProfile(raw.safety_profile);
   if (provider !== undefined) out.provider = provider;
   if (surface !== undefined) out.surface = surface;
   if (authSource !== undefined) out.authSource = authSource;
   if (billingKind !== undefined) out.billingKind = billingKind;
-  if (billingConfidence !== undefined) out.billingConfidence = billingConfidence;
   if (typeof raw.paid_usage_possible === "boolean") {
     out.paidUsagePossible = raw.paid_usage_possible;
   }
-  if (typeof raw.allow_paid_usage === "boolean") out.allowPaidUsage = raw.allow_paid_usage;
-  const notes = str(raw.billing_notes);
-  if (notes !== undefined) out.billingNotes = notes;
-  if (safetyProfile !== undefined) out.safetyProfile = safetyProfile;
-  // effective_safety was handled by the `clis:` builder and the legacy
-  // `services:` path but not here, so an `endpoints:` entry declaring it was
-  // silently ignored — the fourth instance of this file's parallel-field-list
-  // defect, and the first one caught by a test rather than by a user or a
-  // reviewer. Practically fail-safe (openai_compatible routes are read_only by
-  // construction, so the ignored value could only have widened them), but the
-  // inconsistency is the bug.
-  const effectiveSafety = effectiveSafetyFrom(raw.effective_safety);
-  if (effectiveSafety !== undefined) out.effectiveSafety = effectiveSafety;
-  const workspacePolicy = workspacePolicyFrom(raw.workspace_policy);
-  if (workspacePolicy !== undefined) out.workspacePolicy = workspacePolicy;
   return out;
 }
 
@@ -396,31 +379,11 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       tier: int(svc.tier, 1),
       weight: num(svc.weight, 1.0),
       cliCapability: num(svc.cli_capability, 1.0),
-      ...(str(svc.leaderboard_model) !== undefined
-        ? { leaderboardModel: str(svc.leaderboard_model)! }
-        : {}),
-      ...(() => {
-        const t = thinkingFrom(svc.thinking_level);
-        return t !== undefined ? { thinkingLevel: t } : {};
-      })(),
-      ...(str(svc.escalate_model) !== undefined
-        ? { escalateModel: str(svc.escalate_model)! }
-        : {}),
       escalateOn: escalateOnFrom(svc.escalate_on),
       capabilities: capsFrom(svc.capabilities),
       ...(() => {
-        // Declared context size drives router.ts's preferLargeContext boost
-        // (not harness name), so a legacy entry that omits these but names
-        // a known harness (e.g. antigravity_cli's 2M context) must still
-        // inherit them — otherwise the boost silently becomes a no-op.
-        const v = typeof svc.max_output_tokens === "number" ? svc.max_output_tokens : harnessDefaults?.maxOutputTokens;
-        return v !== undefined ? { maxOutputTokens: v } : {};
-      })(),
-      ...(() => {
-        const v = typeof svc.max_input_tokens === "number" ? svc.max_input_tokens : harnessDefaults?.maxInputTokens;
-        return v !== undefined ? { maxInputTokens: v } : {};
-      })(),
-      ...(() => {
+        // Billing IDENTITY only — the rest of the named harness's defaults
+        // reach this entry through resolveSharedRouteFields below.
         if (!harnessDefaults) return {};
         return {
           provider: harnessDefaults.provider,
@@ -432,30 +395,19 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
           ...(harnessDefaults.paidUsagePossible !== undefined
             ? { paidUsagePossible: harnessDefaults.paidUsagePossible }
             : {}),
-          ...(harnessDefaults.effectiveSafety !== undefined
-            ? { effectiveSafety: harnessDefaults.effectiveSafety }
-            : {}),
-          ...(harnessDefaults.models !== undefined ? { models: harnessDefaults.models } : {}),
-          ...(harnessDefaults.modelHint !== undefined
-            ? { modelHint: harnessDefaults.modelHint }
-            : {}),
         };
       })(),
       ...billingFields(svc),
-      ...(() => {
-        const effectiveSafety = effectiveSafetyFrom(svc.effective_safety);
-        return effectiveSafety !== undefined ? { effectiveSafety } : {};
-      })(),
-      ...(() => {
-        const models = stringArrayFrom(svc.models);
-        return models !== undefined ? { models } : {};
-      })(),
-      ...(() => {
-        const modelHint = str(svc.model_hint);
-        return modelHint !== undefined ? { modelHint } : {};
-      })(),
+      // The same table the `clis:` and `endpoints:` builders use. This shape
+      // previously read the shared keys through billingFields() plus four
+      // hand-written blocks, which is how it ended up with a DIFFERENT set
+      // again: it inherited maxInput/OutputTokens, effectiveSafety, models and
+      // modelHint from the named harness but not leaderboardModel or
+      // thinkingLevel, so `services: { x: { harness: antigravity_cli } }`
+      // silently lost its scoring key and its thinking level. Passing the
+      // defaults through one table fixes that too.
+      ...resolveSharedRouteFields(svc, harnessDefaults),
       ...endpointFields(svc, type, str(svc.base_url)),
-      ...(typeof svc.timeout_ms === "number" ? { timeoutMs: svc.timeout_ms } : {}),
       ...(() => {
         // Falls back to the named harness's built-in default protocol (if
         // any) when this legacy-format entry doesn't declare its own —
@@ -527,30 +479,13 @@ function buildCliServiceConfig(
     weight: num(override.weight, 1.0),
     tier: int(override.tier, defaults.tier),
     cliCapability: num(override.cli_capability, defaults.cliCapability),
-    leaderboardModel: str(override.leaderboard_model) ?? defaults.leaderboardModel,
-    ...(() => {
-      const overrideThinking = thinkingFrom(override.thinking_level);
-      if (overrideThinking !== undefined) return { thinkingLevel: overrideThinking };
-      if (defaults.thinkingLevel !== undefined) {
-        return { thinkingLevel: defaults.thinkingLevel };
-      }
-      return {};
-    })(),
-    ...(str(override.escalate_model) !== undefined
-      ? { escalateModel: str(override.escalate_model)! }
-      : {}),
     escalateOn: escalateOnFrom(override.escalate_on),
     capabilities: caps,
-    ...(() => {
-      const m = override.max_output_tokens;
-      const v = typeof m === "number" ? m : defaults.maxOutputTokens;
-      return v !== undefined ? { maxOutputTokens: v } : {};
-    })(),
-    ...(() => {
-      const m = override.max_input_tokens;
-      const v = typeof m === "number" ? m : defaults.maxInputTokens;
-      return v !== undefined ? { maxInputTokens: v } : {};
-    })(),
+    // Every field that means the same thing on every route shape, resolved
+    // from ONE table against this harness's shipped defaults. Spread early so
+    // the shape-specific resolutions below (billing identity, which depends on
+    // whether an api_key is present) still win.
+    ...resolveSharedRouteFields(override, defaults),
     provider: providerFrom(override.provider) ?? defaults.provider,
     surface: surfaceFrom(override.surface) ?? defaults.surface,
     authSource: authSourceFrom(override.auth_source) ?? (apiKey ? "api_key" : defaults.authSource),
@@ -584,48 +519,7 @@ function buildCliServiceConfig(
               : defaults.paidUsagePossible;
       return paidUsagePossible !== undefined ? { paidUsagePossible } : {};
     })(),
-    ...(typeof override.allow_paid_usage === "boolean"
-      ? { allowPaidUsage: override.allow_paid_usage }
-      : {}),
-    ...(() => {
-      const c = confidenceFrom(override.billing_confidence);
-      return c !== undefined ? { billingConfidence: c } : {};
-    })(),
-    ...(() => {
-      const notes = str(override.billing_notes);
-      return notes !== undefined ? { billingNotes: notes } : {};
-    })(),
-    ...(() => {
-      const safetyProfile = normalizeSafetyProfile(override.safety_profile);
-      return safetyProfile !== undefined ? { safetyProfile } : {};
-    })(),
-    ...(() => {
-      // `clis:` entries never read this. It was handled for `services:` and
-      // `endpoints:` (both go through billingFields, which this builder does
-      // not call), so `workspace_policy: copy` on the primary, documented way
-      // to define a route was silently dropped and the route fell back to
-      // shared_locked — the LESS isolated default, with no warning, because
-      // the value itself is perfectly valid. The fail-open enum check added
-      // earlier cannot catch this: the key is right and the value is right;
-      // nothing was reading it.
-      const workspacePolicy = workspacePolicyFrom(override.workspace_policy);
-      return workspacePolicy !== undefined ? { workspacePolicy } : {};
-    })(),
-    ...(() => {
-      const effectiveSafety =
-        effectiveSafetyFrom(override.effective_safety) ?? defaults.effectiveSafety;
-      return effectiveSafety !== undefined ? { effectiveSafety } : {};
-    })(),
-    ...(() => {
-      const models = stringArrayFrom(override.models) ?? defaults.models;
-      return models !== undefined ? { models } : {};
-    })(),
-    ...(() => {
-      const modelHint = str(override.model_hint) ?? defaults.modelHint;
-      return modelHint !== undefined ? { modelHint } : {};
-    })(),
     ...endpointFields(override, "cli", str(override.base_url)),
-    ...(typeof override.timeout_ms === "number" ? { timeoutMs: override.timeout_ms } : {}),
     ...(() => {
       // Falls back to this harness's built-in default (if any) when no
       // override is given, or when the override is malformed — protocolFrom
@@ -816,16 +710,6 @@ function addEndpoints(
       weight: num(ep.weight, 0.6),
       tier: int(ep.tier, 3),
       cliCapability: num(ep.cli_capability, 1.0),
-      ...(str(ep.leaderboard_model) !== undefined
-        ? { leaderboardModel: str(ep.leaderboard_model)! }
-        : {}),
-      // escalate_on was honoured here and escalate_model was not — the fifth
-      // instance of this file's parallel-field-list defect, and the second
-      // found by review rather than by the parity test, which pins 16 shared
-      // keys and did not include this one. It does now.
-      ...(str(ep.escalate_model) !== undefined
-        ? { escalateModel: str(ep.escalate_model)! }
-        : {}),
       escalateOn: escalateOnFrom(ep.escalate_on),
       capabilities: capsFrom(ep.capabilities),
       ...billingFields({
@@ -844,21 +728,10 @@ function addEndpoints(
           ep.billing_confidence ?? (inferEndpointProvider(baseUrl) === "custom" ? undefined : "documented"),
       }),
       ...endpointFields(ep, "openai_compatible", baseUrl),
-      ...(typeof ep.timeout_ms === "number" ? { timeoutMs: ep.timeout_ms } : {}),
-      ...(typeof ep.max_output_tokens === "number" ? { maxOutputTokens: ep.max_output_tokens } : {}),
-      ...(typeof ep.max_input_tokens === "number" ? { maxInputTokens: ep.max_input_tokens } : {}),
-      ...(() => {
-        const t = thinkingFrom(ep.thinking_level);
-        return t !== undefined ? { thinkingLevel: t } : {};
-      })(),
-      ...(() => {
-        const models = stringArrayFrom(ep.models);
-        return models !== undefined ? { models } : {};
-      })(),
-      ...(() => {
-        const modelHint = str(ep.model_hint);
-        return modelHint !== undefined ? { modelHint } : {};
-      })(),
+      // No defaults argument: an endpoint has no harness whose shipped
+      // defaults it could fall back to. That absence is exactly why the CLI
+      // path could not simply reuse billingFields() — see route-fields.ts.
+      ...resolveSharedRouteFields(ep),
     };
     services[name] = svc;
   }
