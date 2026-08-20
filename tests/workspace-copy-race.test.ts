@@ -28,12 +28,15 @@ const realFsp = await vi.importActual<typeof import("node:fs/promises")>("node:f
 const vanish = new Set<string>();
 /** A copy failure that is NOT a disappearance, to prove it still propagates. */
 const denied = new Set<string>();
+/** The `mode` argument each copyFile call received, for the reflink check. */
+const copyModes: Array<number | undefined> = [];
 
 vi.mock("node:fs/promises", async () => {
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
   return {
     ...actual,
-    copyFile: async (src: string, dest: string) => {
+    copyFile: async (src: string, dest: string, mode?: number) => {
+      copyModes.push(mode);
       const base = path.basename(String(src));
       if (vanish.has(base)) {
         const err = new Error(`ENOENT: no such file or directory, copyfile '${src}'`) as NodeJS.ErrnoException;
@@ -45,7 +48,7 @@ vi.mock("node:fs/promises", async () => {
         err.code = "EACCES";
         throw err;
       }
-      return actual.copyFile(src, dest);
+      return actual.copyFile(src, dest, mode);
     },
   };
 });
@@ -57,6 +60,7 @@ let dir: string;
 beforeEach(async () => {
   vanish.clear();
   denied.clear();
+  copyModes.length = 0;
   dir = await realFsp.mkdtemp(path.join(os.tmpdir(), "hr-copyrace-"));
   await realFsp.writeFile(path.join(dir, "keep.js"), "export const a = 1;\n", "utf8");
   await realFsp.writeFile(path.join(dir, "doomed.js"), "export const b = 2;\n", "utf8");
@@ -101,5 +105,29 @@ describe("copying a directory that is being written to", () => {
     await expect(
       prepareWorkspace({ policy: "copy", routeName: "probe", workingDir: dir, files: [] }),
     ).rejects.toThrow(/EACCES/);
+  });
+});
+
+describe("workspace copies ask for a reflink", () => {
+  /**
+   * `copy` duplicates a whole project per dispatch, and fanout does it per
+   * arm, so the copy is the setup cost that matters. COPYFILE_FICLONE asks
+   * the filesystem to share blocks instead of duplicating them — instant and
+   * allocation-free on APFS, Btrfs/XFS and ReFS/Dev Drive.
+   *
+   * FICLONE and not FICLONE_FORCE is the load-bearing detail: the plain flag
+   * degrades to an ordinary copy where reflinks are unsupported (plain NTFS,
+   * ext4, cross-device), while FORCE would turn a working copy into an error
+   * on most machines. This asserts the weaker, safe flag specifically.
+   */
+  it("passes COPYFILE_FICLONE, not FICLONE_FORCE", async () => {
+    const { constants } = await import("node:fs");
+    await prepareWorkspace({ policy: "copy", routeName: "probe", workingDir: dir, files: [] });
+
+    expect(copyModes.length).toBeGreaterThan(0);
+    for (const mode of copyModes) {
+      expect(mode).toBe(constants.COPYFILE_FICLONE);
+      expect(mode).not.toBe(constants.COPYFILE_FICLONE_FORCE);
+    }
   });
 });

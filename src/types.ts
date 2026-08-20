@@ -394,6 +394,20 @@ export interface ServiceConfig {
   endpointMode?: EndpointMode;
   endpointProvider?: EndpointProvider;
   wireProtocol?: WireProtocol;
+  /**
+   * How much of the concurrency budget one run of this route consumes.
+   *
+   * `max_concurrent_runs` counted jobs, which treated an HTTP call to a local
+   * endpoint as costing the same as a whole Claude Code process — so four
+   * cheap endpoint calls could exclude a real dispatch, and the bound could
+   * not be raised without also allowing four heavyweight CLIs. Weighting the
+   * count fixes both directions.
+   *
+   * Defaults to 1.0 for CLI routes and 0.1 for openai_compatible endpoints.
+   * With every weight at 1.0 the arithmetic is exactly the old count, so
+   * existing configs behave identically.
+   */
+  resourceWeight?: number;
   workspacePolicy?: WorkspacePolicy;
   /** Required when `harness: "generic"` — see CliProtocolConfig. Ignored otherwise. */
   protocol?: CliProtocolConfig;

@@ -114,7 +114,7 @@ export const KNOWN_ROUTE_KEYS = new Set([
   "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
   "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
-  "leaderboard_model", "escalate_model", "escalate_on",
+  "leaderboard_model", "escalate_model", "escalate_on", "resource_weight",
   "api_key", "base_url", "protocol", "filter",
   "provider", "surface", "auth_source", "billing_kind", "billing_confidence",
   "billing_notes", "paid_usage_possible", "allow_paid_usage",

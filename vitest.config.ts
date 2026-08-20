@@ -5,6 +5,24 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     setupFiles: ["tests/setup-env.ts"],
     environment: "node",
+    // Test FILES run one at a time.
+    //
+    // A large share of this suite drives real OS processes — detached job
+    // runners, supervisors, agent-CLI stubs, git, cross-process lock probes.
+    // Running those files concurrently stacks dozens of spawns on one machine
+    // and they start timing out: a full-suite run produced four failures
+    // (job-runner, breaker-concurrent, stream-subprocess, slot-queue) that
+    // every one of them passed in isolation, and the same run passed
+    // completely with parallelism off. It also explains an earlier
+    // intermittent failure in the copy-isolated fanout test that could not be
+    // reproduced on demand — the suite had simply not yet grown past the
+    // threshold.
+    //
+    // The cost is wall-clock: about 2 minutes serial against roughly 45
+    // seconds parallel. That is the right trade. A suite that fails four
+    // random tests per run teaches people to re-run until green, which is how
+    // a real regression gets waved through as "just the flaky one".
+    fileParallelism: false,
     testTimeout: 15_000,
     hookTimeout: 15_000,
     coverage: {
