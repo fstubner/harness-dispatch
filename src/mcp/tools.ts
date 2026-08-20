@@ -31,12 +31,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
-import { getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobStatus } from "../jobs.js";
+import { cancelJob, getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobStatus } from "../jobs.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { buildStatus, buildUsage, redactEndpointHost } from "../status.js";
 import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 import {
+  cancelJobInputShape,
   DEFAULT_GRACE_SECONDS,
   dispatchInputShape,
   JOB_ID_RE,
@@ -71,7 +72,7 @@ import {
  */
 
 
-export const TOOL_NAMES = ["dispatch", "job_status", "usage"] as const;
+export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "usage"] as const;
 
 export interface RouteResponse {
   success: boolean;
@@ -600,6 +601,10 @@ export async function handleDispatch(
 /** Most-recent jobs returned by the list view. */
 const LIST_LIMIT = 20;
 
+export async function handleCancelJob(args: { jobId: string; reason?: string | undefined }) {
+  return cancelJob(args.jobId, args.reason);
+}
+
 export async function handleJobStatus(
   input: z.infer<z.ZodObject<typeof jobStatusInputShape>>,
 ): Promise<unknown> {
@@ -735,6 +740,25 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   );
 
   server.registerTool(
+    "cancel_job",
+    {
+      title: "Stop a running or queued dispatch",
+      description:
+        "Stop work started by `dispatch` — use it when a run is going the wrong way, " +
+        "was sent to the wrong directory, or has been superseded. A job still waiting " +
+        "for a slot stops outright; a running one is asked to tear down and stops " +
+        "within about a second (poll `job_status` to see it land), killing the agent " +
+        "CLI and its child processes. TWO THINGS TO KNOW: files the agent already " +
+        "changed are NOT reverted — this stops further work, it is not a rollback; and " +
+        "a cancelled run is not counted as a route failure, so cancelling costs the " +
+        "route nothing. Cancelling an already-finished job is a harmless no-op that " +
+        "reports what it found.",
+      inputSchema: cancelJobInputShape,
+    },
+    async (args) => jsonText(await handleCancelJob(args)),
+  );
+
+  server.registerTool(
     "usage",
     {
       title: "Check current usage",
@@ -766,6 +790,10 @@ export async function invokeTool(
   if (name === "dispatch") {
     const parsed = z.object(dispatchInputShape).parse(args);
     return { kind: "json", data: await handleDispatch(deps, parsed) };
+  }
+  if (name === "cancel_job") {
+    const parsed = z.object(cancelJobInputShape).parse(args ?? {});
+    return { kind: "json", data: await handleCancelJob(parsed) };
   }
   if (name === "job_status") {
     const parsed = z.object(jobStatusInputShape).parse(args ?? {});

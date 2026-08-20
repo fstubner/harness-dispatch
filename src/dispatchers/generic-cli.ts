@@ -382,6 +382,9 @@ export class GenericCliDispatcher extends BaseDispatcher {
     if (effectiveWorkingDir) subOpts.cwd = effectiveWorkingDir;
     if (protocol.stdin) subOpts.stdin = fullPrompt;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
+    // Cancellation reaches the child here, not by unwinding the iterator —
+    // an agent CLI that has gone silent cannot be interrupted any other way.
+    if (opts.signal) subOpts.signal = opts.signal;
 
     const stdoutBuf: string[] = [];
     const stderrBuf: string[] = [];

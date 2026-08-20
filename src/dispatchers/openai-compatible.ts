@@ -450,6 +450,13 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
+    // A cancellation aborts the in-flight request the same way the timeout
+    // does, so a cancelled endpoint call stops paying for tokens it will
+    // never read.
+    if (opts?.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
 
     let res: Response;
     try {
@@ -567,6 +574,13 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref?.();
+    // A cancellation aborts the in-flight request the same way the timeout
+    // does, so a cancelled endpoint call stops paying for tokens it will
+    // never read.
+    if (opts?.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
 
     let res: Response;
     try {

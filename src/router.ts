@@ -107,6 +107,8 @@ function unknownServiceError(service: string, valid: string[]): string {
  * per-task model escalation (escalateOn/escalateModel).
  */
 export interface ExplicitDispatchOpts {
+  /** Abort an in-flight run; forwarded to the dispatcher and on to the child. */
+  signal?: AbortSignal;
   safetyProfile?: SafetyProfile;
   workspacePolicy?: ServiceConfig["workspacePolicy"];
   routePolicy?: import("./types.js").RoutePolicy;
@@ -555,7 +557,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number; signal?: AbortSignal } = {},
   ): AsyncIterable<RouterStreamEvent> {
     return this.#runStream(prompt, files, workingDir, opts);
   }
@@ -564,7 +566,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number },
+    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number; signal?: AbortSignal },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
     const maxFallbacks = opts.maxFallbacks ?? 2;
@@ -616,7 +618,8 @@ export class Router {
         modelOverride?: string;
         safetyProfile?: import("./types.js").SafetyProfile;
         timeoutMs?: number;
-      } = {};
+      signal?: AbortSignal;
+              } = {};
       if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
       if (decision.effectiveSafetyProfile !== undefined) {
         dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
@@ -633,6 +636,7 @@ export class Router {
         effectiveTimeoutMs = Math.max(remaining, 1);
       }
       if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
+      if (opts.signal) dispatchOpts.signal = opts.signal;
 
       let finalResult: DispatchResult | null = null;
       for await (const event of streamWithWorkspacePolicy(
@@ -781,6 +785,7 @@ export class Router {
       modelOverride?: string;
       safetyProfile?: import("./types.js").SafetyProfile;
       timeoutMs?: number;
+      signal?: AbortSignal;
     } = {};
     if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
     if (decision.effectiveSafetyProfile !== undefined) {
@@ -788,6 +793,7 @@ export class Router {
     }
     const effectiveTimeoutMs = opts.timeoutMs ?? svc.timeoutMs ?? opts.defaultTimeoutMs;
     if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
+    if (opts.signal) dispatchOpts.signal = opts.signal;
 
     let finalResult: DispatchResult | null = null;
     for await (const event of streamWithWorkspacePolicy(
@@ -831,7 +837,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     return withRouterSpan(
       {
@@ -854,7 +860,7 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number } = {},
+    opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     const hints = opts.hints ?? {};
     const maxFallbacks = opts.maxFallbacks ?? 2;
@@ -895,7 +901,8 @@ export class Router {
         modelOverride?: string;
         safetyProfile?: import("./types.js").SafetyProfile;
         timeoutMs?: number;
-      } = {};
+      signal?: AbortSignal;
+              } = {};
       if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
       if (decision.effectiveSafetyProfile !== undefined) {
         dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
@@ -904,6 +911,7 @@ export class Router {
         const effectiveTimeoutMs =
           hints.timeoutMs ?? this.config.services[decision.service]!.timeoutMs;
         if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
+        if (opts.signal) dispatchOpts.signal = opts.signal;
       }
       // Prefer the buffered dispatch path when it's available — many R1/R2
       // tests assert on dispatcher.dispatch being called once; if we always
@@ -1056,6 +1064,7 @@ export class Router {
       modelOverride?: string;
       safetyProfile?: import("./types.js").SafetyProfile;
       timeoutMs?: number;
+      signal?: AbortSignal;
     } = {};
     if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
     if (decision.effectiveSafetyProfile !== undefined) {
@@ -1064,6 +1073,7 @@ export class Router {
     {
       const effectiveTimeoutMs = opts.timeoutMs ?? svc.timeoutMs;
       if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
+      if (opts.signal) dispatchOpts.signal = opts.signal;
     }
     const result = await withWorkspacePolicy(
       svc,
