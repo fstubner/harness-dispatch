@@ -1,13 +1,22 @@
 /**
  * Live dashboard renderer for harness-dispatch.
  *
- * Pure function `renderDashboard(state)` → ANSI-formatted string. Consumed
- * by:
- *   - legacy dashboard tests.
- *   - the hidden `dashboard --watch` compatibility alias.
+ * NOTHING IN THE PRODUCT CALLS THIS. The header used to claim it backed "the
+ * hidden `dashboard --watch` compatibility alias"; that alias maps to
+ * cmdStatus, which renders through status.ts's renderStatusText instead. The
+ * only remaining consumers are this module's own tests and the package's
+ * public export (src/index.ts), for library callers who want to render a
+ * snapshot themselves.
  *
- * Keeping the renderer pure (no I/O) makes it unit-testable with a simple
- * snapshot-style assertion.
+ * `recentEvents` in particular is never populated by anything here — no code
+ * path feeds it, so the "Recent Activity" section only ever appears for a
+ * caller that assembles the state by hand.
+ *
+ * Kept for now rather than deleted because it is exported API; if it stays,
+ * note that `evt.message` is written to the terminal with only a length cap
+ * and no control-character stripping, and harness stderr can carry ANSI.
+ *
+ * Pure (no I/O), which is what makes it unit-testable at all.
  */
 
 import type { ServiceConfig } from "../types.js";

@@ -39,21 +39,37 @@ function resolveBin() {
 
 function resolveConfigArgs() {
   const fromEnv = process.env.HARNESS_DISPATCH_CONFIG;
-  if (fromEnv && existsSync(fromEnv)) return ["--config", fromEnv];
+  // Passed through WITHOUT an existence check, deliberately. Gating on
+  // existsSync meant a typo'd or stale HARNESS_DISPATCH_CONFIG silently fell
+  // through to auto-detection: the server came up healthy on built-in
+  // defaults, with none of the routes, safety floors or workspace policies
+  // the operator had written. The CLI treats an explicit --config that is not
+  // there as a hard error for exactly this reason ("config file not found"),
+  // and the launcher must not soften it — so hand the path over and let the
+  // server produce that message.
+  if (fromEnv) return ["--config", fromEnv];
+  // The conventional location is different: its ABSENCE is the normal case
+  // for someone who never wrote a config, so falling through is right here.
   const userConfig = path.join(homedir(), ".harness-dispatch", "config.yaml");
   if (existsSync(userConfig)) return ["--config", userConfig];
   return [];
 }
 
 /**
- * Quote one argument for cmd.exe.
+ * Quote one argument for cmd.exe, doubling any embedded quote.
  *
- * Only used on the Windows shell path below. Wrapping in double quotes is
- * enough here because a Windows path cannot itself contain `"` — it is an
- * illegal filename character — so there is no quote to escape out of.
+ * Only used on the Windows shell path below. The doubling is cmd.exe's own
+ * escape and is kept IDENTICAL to install-codex.mjs's copy: the two versions
+ * had drifted, this one omitting the doubling on the argument that a Windows
+ * path can never contain `"` anyway. That reasoning was sound and the drift
+ * still was not — a security-sensitive quoter that differs between two files
+ * in one directory is one edit away from the weaker one being copied
+ * somewhere the argument is not a path.
  */
 function quoteForCmd(arg) {
-  return /[\s&|<>^()"]/.test(arg) ? `"${arg}"` : arg;
+  const s = String(arg);
+  const escaped = s.replace(/"/g, '""');
+  return /[\s&|<>^()"]/.test(s) ? `"${escaped}"` : escaped;
 }
 
 const bin = resolveBin();
