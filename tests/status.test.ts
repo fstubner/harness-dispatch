@@ -166,6 +166,37 @@ describe("renderUsageText", () => {
     expect(text).toContain("breaker=closed");
   });
 
+  it("shows token totals, which reached --json and the MCP tool but not the text a human reads", () => {
+    // The one surface people actually type at was the one that never showed
+    // them, while the changelog advertised token totals in `usage`.
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "claude_code_cli",
+          quota: {
+            score: 1,
+            localCallCount: 9,
+            localSuccessCount: 9,
+            localFailureCount: 0,
+            localInputTokens: 466_703,
+            localOutputTokens: 12_400,
+          },
+        }),
+      ],
+      ["claude_code_cli"],
+    );
+    const text = renderUsageText(buildUsage(status));
+    expect(text).toMatch(/tokens: in=467k out=12k/);
+  });
+
+  it("omits the tokens line when the harness reported nothing, rather than claiming zero", () => {
+    // "in=0 out=0" asserts nothing was spent. What actually happened is that
+    // the harness told us nothing — a different claim, and the one the
+    // changelog is careful to make.
+    const status = makeStatus([makeRoute({ id: "codex" })], ["codex"]);
+    expect(renderUsageText(buildUsage(status))).not.toContain("tokens:");
+  });
+
   it("includes a models: line with the declared discovery hint when present", () => {
     const status = makeStatus(
       [

@@ -343,6 +343,14 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
         ` quota=${quota} ` +
         `billing=${route.billingKind} breaker=${route.breakerTripped ? "open" : "closed"}`,
     );
+    // Tokens were reaching `usage --json` and the MCP tool but never the text
+    // output a human reads, so the one surface people actually type at was the
+    // one that never showed them. Omitted when both are zero: a harness that
+    // reports nothing would otherwise print "tokens: in=0 out=0" and read as
+    // "nothing was spent", which is a different claim.
+    if (route.inputTokens > 0 || route.outputTokens > 0) {
+      lines.push(`  tokens: in=${fmtTokens(route.inputTokens)} out=${fmtTokens(route.outputTokens)}`);
+    }
     if (route.modelHint) lines.push(`  models: ${route.modelHint}`);
   }
   return lines.join("\n");

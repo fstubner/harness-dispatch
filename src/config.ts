@@ -809,6 +809,32 @@ export interface LoadConfigOptions {
  *
  * Supports ${ENV_VAR} interpolation for any string value.
  */
+/**
+ * The config file a process should load: an explicit `--config`, else
+ * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else nothing
+ * (auto-detect).
+ *
+ * ONE function because there used to be two, and they disagreed. job-runner.ts
+ * read the environment variable and bin.ts did not, while job-runner's own
+ * header claimed the two mirrored each other. With the variable set in the
+ * ambient environment, the server routed on auto-detected defaults and the
+ * runner it spawned loaded a different file — the two halves of a single
+ * dispatch working from different configs, with nothing reporting it. A
+ * variable pointing at a file that does not exist was likewise ignored
+ * outright by the CLI and the server, which CHANGELOG 0.6.0 claimed was
+ * reported.
+ *
+ * A path from the variable is treated as EXPLICIT, so a missing file is an
+ * error rather than a silent fall-through to auto-detect: someone who exported
+ * it meant it.
+ */
+export function resolveConfigPath(explicit?: string): string | undefined {
+  if (explicit !== undefined) return explicit;
+  const fromEnv = process.env["HARNESS_DISPATCH_CONFIG"];
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  return existsSync("config.yaml") ? "config.yaml" : undefined;
+}
+
 export async function loadConfig(
   path?: string,
   opts: LoadConfigOptions = {},

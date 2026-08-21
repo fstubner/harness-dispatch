@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 import yaml from "js-yaml";
 
 import { ensureHttpToken, maskToken, readHttpToken, rotateHttpToken, tokenPath } from "./auth.js";
-import { AUTO_DETECT_COMMANDS, loadConfig } from "./config.js";
+import { AUTO_DETECT_COMMANDS, loadConfig, resolveConfigPath } from "./config.js";
 import { LeaderboardCache } from "./leaderboard.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
@@ -586,9 +586,9 @@ export async function main(argv: string[]): Promise<number> {
     throw new UsageError("--config needs a path, e.g. --config ./config.yaml");
   }
   const explicitConfigPath = values.config as string | undefined;
-  // If the caller didn't pass --config, fall back to ./config.yaml when it
-  // exists, rather than silently ignoring it and running pure auto-detect.
-  const configPath = explicitConfigPath ?? (existsSync("config.yaml") ? "config.yaml" : undefined);
+  // Shared with job-runner.ts so the server and the runners it spawns cannot
+  // resolve different files — see resolveConfigPath.
+  const configPath = resolveConfigPath(explicitConfigPath);
 
   if (command === undefined) {
     const handle = await startMcpServer(configPath === undefined ? {} : { configPath });
