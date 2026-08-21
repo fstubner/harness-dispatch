@@ -6,6 +6,30 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-21
+
+Two defects found by an independent acceptance pass against 0.6.0, both
+contradicting something the release claimed.
+
+### Fixed
+
+- `usage` token totals were meaningless for Claude Code. Anthropic splits a
+  turn's input across three sibling fields, and only the first — the uncached
+  remainder — was read: a turn that consumed 55,213 input tokens was recorded as
+  2, and a route showed 28 input tokens across 58 real calls. Cached input is
+  now counted, via a new `input_extra`/`output_extra` list on a protocol's
+  `usage` mapping whose entries are SUMMED, as against `input`/`output`, which
+  are alternative spellings of one quantity and stay first-match-wins. 0.6.0
+  advertised token totals; the number it printed was four orders of magnitude
+  low.
+- `configure` no longer drops an `api_key: ${VAR}` reference when the variable
+  is not set in the current shell. The reference resolved to an empty string,
+  which is indistinguishable from "this route has no key", so the route was
+  re-emitted with no `api_key` line at all — and `configure --yes --force`
+  wrote that over a working config, silently deleting the key. References are
+  now recorded per route before interpolation, which is the only point at which
+  an unset variable is still distinguishable from any other unset variable.
+
 ## [0.6.0] — 2026-08-21
 
 The job lifecycle is complete: start, watch, **stop**, **retry**, and **resolve the
@@ -146,7 +170,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/fstubner/harness-dispatch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fstubner/harness-dispatch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/fstubner/harness-dispatch/releases/tag/v0.4.0

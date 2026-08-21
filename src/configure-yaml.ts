@@ -78,6 +78,9 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
  *
  * `config.envRefs` maps the resolved value back to the reference that
  * produced it, so a key that came from `${GROQ_API_KEY}` round-trips exactly.
+ * `config.apiKeyRefs` covers the case envRefs structurally cannot — a
+ * reference whose variable is unset, which resolves to "" and so has no
+ * distinct value to key on.
  *
  * A key written as a LITERAL in the source file has no reference to restore.
  * That case splits by destination: `--yes` writes to disk, where the literal
@@ -90,8 +93,13 @@ function apiKeyForYaml(
   config: RouterConfig,
   opts: { redactLiterals: boolean },
 ): string | undefined {
-  if (svc.apiKey === undefined || svc.apiKey === "") return undefined;
-  const ref = config.envRefs?.get(svc.apiKey);
+  // An UNSET ${VAR} resolves to "", so an empty apiKey is ambiguous: either
+  // the route never had a key, or it had a reference whose variable was not
+  // exported in this shell. config.apiKeyRefs, read before interpolation,
+  // tells the two apart — without it, `configure --yes --force` on such a
+  // shell silently rewrote a working config with the key deleted.
+  if (svc.apiKey === undefined || svc.apiKey === "") return config.apiKeyRefs?.get(svc.name);
+  const ref = config.envRefs?.get(svc.apiKey) ?? config.apiKeyRefs?.get(svc.name);
   if (ref !== undefined) return ref;
   if (!opts.redactLiterals) return svc.apiKey;
   // protocol.apiKeyEnvVar is the var the CHILD CLI reads, which is only a

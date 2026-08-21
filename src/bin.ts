@@ -99,7 +99,8 @@ async function cmdConfigure(
       (svc) =>
         svc.apiKey !== undefined &&
         svc.apiKey !== "" &&
-        config.envRefs?.get(svc.apiKey) === undefined,
+        config.envRefs?.get(svc.apiKey) === undefined &&
+        config.apiKeyRefs?.get(svc.name) === undefined,
     );
     if (redacted) {
       process.stderr.write(

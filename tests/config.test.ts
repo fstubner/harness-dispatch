@@ -445,6 +445,24 @@ overrides:
     expect(cfg.services.claude_code_cli!.model).toBe("custom-model-1");
   });
 
+  it("carries Claude's cache token fields from the shipped defaults into the protocol", async () => {
+    // The mechanism is tested in generic-cli.test.ts; this tests the WIRING,
+    // which is the half that has failed repeatedly here — a correctly spelled,
+    // correctly valued setting read by one shape and dropped by another. If
+    // config.default.yaml declares input_extra and protocol.ts does not parse
+    // it, the dispatcher sums an undefined list and `usage` stays wrong with
+    // nothing to show for the fix.
+    const p = await writeTmpYaml(
+      "cachefields.yaml",
+      "clis:\n  - name: probe\n    harness: claude_code\n",
+    );
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(cfg.services.probe!.protocol?.output.usage?.inputExtra).toEqual([
+      "usage.cache_creation_input_tokens",
+      "usage.cache_read_input_tokens",
+    ]);
+  });
+
   it("interpolates a reference EMBEDDED in a longer string, as the shipped config promises", async () => {
     // config.default.yaml has said "anywhere in a string value" all along; the
     // implementation was anchored to whole-string matches, so

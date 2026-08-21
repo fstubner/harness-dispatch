@@ -448,6 +448,49 @@ describe("GenericCliDispatcher", () => {
     expect(opts?.env?.["MY_CLI_API_KEY"]).toBe("");
   });
 
+  it("sums input_extra on top of input, and keeps input itself first-match", async () => {
+    // Anthropic SPLITS a turn's input across three siblings: input_tokens is
+    // only the uncached remainder. Reading the first present field alone
+    // recorded 2 tokens for a turn that consumed 55,213, which made `usage`
+    // totals meaningless — the shipped claim was "token totals", and the
+    // number was four orders of magnitude low.
+    //
+    // The two lists cannot be merged into one. `input` holds ALTERNATIVE
+    // spellings of the same quantity (Anthropic's input_tokens vs OpenAI's
+    // prompt_tokens); summing those would double-count.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: JSON.stringify({
+          result: "done",
+          usage: {
+            input_tokens: 2,
+            prompt_tokens: 999, // alternative spelling — must NOT be added
+            cache_creation_input_tokens: 34141,
+            cache_read_input_tokens: 21070,
+            output_tokens: 97,
+          },
+        }),
+      }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        output: {
+          mode: "json_field",
+          fields: ["result"],
+          usage: {
+            input: ["usage.input_tokens", "usage.prompt_tokens"],
+            inputExtra: ["usage.cache_creation_input_tokens", "usage.cache_read_input_tokens"],
+            output: ["usage.output_tokens"],
+          },
+        },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.tokensUsed).toEqual({ input: 55213, output: 97 });
+  });
+
   describe("output mode 'jsonl_stream' with eventRules — Codex-parity event semantics", () => {
     const codexLikeRules = [
       {

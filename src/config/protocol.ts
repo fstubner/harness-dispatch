@@ -141,7 +141,16 @@ export function parseProtocolFields(
       const u = usageRaw as Record<string, unknown>;
       const input = stringArrayFrom(u.input);
       const outputTokens = stringArrayFrom(u.output);
-      if (input !== undefined && outputTokens !== undefined) output.usage = { input, output: outputTokens };
+      if (input !== undefined && outputTokens !== undefined) {
+        const inputExtra = stringArrayFrom(u.input_extra);
+        const outputExtra = stringArrayFrom(u.output_extra);
+        output.usage = {
+          input,
+          output: outputTokens,
+          ...(inputExtra !== undefined ? { inputExtra } : {}),
+          ...(outputExtra !== undefined ? { outputExtra } : {}),
+        };
+      }
     }
     const eventRulesRaw = o.event_rules;
     if (Array.isArray(eventRulesRaw)) {
