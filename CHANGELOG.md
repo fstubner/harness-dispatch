@@ -6,6 +6,12 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-21
+
+The job lifecycle is complete: start, watch, **stop**, **retry**, and **resolve the
+isolated result**. Every verb was exercised against real harness CLIs rather than
+fakes. The MCP surface grows from three tools to six.
+
 ### Added
 
 - **`retry_job`** — run a finished job's task again from its own record: the same
@@ -26,6 +32,11 @@ pre-1.0, so minor versions can carry behaviour changes.
   project has uncommitted changes, because the patch was built against a clean base),
   and `"discard"` removes the workspace. The patch is always written to the job
   directory, so applying it by hand is available even when the automatic path declines.
+- **`resource_weight`** on a route — the concurrency bound now counts CAPACITY, not
+  jobs. `max_concurrent_runs` priced an HTTP call to a local endpoint the same as a
+  whole Claude Code process, so four cheap endpoint calls could lock out a real
+  dispatch. Defaults to 1.0 for CLI routes and 0.1 for endpoints; with every weight at
+  1.0 the arithmetic is exactly the old count, so existing configs are unchanged.
 - **`cancel_job`** — stop a dispatch you already started. Until now the product could
   start a 60-minute detached run and offer no way to stop it, so a misdirected agent
   kept spending subscription quota and editing a workspace until it finished or timed
@@ -55,6 +66,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Copying a live working directory survives a file disappearing mid-copy. A working
+  directory is being written to while it is read — an editor saving, a build watcher
+  cleaning, another fanout arm — and any of those used to fail the whole dispatch with
+  a raw ENOENT. A vanished file is now skipped and named in the workspace notes; a
+  permission error or a full disk still fails loudly.
+- Workspace copies ask the filesystem for a copy-on-write reflink
+  (`COPYFILE_FICLONE`), which makes a clone near-instant and allocation-free on APFS,
+  Btrfs/XFS and ReFS/Dev Drive, and falls back to an ordinary copy everywhere else.
+- `workspace` on a `copy` job no longer emits a spurious deletion of the file it is
+  editing, and no longer refuses to apply because of its own scratch directory. The
+  workspace lives inside the project, which broke both.
 - Live agent smoke tests no longer write circuit-breaker state into the real install,
   so a smoke failure cannot block a healthy route for real dispatches.
 
@@ -124,6 +146,7 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/fstubner/harness-dispatch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fstubner/harness-dispatch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/fstubner/harness-dispatch/releases/tag/v0.4.0
