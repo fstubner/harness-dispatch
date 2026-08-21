@@ -71,10 +71,58 @@ beforeEach(async () => {
   vi.stubEnv("HARNESS_DISPATCH_INPROC_JOBS", "");
 });
 
+/**
+ * Wait until no supervisor process is still alive in this test's jobs root.
+ *
+ * A supervisor OUTLIVES the jobs it runs — that is the point of pooling it —
+ * so awaiting `completion` says nothing about whether the process is gone. It
+ * stays up until it has been idle for SUPERVISOR_IDLE_EXIT_MS, holding an open
+ * stdio handle on `<jobs>/.supervisors/spawn-<id>.log` the whole time. Deleting
+ * the tree under it raced that: on Windows an open handle blocks the delete and
+ * the rmdir fails with ENOTEMPTY, surfacing as a failure of whichever test
+ * happened to run last. Seen on the windows-latest CI runner, which is slow
+ * enough to widen the window; the race exists on every platform.
+ *
+ * Liveness is read from the `<id>.txt` heartbeats, which a supervisor rewrites
+ * several times a second and deletes on its way out. The `spawn-*.log` files
+ * are deliberately NOT counted: nothing ever removes them, so waiting for the
+ * directory to be empty would wait forever — which is how the first attempt at
+ * this fix timed out instead of fixing anything.
+ *
+ * A heartbeat that has stopped advancing means the process died without
+ * cleaning up. That is counted as gone rather than waited on, so a crashed
+ * supervisor cannot hang teardown. The ceiling bounds the pathological case and
+ * falls through to the retrying rm below rather than failing an innocent test.
+ */
+const BEAT_STALE_MS = 3_000;
+
+async function waitForSupervisorsToExit(ceilingMs = 30_000): Promise<void> {
+  const beatDir = path.join(jobsDir, ".supervisors");
+  const deadline = Date.now() + ceilingMs;
+  for (;;) {
+    let live = 0;
+    try {
+      for (const name of await fs.readdir(beatDir)) {
+        if (!name.endsWith(".txt")) continue; // spawn-*.log is never cleaned up
+        const st = await fs.stat(path.join(beatDir, name)).catch(() => null);
+        if (st !== null && Date.now() - st.mtimeMs < BEAT_STALE_MS) live += 1;
+      }
+    } catch {
+      return; // never created, or already cleaned up
+    }
+    if (live === 0 || Date.now() > deadline) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 afterEach(async () => {
   vi.unstubAllEnvs();
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
+  await waitForSupervisorsToExit();
+  // maxRetries matches every other suite here: covers the brief lag between a
+  // process exiting and Windows releasing its handles, which no amount of
+  // waiting on our own bookkeeping can observe.
+  await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+}, 60_000);
 
 describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
   it("holds a dispatch past the limit in slotQueued instead of spawning a runner", async () => {
