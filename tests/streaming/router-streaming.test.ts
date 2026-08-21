@@ -320,7 +320,7 @@ describe("Router.stream", () => {
     expect(events[0]?.type).toBe("completion");
     if (events[0]?.type === "completion") {
       expect(events[0].result.success).toBe(false);
-      expect(events[0].result.error).toMatch(/No available services/i);
+      expect(events[0].result.error).toMatch(/No route was eligible/i);
     }
   });
 

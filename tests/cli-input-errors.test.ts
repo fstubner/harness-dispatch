@@ -15,7 +15,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { loadConfig } from "../src/config.js";
+import { loadConfig, resolveConfigPath } from "../src/config.js";
 
 let dir: string;
 
@@ -160,5 +160,55 @@ describe("per-route unknown keys — the root cause, not another instance", () =
       ].join("\n"),
     );
     expect(w).toEqual([]);
+  });
+});
+
+describe("resolveConfigPath — one resolution, shared by the server and its runners", () => {
+  const VAR = "HARNESS_DISPATCH_CONFIG";
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[VAR];
+    delete process.env[VAR];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[VAR];
+    else process.env[VAR] = saved;
+  });
+
+  it("honours HARNESS_DISPATCH_CONFIG", () => {
+    // job-runner.ts read this variable and bin.ts did not, while job-runner's
+    // header claimed the two mirrored each other. With it set in the ambient
+    // environment the server routed on auto-detected defaults while the runner
+    // it spawned loaded a different file — the two halves of one dispatch
+    // working from different configs, and nothing reported it.
+    process.env[VAR] = path.join(dir, "from-env.yaml");
+    expect(resolveConfigPath()).toBe(path.join(dir, "from-env.yaml"));
+  });
+
+  it("lets an explicit --config win over the variable", () => {
+    process.env[VAR] = path.join(dir, "from-env.yaml");
+    expect(resolveConfigPath(path.join(dir, "explicit.yaml"))).toBe(path.join(dir, "explicit.yaml"));
+  });
+
+  it("treats a variable pointing at a missing file as an error, not as auto-detect", async () => {
+    // CHANGELOG 0.6.0 claimed the server reported this. Only the detached
+    // runner did; the CLI and server ignored the variable outright, so a
+    // typo'd path printed a confident route table built from defaults.
+    const missing = path.join(dir, "nope.yaml");
+    process.env[VAR] = missing;
+    const resolved = resolveConfigPath();
+    expect(resolved).toBe(missing);
+    await expect(loadConfig(resolved!, { whichFn: async () => null })).rejects.toThrow(
+      /config file not found/,
+    );
+  });
+
+  it("ignores an empty variable rather than resolving to an empty path", () => {
+    process.env[VAR] = "";
+    // Falls through to ./config.yaml-or-nothing; either is fine, an empty
+    // string is not.
+    expect(resolveConfigPath()).not.toBe("");
   });
 });

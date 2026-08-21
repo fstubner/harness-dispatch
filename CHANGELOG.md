@@ -6,6 +6,33 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-21
+
+Three defects from a second independent acceptance pass, two of which
+contradicted claims made in this changelog.
+
+### Fixed
+
+- `HARNESS_DISPATCH_CONFIG` is honoured by the CLI and the MCP server, not only
+  by the detached job runner. With the variable set in the ambient environment,
+  the server routed on auto-detected defaults while the runner it spawned loaded
+  the file the variable named — the two halves of one dispatch working from
+  different configs, with nothing reporting the split. Pointing it at a file that
+  does not exist is now an error, which 0.6.0 claimed and only the runner
+  delivered. Both processes resolve the path through the same function, so they
+  cannot drift apart again.
+- `usage` shows token totals in its human output. They were reaching
+  `usage --json` and the MCP tool but not the text a person actually types at, so
+  the surface the 0.6.0 and 0.6.1 notes described was the one place they never
+  appeared. A route whose harness reported nothing prints no token line at all,
+  rather than a zero that would read as "nothing was spent".
+- The "nothing was eligible" error names what actually happened instead of
+  asserting all three of disabled, exhausted and circuit-broken. A route the
+  operator deliberately blocked on billing was reported as a route health
+  problem, printed beside a breaker blob reading `tripped:false, failures:0`.
+  Breakers are now named only when one is genuinely tripped. The machine-readable
+  `skippedRoutes` detail is unchanged — it was accurate all along.
+
 ## [0.6.1] — 2026-08-21
 
 Two defects found by an independent acceptance pass against 0.6.0, both
@@ -170,7 +197,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/fstubner/harness-dispatch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fstubner/harness-dispatch/compare/v0.4.0...v0.5.0

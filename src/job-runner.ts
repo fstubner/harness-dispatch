@@ -13,11 +13,12 @@
  * Usage: node dist/job-runner.js <jobDir>
  * Config: HARNESS_DISPATCH_CONFIG (set by the spawning server so the run
  * bootstraps against the same config file), else ./config.yaml if present,
- * else auto-detect — mirroring bin.ts's resolution.
+ * else auto-detect. Shared with bin.ts through resolveConfigPath(), which is
+ * what makes that claim true — the two used to be written out separately and
+ * had drifted apart.
  */
 
-import { existsSync } from "node:fs";
-
+import { resolveConfigPath } from "./config.js";
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
 import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
 
@@ -27,9 +28,7 @@ async function main(): Promise<void> {
     console.error("usage: job-runner <jobDir> | job-runner --supervisor");
     process.exit(2);
   }
-  const configPath =
-    process.env.HARNESS_DISPATCH_CONFIG ??
-    (existsSync("config.yaml") ? "config.yaml" : undefined);
+  const configPath = resolveConfigPath();
   const state = await bootstrapRuntime(
     configPath !== undefined ? { configPath } : {},
   );

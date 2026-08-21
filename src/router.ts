@@ -352,6 +352,44 @@ export class Router {
     return this.lastSkippedRoutes.slice();
   }
 
+  /**
+   * Why nothing was eligible — read off what ACTUALLY happened, not a fixed
+   * list of guesses.
+   *
+   * The message used to say "all are disabled, exhausted, or circuit-broken"
+   * whatever the cause, and print every breaker alongside it. A route skipped
+   * as `paid_blocked` — a billing policy the operator chose — was therefore
+   * reported as a health problem, next to a breaker blob reading
+   * `tripped:false, failures:0`. That is this project's own counter-signal:
+   * making a healthy route look unreliable. `skippedRoutes` carried the true
+   * reason all along, so only the headline a human reads was wrong.
+   *
+   * Breakers are named only when one is actually tripped; an untripped blob is
+   * noise that reads as evidence.
+   */
+  private noEligibleRouteError(): string {
+    const byCode = new Map<string, string[]>();
+    for (const skip of this.lastSkippedRoutes) {
+      const routes = byCode.get(skip.code) ?? [];
+      routes.push(skip.route);
+      byCode.set(skip.code, routes);
+    }
+    const why =
+      byCode.size > 0
+        ? [...byCode].map(([code, routes]) => `${code}: ${routes.join(", ")}`).join("; ")
+        : "no routes are configured";
+
+    const tripped: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
+    for (const [name, breaker] of this.breakers) {
+      const state = breaker.status();
+      if (state.tripped) tripped[name] = state;
+    }
+    const breakerNote =
+      Object.keys(tripped).length > 0 ? ` Tripped breakers: ${JSON.stringify(tripped)}` : "";
+
+    return `No route was eligible for this dispatch — ${why}.${breakerNote}`;
+  }
+
   async pickService(opts: {
     hints?: RouteHints;
     prompt?: string;
@@ -591,15 +629,11 @@ export class Router {
 
       if (decision === null) {
         if (lastDecision === null) {
-          const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
-          for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
           const result: DispatchResult = {
             output: "",
             service: "none",
             success: false,
-            error:
-              "No available services — all are disabled, exhausted, or circuit-broken. " +
-              `Breaker state: ${JSON.stringify(breakerInfo)}`,
+            error: this.noEligibleRouteError(),
             skippedRoutes: this.skippedRoutes(),
           };
           yield { event: { type: "completion", result }, decision: null };
@@ -880,16 +914,12 @@ export class Router {
         if (lastResult !== null) {
           return { result: lastResult, decision: lastDecision };
         }
-        const breakerInfo: Record<string, ReturnType<CircuitBreaker["status"]>> = {};
-        for (const [name, b] of this.breakers) breakerInfo[name] = b.status();
         return {
           result: {
             output: "",
             service: "none",
             success: false,
-            error:
-              "No available services — all are disabled, exhausted, or circuit-broken. " +
-              `Breaker state: ${JSON.stringify(breakerInfo)}`,
+            error: this.noEligibleRouteError(),
             skippedRoutes: this.skippedRoutes(),
           } as DispatchResult,
           decision: null,

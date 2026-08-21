@@ -1151,4 +1151,31 @@ describe("Router.routeTo", () => {
     await router.routeTo("alpha", "hi", [], "/tmp");
     expect(alphaD.calls[0]?.timeoutMs).toBe(900_000);
   });
+it("names the real reason when nothing is eligible, instead of guessing at three", async () => {
+    // The message was fixed text — "all are disabled, exhausted, or
+    // circuit-broken" — whatever had actually happened, printed next to every
+    // breaker including untripped ones. A route the operator deliberately
+    // blocked on billing was therefore reported as a health problem, beside a
+    // breaker blob reading tripped:false, failures:0. That is this project's
+    // own counter-signal: making a healthy route look unreliable.
+    const paid = makeService({
+      name: "metered",
+      tier: 1,
+      billingKind: "metered_api",
+      paidUsagePossible: true,
+    });
+    const router = new Router(makeConfig([paid]), quota, { metered: new StubDispatcher("metered") }, leaderboard);
+    const res = await router.route("hi", [], "/tmp");
+
+    expect(res.result.success).toBe(false);
+    expect(res.result.error).toContain("paid_blocked");
+    expect(res.result.error).toContain("metered");
+    // The causes that did NOT apply must not be asserted.
+    expect(res.result.error).not.toMatch(/disabled, exhausted, or circuit-broken/);
+    // No breaker tripped, so no breaker blob: an untripped one reads as
+    // evidence of a fault that is not there.
+    expect(res.result.error).not.toMatch(/breaker/i);
+    // The machine-readable detail is unchanged.
+    expect(res.result.skippedRoutes?.[0]?.code).toBe("paid_blocked");
+  });
 });
