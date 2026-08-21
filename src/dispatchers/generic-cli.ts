@@ -257,6 +257,20 @@ function firstNumberAt(obj: unknown, fields: string[]): number {
   return 0;
 }
 
+/**
+ * Every present field added together — for token counts a vendor SPLITS across
+ * siblings rather than spelling differently. See CliProtocolConfig.output.usage
+ * for why the two behaviours cannot be the same list.
+ */
+function sumNumbersAt(obj: unknown, fields: string[] | undefined): number {
+  let total = 0;
+  for (const field of fields ?? []) {
+    const v = getPath(obj, field);
+    if (typeof v === "number") total += v;
+  }
+  return total;
+}
+
 export class GenericCliDispatcher extends BaseDispatcher {
   readonly id: string;
   private readonly command: string;
@@ -482,8 +496,12 @@ export class GenericCliDispatcher extends BaseDispatcher {
             usageSource = stderrJson ?? stdoutJson;
           }
           if (usageSource !== undefined && protocol.output.usage) {
-            const inTok = firstNumberAt(usageSource, protocol.output.usage.input);
-            const outTok = firstNumberAt(usageSource, protocol.output.usage.output);
+            const inTok =
+              firstNumberAt(usageSource, protocol.output.usage.input) +
+              sumNumbersAt(usageSource, protocol.output.usage.inputExtra);
+            const outTok =
+              firstNumberAt(usageSource, protocol.output.usage.output) +
+              sumNumbersAt(usageSource, protocol.output.usage.outputExtra);
             if (inTok || outTok) tokensUsed = { input: inTok, output: outTok };
           }
           if (usageSource !== undefined && protocol.output.error) {

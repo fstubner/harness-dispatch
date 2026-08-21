@@ -282,7 +282,22 @@ export interface CliProtocolConfig {
      * Token-usage extraction for "text"/"json_field" modes (jsonl_stream
      * uses eventRules' emit: "usage" instead).
      */
-    usage?: { input: string[]; output: string[] };
+    /**
+     * `input`/`output` are dotted paths checked in order, FIRST PRESENT WINS —
+     * they name the same quantity under different vendor spellings
+     * (`usage.input_tokens` vs `usage.prompt_tokens`), so summing them would
+     * double-count.
+     *
+     * `inputExtra`/`outputExtra` are the opposite: every listed path that is
+     * present is SUMMED ON TOP of the primary. Anthropic splits input across
+     * three sibling fields — `input_tokens` counts only the uncached remainder,
+     * with the bulk in `cache_creation_input_tokens` and
+     * `cache_read_input_tokens`. Reading the first alone reported 2 tokens for
+     * a turn that consumed 55,213, and `usage` totals were meaningless as a
+     * result. There is no vendor field carrying the total, so it has to be
+     * added up here.
+     */
+    usage?: { input: string[]; output: string[]; inputExtra?: string[]; outputExtra?: string[] };
     /** jsonl_stream only — see CliEventRule. */
     eventRules?: CliEventRule[];
     /**
@@ -451,6 +466,16 @@ export interface RouterConfig {
    * record of it. Never serialize this map.
    */
   envRefs?: ReadonlyMap<string, string>;
+  /**
+   * ROUTE NAME -> the `api_key: ${VAR}` reference written in the config file.
+   *
+   * envRefs is keyed by resolved value and therefore cannot represent a
+   * reference whose variable is UNSET: that resolves to "", which every unset
+   * variable shares. Without this map, regenerating a config on a shell that
+   * had not exported the variable dropped the api_key line entirely. Never
+   * serialize this map.
+   */
+  apiKeyRefs?: ReadonlyMap<string, string>;
   /**
    * Ceiling on agent CLIs running at once, machine-wide (default 4).
    *

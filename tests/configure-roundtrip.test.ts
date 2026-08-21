@@ -112,6 +112,35 @@ describe("configure round-trip", () => {
     expect(reloaded.services["fake_echo"]?.paidUsagePossible).toBe(false);
   });
 
+  it("keeps an api_key ${VAR} reference when the variable is not set", async () => {
+    // The reference must survive REGARDLESS of this shell's environment. It
+    // did not: an unset variable interpolates to "", the route was emitted
+    // with base_url and model but no api_key line at all, and
+    // `configure --yes --force` wrote that over a correct config — the key
+    // silently gone. envRefs cannot fix this on its own, because it is keyed
+    // by resolved value and every unset variable resolves to the same "".
+    delete process.env["HR_TEST_ABSENT_KEY"];
+    const src = path.join(dir, "in5.yaml");
+    await fs.writeFile(
+      src,
+      [
+        "endpoints:",
+        "  - name: probe_ep",
+        "    base_url: https://example.test/v1",
+        "    model: m",
+        "    api_key: ${HR_TEST_ABSENT_KEY}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const printed = await capture(() => main(["configure", "--print", "--config", src]));
+    expect(printed.code).toBe(0);
+    expect(printed.stdout).toContain("api_key: ${HR_TEST_ABSENT_KEY}");
+    // And no placeholder stood in for it — that would name the wrong variable.
+    expect(printed.stdout).not.toContain("YOUR_API_KEY_ENV_VAR");
+  });
+
   it("still omits protocol for built-in harnesses, whose preset supplies it", async () => {
     // The lean output is deliberate: emitting a copy would freeze a snapshot
     // that stops tracking future preset changes.

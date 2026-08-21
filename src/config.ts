@@ -38,7 +38,7 @@ import {
   effectiveSafetyFrom,
   resolveSharedRouteFields,
 } from "./config/route-fields.js";
-import { interpolateTree } from "./config/env-interpolation.js";
+import { ENV_VAR_RE, interpolateTree } from "./config/env-interpolation.js";
 
 /** Injection seam for tests. Set via loadConfig({ whichFn }) if needed. */
 export type WhichFn = (cmd: string) => Promise<string | null>;
@@ -640,6 +640,51 @@ function addClis(
   }
 }
 
+/**
+ * `api_key: ${VAR}` references keyed by route name, read from the RAW tree
+ * before interpolation.
+ *
+ * envRefs cannot cover this case. It maps a resolved value back to the
+ * reference that produced it, and an UNSET variable resolves to "" — which
+ * every unset variable shares, so the map would hand one route another route's
+ * variable name. interpolateEnv skips empty resolutions for exactly that
+ * reason.
+ *
+ * The consequence was silent: `configure --yes --force` run in a shell that
+ * had not exported the variable emitted the route with no `api_key` line at
+ * all, overwriting a correct config with one whose key was simply gone. Keyed
+ * by route name, which is unique per shape and is what configure has in hand.
+ */
+function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {
+  const refs = new Map<string, string>();
+  const note = (name: unknown, value: unknown): void => {
+    if (typeof name === "string" && typeof value === "string" && ENV_VAR_RE.test(value)) {
+      refs.set(name, value);
+    }
+  };
+  for (const key of ["clis", "endpoints"] as const) {
+    const list = parsed[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry !== null && typeof entry === "object") {
+        const e = entry as Record<string, unknown>;
+        note(e.name, e.api_key);
+      }
+    }
+  }
+  for (const key of ["services", "api_keys"] as const) {
+    const block = parsed[key];
+    if (block === null || typeof block !== "object") continue;
+    for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+      if (key === "api_keys") note(name, entry);
+      else if (entry !== null && typeof entry === "object") {
+        note(name, (entry as Record<string, unknown>).api_key);
+      }
+    }
+  }
+  return refs;
+}
+
 function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
   const apiKeys: ApiKeys = {};
 
@@ -773,11 +818,17 @@ export async function loadConfig(
   let raw: Record<string, unknown> = {};
   const unsetEnvVars = new Set<string>();
   const envRefs = new Map<string, string>();
+  const apiKeyRefs = new Map<string, string>();
   if (path) {
     try {
       const text = await fs.readFile(path, "utf-8");
       const parsed = yaml.load(text);
       if (parsed && typeof parsed === "object") {
+        // Before interpolation: an unset ${VAR} is indistinguishable from
+        // every other unset ${VAR} once it has resolved to "".
+        for (const [name, ref] of collectApiKeyRefs(parsed as Record<string, unknown>)) {
+          apiKeyRefs.set(name, ref);
+        }
         raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
       }
     } catch (err: unknown) {
@@ -822,8 +873,11 @@ export async function loadConfig(
     if (enumWarnings.length > 0) {
       legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
     }
-    const withRefs =
-      envRefs.size > 0 ? { ...legacyCfg, envRefs } : legacyCfg;
+    const withRefs = {
+      ...legacyCfg,
+      ...(envRefs.size > 0 ? { envRefs } : {}),
+      ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
+    };
     if (envVarWarning !== undefined) {
       return { ...withRefs, configWarnings: [...(withRefs.configWarnings ?? []), envVarWarning] };
     }
@@ -868,6 +922,7 @@ export async function loadConfig(
     disabled,
     ...topLevelSettings(raw, warnings),
     ...(envRefs.size > 0 ? { envRefs } : {}),
+    ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;

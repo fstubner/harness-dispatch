@@ -63,7 +63,16 @@ clis:
       output:
         mode: json_field
         fields: [result, response, text]
-        usage: { input: [usage.input_tokens], output: [usage.output_tokens] }
+        # input_extra is SUMMED on top of input, unlike the alternatives in
+        # `input`. Claude splits a turn's input across three sibling fields and
+        # `input_tokens` is only the uncached remainder — a real turn reported
+        # input_tokens=2 against cache_creation=34141 + cache_read=21070, so
+        # reading the first alone made `usage` totals off by four orders of
+        # magnitude. No field carries the total; it has to be added up.
+        usage:
+          input: [usage.input_tokens]
+          input_extra: [usage.cache_creation_input_tokens, usage.cache_read_input_tokens]
+          output: [usage.output_tokens]
         # Confirmed live 2026-07-24: a successful response carries a sibling
         # "is_error": false (and "api_error_status": null) alongside "result"
         # — without this, an API-level failure that still exits 0 would be
