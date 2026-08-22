@@ -560,10 +560,19 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           ),
         );
       } else if (err.code === "EACCES") {
+        // Do NOT assert privileges here. The first version said "ports below
+        // 1024 need elevated privileges" for EVERY EACCES, and on Windows a
+        // HIGH port is refused just as often — the OS reserves whole ranges
+        // (Hyper-V, WinNAT, `netsh interface ipv4 show excludedportrange`),
+        // where elevation changes nothing. Naming a cause that does not apply
+        // sends people to fix the wrong thing, which is worse than the stack
+        // trace this replaced.
         reject(
           new Error(
-            `not permitted to bind ${where}. Ports below 1024 need elevated privileges; ` +
-              `pick a higher --port.`,
+            `not permitted to bind ${where}. Below 1024 that means elevated privileges are ` +
+              `needed; above it, the OS has usually reserved the port (on Windows check ` +
+              `\`netsh interface ipv4 show excludedportrange protocol=tcp\`). Either way, ` +
+              `another --port is the quick answer.`,
           ),
         );
       } else if (err.code === "EADDRNOTAVAIL") {

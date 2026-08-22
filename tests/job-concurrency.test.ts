@@ -202,6 +202,53 @@ describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
   }, 60_000);
 });
 
+describe.skipIf(!existsSync(RUNNER))("a supervisor picks up config edits before claiming work", () => {
+  it("stops running a route that has been removed from the config", async () => {
+    // A pooled supervisor OUTLIVES the server that spawned it, by design. It
+    // also outlived the server's CONFIG: restart with a route removed,
+    // dispatch inside the ~5s idle window, and the old supervisor claimed the
+    // job and ran the removed route, reporting plain success with nothing in
+    // the response signalling the split. For those seconds `disabled:`,
+    // `allow_paid_usage` and safety profiles were not the controls they appear
+    // to be — against this product's own "never spend money silently".
+    configPath = await writeConfig(1, 200);
+    const d = await deps();
+
+    // A first dispatch, so a supervisor exists and is alive.
+    const first = await startAsyncJobTracked(d, {
+      prompt: "one",
+      workingDir: tmpDir,
+      service: "slow_node",
+    });
+    await first.completion.catch(() => undefined);
+
+    // Remove the route, exactly as an operator editing their config would.
+    // The sleep is for mtime granularity, not for the reloader.
+    await new Promise((r) => setTimeout(r, 1100));
+    await fs.writeFile(configPath, ["max_concurrent_runs: 1", "clis: []", ""].join("\n"), "utf8");
+    const after = await loadConfig(configPath);
+    expect(Object.keys(after.services)).not.toContain("slow_node");
+
+    // Give the still-live supervisor a poll or two to notice.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // A supervisor holding the OLD config would happily run this.
+    const holder = { state: { config: after, configPath } } as unknown as RuntimeHolder;
+    const second = await startAsyncJobTracked(
+      { holder },
+      { prompt: "two", workingDir: tmpDir, service: "slow_node" },
+    );
+    await second.completion.catch(() => undefined);
+    const job = await getAsyncJob(second.status.jobId);
+    const outcome = job.result?.result;
+
+    expect(
+      outcome?.success,
+      `a route removed from the config still ran: ${JSON.stringify(outcome)}`,
+    ).not.toBe(true);
+  }, 90_000);
+});
+
 describe("concurrency bound — runner not built", () => {
   it("is skipped when dist/job-runner.js is absent, and says so", () => {
     // Guard against the F20 failure mode: a suite that silently reports green

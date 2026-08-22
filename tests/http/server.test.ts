@@ -143,6 +143,44 @@ describe("HTTP server", () => {
     ).rejects.toThrow(/already in use/);
   });
 
+  it("does not blame privileges for an EACCES on a high port", async () => {
+    // The first version of the message asserted "ports below 1024 need
+    // elevated privileges" for EVERY EACCES. On Windows a HIGH port is refused
+    // just as often, because the OS reserves whole ranges — and there
+    // elevation changes nothing. Observed live on port 39271. Naming a cause
+    // that does not apply sends people to fix the wrong thing, which is worse
+    // than the stack trace it replaced.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+
+    const listen = await import("node:http");
+    const spy = vi
+      .spyOn(listen.Server.prototype, "listen")
+      .mockImplementation(function (this: Server): Server {
+        const err = new Error("listen EACCES") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        setImmediate(() => this.emit("error", err));
+        return this;
+      });
+    try {
+      const err = await startHttpServer({
+        configPath: config,
+        token: "secret",
+        port: 39271,
+      }).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(/not permitted to bind/);
+      expect(err?.message).toMatch(/reserved/);
+      // The unconditional privileges claim must be gone.
+      expect(err?.message).not.toMatch(/^.*Ports below 1024 need elevated privileges/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("does not warn when binding to loopback (default)", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);
