@@ -6,6 +6,35 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-08-22
+
+**Upgrade if you use `workspace_policy: copy`.** A third independent acceptance
+pass blocked the release on work being silently lost, in the feature whose whole
+job is not losing it. Present in 0.6.0, 0.6.1 and 0.6.2.
+
+### Fixed
+
+- A `copy` dispatch returns a file the agent CREATED. It did not: the patch came
+  back empty, `apply` said "the agent changed nothing" beside its own list
+  saying the file was added, and `discard` then deleted the only copy. A copy
+  workspace lives inside the project, so a created file appears on both sides of
+  the comparison with identical content — once under
+  `.harness-dispatch/.../workspace/` while git scans the project, once at its
+  real path inside the copy. Rename detection paired the two and emitted nothing
+  at all for that file. A MODIFIED file was unaffected, which is why this
+  survived three releases and every live test: they all edited an existing file.
+- `apply` refuses instead of reporting "nothing to apply" when the recorded
+  changed-file list is not empty but the patch is. That combination means the
+  patch lost something, and the reassuring message is the one a user acts on
+  before discarding the workspace. It now names the files, says not to discard,
+  and gives the path they are still sitting at.
+- `discard` retries removing the workspace. The agent CLI has only just exited
+  and Windows can still hold a handle on something it wrote — observed live as
+  `EBUSY: rmdir ...\workspace` on a discard issued straight after a successful
+  apply, where the same removal succeeded moments later. A failure here strands
+  the workspace inside the user's project, which is the one place it must not be
+  left.
+
 ## [0.6.2] — 2026-08-21
 
 Three defects from a second independent acceptance pass, two of which
@@ -197,7 +226,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/fstubner/harness-dispatch/compare/v0.5.0...v0.6.0
