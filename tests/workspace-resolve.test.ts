@@ -415,6 +415,37 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
   });
 
+  it("says 'already applied' on a second apply, instead of crying data loss", async () => {
+    // The 0.6.3 guard fired on the one benign case with the same shape.
+    // changedFiles is frozen at dispatch and the patch is recomputed live, so
+    // after a successful apply the project matches the workspace and the empty
+    // patch is CORRECT — but the user was told their work had been silently
+    // dropped and to report a bug, a second after it landed fine.
+    const repo = await makeRepo("apply-twice");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "notes.txt"), "hello-from-delegate\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "notes.txt", kind: "added" }],
+    };
+
+    const first = await applyWorkspace("job-1700000000013-aabbccdd", jobDir, run);
+    expect(first.applied, first.message).toBe(true);
+
+    const second = await applyWorkspace("job-1700000000013-aabbccdd", jobDir, run);
+    expect(second.applied).toBe(false);
+    expect(second.message).toMatch(/already matches/i);
+    expect(second.message).not.toMatch(/silently drop|Please report/);
+  });
+
   it("refuses rather than claiming nothing changed when changedFiles disagrees", async () => {
     // The guard behind the fix above. An empty patch beside a non-empty
     // changedFiles means the patch lost something, and the message a user acts
@@ -439,9 +470,12 @@ describe("a copy workspace that lives INSIDE the project", () => {
 
     const out = await applyWorkspace("job-1700000000012-aabbccdd", jobDir, run);
     expect(out.applied).toBe(false);
-    expect(out.message).toContain("notes.txt added");
+    expect(out.message).toContain("notes.txt");
     expect(out.message).toContain("Do NOT discard");
     expect(out.message).not.toContain("changed nothing");
+    // And not the benign "already applied" answer: the file is in neither the
+    // project nor the workspace, so nothing landed.
+    expect(out.message).not.toMatch(/already matches/i);
   });
 
   it("does not count its own workspace directory as the user's uncommitted work", async () => {

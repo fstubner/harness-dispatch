@@ -661,6 +661,12 @@ async function claimNextJob(): Promise<string | undefined> {
 export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promise<void> {
   const inflight = new Set<Promise<unknown>>();
   let idleSince = Date.now();
+  // Imported here rather than at module scope: config-hot-reload.ts imports
+  // setJobRetentionDays from THIS file, so a static value import would close a
+  // cycle and leave one of the two half-initialised depending on entry point.
+  // The type-only import at the top is fine; it is erased.
+  const { ConfigHotReloader } = await import("./mcp/config-hot-reload.js");
+  const reloader = new ConfigHotReloader(deps.holder, deps.holder.state.configPath);
 
   // Heartbeat so drainSlotQueue can tell how many supervisors already exist
   // and avoid piling on. Same staleness rule as jobs, so a killed supervisor
@@ -703,6 +709,21 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
       if (!existsSync(jobsRoot())) return;
 
       if (inflight.size < jobsPerSupervisor(limit)) {
+        // Pick up config edits before claiming anything.
+        //
+        // A supervisor OUTLIVES the server that spawned it, by design and by
+        // up to SUPERVISOR_IDLE_EXIT_MS. Without this it also outlived the
+        // server's CONFIG: restart with a route removed and dispatch inside
+        // that window, and the old supervisor claimed the job and ran the
+        // removed route, reporting plain success. `disabled:`,
+        // `allow_paid_usage` and safety profiles are meant to be controls, and
+        // for those few seconds they were not — against this product's own
+        // "never spend money silently".
+        //
+        // maybeReload is mtime-gated, so the steady-state cost is one stat per
+        // poll, and it keeps the old state when an edit is malformed.
+        await reloader.maybeReload();
+
         // Promote waiting jobs into released ones first. The old per-job
         // runner called drainSlotQueue as it exited, which is what kept the
         // queue moving; a pooled supervisor outlives individual jobs, so it

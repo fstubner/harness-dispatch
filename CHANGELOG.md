@@ -6,6 +6,35 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-08-22
+
+Three findings from a fourth independent acceptance pass. The first is the one
+with real consequences; the second is a regression 0.6.3 introduced.
+
+### Fixed
+
+- A pooled supervisor picks up config edits before claiming work. A supervisor
+  outlives the server that spawned it by design, and it was also outliving that
+  server's CONFIG: remove a route, restart, and dispatch within about five
+  seconds, and the old supervisor claimed the job and ran the removed route,
+  reporting plain success with nothing signalling the split. For that window
+  `disabled:`, `allow_paid_usage` and safety profiles were not the controls they
+  appear to be. Reloading is mtime-gated, so the steady-state cost is one stat
+  per poll, and a malformed edit keeps the previous config rather than killing
+  the supervisor.
+- Applying twice no longer reports data loss. 0.6.3 added a guard for "changed
+  files recorded but the patch is empty", which is the shape of a patch that
+  lost something — and also the shape of a second `apply`, where the project
+  legitimately matches the workspace already. It now checks whether those files
+  actually reached the project and answers "already applied" when they did.
+  Line endings are normalised for that comparison: `git apply` writes through
+  the repository's eol settings, so an applied file routinely lands as CRLF
+  against an LF workspace copy, and comparing raw bytes would have raised the
+  false alarm on the platform it was reported from.
+- The `EACCES` message from `serve` no longer blames privileges for a high
+  port. Windows reserves whole port ranges, where elevation changes nothing;
+  0.6.4 told anyone hitting one to fix something unrelated.
+
 ## [0.6.4] — 2026-08-22
 
 The two non-blocking findings left over from 0.6.3's acceptance pass.
@@ -247,7 +276,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...v0.6.2

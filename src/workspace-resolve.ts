@@ -141,6 +141,60 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
 }
 
 /**
+ * Which recorded changes are NOT yet reflected in the user's project.
+ *
+ * Uniform rule: for an added or modified file the project copy must match the
+ * workspace copy; for a deleted one the project copy must be gone. Anything
+ * that fails is work the project does not have.
+ *
+ * A file that cannot be read on either side counts as missing — the whole
+ * point is to be sure before telling someone their work is safe.
+ */
+/**
+ * Content with CRLF collapsed to LF, for comparing a file that has been
+ * through `git apply` against the copy it came from. A file whose ONLY
+ * difference is its line endings reads as landed, which is the right answer
+ * here: the question is whether the user's work is in their project, not
+ * whether the two bytestreams are identical.
+ */
+function normaliseEol(buf: Buffer): string {
+  return buf.toString("utf8").replace(/\r\n/g, "\n");
+}
+
+async function changesNotInProject(
+  run: WorkspaceRun,
+  changed: ReadonlyArray<{ path: string; kind: string }>,
+): Promise<string[]> {
+  const workspace = isolatedRoot(run);
+  const missing: string[] = [];
+  for (const change of changed) {
+    const inProject = path.join(run.originalWorkingDir, change.path);
+    if (change.kind === "deleted") {
+      if (existsSync(inProject)) missing.push(`${change.path} (still present)`);
+      continue;
+    }
+    try {
+      const [a, b] = await Promise.all([
+        readFile(inProject),
+        readFile(path.join(workspace, change.path)),
+      ]);
+      // Bytes first, then line endings. `git apply` writes through the
+      // repository's eol/autocrlf settings, so on Windows an applied text file
+      // routinely lands as CRLF while the workspace copy is LF. A raw byte
+      // comparison called every one of those "differs" — which would have
+      // raised the false data-loss alarm this check exists to remove, on the
+      // platform it was reported from.
+      if (!a.equals(b) && normaliseEol(a) !== normaliseEol(b)) {
+        missing.push(`${change.path} (differs)`);
+      }
+    } catch {
+      missing.push(`${change.path} (${change.kind})`);
+    }
+  }
+  return missing;
+}
+
+/**
  * Drop patch sections for files inside the workspace directory itself.
  *
  * A `copy` workspace lives INSIDE the project (.harness-dispatch/workspaces/),
@@ -353,15 +407,39 @@ export async function applyWorkspace(
     // workspace it describes is about to be deleted.
     const changed = run.changedFiles ?? [];
     if (changed.length > 0) {
+      // changedFiles is frozen at dispatch; the patch is recomputed live. So
+      // "recorded changes, empty patch" has TWO causes and they need opposite
+      // answers:
+      //
+      //   already applied — the project now matches the workspace, so there is
+      //     genuinely nothing left to do. Alarming here told a user their work
+      //     had been dropped one second after it landed correctly.
+      //   the patch lost something — the project does NOT match, and applying
+      //     an empty patch would quietly abandon the difference.
+      //
+      // Asking the filesystem which one it is settles it, at the cost of
+      // reading a handful of named files.
+      const missing = await changesNotInProject(run, changed);
+      if (missing.length === 0) {
+        return {
+          jobId,
+          applied: false,
+          patchPath: diff.patchPath,
+          message:
+            `Already applied: the project already matches the workspace for all ` +
+            `${changed.length} changed file(s), so there is nothing left to apply. ` +
+            `Use action: "discard" to clean up the workspace.`,
+        };
+      }
       return {
         jobId,
         applied: false,
         patchPath: diff.patchPath,
         message:
-          `Refused: ${changed.length} file(s) were recorded as changed ` +
-          `(${changed.map((c) => `${c.path} ${c.kind}`).join(", ")}) but the patch is empty, ` +
-          `so applying it would silently drop that work. Do NOT discard this job — the ` +
-          `workspace still holds the files at ${isolatedRoot(run)}. Please report this.`,
+          `Refused: ${missing.length} recorded change(s) are missing from your project ` +
+          `(${missing.join(", ")}) but the patch is empty, so applying it would silently ` +
+          `drop that work. Do NOT discard this job — the workspace still holds the files ` +
+          `at ${isolatedRoot(run)}. Please report this.`,
       };
     }
     return {
