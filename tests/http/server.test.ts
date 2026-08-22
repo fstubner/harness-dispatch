@@ -125,6 +125,24 @@ describe("HTTP server", () => {
     expect(res.status).toBe(401);
   });
 
+  it("reports a busy port as one actionable line, not an unhandled error event", async () => {
+    // A listen failure arrives as an 'error' EVENT, not a rejected call, so
+    // with no handler Node rethrew it from the event loop and `serve --port
+    // <busy>` printed `node:events:486 throw er; // Unhandled 'error' event`
+    // followed by a stack. Every other bad-input path in this CLI answers with
+    // one line, and a port already in use is the most ordinary of them.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+
+    const first = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(first);
+
+    await expect(
+      startHttpServer({ configPath: config, token: "secret", port: first.port }),
+    ).rejects.toThrow(/already in use/);
+  });
+
   it("does not warn when binding to loopback (default)", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);

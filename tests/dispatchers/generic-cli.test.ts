@@ -21,7 +21,7 @@ vi.mock("which", () => {
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
 const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
-const { GenericCliDispatcher, detectRateLimit } = await import(
+const { GenericCliDispatcher, detectRateLimit, detectHarnessEnvironmentFailure } = await import(
   "../../src/dispatchers/generic-cli.js"
 );
 
@@ -766,6 +766,48 @@ describe("GenericCliDispatcher", () => {
       const res = await d.dispatch("go", [], "/tmp");
       expect(res.success).toBe(false);
     });
+  });
+});
+
+describe("a harness that could not run its own tools is not a success", () => {
+  it("fails a lenient exit-0 run whose sandbox refused every spawn", async () => {
+    // Observed live: codex's Windows sandbox failed to spawn ANY child on a
+    // deep path, the delegate replied "Unable to read file.", the process
+    // exited 0, and a lenient route returned success: true — counting a
+    // success in usage, leaving the breaker closed, after 57k tokens. The
+    // router then kept picking a route that could not do anything.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: JSON.stringify({ result: "Unable to read file." }),
+        stderr: [
+          "CreateProcessAsUserW failed: 5 (Access is denied)",
+          "CreateProcessAsUserW failed: 5 (Access is denied)",
+        ].join("\n"),
+        exitCode: 0,
+      }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        successRequiresOutput: false,
+        output: { mode: "json_field", fields: ["result"] },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/could not spawn any child process/);
+    // Not a rate limit: this must trip the breaker, which is the whole point.
+    expect(res.rateLimited).toBeUndefined();
+  });
+
+  it("leaves an ordinary lenient exit-0 run alone", () => {
+    // The guard must not fire on a normal transcript. A route wrongly failed
+    // here is a route the user paid for and cannot use.
+    expect(detectHarnessEnvironmentFailure("created 3 files, all tests pass")).toBeUndefined();
+    expect(detectHarnessEnvironmentFailure("Access is denied reading /etc/shadow")).toBeUndefined();
+    expect(detectHarnessEnvironmentFailure("spawn failed for one optional linter")).toBeUndefined();
   });
 });
 

@@ -6,6 +6,27 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-08-22
+
+The two non-blocking findings left over from 0.6.3's acceptance pass.
+
+### Fixed
+
+- A run in which the harness could not spawn ANY child process is reported as a
+  failure, not a success. Codex's Windows sandbox refused every spawn on a deep
+  path (`CreateProcessAsUserW failed: 5`), the delegate replied "Unable to read
+  file." having read nothing, the process exited 0, and a lenient route returned
+  `success: true` — counting a success in `usage`, leaving the breaker closed,
+  after 57k tokens and 63 seconds. The router then kept choosing a route that
+  could not do anything, which is the shape PRODUCT.md names as a counter-signal.
+  The error now says what happened and what to try. Deliberately narrow: it
+  matches the harness failing to START a process, not a tool call that failed —
+  an agent hitting a permission error and working around it is normal work.
+- `serve` on a busy port prints one actionable line instead of a stack trace. A
+  listen failure arrives as an 'error' event rather than a rejected call, so with
+  no handler Node rethrew it from the event loop: `node:events:486 throw er; //
+  Unhandled 'error' event`. `EACCES` and `EADDRNOTAVAIL` are named too.
+
 ## [0.6.3] — 2026-08-22
 
 **Upgrade if you use `workspace_policy: copy`.** A third independent acceptance
@@ -226,7 +247,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/fstubner/harness-dispatch/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/fstubner/harness-dispatch/compare/v0.6.0...v0.6.1
