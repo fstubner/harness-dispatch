@@ -350,6 +350,100 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(patch).toContain("+const a = 5;");
   });
 
+  it("returns a file the agent CREATED, not just one it modified", async () => {
+    // The gap this file left open twice over. The added-file cases above use a
+    // SIBLING workspace; this block used the nested layout but only ever
+    // MODIFIED a file. Nothing combined the two, and the combination is the
+    // one that loses work.
+    //
+    // What happened: git pairs the two directory trees by relative path, and
+    // the copy's own `notes.txt` (at .harness-dispatch/.../workspace/notes.txt
+    // while scanning the project) has identical content to the addition (at
+    // notes.txt inside the copy). Rename detection matched them and emitted
+    // NOTHING — no deletion, no addition. dropSectionsUnder was already
+    // written to keep additions under the workspace root; there was simply no
+    // addition to keep. `diff` returned 0 bytes and `apply` said "the agent
+    // changed nothing" while the same response listed the file as added, and
+    // then `discard` deleted the only copy.
+    const repo = await makeRepo("nested-added");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "notes.txt"), "hello-from-delegate\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    const patch = await buildWorkspacePatch(run);
+    expect(patch, "the created file is missing from the patch entirely").toContain("notes.txt");
+    expect(patch).toContain("hello-from-delegate");
+    // And it must arrive as an addition against nothing, at the project-
+    // relative path — not carrying the workspace directory in its name.
+    expect(patch).toContain("--- /dev/null");
+    expect(patch).toContain("+++ b/notes.txt");
+    expect(patch).not.toContain(".harness-dispatch");
+
+    // The unmodified file must not appear at all.
+    expect(patch).not.toContain("app.js");
+  });
+
+  it("applies a created file into the project", async () => {
+    // The end a user actually cares about: the work survives the round trip.
+    const repo = await makeRepo("nested-added-apply");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "notes.txt"), "hello-from-delegate\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    const out = await applyWorkspace("job-1700000000011-aabbccdd", jobDir, run);
+    expect(out.applied, out.message).toBe(true);
+    expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
+  });
+
+  it("refuses rather than claiming nothing changed when changedFiles disagrees", async () => {
+    // The guard behind the fix above. An empty patch beside a non-empty
+    // changedFiles means the patch lost something, and the message a user acts
+    // on must not be the reassuring one — they discard on the strength of it,
+    // and the workspace is the only copy.
+    const repo = await makeRepo("mismatch");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      // Nothing actually differs on disk, so the patch is legitimately empty;
+      // this asserts a change anyway, standing in for a patch that lost one.
+      changedFiles: [{ path: "notes.txt", kind: "added" }],
+    };
+
+    const out = await applyWorkspace("job-1700000000012-aabbccdd", jobDir, run);
+    expect(out.applied).toBe(false);
+    expect(out.message).toContain("notes.txt added");
+    expect(out.message).toContain("Do NOT discard");
+    expect(out.message).not.toContain("changed nothing");
+  });
+
   it("does not count its own workspace directory as the user's uncommitted work", async () => {
     // The workspace is created inside the project, so `git status` is never
     // empty once a copy dispatch has run — and apply refused every time with

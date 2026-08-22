@@ -113,8 +113,25 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
   // stripping can handle.
   const origPosix = toPosix(run.originalWorkingDir);
   const isoPosix = toPosix(root);
+  // --no-renames, and it is load-bearing rather than cosmetic.
+  //
+  // The copy lives INSIDE the project, so a file the agent CREATED appears on
+  // both sides of the comparison with identical content: once as
+  // `.harness-dispatch/.../workspace/notes.txt` while git scans the project,
+  // and once as `notes.txt` inside the copy. Rename detection paired the two
+  // and emitted NOTHING AT ALL for that file — no deletion, no addition — so
+  // the patch came back empty, `apply` reported "the agent changed nothing"
+  // beside its own list saying the file was added, and `discard` then deleted
+  // the only copy of the work. A MODIFIED file was unaffected, which is why
+  // this survived three releases of the feature.
+  //
+  // Disabling rename detection emits the deletion and the addition separately;
+  // dropSectionsUnder was already written to strip the former and keep the
+  // latter. Nothing else here wants renames: a patch that says "rename" only
+  // applies cleanly if the source path is where the patch thinks it is, and on
+  // this comparison it never is.
   const raw = await gitDiff(
-    ["diff", "--no-index", "--binary", "--", origPosix, isoPosix],
+    ["diff", "--no-index", "--no-renames", "--binary", "--", origPosix, isoPosix],
     path.dirname(run.originalWorkingDir),
   );
   // Order matters: the workspace itself is filtered out on ABSOLUTE paths,
@@ -324,6 +341,29 @@ export async function applyWorkspace(
 ): Promise<ApplyResult> {
   const diff = await workspaceDiff(jobId, jobDir, run);
   if (diff.bytes === 0) {
+    // An empty patch is only honest when nothing changed. changedFiles is
+    // computed separately, by comparing fingerprints, so the two disagreeing
+    // means the patch lost something — which is exactly what happened when a
+    // created file went missing: one response said `added: notes.txt` and
+    // "the agent changed nothing" at the same time, and the user, reasonably,
+    // believed the reassuring half and discarded the workspace.
+    //
+    // This is a guard, not a fix; the fix is in buildWorkspacePatch. It stays
+    // because the failure is silent and destructive, and because the
+    // workspace it describes is about to be deleted.
+    const changed = run.changedFiles ?? [];
+    if (changed.length > 0) {
+      return {
+        jobId,
+        applied: false,
+        patchPath: diff.patchPath,
+        message:
+          `Refused: ${changed.length} file(s) were recorded as changed ` +
+          `(${changed.map((c) => `${c.path} ${c.kind}`).join(", ")}) but the patch is empty, ` +
+          `so applying it would silently drop that work. Do NOT discard this job — the ` +
+          `workspace still holds the files at ${isolatedRoot(run)}. Please report this.`,
+      };
+    }
     return {
       jobId,
       applied: false,
@@ -425,7 +465,13 @@ export async function discardWorkspace(
     }
   }
 
-  await rm(root, { recursive: true, force: true });
+  // maxRetries because the agent CLI has only just exited and Windows can
+  // still be holding a handle on something it wrote — observed live as
+  // `EBUSY: resource busy or locked, rmdir ...\workspace` on a discard issued
+  // straight after a successful apply, where the same removal succeeded
+  // moments later. Failing here strands the workspace inside the user's
+  // project, which is the one place it must not be left.
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   return {
     jobId,
     discarded: true,
