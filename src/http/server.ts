@@ -544,8 +544,39 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     }
   });
 
-  await new Promise<void>((resolve) => {
-    http.listen(port, host, () => resolve());
+  // A listen failure arrives as an 'error' EVENT, not a rejected call, so with
+  // no handler Node rethrew it from the event loop: `serve --port <busy>`
+  // printed a raw `node:events:486 throw er; // Unhandled 'error' event`
+  // stack trace. Every other bad-input path in this CLI answers with one
+  // actionable line, and a port already in use is the most ordinary of them.
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException): void => {
+      const where = `${host}:${port}`;
+      if (err.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `port ${port} is already in use on ${host} — another harness-dispatch, or ` +
+              `something else. Pass a different --port, or omit --port to take any free one.`,
+          ),
+        );
+      } else if (err.code === "EACCES") {
+        reject(
+          new Error(
+            `not permitted to bind ${where}. Ports below 1024 need elevated privileges; ` +
+              `pick a higher --port.`,
+          ),
+        );
+      } else if (err.code === "EADDRNOTAVAIL") {
+        reject(new Error(`cannot bind ${where} — no interface on this machine has that address.`));
+      } else {
+        reject(new Error(`could not bind ${where}: ${err.message}`));
+      }
+    };
+    http.once("error", onError);
+    http.listen(port, host, () => {
+      http.removeListener("error", onError);
+      resolve();
+    });
   });
   const addr = http.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : port;

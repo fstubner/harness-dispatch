@@ -78,6 +78,41 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
   };
 }
 
+/**
+ * The harness could not run its own tools — an environment fault, not an
+ * answer.
+ *
+ * Observed live: Codex's Windows sandbox failed to spawn ANY child on a deep
+ * path (`CreateProcessAsUserW failed: 5 (Access is denied)`, six times in one
+ * run). The delegate, unable to read anything, replied "Unable to read file.",
+ * the process exited 0, and a lenient harness reported `success: true`. That
+ * counted a success in `usage`, left the breaker closed, and cost 57k tokens
+ * and 63 seconds — so the router kept choosing a route that could not do
+ * anything. PRODUCT.md names exactly that shape as a counter-signal.
+ *
+ * Erring toward failure is deliberate. If the agent recovered and the run was
+ * fine, calling it a failure costs one retry on another route. The other
+ * direction costs plausible garbage, real quota, and a breaker that never
+ * opens — and the user cannot tell.
+ *
+ * Deliberately NOT a general "did any tool call fail" check: an agent hitting
+ * a permission error and working around it is normal. This matches the harness
+ * reporting that it could not START a process at all, which no prompt can
+ * work around.
+ */
+export function detectHarnessEnvironmentFailure(text: string): string | undefined {
+  if (/CreateProcessAsUserW failed/i.test(text)) {
+    return (
+      "the harness could not spawn any child process — its sandbox refused " +
+      "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
+      "reading or running anything. On Windows this is usually a path the " +
+      "harness's own sandbox will not run in; try a shorter working directory, " +
+      "or a different route."
+    );
+  }
+  return undefined;
+}
+
 /** Walk a nested object by dotted path, e.g. "message.content". */
 function getPath(value: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
@@ -535,10 +570,16 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     const lenient = protocol.successRequiresOutput === false;
 
+    // Checked before the success paths, and on BOTH streams: the harness
+    // reports this on whichever one it likes while its real payload goes to
+    // the other, and a lenient exit-0 route would otherwise return the
+    // delegate's uninformed answer as a success.
+    const envFailure = detectHarnessEnvironmentFailure(`${stdout}\n${stderr}`);
+
     // A structured error overrides exit code entirely — a CLI that reports
     // failure in its own response body (is_error, a turn.failed event) is
     // reporting failure regardless of what the process exit code says.
-    if (structuredError === undefined) {
+    if (structuredError === undefined && envFailure === undefined) {
       if (lenient && exitCode === 0) {
         const output = parsedOutput ?? (stdout.trim() || stderr.trim());
         const result: DispatchResult = { output, service: this.id, success: true, durationMs };
@@ -573,8 +614,14 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // structuredError still wins — a turn.failed reason beats the last
     // message — and rawErrorFallback still covers the nothing-parsed case.
     const parsedErrorDetail = eventDriven ? parsedOutput : undefined;
+    // envFailure leads: it explains WHY whatever else is here is untrustworthy,
+    // and the delegate's own last message ("Unable to read file.") is a symptom
+    // that reads like a normal answer on its own.
     const errorDetail =
-      structuredError ?? parsedErrorDetail ?? (rawErrorFallback || `Exit code ${exitCode}`);
+      envFailure ??
+      structuredError ??
+      parsedErrorDetail ??
+      (rawErrorFallback || `Exit code ${exitCode}`);
     // Scan BOTH streams, not just whichever one errorDetail resolved to.
     // e78c87a narrowed this to detectRateLimit(errorDetail) while adding
     // structured-error support, so a 429 on the stream that lost the
