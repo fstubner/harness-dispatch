@@ -6,6 +6,60 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-23
+
+**Isolated workspaces have moved out of your project.** A sixth independent
+acceptance pass blocked the release on data loss, and this time the answer was
+not another filter.
+
+### Changed
+
+- A `copy` workspace is created under the system temp directory, not at
+  `<project>/.harness-dispatch/workspaces/`. `git_worktree` already worked this
+  way — which is exactly why none of the defects below ever affected it — and
+  both now use one root. Set `HARNESS_DISPATCH_WORKSPACES_DIR` to override it,
+  for instance to keep workspaces on the project's own volume where a
+  copy-on-write clone is possible; a temp directory on another volume falls back
+  to an ordinary copy.
+
+  Nesting the copy inside the directory it was isolating from caused a defect in
+  every acceptance pass of the 0.6 series, because `git diff --no-index
+  <project> <copy>` then walks into the copy while scanning the project. Each was
+  fixed with a filter and each filter turned out to have a gap. This removes the
+  cause.
+
+### Fixed
+
+- **Applying one job's patch no longer destroys another job's workspace.**
+  Sibling workspaces, retained 24h by design, leaked into the patch as deletions:
+  applying job 1 emptied job 2's workspace — the second delegate's only copy of
+  its work — and said nothing, and job 2's patch then proposed deleting the
+  user's own files. This fired on the **second** isolated dispatch into any
+  project, which is the parallel-delegation case the product is built around.
+- **The patch no longer rewrites file CONTENT that contains the project path.**
+  The project root was stripped from every line of the patch, content included:
+  a delegate wrote `const dataDir = "<project>/data"` and the project received
+  `const dataDir = "data"`, reported as a clean apply. Header lines are decided
+  by position now, so a content line can never be mistaken for one.
+- **`apply` works when the dispatch ran in a subdirectory of the repo.** `git
+  apply` resolves paths at the repository root regardless of where it is invoked,
+  so from a subdirectory it found nothing, printed `Skipped patch`, exited 0 —
+  and the tool reported "Applied N bytes" for a run that changed nothing. It
+  applies from the repo root now, and a `Skipped patch` is treated as the failure
+  it is.
+- **`apply` no longer refuses on a clean project in a monorepo.** The filter that
+  keeps the tool's own directory out of the dirty check matched only a
+  first-segment `.harness-dispatch/`, while git reports `sub/.harness-dispatch/`
+  from a subdirectory — the feature blocking itself with its own leftovers, for
+  every `apps/*` layout.
+- **`discard` no longer refuses after a successful apply.** A worktree's
+  changed-file paths are relative to the repo root and were joined onto the
+  dispatch's working directory, so a subdirectory dispatch looked for
+  `<repo>/sub/sub/a.txt` and concluded the work was missing — an unresolvable
+  loop without `force`.
+- **`discard` no longer claims "the original project was never modified"** when
+  an apply modified it moments earlier. Discard speaks for itself only.
+
 ## [0.6.6] — 2026-08-22
 
 Four findings from a fifth independent acceptance pass — the first to drive
@@ -309,7 +363,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...v0.6.4

@@ -580,8 +580,12 @@ Workspace policy:
   dispatches for the same directory across ALL processes — concurrent dispatches
   from separate server instances and detached job runners queue on a heartbeated
   cross-process lock rather than editing the directory at the same time.
-- `copy`: copy the project into `.harness-dispatch/workspaces/...`, run the agent
-  there, and return the isolated workspace path plus changed-file metadata.
+- `copy`: copy the project into a workspace OUTSIDE it, run the agent there, and
+  return the isolated workspace path plus changed-file metadata. Both isolated
+  policies keep their workspaces under the system temp directory; nothing is
+  written inside your project. Set `HARNESS_DISPATCH_WORKSPACES_DIR` to put them
+  somewhere else — on the project's own volume, for instance, where a
+  copy-on-write clone is possible.
 - `git_worktree`: create a detached git worktree for the route and return the
   worktree path plus changed-file metadata. This starts from `HEAD`, so
   uncommitted source-workspace changes are not copied.

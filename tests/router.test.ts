@@ -798,7 +798,12 @@ describe("Router.route", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-copy-prune-"));
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
 
-    const staleRoot = path.join(root, ".harness-dispatch", "workspaces", "stale-run");
+    // Workspaces live OUTSIDE the project now, so the stale one to prune goes
+    // where the product actually puts them. Pinned via the env override rather
+    // than reaching into os.tmpdir(), so the test cannot delete a real
+    // workspace belonging to something else on this machine.
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-ws-home-"));
+    const staleRoot = path.join(wsHome, "stale-run");
     await fs.mkdir(staleRoot, { recursive: true });
     const staleTime = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await fs.utimes(staleRoot, staleTime, staleTime);
@@ -808,7 +813,9 @@ describe("Router.route", () => {
     const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
 
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
     process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
     try {
       const { result } = await router.route("noop", [], root, {
         hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
@@ -818,9 +825,18 @@ describe("Router.route", () => {
       // only the pre-existing stale one should be gone.
       expect(result.workspace?.workspaceRoot).toBeDefined();
       await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();
+
+      // The guarantee the move exists for: a copy dispatch leaves NOTHING in
+      // the user's project. Nesting the workspace here is what let sibling
+      // workspaces leak into the patch as deletions, destroying another job's
+      // work and offering to delete the user's files.
+      await expect(fs.stat(path.join(root, ".harness-dispatch"))).rejects.toThrow();
     } finally {
       if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
       else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
     }
 
     await expect(fs.stat(staleRoot)).rejects.toThrow();
