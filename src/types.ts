@@ -165,6 +165,17 @@ export interface DispatchResult {
   success: boolean;
   error?: string;
   rateLimited?: boolean;
+  /**
+   * The INPUT was refused before the route was asked to do anything.
+   *
+   * Distinct from a failure, because it says nothing about whether the route
+   * works: the same input fails identically on every route of that shape, and
+   * a fresh one would fail again. Not counted toward `usage` or the circuit
+   * breaker — an over-long prompt cascading through three routes otherwise
+   * recorded three calls and three failures, and three such dispatches opened
+   * healthy routes for 300 seconds.
+   */
+  inputRejected?: boolean;
   retryAfter?: number;
   rateLimitHeaders?: Record<string, string>;
   /**

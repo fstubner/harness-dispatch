@@ -358,10 +358,17 @@ describe("Router.pickService", () => {
     };
     const router = new Router(makeConfig([local, other]), quota, dispatchers, leaderboard);
 
-    // The hint boosts fast_local, but force alpha so the loser's id is what
-    // would have been forwarded.
+    // The hinted route LOSES — excluded here, as it would be by a tripped
+    // breaker or a policy block in the field. Whoever wins must not be handed
+    // the loser's id as a model.
+    //
+    // Deliberately NOT via hints.service: on the forced path the caller has
+    // already chosen the route, so `model` can only mean a model, and
+    // suppressing it there dropped a caller's explicit request. That is its
+    // own test below.
     const decision = await router.pickService({
-      hints: { service: "alpha", model: "fast_local" },
+      hints: { model: "fast_local" },
+      exclude: new Set(["fast_local"]),
     });
 
     expect(decision?.service).toBe("alpha");
@@ -370,6 +377,31 @@ describe("Router.pickService", () => {
       "a route id was forwarded to the harness as a model name",
     ).not.toBe("fast_local");
     expect(decision?.model).toBe("alpha-model");
+  });
+
+  it("still honours a model on a FORCED route, even if some other route is named that", async () => {
+    // The over-fire the first version of the route-id fix caused. With the
+    // service already chosen by the caller, `model` cannot be a routing nudge
+    // — it can only be a model — so a model name that happens to collide with
+    // another route's id must still reach the harness. It was being swapped
+    // for the route default, silently, on an explicit request.
+    const worker = makeService({ name: "worker_route", tier: 1, model: "route-default-model" });
+    const collides = makeService({ name: "gpt-5.6-sol", tier: 3 });
+    const dispatchers: Record<string, Dispatcher> = {
+      worker_route: new StubDispatcher("worker_route"),
+      "gpt-5.6-sol": new StubDispatcher("gpt-5.6-sol"),
+    };
+    const router = new Router(makeConfig([worker, collides]), quota, dispatchers, leaderboard);
+
+    const decision = await router.pickService({
+      hints: { service: "worker_route", model: "gpt-5.6-sol" },
+    });
+
+    expect(decision?.service).toBe("worker_route");
+    expect(
+      decision?.model,
+      "an explicitly requested model was silently replaced by the route default",
+    ).toBe("gpt-5.6-sol");
   });
 
   it("still lets a route id steer routing", async () => {
@@ -1252,5 +1284,57 @@ it("names the real reason when nothing is eligible, instead of guessing at three
     expect(res.result.error).not.toMatch(/breaker/i);
     // The machine-readable detail is unchanged.
     expect(res.result.skippedRoutes?.[0]?.code).toBe("paid_blocked");
+  });
+});
+
+describe("a rejected input is not charged to the route", () => {
+  let quota: QuotaCache;
+  let leaderboard: LeaderboardCache;
+
+  beforeEach(() => {
+    quota = new QuotaCache({} as never);
+    leaderboard = new LeaderboardCache();
+  });
+
+  /**
+   * The prompt-too-long refusal happens before any process is spawned and
+   * fails identically on every argv route, so one over-long prompt cascading
+   * through three routes counted three calls and three failures — and three
+   * such dispatches opened healthy routes for 300 seconds. The route was never
+   * asked to do anything.
+   *
+   * This tests the ROUTER's handling. A companion test in
+   * dispatchers/generic-cli.test.ts covers the dispatcher setting the flag;
+   * neither is sufficient alone, and the router half had no coverage at all —
+   * disabling it passed every router test.
+   */
+  it("records no failure and leaves the breaker closed", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha", {
+      success: false,
+      error: "prompt too long for alpha",
+      inputRejected: true,
+    });
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+
+    // Well past the breaker's 5-failure threshold, if these counted.
+    for (let i = 0; i < 8; i += 1) {
+      await router.routeTo("alpha", "hi", [], "/tmp");
+    }
+
+    const breaker = router.circuitBreakerStatus()["alpha"];
+    expect(breaker?.tripped, "a rejected input tripped the route's breaker").toBe(false);
+    expect(breaker?.failures, "a rejected input was counted as a route failure").toBe(0);
+  });
+
+  it("still counts a genuine failure", async () => {
+    // The negative: suppressing the wrong thing would hide real breakage.
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha", { success: false, error: "the CLI crashed" });
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+
+    await router.routeTo("alpha", "hi", [], "/tmp");
+
+    expect(router.circuitBreakerStatus()["alpha"]?.failures).toBeGreaterThan(0);
   });
 });

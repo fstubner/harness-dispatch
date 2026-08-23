@@ -849,6 +849,62 @@ describe("a prompt too long for the command line", () => {
     expect(runSubprocessMock).toHaveBeenCalled();
   });
 
+  it.runIf(process.platform === "win32")(
+    "budgets a .CMD shim at cmd.exe's limit, not CreateProcess's",
+    async () => {
+      // The shipped Cursor route is `cursor-agent.CMD` — a PowerShell wrapper,
+      // not an npm shim — so cross-spawn re-spawns it through cmd.exe, which
+      // caps a command line at 8,191 characters rather than 32,767. Budgeting
+      // the larger figure meant a ~9k prompt sailed past this check and died
+      // with the bare "The command line is too long." this check exists to
+      // replace. Measured on a stock install.
+      mockFound("C:/tools/cursor-agent.CMD");
+      const d = new GenericCliDispatcher(
+        svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+      );
+      const res = await d.dispatch("x".repeat(9_031), [], "/tmp");
+
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/prompt too long/i);
+      expect(runSubprocessMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "counts a quote-heavy prompt at its ESCAPED length",
+    async () => {
+      // Windows escapes every `"` to `\"`, so a raw character count under-reads
+      // a JSON or source-code prompt. A 31k prompt at ~10% quotes measured
+      // under the budget and then threw spawn ENAMETOOLONG anyway.
+      mockFound("C:/tools/agent.exe");
+      const quoteHeavy = '{"k":"v"}'.repeat(3_400); // ~30.6k raw, ~44% over once escaped
+      const d = new GenericCliDispatcher(
+        svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+      );
+      const res = await d.dispatch(quoteHeavy, [], "/tmp");
+
+      expect(res.success, "an escaped-length overflow slipped past the check").toBe(false);
+      expect(res.error).toMatch(/prompt too long/i);
+      expect(runSubprocessMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not charge the route for a refused prompt", async () => {
+    // The refusal happens before any process is spawned and fails identically
+    // on every argv route, so one over-long prompt cascading through three
+    // routes counted three calls and three failures — three such dispatches
+    // opened healthy routes for 300s. The route was never asked to do
+    // anything.
+    mockFound();
+    const d = new GenericCliDispatcher(
+      svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+    );
+    const res = await d.dispatch("x".repeat(200_000), [], "/tmp");
+
+    expect(res.success).toBe(false);
+    expect(res.inputRejected, "a rejected input was not marked as such").toBe(true);
+  });
+
   it("leaves an ordinary prompt alone", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "fine" }));
