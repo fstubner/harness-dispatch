@@ -84,6 +84,22 @@ re-opened a bug 0.7.6 had fixed.
 - A whitespace-only `prompt` is rejected on the MCP surface, which the HTTP
   surface has always done. It passed the non-empty check and spent a real route
   call producing nothing.
+- The HTTP surface stops silently downgrading a request it does not understand.
+  `mode: "fanou"` ran ONE dispatch and returned 200, so a CI caller asking for
+  independent opinions got a single answer indistinguishable from a real one;
+  `stream: "true"` returned a non-streaming response the same way; a non-string
+  entry in `files` or `models` was dropped, so a delegate ran without context
+  the caller believed it had sent. All are refused by name now.
+- `hints.timeoutMs` is checked for its VALUE, not just its type. `0` is not
+  nullish, so it won every fallback down to `setTimeout`, fired on the first
+  tick and killed the child — "Timed out after 0ms", recorded as a route
+  failure with breaker credit, behind an HTTP 200. Negative, fractional and
+  absurdly large values were accepted too; MCP has always refused all four.
+- `routePolicy: "standard"` is accepted over HTTP. It is the router's own
+  default and the documented one, so copying it out of the docs into an HTTP
+  body was an error for naming the thing that already happens.
+- A NUL byte in `prompt` is refused at the HTTP boundary instead of surfacing
+  as a raw Node internal from deep inside process spawning.
 - An environment failure is detected by SHAPE, not by how often the phrase
   appears. The detector overrides a successful exit — it charges the route a
   failure and tells the caller "any answer it gave was produced without reading

@@ -23,7 +23,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { z } from "zod";
+
 import { buildMcpServer } from "../src/mcp/server.js";
+import { dispatchInputShape } from "../src/mcp/tool-schemas.js";
+import { BadRequestError, parseChatRequest } from "../src/http/parse.js";
 
 let dir: string;
 let client: Client;
@@ -138,5 +142,106 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     // disabled a safety limit.
     const err = await dispatchError({ prompt: "hi", hints: { safety_profile: "read_only" } });
     expect(err).toMatch(/safety_profile|unrecognized|Unrecognized/);
+  });
+});
+
+/**
+ * The same input, put to BOTH surfaces, asserted to get the same answer.
+ *
+ * This file was named for that invariant and did not check it: every
+ * assertion above drives the MCP client, and `parseChatRequest` — the entirety
+ * of the HTTP surface's validation — was never imported. Five consecutive
+ * reviews each found a fresh divergence, and each was fixed one instance at a
+ * time, which is what happens when the check is a habit rather than a test.
+ * The list below is those instances plus the fields around them.
+ *
+ * A row is not "HTTP rejects X". It is "the two surfaces agree about X", so
+ * adding a guard to one and forgetting the other fails here regardless of
+ * WHICH one was forgotten. That is the only property worth pinning: every
+ * divergence so far has been a guard that exists on one side.
+ *
+ * Kept as data rather than prose so the next field is one line, not a
+ * judgement call about whether it is worth a test.
+ */
+describe("both surfaces answer the same input the same way", () => {
+  const REJECTED: Array<[label: string, body: Record<string, unknown>]> = [
+    ["a whitespace-only prompt", { prompt: "   " }],
+    ["a NUL byte in the prompt", { prompt: `has${String.fromCharCode(0)}nul` }],
+    ["a blank hints.model", { prompt: "hi", hints: { model: "" } }],
+    ["a whitespace hints.model", { prompt: "hi", hints: { model: "   " } }],
+    ["a wrong-typed hints.model", { prompt: "hi", hints: { model: 123 } }],
+    ["a wrong-typed hints.preferLargeContext", { prompt: "hi", hints: { preferLargeContext: "y" } }],
+    ["a wrong-typed hints.timeoutMs", { prompt: "hi", hints: { timeoutMs: "5000" } }],
+    ["a zero hints.timeoutMs", { prompt: "hi", hints: { timeoutMs: 0 } }],
+    ["a negative hints.timeoutMs", { prompt: "hi", hints: { timeoutMs: -5 } }],
+    ["a fractional hints.timeoutMs", { prompt: "hi", hints: { timeoutMs: 1.5 } }],
+    ["a non-object hints", { prompt: "hi", hints: "workspace_edit" }],
+    ["an unknown hints key", { prompt: "hi", hints: { safety_profile: "read_only" } }],
+    ["a typo'd hints.safetyProfile", { prompt: "hi", hints: { safetyProfile: "read_onlyy" } }],
+    ["a typo'd hints.taskType", { prompt: "hi", hints: { taskType: "excute" } }],
+    ["a typo'd hints.routePolicy", { prompt: "hi", hints: { routePolicy: "bloked" } }],
+    ["a typo'd hints.workspacePolicy", { prompt: "hi", hints: { workspacePolicy: "copyy" } }],
+    ["a typo'd mode", { prompt: "hi", mode: "fanou" }],
+    ["a non-string files entry", { prompt: "hi", files: [1] }],
+    ["a non-string models entry", { prompt: "hi", models: [1] }],
+  ];
+
+  it.each(REJECTED)("both reject %s", async (_label, body) => {
+    const mcpError = await dispatchError({ workingDir: dir, ...body });
+    expect(mcpError, "MCP accepted it").toBeDefined();
+    expect(() => parseChatRequest({ workingDir: dir, ...body })).toThrow(BadRequestError);
+  });
+
+  const ACCEPTED: Array<[label: string, body: Record<string, unknown>]> = [
+    // Documented as the default in the MCP description, and absent from the
+    // HTTP enum list until 2026-08-23 — so copying the documented value into
+    // an HTTP body was an error for naming the thing that already happens.
+    ["routePolicy: standard", { hints: { routePolicy: "standard" } }],
+    ["a prompt padded with whitespace", { prompt: "  real work  " }],
+    ["hints omitted entirely", {}],
+    ["an empty hints object", { hints: {} }],
+    ["a positive integer timeoutMs", { hints: { timeoutMs: 5000 } }],
+  ];
+
+  it.each(ACCEPTED)("both accept %s", (_label, body) => {
+    // Asserted through the SCHEMA rather than a live dispatch: accepting means
+    // the run starts, and starting twenty runs to prove twenty inputs parse
+    // would test the job runner, not the boundary.
+    expect(() =>
+      z.object(dispatchInputShape).parse({ prompt: "hi", workingDir: dir, ...body }),
+    ).not.toThrow();
+    expect(() => parseChatRequest({ prompt: "hi", workingDir: dir, ...body })).not.toThrow();
+  });
+
+  /**
+   * Fields that exist on ONE surface, listed so their absence from the tables
+   * above reads as a decision rather than an oversight. There is nothing to
+   * agree about: `stream` selects SSE, which is a property of the HTTP
+   * transport, and MCP dispatch always uses the grace window instead. The
+   * MCP schema is non-strict at the top level, so it strips the key.
+   *
+   * They still get the same TREATMENT — a typo is refused, not coerced — which
+   * is the part that was wrong: `{"stream":"true"}` returned a non-streaming
+   * response on a 200, and the caller was never told.
+   */
+  it.each([
+    ["stream", { stream: "true" }],
+    ["stream", { stream: 1 }],
+  ])("rejects a non-boolean %s on the surface that has it", (_label, body) => {
+    expect(() => parseChatRequest({ prompt: "hi", workingDir: dir, ...body })).toThrow(
+      BadRequestError,
+    );
+  });
+
+  it("agrees that a blank top-level model is not a model", () => {
+    // The one deliberate ASYMMETRY, pinned so it reads as a decision rather
+    // than the next divergence: HTTP drops a blank OpenAI-protocol `model`
+    // instead of rejecting it, because clients fill that field in
+    // unconditionally. MCP has no such field — a model only ever arrives as
+    // hints.model, which both surfaces reject when blank.
+    for (const value of ["", "   "]) {
+      const parsed = parseChatRequest({ prompt: "hi", workingDir: dir, model: value });
+      expect(parsed.hints.model, `top-level model ${JSON.stringify(value)} survived`).toBeUndefined();
+    }
   });
 });

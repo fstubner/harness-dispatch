@@ -123,7 +123,38 @@ function messagesToPrompt(messages: unknown): string {
 const TASK_TYPES = ["execute", "plan", "review", "local"] as const;
 const SAFETY_PROFILES = ["read_only", "workspace_edit", "full_auto"] as const;
 const WORKSPACE_POLICIES = ["shared", "shared_locked", "copy", "git_worktree"] as const;
-const ROUTE_POLICIES = ["local_only", "approval_required", "blocked"] as const;
+// "standard" belongs here: it is in the RoutePolicy type, it is the router's
+// own default, and the MCP description advertises it as `'standard'
+// (default)`. Omitting it meant a caller copying the documented default into
+// an HTTP body got `invalid value "standard"` for naming the thing that
+// already happens.
+const ROUTE_POLICIES = ["standard", "local_only", "approval_required", "blocked"] as const;
+
+const MODES = ["single", "fanout"] as const;
+
+/** A boolean field: rejected when it is a non-boolean, not coerced. */
+function boolField(value: unknown, field: string): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value !== "boolean") {
+    throw new BadRequestError(`${field}: expected boolean, got ${JSON.stringify(value)}.`);
+  }
+  return value;
+}
+
+/** A string array: rejected entry by entry rather than silently filtered. */
+function stringArray(value: unknown, field: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new BadRequestError(`${field}: must be an array of strings.`);
+  }
+  const bad = value.findIndex((v) => typeof v !== "string");
+  if (bad >= 0) {
+    throw new BadRequestError(
+      `${field}[${bad}]: expected string, got ${JSON.stringify(value[bad])}.`,
+    );
+  }
+  return value as string[];
+}
 
 /**
  * An enum-valued field: accepted when it is one of the listed values, REJECTED
@@ -228,8 +259,19 @@ function parseHints(body: ChatRequest): RouteHints {
     // nothing at runtime its own counter-signal.
     const routePolicy = enumField(raw.routePolicy, ROUTE_POLICIES, "hints.routePolicy");
     if (routePolicy !== undefined) hints.routePolicy = routePolicy;
-    if (typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs)) {
-      hints.timeoutMs = raw.timeoutMs;
+    // The VALUE, not just the type. MCP advertises
+    // {"type":"integer","exclusiveMinimum":0} and refuses 0, -5, 1.5 and 1e21;
+    // Number.isFinite let all four through. `0` is not nullish, so it won
+    // every coalesce down to setTimeout, fired on the first tick, SIGTERMed
+    // the child, and came back "Timed out after 0ms" — recorded as a route
+    // failure with breaker credit, behind an HTTP 200.
+    if (raw.timeoutMs !== undefined) {
+      if (!Number.isInteger(raw.timeoutMs) || (raw.timeoutMs as number) <= 0) {
+        throw new BadRequestError(
+          `hints.timeoutMs: expected a positive integer, got ${JSON.stringify(raw.timeoutMs)}.`,
+        );
+      }
+      hints.timeoutMs = raw.timeoutMs as number;
     }
     // Unknown keys are REJECTED, matching the MCP surface. The whole point of
     // making hints strict there was that `safety_profile` (the config
@@ -278,6 +320,13 @@ export function parseChatRequest(raw: unknown): {
       ? body.prompt
       : messagesToPrompt(body.messages);
   if (!prompt.trim()) throw new BadRequestError("messages or prompt is required");
+  // MCP refuses this at the boundary; here it reached cross-spawn and surfaced
+  // as `The argument 'args[2]' must be a string without null bytes` — a raw
+  // Node internal where a boundary rejection belongs, which is exactly what
+  // the MCP refine was added to replace.
+  if (prompt.includes("\u0000")) {
+    throw new BadRequestError("prompt must not contain NUL bytes");
+  }
   // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
   // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
   // exists to prevent, on the surface CI uses.
@@ -296,12 +345,13 @@ export function parseChatRequest(raw: unknown): {
       `files: ${body.files.length} entries exceeds the maximum of ${MAX_CONTEXT_FILES_HTTP}.`,
     );
   }
-  const files = Array.isArray(body.files)
-    ? body.files.filter((v): v is string => typeof v === "string")
-    : [];
-  const models = Array.isArray(body.models)
-    ? body.models.filter((v): v is string => typeof v === "string")
-    : [];
+  // Non-string entries are REJECTED, not filtered out. `files: [1, "a"]`
+  // returned 200 having quietly dropped an entry, so the delegate ran without
+  // context the caller believed it had sent — and `models` decides which
+  // fanout arms run, so a dropped entry is an opinion the caller asked for and
+  // never got. MCP rejects both arrays by name.
+  const files = stringArray(body.files, "files");
+  const models = stringArray(body.models, "models");
   const resolvedWorkingDir = resolveWorkingDir(
     typeof body.workingDir === "string" ? body.workingDir : undefined,
   );
@@ -311,8 +361,14 @@ export function parseChatRequest(raw: unknown): {
     files,
     workingDir: resolvedWorkingDir.workingDir,
     ...(warning !== undefined ? { workingDirWarning: warning } : {}),
-    stream: body.stream === true,
-    mode: body.mode === "fanout" ? "fanout" : "single",
+    // `mode` and `stream` are enum/boolean fields, not truthiness tests. A
+    // typo used to DOWNGRADE silently on a 200: {"mode":"fanou"} ran one
+    // dispatch and never said so, and a CI caller asking for independent
+    // opinions got a single answer it could not tell apart from a real one.
+    // {"stream":"true"} likewise returned a non-streaming response. This is
+    // the class enumField was written for, three screens up.
+    stream: boolField(body.stream, "stream"),
+    mode: enumField(body.mode, MODES, "mode") ?? "single",
     models,
     hints: parseHints(body),
   };
