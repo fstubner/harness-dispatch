@@ -86,19 +86,48 @@ function resolveDir(workingDir: string): string {
   return path.resolve(workingDir || process.cwd());
 }
 
+/**
+ * Isolated workspaces live OUTSIDE the project, for both policies.
+ *
+ * `copy` used to put its workspace at `<project>/.harness-dispatch/workspaces/`
+ * — inside the very directory it was isolating from. That one decision
+ * produced a defect in every acceptance pass of the 0.6 series, because
+ * `git diff --no-index <project> <copy>` then walks into the copy while
+ * scanning the project:
+ *
+ *   - a file the agent CREATED appeared on both sides with identical content,
+ *     so rename detection paired them and emitted nothing at all (0.6.3);
+ *   - SIBLING workspaces from other jobs, retained for 24h by design, leaked
+ *     in as deletions — so applying one job's patch emptied another job's
+ *     workspace, destroying the only copy of a second delegate's work, and
+ *     then offered to delete the user's own files (0.6.6 acceptance, BLOCK);
+ *   - the project root had to be stripped out of the patch text, which
+ *     silently rewrote CONTENT lines that happened to contain that path.
+ *
+ * Each was fixed with a filter, and each filter turned out to have a gap. The
+ * copy being nested is the shared cause, so it is the thing that changes here.
+ * git_worktree already lived out of tree — which is exactly why none of the
+ * above ever affected it — and both now use one root.
+ *
+ * The trade is copy-on-write: COPYFILE_FICLONE only reflinks within a
+ * filesystem, so a temp dir on another volume falls back to a real copy. That
+ * is a bounded, measurable cost; silently losing a delegate's work is not.
+ * HARNESS_DISPATCH_WORKSPACES_DIR overrides it for anyone who wants the
+ * workspaces on the project's volume.
+ */
 function workspaceRootFor(originalWorkingDir: string): string {
   return (
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
-    path.join(originalWorkingDir, ".harness-dispatch", "workspaces")
+    path.join(
+      os.tmpdir(),
+      "harness-dispatch",
+      "workspaces",
+      safeName(path.basename(originalWorkingDir)),
+    )
   );
 }
 
-function gitWorkspaceRootFor(originalWorkingDir: string): string {
-  return (
-    process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
-    path.join(os.tmpdir(), "harness-dispatch", "workspaces", safeName(path.basename(originalWorkingDir)))
-  );
-}
+const gitWorkspaceRootFor = workspaceRootFor;
 
 const DEFAULT_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

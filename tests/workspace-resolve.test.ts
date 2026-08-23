@@ -240,9 +240,59 @@ describe("git_worktree workspaces", () => {
     }
   });
 
+  it("applies, and then discards, when the dispatch ran in a SUBDIRECTORY of the repo", async () => {
+    // Two defects met here, both invisible to a repo-root dispatch:
+    //
+    //   apply ran git from the workingDir, but git apply resolves patch paths
+    //   at the REPO root regardless of cwd — so from `sub/` it looked for
+    //   `sub/a.txt` at the root, printed `Skipped patch`, exited 0, and we
+    //   reported "Applied N bytes" having changed nothing.
+    //
+    //   discard then refused forever: a worktree's changedFiles are relative
+    //   to the repo root, and the check joined them onto originalWorkingDir,
+    //   looking for `<repo>/sub/sub/a.txt`. A guard that fires after a
+    //   verified successful apply is a guard that cries wolf.
+    const repo = await makeRepo("subdir-proj");
+    const sub = path.join(repo, "sub");
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(sub, "a.txt"), "original\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "add sub"], repo);
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+
+    const wsRoot = path.join(dir, "subws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+    await fs.writeFile(path.join(worktree, "sub", "a.txt"), "AGENT line\n", "utf8");
+
+    const run: WorkspaceRun = {
+      policy: "git_worktree",
+      originalWorkingDir: sub, // the dispatch's workingDir, BELOW the repo root
+      effectiveWorkingDir: path.join(worktree, "sub"),
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "sub/a.txt", kind: "modified" }],
+    };
+
+    const applied = await applyWorkspace("job-1700000000024-aabbccdd", jobDir, run);
+    expect(applied.applied, applied.message).toBe(true);
+    // The assertion that catches "Skipped patch, exit 0, reported success".
+    expect(await readNorm(path.join(sub, "a.txt"))).toBe("AGENT line\n");
+
+    const out = await discardWorkspace("job-1700000000024-aabbccdd", run);
+    expect(out.discarded, out.message).toBe(true);
+  });
+
   it("discard removes the worktree through git, not just the directory", async () => {
     const run = await worktreeRun();
-    await discardWorkspace("job-1700000000006-ffffffff", run);
+    const discarded = await discardWorkspace("job-1700000000006-ffffffff", run);
+    // discard speaks only for ITSELF. "The original project was never
+    // modified" was printed unconditionally, including immediately after an
+    // apply that had just modified it.
+    expect(discarded.message).not.toMatch(/never modified/i);
 
     // rm -rf alone would leave git believing the worktree still exists.
     const list = (await git(["worktree", "list"], run.originalWorkingDir)).stdout;
@@ -450,6 +500,39 @@ describe("a copy workspace that lives INSIDE the project", () => {
     const out = await applyWorkspace("job-1700000000011-aabbccdd", jobDir, run);
     expect(out.applied, out.message).toBe(true);
     expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
+  });
+
+  it("never rewrites file CONTENT that contains the project path", async () => {
+    // The patch text had the project root stripped from EVERY line, content
+    // included. A delegate wrote `const dataDir = "<project>/data"` and the
+    // project received `const dataDir = "data"` — wrong content, applied,
+    // reported as a clean success. Env files, tsconfig paths, docker volumes
+    // and fixtures all routinely name their own absolute path.
+    const repo = await makeRepo("content-path");
+    const wsRoot = path.join(dir, "cp-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    const posixRepo = repo.replace(/\\/g, "/");
+    await fs.writeFile(
+      path.join(copy, "conf.js"),
+      `export const dataDir = "${posixRepo}/data";\n`,
+      "utf8",
+    );
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    const patch = await buildWorkspacePatch(run);
+    expect(patch, `content line was rewritten:\n${patch}`).toContain(`"${posixRepo}/data"`);
+    // Headers must still be repo-relative, or the patch applies nowhere.
+    expect(patch).toContain("+++ b/conf.js");
+    expect(patch).not.toContain(`+++ b/${posixRepo}`);
   });
 
   it("reports a git failure instead of returning it as an empty patch", async () => {

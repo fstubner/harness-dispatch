@@ -86,6 +86,31 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
   }
 }
 
+/**
+ * stdout AND stderr together. `git apply` writes "Skipped patch 'x'." to
+ * stderr while exiting 0, so a stdout-only read cannot see the one line that
+ * says it did nothing.
+ */
+async function gitBoth(args: string[], cwd: string): Promise<string> {
+  const { stdout, stderr } = await execFile("git", args, {
+    cwd,
+    windowsHide: true,
+    maxBuffer: MAX_PATCH_BYTES,
+  });
+  return `${String(stdout)}\n${String(stderr)}`;
+}
+
+/** The repository root containing `dir`, or undefined when it is not a repo. */
+async function repoRoot(dir: string): Promise<string | undefined> {
+  try {
+    const out = await git(["rev-parse", "--show-toplevel"], dir);
+    const root = out.trim();
+    return root.length > 0 ? root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The directory the agent actually worked in, for each isolation policy. */
 function isolatedRoot(run: WorkspaceRun): string {
   if (run.policy === "git_worktree") return path.join(run.workspaceRoot ?? "", "worktree");
@@ -197,9 +222,20 @@ async function changesNotInProject(
   changed: ReadonlyArray<{ path: string; kind: string }>,
 ): Promise<string[]> {
   const workspace = isolatedRoot(run);
+  // The base these paths are relative to is NOT always originalWorkingDir. A
+  // git_worktree's changedFiles are fingerprinted from the worktree root,
+  // which mirrors the REPO root — so for a dispatch whose workingDir was a
+  // subdirectory, joining `sub/a.txt` onto `<repo>/sub` looked for
+  // `<repo>/sub/sub/a.txt`, found nothing, and made discard refuse forever
+  // after an apply that had demonstrably worked. A copy is fingerprinted from
+  // the copied directory itself, so there the two coincide.
+  const projectBase =
+    run.policy === "git_worktree"
+      ? ((await repoRoot(run.originalWorkingDir)) ?? run.originalWorkingDir)
+      : run.originalWorkingDir;
   const missing: string[] = [];
   for (const change of changed) {
-    const inProject = path.join(run.originalWorkingDir, change.path);
+    const inProject = path.join(projectBase, change.path);
     if (change.kind === "deleted") {
       if (existsSync(inProject)) missing.push(`${change.path} (still present)`);
       continue;
@@ -319,9 +355,26 @@ export function normaliseNoIndexPaths(patch: string, origRoot: string, isoRoot: 
   // Longest first: when one root is a prefix of the other, stripping the
   // shorter one first would leave a fragment of the longer behind.
   const roots = [origRoot, isoRoot].sort((a, b) => b.length - a.length);
+  // HEADER LINES ONLY, and "header" is decided by POSITION, not by prefix.
+  //
+  // This used to run over every line in the patch, including `+` and `-`
+  // content, so a file that mentioned its own absolute path had that path
+  // deleted from its text on the way through: a delegate wrote
+  // `const dataDir = "C:/…/hd-acc/data"` and the project received
+  // `const dataDir = "data"`, reported as a clean apply. Env files, tsconfig
+  // paths, docker volumes and fixtures all routinely contain the project path.
+  //
+  // Matching on prefixes alone is not enough either: an ADDED line whose own
+  // text starts with "++ " arrives as "+++ ", and a `git diff` of a patch file
+  // is not a hypothetical in this repo. Everything from `@@` to the next
+  // section is content, full stop.
+  let inHunk = false;
   return patch
     .split("\n")
     .map((line) => {
+      if (line.startsWith("diff --git ")) inHunk = false;
+      else if (line.startsWith("@@")) inHunk = true;
+      if (inHunk) return line;
       let out = line;
       for (const r of roots) {
         // The a/ and b/ prefixes are rebuilt explicitly rather than left to a
@@ -379,11 +432,17 @@ export async function workspaceDiff(
 /**
  * Uncommitted changes in the target, or undefined when it is not a repo.
  *
- * The tool's OWN directory is not the user's work. A `copy` workspace is
- * created at <project>/.harness-dispatch/workspaces/..., so its mere existence
- * made `git status` non-empty and apply refused every single time with "1
- * uncommitted change" — the feature blocking itself with its own scratch
- * space. Only real changes count toward the dirty check.
+ * The tool's OWN directory is not the user's work. Workspaces now live outside
+ * the project entirely, but an install that ran an earlier version can still
+ * have a `.harness-dispatch/` sitting there, and counting it made apply refuse
+ * with "1 uncommitted change" — the feature blocking itself with its own
+ * leftovers.
+ *
+ * Matched on ANY segment, not just the first. `git status --porcelain` reports
+ * paths from the repo root, so a dispatch whose workingDir was a subdirectory
+ * saw `sub/.harness-dispatch/` and the old first-segment test missed it —
+ * which is how the self-blocking bug this comment describes came back for
+ * every monorepo layout after it was supposedly fixed.
  */
 async function dirtyPaths(dir: string): Promise<string[] | undefined> {
   try {
@@ -395,7 +454,7 @@ async function dirtyPaths(dir: string): Promise<string[] | undefined> {
       .filter((line) => {
         // Porcelain lines are "XY path"; the path may be quoted.
         const p = line.slice(2).trim().replace(/^"|"$/g, "").replace(/\\/g, "/");
-        return !(p === ".harness-dispatch" || p.startsWith(".harness-dispatch/"));
+        return !p.split("/").includes(".harness-dispatch");
       });
   } catch {
     return undefined;
@@ -507,13 +566,13 @@ export async function applyWorkspace(
     };
   }
 
-  // --3way first: it merges when context has moved instead of failing
-  // outright. It needs the pre-image blobs to exist in the target repo, which
-  // holds for a worktree patch (same repo, real commit) but NOT for a copy
-  // patch — `git diff --no-index` writes index lines for blobs the repo has
-  // never seen, so --3way fails with "could not build fake ancestor". Plain
-  // apply handles that fine, so the strict-but-smarter mode is an attempt,
-  // not a requirement.
+  // --3way merges when context has moved instead of failing outright. It
+  // needs the pre-image blobs to exist in the target repo, which holds for a
+  // worktree patch (same repo, real commit) but NOT for a copy patch — `git
+  // diff --no-index` writes index lines for blobs the repo has never seen, so
+  // --3way fails with "could not build fake ancestor". Plain apply handles
+  // that fine, so the strict-but-smarter mode is an attempt, not a requirement.
+  //
   // PLAIN APPLY FIRST, --3way second. The order used to be the other way
   // round, and --3way is not atomic: on conflict it writes `<<<<<<< ours` /
   // `>>>>>>> theirs` markers INTO the target and then exits non-zero. The
@@ -523,6 +582,16 @@ export async function applyWorkspace(
   // so trying it first means the common case never mutates on failure, and
   // --3way is still there for the case it exists to handle (context moved in a
   // worktree patch, where the pre-image blobs are in the repo).
+  // Apply from the REPO ROOT, not from the dispatch's workingDir.
+  //
+  // The patch is repo-relative, and `git apply` resolves paths against the
+  // repository root regardless of the cwd it is invoked from. Run from a
+  // subdirectory it therefore looked for `a.txt` at the repo root, did not
+  // find it, printed `Skipped patch 'a.txt'.` — and EXITED 0. We reported
+  // "Applied 120 bytes of changes" for a run that changed nothing at all. Any
+  // dispatch whose workingDir was below the repo root (every monorepo package)
+  // hit this.
+  const applyCwd = (await repoRoot(target)) ?? target;
   const beforeAttempt = await dirtyPaths(target);
   let applyError: string | undefined;
   for (const args of [
@@ -530,7 +599,14 @@ export async function applyWorkspace(
     ["apply", "--3way", "--whitespace=nowarn", diff.patchPath],
   ]) {
     try {
-      await git(args, target);
+      const out = await gitBoth(args, applyCwd);
+      // `Skipped patch` is git telling us, on a zero exit, that it did
+      // nothing. Treated as success it is indistinguishable from a real apply,
+      // which is the whole defect above.
+      if (/^Skipped patch /m.test(out)) {
+        applyError = out.split("\n").find((l) => l.startsWith("Skipped patch")) ?? out;
+        continue;
+      }
       applyError = undefined;
       break;
     } catch (err) {
@@ -653,10 +729,14 @@ export async function discardWorkspace(
   // moments later. Failing here strands the workspace inside the user's
   // project, which is the one place it must not be left.
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  // "The original project was never modified" was printed unconditionally,
+  // including immediately after an apply that had just modified it. Discard
+  // only ever speaks for ITSELF; whether the project was touched earlier is
+  // not something this function knows.
   return {
     jobId,
     discarded: true,
-    message: `Discarded the isolated workspace at ${root}. The original project was never modified.`,
+    message: `Discarded the isolated workspace at ${root}. Discarding changes nothing in ${run.originalWorkingDir} — anything already applied from this job stays applied.`,
   };
 }
 
