@@ -53,4 +53,19 @@ describe("HTTP hint values are rejected, not dropped", () => {
     expect(parsed.hints.safetyProfile).toBeUndefined();
     expect(parsed.hints.workspacePolicy).toBeUndefined();
   });
+
+  it.each([["empty", ""], ["whitespace", "   "]])(
+    "rejects a %s hints.model instead of unsetting the route's own",
+    (_label, value) => {
+      // The same rule as the MCP surface, and the same reason the unknown-KEY
+      // check above spans both: a blank model beat the route's configured one,
+      // so the harness ran with no model flag and the response reported
+      // model: "". The OpenAI top-level `model` field has always dropped "",
+      // so this failed open on one surface only — and the 0.7.8 release notes
+      // claimed the rejection without qualifying which surface.
+      expect(() => parseChatRequest({ ...base, hints: { model: value } })).toThrow(
+        /hints\.model: must not be empty/,
+      );
+    },
+  );
 });

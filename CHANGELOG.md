@@ -66,10 +66,14 @@ re-opened a bug 0.7.6 had fixed.
   "codex"` still sent `--model codex` to the harness — the failure the forced
   path was fixed for — and reported neither field. All three paths now share
   one function.
-- `hints.model: ""` is rejected instead of silently unsetting the route's
-  configured model. An empty string is not "no preference": it won against the
-  route default, the harness ran with no model flag, and the response reported
-  `model: ""` with nothing to say the request had been discarded.
+- A blank `hints.model` is rejected on BOTH surfaces instead of silently
+  unsetting the route's configured model. An empty string is not "no
+  preference": it won against the route default, the harness ran with no model
+  flag, and the response reported `model: ""` with nothing to say the request
+  had been discarded. Whitespace did the same and also reached the harness as a
+  real argument. The OpenAI-compatible HTTP endpoint had always dropped a blank
+  top-level `model` but not a blank `hints.model`, so the same mistake failed
+  open on one surface only.
 - An environment failure is detected by SHAPE, not by how often the phrase
   appears. The detector overrides a successful exit — it charges the route a
   failure and tells the caller "any answer it gave was produced without reading

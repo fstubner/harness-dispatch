@@ -162,7 +162,20 @@ function parseHints(body: ChatRequest): RouteHints {
   if (topSafety !== undefined) hints.safetyProfile = topSafety;
   if (body.hints && typeof body.hints === "object") {
     const raw = body.hints as Record<string, unknown>;
-    if (typeof raw.model === "string") hints.model = raw.model;
+    // Blank is REJECTED, matching the MCP surface — for the same reason the
+    // unknown-key rule below exists. An empty string is not "no preference":
+    // it beat the route's configured model, so the harness ran with no model
+    // flag and the response reported model: "". The OpenAI top-level `model`
+    // three lines up has always dropped "", so accepting it here left the
+    // identical mistake failing open on one surface only.
+    if (typeof raw.model === "string") {
+      if (raw.model.trim() === "") {
+        throw new BadRequestError(
+          `hints.model: must not be empty — omit it entirely for no preference.`,
+        );
+      }
+      hints.model = raw.model;
+    }
     const taskType = enumField(raw.taskType, TASK_TYPES, "hints.taskType");
     if (taskType !== undefined) hints.taskType = taskType;
     if (typeof raw.preferLargeContext === "boolean") {
