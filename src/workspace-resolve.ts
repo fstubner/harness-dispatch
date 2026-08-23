@@ -44,13 +44,44 @@ async function git(args: string[], cwd: string): Promise<string> {
   return String(stdout);
 }
 
-/** `git diff` exits 1 when there ARE differences; that is success, not failure. */
+/**
+ * `git diff` exits 1 when there ARE differences; that is success, not failure.
+ *
+ * But exit 1 is NOT exclusively "differences found" — git also uses it for
+ * real errors, and the two were indistinguishable here. Observed live on
+ * Windows: a copy workspace whose paths crossed MAX_PATH made git exit 1 with
+ * an EMPTY stdout and `error: Could not open directory <259-char path>` on
+ * stderr. Returning stdout meant an empty patch, which every caller reads as
+ * "the agent changed nothing" — the feature could not deliver, and the user
+ * was told to file a bug report rather than the actual cause. git's own
+ * explanation was discarded at this line and never reached anyone.
+ *
+ * `error:`/`fatal:` on stderr is the discriminator. Plain `warning:` lines do
+ * not count: git emits those routinely for line-ending conversion, and
+ * treating them as failure would break every diff on a CRLF checkout.
+ */
 async function gitDiff(args: string[], cwd: string): Promise<string> {
   try {
     return await git(args, cwd);
   } catch (err) {
-    const e = err as { code?: number; stdout?: string };
-    if (e.code === 1 && typeof e.stdout === "string") return e.stdout;
+    const e = err as { code?: number; stdout?: string; stderr?: string };
+    const stderr = typeof e.stderr === "string" ? e.stderr : "";
+    const failure = stderr
+      .split("\n")
+      .find((line) => /^\s*(error|fatal):/.test(line))
+      ?.trim();
+    if (e.code === 1 && typeof e.stdout === "string" && failure === undefined) {
+      return e.stdout;
+    }
+    if (failure !== undefined) {
+      const hint = /could not open directory|filename too long|No such file or directory/i.test(
+        failure,
+      )
+        ? " This is usually a path too long for the platform — on Windows, `git config " +
+          "--global core.longpaths true`, or run the dispatch from a shorter directory."
+        : "";
+      throw new Error(`git could not produce a patch for this workspace: ${failure}.${hint}`);
+    }
     throw err;
   }
 }
@@ -371,6 +402,17 @@ async function dirtyPaths(dir: string): Promise<string[] | undefined> {
   }
 }
 
+/**
+ * Porcelain lines present after an attempt that were not there before, as bare
+ * paths. `undefined` on either side means git could not be asked (not a repo),
+ * in which case nothing can be claimed either way and the list is empty.
+ */
+function diffPathLists(before: string[] | undefined, after: string[] | undefined): string[] {
+  if (before === undefined || after === undefined) return [];
+  const seen = new Set(before);
+  return after.filter((line) => !seen.has(line)).map((line) => line.slice(2).trim());
+}
+
 export interface ApplyResult {
   jobId: string;
   applied: boolean;
@@ -472,10 +514,20 @@ export async function applyWorkspace(
   // never seen, so --3way fails with "could not build fake ancestor". Plain
   // apply handles that fine, so the strict-but-smarter mode is an attempt,
   // not a requirement.
+  // PLAIN APPLY FIRST, --3way second. The order used to be the other way
+  // round, and --3way is not atomic: on conflict it writes `<<<<<<< ours` /
+  // `>>>>>>> theirs` markers INTO the target and then exits non-zero. The
+  // failure was reported as "git apply failed … resolve by hand", which reads
+  // as "nothing happened" — while the user's file had already been rewritten
+  // with conflict markers. Plain apply either applies everything or nothing,
+  // so trying it first means the common case never mutates on failure, and
+  // --3way is still there for the case it exists to handle (context moved in a
+  // worktree patch, where the pre-image blobs are in the repo).
+  const beforeAttempt = await dirtyPaths(target);
   let applyError: string | undefined;
   for (const args of [
-    ["apply", "--3way", "--whitespace=nowarn", diff.patchPath],
     ["apply", "--whitespace=nowarn", diff.patchPath],
+    ["apply", "--3way", "--whitespace=nowarn", diff.patchPath],
   ]) {
     try {
       await git(args, target);
@@ -487,21 +539,45 @@ export async function applyWorkspace(
   }
   if (applyError !== undefined) {
     const firstLine = applyError.split("\n").find((l) => l.includes("error:")) ?? applyError.split("\n")[0];
+    // Did the failed attempt leave the project changed anyway? --3way can.
+    // Saying "failed" while the working tree has been rewritten is the worst
+    // of both: the user neither has their change nor knows their file moved.
+    const afterAttempt = await dirtyPaths(target);
+    const touched = diffPathLists(beforeAttempt, afterAttempt);
+    const mutated =
+      touched.length > 0
+        ? ` YOUR PROJECT WAS MODIFIED ANYWAY: ${touched.join(", ")} — a three-way merge ` +
+          `wrote conflict markers before giving up. Check those file(s), and \`git checkout -- ` +
+          `<file>\` to undo if you would rather start over.`
+        : ` Your project was not modified.`;
     return {
       jobId,
       applied: false,
       patchPath: diff.patchPath,
       message:
-        `git apply failed: ${firstLine}. The patch is intact at ` +
+        `git apply failed: ${firstLine}.${mutated} The patch is intact at ` +
         `${diff.patchPath} — resolve by hand, or inspect the workspace directly.`,
     };
   }
 
+  // Name what force ran over. `force: true` is the caller waiving the
+  // uncommitted-changes refusal, and it was answered with the same cheerful
+  // line as a clean apply — so a human edit the patch replaced left no trace
+  // in the response at all. The waiver covers doing it; it does not cover
+  // being quiet about it.
+  const overwritten =
+    opts.force === true && dirty !== undefined && dirty.length > 0
+      ? ` FORCED over ${dirty.length} uncommitted change(s): ` +
+        `${dirty.map((l) => l.slice(2).trim()).join(", ")} — where the patch touched the same ` +
+        `lines, your version was replaced, not merged.`
+      : "";
   return {
     jobId,
     applied: true,
     patchPath: diff.patchPath,
-    message: `Applied ${diff.bytes} bytes of changes to ${target}. Review with git diff before committing.`,
+    message:
+      `Applied ${diff.bytes} bytes of changes to ${target}.${overwritten} ` +
+      `Review with git diff before committing.`,
     ...(run.changedFiles !== undefined ? { changedFiles: run.changedFiles } : {}),
   };
 }
@@ -524,6 +600,7 @@ export interface DiscardResult {
 export async function discardWorkspace(
   jobId: string,
   run: WorkspaceRun,
+  opts: { force?: boolean } = {},
 ): Promise<DiscardResult> {
   const root = run.workspaceRoot;
   if (!root) {
@@ -531,6 +608,32 @@ export async function discardWorkspace(
   }
   if (!existsSync(root)) {
     return { jobId, discarded: true, message: `Already gone: ${root}` };
+  }
+
+  // Refuse to destroy the only copy of work the project does not have.
+  //
+  // `apply` can end with "Do NOT discard this job — the workspace still holds
+  // the files at …", and discard then deleted them anyway and answered "The
+  // original project was never modified." The reassuring sentence arrived at
+  // the exact moment the work was destroyed. Discard is the one irreversible
+  // action here, so it owes the same check apply makes.
+  //
+  // Deliberately not gated on whether apply was ever called: a caller who
+  // never ran apply is in more danger, not less.
+  const changed = run.changedFiles ?? [];
+  if (opts.force !== true && changed.length > 0 && existsSync(isolatedRoot(run))) {
+    const missing = await changesNotInProject(run, changed);
+    if (missing.length > 0) {
+      return {
+        jobId,
+        discarded: false,
+        message:
+          `Refused: ${missing.length} change(s) exist only in this workspace and are not in ` +
+          `your project (${missing.join(", ")}). Discarding would destroy the only copy. Run ` +
+          `action: "apply" first, copy them out of ${isolatedRoot(run)} by hand, or pass ` +
+          `force: true if you genuinely want them thrown away.`,
+      };
+    }
   }
 
   if (run.policy === "git_worktree") {

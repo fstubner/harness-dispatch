@@ -1264,7 +1264,9 @@ export async function resolveJobWorkspace(
   const jobDir = path.join(jobsRoot(), jobId);
   if (action === "diff") return workspaceDiff(jobId, jobDir, run);
   if (action === "apply") return applyWorkspace(jobId, jobDir, run, opts);
-  return discardWorkspace(jobId, run);
+  // force reaches discard too: it now refuses to destroy work the project
+  // does not have, and the caller needs the same override apply offers.
+  return discardWorkspace(jobId, run, opts);
 }
 
 export interface RetryOutcome {
