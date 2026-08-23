@@ -16,7 +16,7 @@
  * the thing this repo treats as worse than no test at all.
  */
 
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -130,4 +130,56 @@ describe("workspace copies ask for a reflink", () => {
       expect(mode).not.toBe(constants.COPYFILE_FICLONE_FORCE);
     }
   });
+});
+
+describe("a workspaces root inside the project", () => {
+  /**
+   * HARNESS_DISPATCH_WORKSPACES_DIR pointing inside the project is not an
+   * exotic misconfiguration — it is what README and the 0.7.0 notes recommend
+   * for keeping the copy on the project's own volume, where a reflink is
+   * possible. Nothing validated it, and the exclusion list covered exactly one
+   * hard-coded path, so the copy walked into the workspace it was writing:
+   * measured at 201 levels of nesting and an 11,800-character path on a
+   * six-file project before the run was killed.
+   */
+  it("does not copy the workspace area into itself", async () => {
+    const inside = path.join(dir, "ws");
+    const original = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = inside;
+    try {
+      // A sibling run's workspace, which must not be copied either.
+      await realFsp.mkdir(path.join(inside, "older-run", "workspace"), { recursive: true });
+      await realFsp.writeFile(path.join(inside, "older-run", "workspace", "old.js"), "//\n", "utf8");
+
+      const prepared = await prepareWorkspace({
+        policy: "copy",
+        routeName: "probe",
+        workingDir: dir,
+        files: [],
+      });
+      const copyRoot = prepared.effectiveWorkingDir;
+
+      // The project's real files came across...
+      expect(existsSync(path.join(copyRoot, "keep.js"))).toBe(true);
+      // ...and the workspace area did not, at any depth.
+      expect(existsSync(path.join(copyRoot, "ws"))).toBe(false);
+
+      // Nothing runaway: a self-copy shows up as depth long before it shows up
+      // as a hang, and asserting on depth fails fast instead of timing out.
+      const deepest = async (root: string, depth = 0): Promise<number> => {
+        if (depth > 12) return depth;
+        const entries = await realFsp.readdir(root, { withFileTypes: true }).catch(() => []);
+        let max = depth;
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          max = Math.max(max, await deepest(path.join(root, e.name), depth + 1));
+        }
+        return max;
+      };
+      expect(await deepest(copyRoot)).toBeLessThanOrEqual(3);
+    } finally {
+      if (original === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = original;
+    }
+  }, 60_000);
 });

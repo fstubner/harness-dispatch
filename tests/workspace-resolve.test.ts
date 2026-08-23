@@ -535,6 +535,55 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(patch).not.toContain(`+++ b/${posixRepo}`);
   });
 
+  it("applies a SUBDIRECTORY copy patch to the subdirectory, not the repo root", async () => {
+    // 0.7.0 started applying from the repo root, which is correct for a
+    // worktree patch (repo-relative) and wrong for a copy patch
+    // (workingDir-relative). With a same-named file at the root it silently
+    // edited and DELETED the wrong files and reported success; without one it
+    // wrote conflict markers into a root file the delegate had never seen.
+    //
+    // The fixture is deliberately the dangerous shape: the same filenames at
+    // both levels, so getting the base wrong cannot pass by luck.
+    const repo = await makeRepo("copy-subdir");
+    const sub = path.join(repo, "pkg");
+    await fs.mkdir(sub, { recursive: true });
+    await fs.writeFile(path.join(repo, "shared.txt"), "ROOT — do not touch\n", "utf8");
+    await fs.writeFile(path.join(repo, "doomed.txt"), "ROOT — must survive\n", "utf8");
+    await fs.writeFile(path.join(sub, "shared.txt"), "pkg original\n", "utf8");
+    await fs.writeFile(path.join(sub, "doomed.txt"), "pkg doomed\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "add pkg"], repo);
+
+    // The copy is of the SUBDIRECTORY, which is what workingDir means here.
+    const wsRoot = path.join(dir, "copysub-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "shared.txt"), "PKG-EDITED\n", "utf8");
+    // and the agent deleted pkg/doomed.txt by not copying it forward.
+
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: sub,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    const out = await applyWorkspace("job-1700000000030-aabbccdd", jobDir, run);
+    expect(out.applied, out.message).toBe(true);
+
+    // The subdirectory got the change...
+    expect(await readNorm(path.join(sub, "shared.txt"))).toBe("PKG-EDITED\n");
+    expect(existsSync(path.join(sub, "doomed.txt"))).toBe(false);
+    // ...and the root files the delegate never saw are untouched.
+    expect(await readNorm(path.join(repo, "shared.txt"))).toBe("ROOT — do not touch\n");
+    expect(
+      existsSync(path.join(repo, "doomed.txt")),
+      "a root file outside the dispatch's workingDir was deleted",
+    ).toBe(true);
+  });
+
   it("reports a git failure instead of returning it as an empty patch", async () => {
     // git diff exits 1 for "there are differences" AND for real errors, and
     // the two were indistinguishable. Live on Windows, a copy workspace whose
