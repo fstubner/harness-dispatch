@@ -33,8 +33,11 @@ export const publicHintsSchema = z
       // spends a round trip on a -32602 — the same "an agent following the
       // schema burns a call" cost this file's `service` wording was fixed for.
       .min(1, "hints.model must not be empty — omit it entirely for no preference")
+      // `v === ""` short-circuits so .min(1) is the only rule that reports on
+      // an empty string; without it both fire and the caller reads the same
+      // sentence twice in one error payload.
       .refine(
-        (v) => v.trim() !== "",
+        (v) => v === "" || v.trim() !== "",
         "hints.model must not be empty — omit it entirely for no preference",
       )
       .optional()
@@ -216,7 +219,7 @@ export const dispatchInputShape = {
     // said so (`!prompt.trim()` → 400). Here it passed .min(1) and spent a
     // real route call producing nothing — the exact waste the line above
     // exists to prevent, on the one field that is required.
-    .refine((v) => v.trim() !== "", "prompt must not be empty")
+    .refine((v) => v === "" || v.trim() !== "", "prompt must not be empty")
     // A NUL byte passed the schema and failed deep inside cross-spawn with
     // "The argument 'args[2]' must be a string without null bytes" — caught,
     // never a crash, and correctly not charged to the route's failure count,
