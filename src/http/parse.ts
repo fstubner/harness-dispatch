@@ -120,58 +120,70 @@ function messagesToPrompt(messages: unknown): string {
     .join("\n\n");
 }
 
+const TASK_TYPES = ["execute", "plan", "review", "local"] as const;
+const SAFETY_PROFILES = ["read_only", "workspace_edit", "full_auto"] as const;
+const WORKSPACE_POLICIES = ["shared", "shared_locked", "copy", "git_worktree"] as const;
+const ROUTE_POLICIES = ["local_only", "approval_required", "blocked"] as const;
+
+/**
+ * An enum-valued field: accepted when it is one of the listed values, REJECTED
+ * when it is anything else.
+ *
+ * Each of these used to be an `if (v === a || v === b)` that simply did not
+ * assign on a miss, so a typo was DROPPED and the default applied. For
+ * safetyProfile that default is less restrictive than what the caller was
+ * reaching for: `"read_onlyy"` returned 200 and ran the dispatch
+ * write-capable, while the MCP surface rejects the identical input by name.
+ *
+ * The unknown-KEY check further down was added for precisely this failure and
+ * covers only half of it. The config loader gets the value case right and says
+ * so loudly ("IGNORED, and the default applies instead, which is less
+ * restrictive than what this looks like it was meant to set"); this surface is
+ * the one PRODUCT.md points CI and cron at, and it was the one failing open.
+ */
+function enumField<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+): T | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new BadRequestError(
+    `${field}: invalid value ${JSON.stringify(value)}. Valid: ${allowed.join(", ")}.`,
+  );
+}
+
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
   if (typeof body.model === "string" && body.model !== "") hints.model = body.model;
-  if (
-    body.safetyProfile === "read_only" ||
-    body.safetyProfile === "workspace_edit" ||
-    body.safetyProfile === "full_auto"
-  ) {
-    hints.safetyProfile = body.safetyProfile;
-  }
+  const topSafety = enumField(body.safetyProfile, SAFETY_PROFILES, "safetyProfile");
+  if (topSafety !== undefined) hints.safetyProfile = topSafety;
   if (body.hints && typeof body.hints === "object") {
     const raw = body.hints as Record<string, unknown>;
     if (typeof raw.model === "string") hints.model = raw.model;
-    if (
-      raw.taskType === "execute" ||
-      raw.taskType === "plan" ||
-      raw.taskType === "review" ||
-      raw.taskType === "local"
-    ) {
-      hints.taskType = raw.taskType;
-    }
+    const taskType = enumField(raw.taskType, TASK_TYPES, "hints.taskType");
+    if (taskType !== undefined) hints.taskType = taskType;
     if (typeof raw.preferLargeContext === "boolean") {
       hints.preferLargeContext = raw.preferLargeContext;
     }
-    if (
-      raw.safetyProfile === "read_only" ||
-      raw.safetyProfile === "workspace_edit" ||
-      raw.safetyProfile === "full_auto"
-    ) {
-      hints.safetyProfile = raw.safetyProfile;
-    }
-    if (
-      raw.workspacePolicy === "shared" ||
-      raw.workspacePolicy === "shared_locked" ||
-      raw.workspacePolicy === "copy" ||
-      raw.workspacePolicy === "git_worktree"
-    ) {
-      hints.workspacePolicy = raw.workspacePolicy;
-    }
+    const safetyProfile = enumField(raw.safetyProfile, SAFETY_PROFILES, "hints.safetyProfile");
+    if (safetyProfile !== undefined) hints.safetyProfile = safetyProfile;
+    const workspacePolicy = enumField(
+      raw.workspacePolicy,
+      WORKSPACE_POLICIES,
+      "hints.workspacePolicy",
+    );
+    if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
     // routePolicy was never read here at all. evaluateRoutePolicy implements
     // local_only, approval_required and blocked in full, and on this surface
     // they were wired to nothing: POST {"hints":{"routePolicy":"blocked"}}
     // returned 200 and dispatched. PRODUCT.md names CI and cron as this
     // surface's consumers, and calls a guarantee that reads correctly and does
     // nothing at runtime its own counter-signal.
-    if (
-      raw.routePolicy === "local_only" ||
-      raw.routePolicy === "approval_required" ||
-      raw.routePolicy === "blocked"
-    ) {
-      hints.routePolicy = raw.routePolicy;
-    }
+    const routePolicy = enumField(raw.routePolicy, ROUTE_POLICIES, "hints.routePolicy");
+    if (routePolicy !== undefined) hints.routePolicy = routePolicy;
     if (typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs)) {
       hints.timeoutMs = raw.timeoutMs;
     }
@@ -195,14 +207,8 @@ function parseHints(body: ChatRequest): RouteHints {
       );
     }
   }
-  if (
-    body.workspacePolicy === "shared" ||
-    body.workspacePolicy === "shared_locked" ||
-    body.workspacePolicy === "copy" ||
-    body.workspacePolicy === "git_worktree"
-  ) {
-    hints.workspacePolicy = body.workspacePolicy;
-  }
+  const topPolicy = enumField(body.workspacePolicy, WORKSPACE_POLICIES, "workspacePolicy");
+  if (topPolicy !== undefined) hints.workspacePolicy = topPolicy;
   return hints;
 }
 

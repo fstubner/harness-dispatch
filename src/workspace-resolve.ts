@@ -74,9 +74,16 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
       return e.stdout;
     }
     if (failure !== undefined) {
-      const hint = /could not open directory|filename too long|No such file or directory/i.test(
-        failure,
-      )
+      // `Could not access` is git's wording when it stats a FILE it cannot
+      // reach; `Could not open directory` is the same fault hit while scanning
+      // a directory. The first version of this hint pinned only the string
+      // that had been observed, so the file variant — which is what an
+      // over-long path usually produces — got a bare error with no cause and
+      // no remedy, for exactly the case the hint exists to explain.
+      const hint =
+        /could not open directory|could not access|filename too long|name too long|No such file or directory/i.test(
+          failure,
+        )
         ? " This is usually a path too long for the platform — on Windows, `git config " +
           "--global core.longpaths true`, or run the dispatch from a shorter directory."
         : "";
@@ -159,7 +166,38 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     return gitDiff(["diff", "--binary", run.baseCommit, "--"], root);
   }
 
-  // --no-index works outside a repository and handles added/deleted files.
+  // A copy patch is built FILE BY FILE, from the list of what the agent
+  // actually changed — not by comparing the two trees.
+  //
+  // A tree comparison has no BASE. It diffs the workspace against the project
+  // as the project is RIGHT NOW, at apply time, so everything that changed in
+  // the project since the copy was taken is proposed for reversal. Reproduced
+  // through the documented tool surface: dispatch two isolated jobs, apply the
+  // first, COMMIT it, apply the second — and the second silently deleted the
+  // first's committed file and reverted its committed line, reporting
+  // `applied: true` and a changedFiles list one entry shorter than the patch it
+  // had just applied. That is the parallel-delegation case this product is
+  // built around, and the refusal on uncommitted changes is not a mitigation:
+  // it tells you to commit first, and committing is what walks you into it.
+  //
+  // The git_worktree branch above never had this, because it diffs against a
+  // recorded baseCommit — and its own error text spells the hazard out
+  // ("diffing it against a dirty project could report your own uncommitted
+  // work as deletions"). The danger was documented for one policy and
+  // unguarded in the other.
+  //
+  // changedFiles is exactly the missing base: fingerprints of the workspace
+  // taken at dispatch, compared with fingerprints taken when the agent
+  // finished. A file the agent never touched cannot appear in the patch at
+  // all now, whatever the project has done since — and the patch and the
+  // reported changedFiles are derived from one list, so they cannot disagree.
+  if (run.changedFiles !== undefined) {
+    return buildCopyPatchFromChanges(run, root, run.changedFiles);
+  }
+
+  // Fallback for a job recorded before changedFiles existed. Kept rather than
+  // refusing so an upgrade cannot strand an in-flight job; those records age
+  // out with the workspace inside a day.
   //
   // The paths are handed to git in POSIX form deliberately. Given a Windows
   // path, git quotes the whole filename and escapes the separators as `\\`,
@@ -194,6 +232,105 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
   // before normalisation collapses them.
   const withoutWorkspace = dropSectionsUnder(raw, toPosix(run.workspaceRoot ?? ""));
   return dropExcludedSections(normaliseNoIndexPaths(withoutWorkspace, origPosix, isoPosix));
+}
+
+/** git's own name for "this side does not exist", accepted on Windows too. */
+const NULL_PATH = "/dev/null";
+
+/**
+ * One patch section per recorded change, with headers rewritten to the
+ * project-relative path.
+ *
+ * The headers are REBUILT from the path we already know rather than derived by
+ * stripping roots out of git's output. That is what makes it impossible for
+ * this step to touch file content: nothing is searched for and replaced, the
+ * three header lines are simply replaced with correct ones and every other
+ * line — hunks, `index`, mode lines, the content itself — passes through
+ * untouched.
+ */
+async function buildCopyPatchFromChanges(
+  run: WorkspaceRun,
+  workspace: string,
+  changes: ReadonlyArray<{ path: string; kind: string }>,
+): Promise<string> {
+  const sections: string[] = [];
+  for (const change of changes) {
+    const rel = change.path.split(path.sep).join("/");
+    const projectFile = path.join(run.originalWorkingDir, change.path);
+    const workspaceFile = path.join(workspace, change.path);
+    const projectHas = existsSync(projectFile);
+    const workspaceHas = existsSync(workspaceFile);
+
+    // The LEFT side is what the project has right now, whatever the recorded
+    // kind says — an "added" file the project already has is a modification,
+    // and after a successful apply it is no change at all. Trusting the kind
+    // blindly re-proposed a file the project already held as a fresh addition,
+    // so a second apply always found work to do.
+    const left = change.kind === "deleted" || !projectHas ? NULL_PATH : toPosix(projectFile);
+    const right = change.kind === "deleted" || !workspaceHas ? NULL_PATH : toPosix(workspaceFile);
+
+    // Nothing on either side: cannot be diffed. Skipping leaves the patch
+    // shorter than changedFiles, which is precisely the state applyWorkspace's
+    // guard refuses on — so nothing is lost quietly.
+    if (left === NULL_PATH && right === NULL_PATH) continue;
+    if (change.kind === "deleted" && !projectHas) continue; // already gone
+
+    // Already in the project, modulo line endings: emit nothing. `git apply`
+    // writes through the repository's eol settings, so an applied file lands
+    // as CRLF against an LF workspace copy and a byte comparison would call
+    // that a difference forever — a second apply would keep finding work to
+    // do. Same rule as the already-applied check, deliberately, so the two
+    // cannot disagree about what "landed" means.
+    if (left !== NULL_PATH && right !== NULL_PATH) {
+      const [a, b] = await Promise.all([
+        readFile(projectFile).catch(() => null),
+        readFile(workspaceFile).catch(() => null),
+      ]);
+      if (a !== null && b !== null && (a.equals(b) || normaliseEol(a) === normaliseEol(b))) continue;
+    }
+
+    let raw: string;
+    try {
+      raw = await gitDiff(
+        ["diff", "--no-index", "--no-renames", "--binary", "--", left, right],
+        path.dirname(run.originalWorkingDir),
+      );
+    } catch (err) {
+      // An unreadable file must not silently shrink the patch — that is the
+      // failure mode this whole area keeps producing.
+      throw new Error(
+        `could not diff ${rel} for this workspace: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (raw.trim() === "") continue;
+    sections.push(rewriteSectionHeaders(raw, rel));
+  }
+  return sections.join("");
+}
+
+/**
+ * Replace a section's path headers with the project-relative ones.
+ *
+ * Only before the first `@@`. Prefix alone is not safe: a REMOVED line whose
+ * own text begins `-- ` (an SQL comment, a signature delimiter) arrives as
+ * `--- `, and an added line beginning `++ ` arrives as `+++ `. Rewriting those
+ * would corrupt content — the same defect this file has already shipped once,
+ * from the other direction.
+ */
+function rewriteSectionHeaders(section: string, rel: string): string {
+  let inHunk = false;
+  const out = section
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("@@")) inHunk = true;
+      if (inHunk) return line;
+      if (line.startsWith("diff --git ")) return `diff --git a/${rel} b/${rel}`;
+      if (line.startsWith("--- ")) return line.trim() === `--- ${NULL_PATH}` ? line : `--- a/${rel}`;
+      if (line.startsWith("+++ ")) return line.trim() === `+++ ${NULL_PATH}` ? line : `+++ b/${rel}`;
+      return line;
+    })
+    .join("\n");
+  return out.endsWith("\n") ? out : `${out}\n`;
 }
 
 /**

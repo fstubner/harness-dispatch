@@ -502,6 +502,70 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
   });
 
+  it("does not revert a second job's committed work when applying the first", async () => {
+    // The parallel-delegation case, and the worst defect this feature has had.
+    //
+    // A copy patch used to be a whole-tree `git diff --no-index <project>
+    // <workspace>`, recomputed at APPLY time against the LIVE project — so
+    // everything that changed in the project since the copy was taken was
+    // proposed for reversal. Reproduced through the tool surface: dispatch two
+    // isolated jobs, apply the first, COMMIT it, apply the second, and the
+    // second silently DELETED the first's committed file and reverted its
+    // committed line, reporting applied:true. The uncommitted-changes refusal
+    // is no help — it says "commit or stash first", and committing is exactly
+    // what walks you into this.
+    //
+    // git_worktree never had it, because it diffs against a recorded
+    // baseCommit. The patch is now built per file from changedFiles, so a file
+    // the agent never touched cannot appear in it at all.
+    const repo = await makeRepo("two-jobs");
+    await fs.writeFile(path.join(repo, "shared.txt"), "base\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const mkJob = async (name: string, line: string, created: string): Promise<WorkspaceRun> => {
+      const wsRoot = path.join(dir, `ws-${name}`);
+      const copy = path.join(wsRoot, "workspace");
+      await fs.mkdir(copy, { recursive: true });
+      await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+      await fs.writeFile(path.join(copy, "shared.txt"), `base\n${line}\n`, "utf8");
+      await fs.writeFile(path.join(copy, `created-${name}.txt`), "made by " + name + "\n", "utf8");
+      return {
+        policy: "copy",
+        originalWorkingDir: repo,
+        effectiveWorkingDir: copy,
+        workspaceRoot: wsRoot,
+        isolated: true,
+        securityBoundary: "project_state_and_process_cwd",
+        changedFiles: [
+          { path: "shared.txt", kind: "modified" },
+          { path: `created-${name}.txt`, kind: "added" },
+        ],
+      };
+    };
+
+    // Both copies are taken from the SAME base, as two concurrent dispatches
+    // would be.
+    const jobOne = await mkJob("one", "edited by one", "one");
+    const jobTwo = await mkJob("two", "edited by two", "two");
+
+    const first = await applyWorkspace("job-1700000000040-aabbccdd", jobDir, jobOne);
+    expect(first.applied, first.message).toBe(true);
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "keep job one"], repo);
+
+    const second = await applyWorkspace("job-1700000000041-aabbccdd", jobDir, jobTwo);
+
+    // Job one's committed file must still be there whatever job two did.
+    expect(
+      existsSync(path.join(repo, "created-one.txt")),
+      `job two's apply deleted job one's committed file :: ${second.message}`,
+    ).toBe(true);
+    // And the patch must never have proposed touching it.
+    const patch = await fs.readFile(second.patchPath, "utf8");
+    expect(patch).not.toContain("created-one.txt");
+  });
+
   it("never rewrites file CONTENT that contains the project path", async () => {
     // The patch text had the project root stripped from EVERY line, content
     // included. A delegate wrote `const dataDir = "<project>/data"` and the
