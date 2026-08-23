@@ -25,7 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { EXCLUDED_DIRS } from "./workspaces.js";
+import { eolDigest, EXCLUDED_DIRS } from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -266,14 +266,23 @@ async function buildCopyPatchFromChanges(
     // and after a successful apply it is no change at all. Trusting the kind
     // blindly re-proposed a file the project already held as a fresh addition,
     // so a second apply always found work to do.
-    const left = change.kind === "deleted" || !projectHas ? NULL_PATH : toPosix(projectFile);
+    //
+    // The RIGHT side is the workspace, EXCEPT for a deletion, where the whole
+    // point is that the workspace no longer has it. Nulling both sides for a
+    // deletion — which the first version of this did — made the guard below
+    // fire every time, so no copy patch ever carried a deletion: a delegate
+    // that removed a file had `applied: true` reported over a project where
+    // the file was still there, and a delete-only job produced an empty patch
+    // that apply refused and discard then refused to clean up. A rename is a
+    // delete plus an add, so renames did not land either.
+    const left = projectHas ? toPosix(projectFile) : NULL_PATH;
     const right = change.kind === "deleted" || !workspaceHas ? NULL_PATH : toPosix(workspaceFile);
 
     // Nothing on either side: cannot be diffed. Skipping leaves the patch
     // shorter than changedFiles, which is precisely the state applyWorkspace's
-    // guard refuses on — so nothing is lost quietly.
+    // guard refuses on — so nothing is lost quietly. For a deletion this is
+    // the already-gone case, which is genuinely nothing to do.
     if (left === NULL_PATH && right === NULL_PATH) continue;
-    if (change.kind === "deleted" && !projectHas) continue; // already gone
 
     // Already in the project, modulo line endings: emit nothing. `git apply`
     // writes through the repository's eol settings, so an applied file lands
@@ -331,6 +340,44 @@ function rewriteSectionHeaders(section: string, rel: string): string {
     })
     .join("\n");
   return out.endsWith("\n") ? out : `${out}\n`;
+}
+
+/**
+ * Files the PROJECT has changed since the dispatch started.
+ *
+ * The conflict detection a `copy` patch cannot get from git. A worktree patch
+ * is anchored to a real commit, so `git apply --3way` can see that the target
+ * has moved and refuse or merge. A copy patch is generated against the project
+ * as it stands at apply time, which means its context always matches — git
+ * applies it cleanly and the divergent version is simply overwritten. Two
+ * concurrent dispatches touching one file ended with the second silently
+ * reverting the first's COMMITTED work, reporting `applied: true`.
+ *
+ * baseHash is that file as it was when the dispatch started. If the project's
+ * copy no longer matches, someone else has been here.
+ *
+ * Line endings are normalised on both sides: a checkout whose eol settings
+ * rewrote the file on the way in has not diverged in any sense the user cares
+ * about, and calling that a conflict would refuse every apply on Windows.
+ */
+async function projectMovedSince(
+  run: WorkspaceRun,
+  changed: ReadonlyArray<{ path: string; kind: string; baseHash?: string }>,
+): Promise<string[]> {
+  const moved: string[] = [];
+  for (const change of changed) {
+    if (change.baseHash === undefined) continue; // added: no base to compare
+    const inProject = path.join(run.originalWorkingDir, change.path);
+    const current = await readFile(inProject).catch(() => null);
+    if (current === null) {
+      // Gone from the project. For a deletion that is the outcome we wanted;
+      // for anything else the file the patch edits is no longer there.
+      if (change.kind !== "deleted") moved.push(`${change.path} (deleted since dispatch)`);
+      continue;
+    }
+    if (eolDigest(current) !== change.baseHash) moved.push(`${change.path} (changed since dispatch)`);
+  }
+  return moved;
 }
 
 /**
@@ -689,6 +736,32 @@ export async function applyWorkspace(
   }
 
   const target = run.originalWorkingDir;
+
+  // Has the project moved under this patch? Checked BEFORE the dirty check,
+  // because it catches the case the dirty check cannot: a change that has been
+  // COMMITTED since the dispatch started leaves `git status` clean, and
+  // committing is exactly what the dirty refusal tells you to do. Apply job A,
+  // commit it, apply job B — and B silently reverted A's committed line, with
+  // git apply unable to conflict because the patch's context was the current
+  // file.
+  if (opts.force !== true && run.changedFiles !== undefined) {
+    const moved = await projectMovedSince(run, run.changedFiles);
+    if (moved.length > 0) {
+      return {
+        jobId,
+        applied: false,
+        patchPath: diff.patchPath,
+        message:
+          `Refused: ${moved.length} file(s) this patch touches have changed in ${target} since ` +
+          `the dispatch started (${moved.join(", ")}). The agent worked from the older version, ` +
+          `so applying would overwrite that newer work rather than merge with it — and unlike a ` +
+          `worktree patch there is no common commit for git to merge against. Review the patch ` +
+          `at ${diff.patchPath}, re-run the task against the current tree with retry_job, or ` +
+          `re-run with force: true to overwrite.`,
+      };
+    }
+  }
+
   const dirty = await dirtyPaths(target);
   if (dirty !== undefined && dirty.length > 0 && opts.force !== true) {
     return {
