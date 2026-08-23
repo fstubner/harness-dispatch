@@ -857,14 +857,29 @@ describe("Router.route", () => {
       "initial",
     ]);
 
+    // Learn the workspaces root from the product rather than recomputing its
+    // naming scheme here. The hand-built copy of that formula went stale the
+    // moment the scheme changed, and a prune test that plants its fixture in
+    // the wrong directory passes for the wrong reason just as easily as it
+    // fails.
+    const svcProbe = makeService({ name: "alpha", tier: 1 });
+    const probeRouter = new Router(
+      makeConfig([svcProbe]),
+      quota,
+      { alpha: new StubDispatcher("alpha") },
+      leaderboard,
+    );
+    const probe = await probeRouter.route("noop", [], root, {
+      hints: { safetyProfile: "workspace_edit", workspacePolicy: "git_worktree" },
+    });
+    const probeRoot = probe.result.workspace?.workspaceRoot;
+    expect(probeRoot, "probe dispatch produced no workspace").toBeDefined();
+    await git(root, ["worktree", "remove", "--force", path.join(probeRoot!, "worktree")]);
+    await fs.rm(probeRoot!, { recursive: true, force: true, maxRetries: 3 });
+    const staleGitWorkspaceRoot = path.dirname(probeRoot!);
+
     // Simulate a leftover worktree from a run older than the retention
     // window, created the same way prepareGitWorktreeWorkspace does.
-    const staleGitWorkspaceRoot = path.join(
-      os.tmpdir(),
-      "harness-dispatch",
-      "workspaces",
-      path.basename(root).replace(/[^A-Za-z0-9_.-]/g, "_"),
-    );
     const staleWorkspaceRoot = path.join(staleGitWorkspaceRoot, "stale-run");
     const staleWorktreeRoot = path.join(staleWorkspaceRoot, "worktree");
     await fs.mkdir(staleWorkspaceRoot, { recursive: true });

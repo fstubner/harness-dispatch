@@ -6,6 +6,44 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-23
+
+**Upgrade from 0.7.0 immediately if you dispatch with `workspace_policy: copy`
+from a subdirectory of a repository.** 0.7.0 introduced a regression that writes
+to the wrong files.
+
+### Fixed
+
+- A `copy` patch is applied relative to the dispatch's working directory again.
+  0.7.0 started applying from the repository root, which is right for a
+  `git_worktree` patch (repo-relative) and wrong for a `copy` patch
+  (workingDir-relative) — the same change was applied to both policies without
+  distinguishing them. In a monorepo the effect ranged from conflict markers
+  written into a root file the delegate had never seen, to silently editing and
+  DELETING same-named files at the root while reporting "Applied N bytes" and
+  leaving the intended subdirectory untouched. `--directory` is git's own answer
+  and is what is used now. Verified against real git three ways, because
+  applying from the subdirectory instead is the silent no-op this area started
+  with.
+- A workspaces root inside the project no longer copies itself, forever.
+  `HARNESS_DISPATCH_WORKSPACES_DIR` pointing inside the project — which the
+  README and the 0.7.0 notes recommend, to keep the copy on the project's volume
+  where a reflink is possible — made the copy walk into the workspace it was
+  writing: 201 levels of nesting and an 11,800-character path on a six-file
+  project before the run was killed. The whole workspaces area is excluded from
+  a copy now, compared as resolved absolute paths.
+- Pruning a stale `git_worktree` workspace removes it through git even when a
+  `copy` dispatch is what triggered the prune. Sharing one root between the two
+  policies (new in 0.7.0) meant an `rm -rf` could leave the directory gone while
+  git still listed the worktree as prunable, with `.git/worktrees/<name>` behind
+  it — which the retention code's own comment warns can eventually break
+  `git worktree add`.
+- Each project gets its own directory under `HARNESS_DISPATCH_WORKSPACES_DIR`.
+  The override previously used one flat directory for everything, so a dispatch
+  in one project pruned another's aged workspaces. The per-project segment is
+  keyed on the full path, not the basename, because two checkouts both called
+  `api` are an ordinary thing to have.
+
 ## [0.7.0] — 2026-08-23
 
 **Isolated workspaces have moved out of your project.** A sixth independent
@@ -363,7 +401,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...v0.6.5

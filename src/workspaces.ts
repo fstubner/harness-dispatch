@@ -1,6 +1,6 @@
 import { execFile as execFileCb } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -115,16 +115,31 @@ function resolveDir(workingDir: string): string {
  * HARNESS_DISPATCH_WORKSPACES_DIR overrides it for anyone who wants the
  * workspaces on the project's volume.
  */
-function workspaceRootFor(originalWorkingDir: string): string {
+/** The directory all per-project workspace roots hang off. */
+function workspacesBase(): string {
   return (
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
-    path.join(
-      os.tmpdir(),
-      "harness-dispatch",
-      "workspaces",
-      safeName(path.basename(originalWorkingDir)),
-    )
+    path.join(os.tmpdir(), "harness-dispatch", "workspaces")
   );
+}
+
+function workspaceRootFor(originalWorkingDir: string): string {
+  const base = workspacesBase();
+  // The per-project segment applies to the override too. Without it, every
+  // project pointed at one HARNESS_DISPATCH_WORKSPACES_DIR shared a flat
+  // directory, so a dispatch in project B pruned project A's aged workspaces —
+  // and with both policies now under one root, could strand A's git metadata.
+  //
+  // Keyed on the full path, not just the basename: two checkouts both called
+  // `api` are a normal thing to have, and sharing a directory would make each
+  // one's retention depend on how recently the other was dispatched into. The
+  // basename stays in the name so the directory is still recognisable by eye.
+  return path.join(base, `${safeName(path.basename(originalWorkingDir))}-${pathKey(originalWorkingDir)}`);
+}
+
+/** Short stable digest of a project path, to keep same-named projects apart. */
+function pathKey(dir: string): string {
+  return createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 8);
 }
 
 const gitWorkspaceRootFor = workspaceRootFor;
@@ -147,7 +162,17 @@ function workspaceMaxAgeMs(): number {
  * about to be created — self-limiting, no separate scheduler needed. Best
  * effort: a prune failure must never block or fail the actual dispatch.
  */
-async function pruneStaleCopyWorkspaces(root: string): Promise<void> {
+/**
+ * `copyProjectGitRoot` is the repository the copy dispatch is running against,
+ * when there is one. Both policies share a workspaces root since 0.7.0, so a
+ * copy dispatch's prune can encounter a stale git_worktree workspace — and an
+ * `rm -rf` on one of those leaves the directory gone from disk while git still
+ * lists the worktree, marked prunable, with `.git/worktrees/<name>` behind it.
+ * The code's own retention comment warns that accumulating those "can
+ * eventually slow or break `git worktree add` itself". Before 0.7.0 the two
+ * roots were separate and this could not happen.
+ */
+async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: string): Promise<void> {
   const maxAgeMs = workspaceMaxAgeMs();
   let entries;
   try {
@@ -156,17 +181,32 @@ async function pruneStaleCopyWorkspaces(root: string): Promise<void> {
     return;
   }
   const now = Date.now();
+  let removedWorktree = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
     try {
       const info = await stat(full);
-      if (now - info.mtimeMs > maxAgeMs) {
-        await rm(full, { recursive: true, force: true });
+      if (now - info.mtimeMs <= maxAgeMs) continue;
+      // A `worktree` child is the tell that this belongs to the other policy.
+      const worktreeRoot = path.join(full, "worktree");
+      if (copyProjectGitRoot !== undefined && existsSync(worktreeRoot)) {
+        try {
+          await git(["worktree", "remove", "--force", worktreeRoot], copyProjectGitRoot);
+          removedWorktree = true;
+        } catch {
+          // Registered against a different repo, or already gone: the
+          // filesystem sweep below still reclaims the disk, and the prune
+          // afterwards clears whatever metadata this repo can see.
+        }
       }
+      await rm(full, { recursive: true, force: true });
     } catch {
       // best effort — a locked/already-gone/permission-denied entry is skipped
     }
+  }
+  if (removedWorktree && copyProjectGitRoot !== undefined) {
+    await git(["worktree", "prune"], copyProjectGitRoot).catch(() => undefined);
   }
 }
 
@@ -211,7 +251,32 @@ async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<vo
 function shouldExclude(relPath: string, direntName: string): boolean {
   if (EXCLUDED_DIRS.has(direntName)) return true;
   const normalized = relPath.split(path.sep).join("/");
+  // Leftovers from installs before workspaces moved out of the project.
   return normalized === ".harness-dispatch/workspaces" || normalized.startsWith(".harness-dispatch/workspaces/");
+}
+
+/**
+ * Never copy the workspace area into itself.
+ *
+ * shouldExclude covers ONE hard-coded path, which is fine for the default
+ * (workspaces live outside the project) and catastrophic for the override that
+ * README and the 0.7.0 notes actively recommend: point
+ * HARNESS_DISPATCH_WORKSPACES_DIR at a directory inside the project — to keep
+ * the copy on the same volume, where a reflink is possible — and the copy
+ * walks into the workspace it is currently writing. Measured on a six-file
+ * project: 201 levels of nesting and an 11,800-character path before the run
+ * was killed, all of it inside the user's project.
+ *
+ * Compared as resolved absolute paths, so it does not matter how the override
+ * was spelled, and it covers the whole workspaces root rather than this run's
+ * directory alone — a sibling run's workspace is no more copyable than our own.
+ */
+function isUnderOrEqual(candidate: string, root: string): boolean {
+  const c = path.resolve(candidate);
+  const r = path.resolve(root);
+  if (c === r) return true;
+  const rel = path.relative(r, c);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 /**
@@ -268,6 +333,7 @@ async function copyTree(
   rel = "",
   skipped: string[] = [],
   vanished: string[] = [],
+  excludeRoots: string[] = [],
 ): Promise<void> {
   const sourceDir = rel ? path.join(sourceRoot, rel) : sourceRoot;
   const destDir = rel ? path.join(destRoot, rel) : destRoot;
@@ -278,7 +344,9 @@ async function copyTree(
     try {
       if (entry.isDirectory()) {
         if (shouldExclude(childRel, entry.name)) continue;
-        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished);
+        const childAbs = path.join(sourceDir, entry.name);
+        if (excludeRoots.some((root) => isUnderOrEqual(childAbs, root))) continue;
+        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished, excludeRoots);
         continue;
       }
       if (entry.isFile()) {
@@ -482,12 +550,21 @@ async function prepareCopyWorkspace(
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
   const root = workspaceRootFor(originalWorkingDir);
-  await pruneStaleCopyWorkspaces(root);
+  const projectGitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir)
+    .then((out) => out || undefined)
+    .catch(() => undefined);
+  await pruneStaleCopyWorkspaces(root, projectGitRoot);
   const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
   const vanishedFiles: string[] = [];
-  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks, vanishedFiles);
+  // The whole workspaces BASE, not this run's directory and not even this
+  // project's root under it. A sibling run's workspace is no more copyable
+  // than our own, and another project's is no more copyable than a sibling's —
+  // all of them sit inside the source tree whenever the override points there.
+  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks, vanishedFiles, [
+    workspacesBase(),
+  ]);
   const before = await fingerprintTree(effectiveWorkingDir);
   return {
     policy: "copy",

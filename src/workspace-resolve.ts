@@ -582,21 +582,38 @@ export async function applyWorkspace(
   // so trying it first means the common case never mutates on failure, and
   // --3way is still there for the case it exists to handle (context moved in a
   // worktree patch, where the pre-image blobs are in the repo).
-  // Apply from the REPO ROOT, not from the dispatch's workingDir.
+  // Apply from the repo root — and for `copy`, tell git which subdirectory the
+  // patch is relative to.
   //
-  // The patch is repo-relative, and `git apply` resolves paths against the
-  // repository root regardless of the cwd it is invoked from. Run from a
-  // subdirectory it therefore looked for `a.txt` at the repo root, did not
-  // find it, printed `Skipped patch 'a.txt'.` — and EXITED 0. We reported
-  // "Applied 120 bytes of changes" for a run that changed nothing at all. Any
-  // dispatch whose workingDir was below the repo root (every monorepo package)
-  // hit this.
-  const applyCwd = (await repoRoot(target)) ?? target;
+  // The two policies produce patches with DIFFERENT bases, and conflating them
+  // is destructive:
+  //
+  //   git_worktree — `git diff <baseCommit>` inside the worktree, so paths are
+  //     REPO-relative. Applying from the repo root with no --directory is
+  //     correct.
+  //   copy — `git diff --no-index <workingDir> <copy>`, so paths are
+  //     WORKINGDIR-relative. Applying those at the repo root resolves every
+  //     path one or more levels too high: with a same-named file up there it
+  //     silently edited and DELETED the wrong files and reported success, and
+  //     without one it wrote conflict markers into a root file the delegate
+  //     had never seen. --directory is git's own answer to exactly this.
+  //
+  // Running from the subdirectory instead does not work: `git apply` inside a
+  // repo ignores paths that resolve outside the current directory, so it
+  // matched nothing, printed `Skipped patch`, and exited 0 — the silent no-op
+  // this whole area started with. Verified against real git, all three ways.
+  const root = await repoRoot(target);
+  const applyCwd = root ?? target;
+  const applyPrefix =
+    root !== undefined && run.policy !== "git_worktree"
+      ? path.relative(root, target).split(path.sep).join("/")
+      : "";
+  const directoryArgs = applyPrefix !== "" ? [`--directory=${applyPrefix}`] : [];
   const beforeAttempt = await dirtyPaths(target);
   let applyError: string | undefined;
   for (const args of [
-    ["apply", "--whitespace=nowarn", diff.patchPath],
-    ["apply", "--3way", "--whitespace=nowarn", diff.patchPath],
+    ["apply", ...directoryArgs, "--whitespace=nowarn", diff.patchPath],
+    ["apply", ...directoryArgs, "--3way", "--whitespace=nowarn", diff.patchPath],
   ]) {
     try {
       const out = await gitBoth(args, applyCwd);
