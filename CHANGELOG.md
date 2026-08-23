@@ -6,6 +6,39 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.6] — 2026-08-23
+
+The three items an acceptance pass left open as judgement calls rather than
+defects. All three are the same shape: the product knew something the caller
+could have acted on and did not say it.
+
+### Fixed
+
+- A ROUTE ID passed as `hints.model` is no longer forwarded to the harness as a
+  model override. `hints.model` accepts either a route id or a model name — the
+  schema says so, and naming a route id is the documented way to nudge routing
+  toward it. But the value was then also handed to whichever route WON as
+  `--model`, so hinting a route that lost the decision sent a nonsense model to
+  a real provider. Measured: one dispatch naming a configured local route was
+  tried against four subscription CLIs, each rejecting `--model <route id>`,
+  spending five calls and tripping two circuit breakers. A route id still steers
+  routing exactly as before; it is simply not passed on as a model. A value that
+  is not a configured route id keeps the forward-blind behaviour that makes an
+  undeclared-but-real model usable.
+- A prompt too long for a route's command line is refused with an explanation
+  instead of `spawn ENAMETOOLONG`. Windows caps a command line at 32,767
+  characters and POSIX caps a single argument at 128 KiB; past that the spawn
+  failed with a raw errno pointing at nothing actionable. Checked per route
+  rather than at the schema, because it genuinely is per route — codex reads the
+  prompt from stdin and has no such limit, so a boundary cap would refuse work
+  that route can do. The message says which routes can take it.
+- A config reload that fails now says so on stderr. Keeping the previous config
+  when an edit is malformed is right; saying nothing about it was not. The
+  server stayed up, kept routing on the old config, and nothing distinguished
+  "your edit is live" from "your edit was rejected ten minutes ago" — the edit
+  looks applied because everything still works. Reported once per distinct
+  error, not once per poll.
+
 ## [0.7.5] — 2026-08-23
 
 ### Fixed
@@ -531,7 +564,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...v0.7.3

@@ -400,7 +400,27 @@ export class Router {
     const exclude = opts.exclude ?? new Set<string>();
 
     const forceService = hints.service;
+    // A ROUTE ID is not a model name.
+    //
+    // `hints.model` accepts either — the schema says so, and naming a route id
+    // is the documented way to nudge routing toward it. But the value was then
+    // ALSO forwarded to the winning route as `--model`, and when that was some
+    // other route the result was a real provider call with a nonsense model.
+    // Measured: one dispatch hinting a configured local route id was tried
+    // against four subscription CLIs, each rejecting `--model <route id>`,
+    // spending five calls and tripping two breakers. This product's own
+    // counter-signal is "a route that is configured, reported ready, and never
+    // actually used".
+    //
+    // So a route id still steers routing (modelMatchesService below matches on
+    // the route NAME) and is simply not passed on as a model override. A value
+    // that is not a configured route id keeps today's forward-blind behaviour,
+    // which is what makes an undeclared-but-real model usable.
     const preferredModel = hints.model;
+    const modelIsRouteId =
+      preferredModel !== undefined &&
+      Object.keys(this.config.services).some((name) => sameModel(name, preferredModel));
+    const modelOverride = modelIsRouteId ? undefined : preferredModel;
     const preferLargeContext = hints.preferLargeContext ?? false;
     const taskType: TaskType = hints.taskType ?? "";
     const filterHarness = hints.harness;
@@ -449,7 +469,7 @@ export class Router {
         // "doesn't recognize" a model for may still support it (CLIs accept
         // arbitrary --model values); silently discarding the request instead
         // meant a mismatched hints.model got no error and no explanation.
-        model: preferredModel ?? resolveModel(svc, taskType),
+        model: modelOverride ?? resolveModel(svc, taskType),
         ...(preferredModel !== undefined
           ? { modelHintMatched: modelMatchesService(forceService, svc, preferredModel) }
           : {}),
@@ -564,7 +584,7 @@ export class Router {
         taskType,
         // See the forced-service branch above for why this always prefers
         // the requested model rather than gating on modelMatchesService.
-        model: preferredModel ?? resolveModel(svc, taskType),
+        model: modelOverride ?? resolveModel(svc, taskType),
         ...(preferredModel !== undefined
           ? { modelHintMatched: modelMatchesService(best.name, svc, preferredModel) }
           : {}),

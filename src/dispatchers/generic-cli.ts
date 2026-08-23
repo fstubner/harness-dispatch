@@ -113,6 +113,18 @@ export function detectHarnessEnvironmentFailure(text: string): string | undefine
   return undefined;
 }
 
+/**
+ * Command-line budgets, deliberately a little under the true limits.
+ *
+ * Windows: CreateProcess caps the whole command line at 32,767 characters.
+ * POSIX: ARG_MAX bounds the total but MAX_ARG_STRLEN caps a SINGLE argument at
+ * 128 KiB, and the prompt is one argument, so that is the binding constraint.
+ * Under-shooting means the refusal comes from here, with an explanation,
+ * rather than from the OS as a bare ENAMETOOLONG.
+ */
+const WINDOWS_CMDLINE_MAX = 32_000;
+const POSIX_ARG_MAX = 128 * 1024 - 2048;
+
 /** Walk a nested object by dotted path, e.g. "message.content". */
 function getPath(value: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
@@ -423,6 +435,41 @@ export class GenericCliDispatcher extends BaseDispatcher {
         extraEnv[protocol.apiKeyEnvVar] = this.apiKey;
       } else if (process.env[protocol.apiKeyEnvVar]) {
         extraEnv[protocol.apiKeyEnvVar] = "";
+      }
+    }
+
+    // A prompt too long for this route's COMMAND LINE, caught before spawning.
+    //
+    // A route that takes the prompt on argv is bounded by the OS: Windows caps
+    // a whole command line at 32,767 characters, and POSIX caps a single
+    // argument at 128 KiB. Past that the spawn failed with a raw
+    // `spawn ENAMETOOLONG` — accurate, unexplained, and pointing at nothing
+    // the caller could act on. Measured: 30k characters worked, 100k did not.
+    //
+    // Per route, not at the schema, because it is genuinely per route: codex
+    // reads the prompt from stdin and has no such limit, so a boundary cap
+    // would refuse work that route can do. Saying which routes CAN take it is
+    // the useful half of the message.
+    if (!protocol.stdin) {
+      const budget = process.platform === "win32" ? WINDOWS_CMDLINE_MAX : POSIX_ARG_MAX;
+      const commandLineChars = args.reduce((n, a) => n + a.length + 1, resolved.command.length);
+      if (commandLineChars > budget) {
+        yield {
+          type: "completion",
+          result: {
+            output: "",
+            service: this.id,
+            success: false,
+            error:
+              `prompt too long for ${this.id}: the command line would be ` +
+              `${commandLineChars.toLocaleString()} characters and this platform allows ` +
+              `${budget.toLocaleString()}. ${this.id} passes the prompt as a command-line ` +
+              `argument. Send the bulk as files instead of inline text, shorten the prompt, ` +
+              `or use a route that reads the prompt from stdin (codex does).`,
+            durationMs: 0,
+          },
+        };
+        return;
       }
     }
 
