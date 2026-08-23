@@ -343,6 +343,27 @@ function rewriteSectionHeaders(section: string, rel: string): string {
 }
 
 /**
+ * The directory `changedFiles` paths are relative to, on the PROJECT side.
+ *
+ * Not always originalWorkingDir, and getting it wrong is silent: a
+ * git_worktree's changed files are fingerprinted from the worktree root, which
+ * mirrors the REPO root, so a dispatch whose workingDir was `pkg/` records
+ * `pkg/edit-me.txt`. Joining that onto `<repo>/pkg` looks for
+ * `<repo>/pkg/pkg/edit-me.txt`, finds nothing, and concludes the file is
+ * missing. A copy is fingerprinted from the copied directory itself, so there
+ * the two coincide.
+ *
+ * ONE function because this has now been got wrong twice in this file, in two
+ * different checks, with the same symptom each time — a guard refusing every
+ * apply or discard for a monorepo dispatch. Two callers computing the same
+ * base separately is what allowed the second one.
+ */
+async function projectBaseFor(run: WorkspaceRun): Promise<string> {
+  if (run.policy !== "git_worktree") return run.originalWorkingDir;
+  return (await repoRoot(run.originalWorkingDir)) ?? run.originalWorkingDir;
+}
+
+/**
  * Files the PROJECT has changed since the dispatch started.
  *
  * The conflict detection a `copy` patch cannot get from git. A worktree patch
@@ -364,10 +385,11 @@ async function projectMovedSince(
   run: WorkspaceRun,
   changed: ReadonlyArray<{ path: string; kind: string; baseHash?: string }>,
 ): Promise<string[]> {
+  const base = await projectBaseFor(run);
   const moved: string[] = [];
   for (const change of changed) {
     if (change.baseHash === undefined) continue; // added: no base to compare
-    const inProject = path.join(run.originalWorkingDir, change.path);
+    const inProject = path.join(base, change.path);
     const current = await readFile(inProject).catch(() => null);
     if (current === null) {
       // Gone from the project. For a deletion that is the outcome we wanted;
@@ -406,17 +428,7 @@ async function changesNotInProject(
   changed: ReadonlyArray<{ path: string; kind: string }>,
 ): Promise<string[]> {
   const workspace = isolatedRoot(run);
-  // The base these paths are relative to is NOT always originalWorkingDir. A
-  // git_worktree's changedFiles are fingerprinted from the worktree root,
-  // which mirrors the REPO root — so for a dispatch whose workingDir was a
-  // subdirectory, joining `sub/a.txt` onto `<repo>/sub` looked for
-  // `<repo>/sub/sub/a.txt`, found nothing, and made discard refuse forever
-  // after an apply that had demonstrably worked. A copy is fingerprinted from
-  // the copied directory itself, so there the two coincide.
-  const projectBase =
-    run.policy === "git_worktree"
-      ? ((await repoRoot(run.originalWorkingDir)) ?? run.originalWorkingDir)
-      : run.originalWorkingDir;
+  const projectBase = await projectBaseFor(run);
   const missing: string[] = [];
   for (const change of changed) {
     const inProject = path.join(projectBase, change.path);
