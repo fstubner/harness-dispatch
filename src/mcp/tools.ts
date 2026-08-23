@@ -310,7 +310,14 @@ function jobCompleted(job: Awaited<ReturnType<typeof getAsyncJob>>): boolean {
     job.status.status === "failed" ||
     // Orphaned (owner process died mid-run) is terminal: it will never
     // complete, so callers must stop polling and re-dispatch.
-    job.status.status === "orphaned"
+    job.status.status === "orphaned" ||
+    // Cancelled is terminal too, and was missing. `completed` is the field the
+    // tool descriptions tell an agent to branch on, so an orchestrator that
+    // cancelled a job and then polled it was told `completed: false` with
+    // `nextPollSeconds: 300` and "check again until status is completed or
+    // failed" — forever, for a job that had already stopped at its own
+    // request.
+    job.status.status === "cancelled"
   );
 }
 

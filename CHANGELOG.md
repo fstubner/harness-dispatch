@@ -6,6 +6,48 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-23
+
+**Upgrade if you run more than one isolated dispatch against the same project.**
+An eighth independent acceptance pass found that applying a second `copy` job
+could silently revert and delete the first one's committed work.
+
+### Fixed
+
+- A `copy` patch is built FILE BY FILE from the recorded changed-file list,
+  instead of by comparing the whole workspace against the project.
+
+  The tree comparison had no BASE: it diffed against the project as it stood at
+  APPLY time, so everything that had changed in the project since the copy was
+  taken was proposed for reversal. Dispatch two isolated jobs, apply the first,
+  commit it, apply the second — and the second deleted the first's committed
+  file and reverted its committed line, reporting `applied: true` with a
+  changed-file list one entry shorter than the patch it had just applied. That
+  is the parallel-delegation case this product exists for, and the refusal on
+  uncommitted changes was no help: it says "commit or stash first", and
+  committing is what walks you into it.
+
+  `git_worktree` never had this, because it diffs against a recorded base
+  commit — and its own error text spells the hazard out. The danger was
+  documented for one policy and unguarded in the other. Patch and changed-file
+  list now come from the same source, so they cannot disagree either.
+- The HTTP surface rejects an invalid enum VALUE instead of dropping it.
+  `hints.safetyProfile: "read_onlyy"` returned 200 and ran the dispatch
+  write-capable, while the correctly spelled value produced a read-only run and
+  the MCP surface rejects the same input by name. The unknown-KEY check added
+  earlier was written for exactly this failure and covered half of it.
+  `taskType`, `safetyProfile`, `workspacePolicy` and `routePolicy` are all
+  checked now, at both the top level and inside `hints`.
+- A cancelled job reports `completed: true`. `completed` is the field the tool
+  descriptions tell an agent to branch on, and `cancelled` was missing from the
+  terminal set — so an orchestrator that cancelled a job and then polled it was
+  told to keep checking, with a 300-second poll interval, forever.
+- The path-length hint fires for git's `Could not access` wording, not only
+  `Could not open directory`. The first version pinned the one string that had
+  been observed — a directory scan — and missed the file-stat variant, which is
+  what an over-long path usually produces, so the case the hint exists to
+  explain got a bare error.
+
 ## [0.7.1] — 2026-08-23
 
 **Upgrade from 0.7.0 immediately if you dispatch with `workspace_policy: copy`
@@ -401,7 +443,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...v0.6.6

@@ -223,3 +223,35 @@ describe("cancelJob — end to end against a real run", () => {
     }
   }, 30_000);
 });
+
+describe("a cancelled job is terminal", () => {
+  /**
+   * `completed` is the field the tool descriptions tell an agent to branch on.
+   * jobCompleted() listed completed/failed/orphaned and NOT `cancelled`, so a
+   * caller that cancelled a job and then polled it was answered
+   * `completed: false`, `nextPollSeconds: 300`, and "check again until status
+   * is completed or failed" — forever, for a job that had already stopped at
+   * its own request.
+   */
+  it("reports completed: true so an orchestrator stops polling", async () => {
+    await plantJob("job-1700000000009-99999999", "cancelled", {
+      error: "Cancelled: terminal-state probe",
+    });
+    const { invokeTool } = await import("../src/mcp/tools.js");
+
+    const invoked = await invokeTool(
+      "job_status",
+      { jobId: "job-1700000000009-99999999" },
+      {} as never,
+    );
+    const res = (invoked as { data: unknown }).data as {
+      completed: boolean;
+      status: { status: string };
+      instructions?: string;
+    };
+
+    expect(res.status.status).toBe("cancelled");
+    expect(res.completed, "a cancelled job told the caller to keep polling").toBe(true);
+    expect(res.instructions ?? "").not.toMatch(/check again/i);
+  });
+});
