@@ -6,6 +6,40 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-08-23
+
+**Upgrade from 0.7.2 if you use `workspace_policy: copy`.** 0.7.2 introduced a
+regression that drops file deletions, and only half-fixed the concurrency
+problem it was written for.
+
+### Fixed
+
+- A `copy` patch carries DELETIONS again. 0.7.2's per-file rewrite forced both
+  sides of a deleted file to `/dev/null`, so the can't-be-diffed guard fired
+  every time and no copy patch ever contained one: a delegate that removed a
+  file had `applied: true` reported over a project where the file was still
+  there. A delete-only job produced an empty patch that `apply` refused and
+  `discard` then refused to clean up, leaving the job unescapable without
+  `force`. Renames did not land either — a rename is a delete plus an add.
+- `apply` refuses when the project has moved under the patch, instead of
+  silently overwriting. This is the half of the 0.7.2 concurrency fix that was
+  missing. Excluding untouched files stopped one job deleting another's work,
+  but for a file BOTH jobs touched the patch is generated against the project as
+  it stands at apply time — so its context always matches, git applies it
+  cleanly, and the other version is simply replaced. Apply job A, commit it,
+  apply job B, and A's committed line was gone with `applied: true` and no
+  warning.
+
+  Each changed file now records what it looked like when the dispatch started,
+  and apply compares that against the project before touching anything. A
+  worktree patch gets this from its base commit; a copy patch had no equivalent
+  and now does. `force: true` overrides, and `retry_job` re-runs the task
+  against the current tree.
+
+  Line endings are normalised for that comparison, so a checkout whose eol
+  settings rewrote a file on the way in is not mistaken for someone else's edit
+  — that false positive would refuse every apply on Windows.
+
 ## [0.7.2] — 2026-08-23
 
 **Upgrade if you run more than one isolated dispatch against the same project.**
@@ -443,7 +477,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...v0.7.0

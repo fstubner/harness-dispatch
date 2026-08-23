@@ -45,6 +45,17 @@ export const EXCLUDED_DIRS = new Set([
 interface FileFingerprint {
   hash: string;
   size: number;
+  /**
+   * Digest over content with CRLF collapsed to LF, kept ALONGSIDE the exact
+   * hash rather than replacing it.
+   *
+   * `hash` decides whether the AGENT changed a file and must stay exact: an
+   * edit that only rewrites line endings is a real edit. `eolHash` answers a
+   * different question — has the USER's copy moved since the dispatch started
+   * — where a checkout whose eol settings rewrote the file on the way in must
+   * NOT read as a change. One value cannot serve both.
+   */
+  eolHash: string;
 }
 
 type FingerprintMap = Map<string, FileFingerprint>;
@@ -396,7 +407,19 @@ async function fingerprintFile(filePath: string): Promise<FileFingerprint> {
   return {
     hash: createHash("sha256").update(data).digest("hex"),
     size: data.byteLength,
+    eolHash: eolDigest(data),
   };
+}
+
+/**
+ * The digest WorkspaceFileChange.baseHash carries. Exported so the apply-time
+ * divergence check computes it exactly the same way — two spellings of "same
+ * content" is how this area produces false conflicts.
+ */
+export function eolDigest(data: Buffer): string {
+  return createHash("sha256")
+    .update(data.toString("utf8").replace(/\r\n/g, "\n"))
+    .digest("hex");
 }
 
 async function fingerprintTree(root: string, rel = "", out: FingerprintMap = new Map()): Promise<FingerprintMap> {
@@ -429,15 +452,16 @@ function diffFingerprints(before: FingerprintMap, after: FingerprintMap): Worksp
     const oldFile = before.get(filePath);
     const newFile = after.get(filePath);
     if (!oldFile && newFile) {
+      // No base recorded: the file did not exist when the dispatch started.
       changes.push({ path: filePath, kind: "added" });
       continue;
     }
     if (oldFile && !newFile) {
-      changes.push({ path: filePath, kind: "deleted" });
+      changes.push({ path: filePath, kind: "deleted", baseHash: oldFile.eolHash });
       continue;
     }
     if (oldFile && newFile && (oldFile.hash !== newFile.hash || oldFile.size !== newFile.size)) {
-      changes.push({ path: filePath, kind: "modified" });
+      changes.push({ path: filePath, kind: "modified", baseHash: oldFile.eolHash });
     }
   }
   return changes;

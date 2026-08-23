@@ -28,6 +28,7 @@ import {
   discardWorkspace,
   workspaceDiff,
 } from "../src/workspace-resolve.js";
+import { eolDigest } from "../src/workspaces.js";
 import type { WorkspaceRun } from "../src/types.js";
 
 const execFile = promisify(execFileCb);
@@ -500,6 +501,133 @@ describe("a copy workspace that lives INSIDE the project", () => {
     const out = await applyWorkspace("job-1700000000011-aabbccdd", jobDir, run);
     expect(out.applied, out.message).toBe(true);
     expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
+  });
+
+  it("carries a DELETION, and a rename, into the project", async () => {
+    // The per-file rewrite nulled BOTH sides for a deletion, so the
+    // can't-be-diffed guard fired every time and no copy patch ever carried
+    // one. A delegate that removed a file had `applied: true` reported over a
+    // project where the file was still sitting there; a delete-only job
+    // produced an empty patch that apply refused and discard then refused to
+    // clean up. A rename is a delete plus an add, so renames did not land
+    // either — the project ended up with both names.
+    const repo = await makeRepo("delete-and-rename");
+    await fs.writeFile(path.join(repo, "obsolete.md"), "delete me\n", "utf8");
+    await fs.writeFile(path.join(repo, "old-name.txt"), "same content\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "add files"], repo);
+
+    const wsRoot = path.join(dir, "del-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    // The agent deleted obsolete.md and renamed old-name.txt -> new-name.txt.
+    await fs.writeFile(path.join(copy, "new-name.txt"), "same content\n", "utf8");
+
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [
+        { path: "obsolete.md", kind: "deleted", baseHash: eolDigest(Buffer.from("delete me\n")) },
+        { path: "old-name.txt", kind: "deleted", baseHash: eolDigest(Buffer.from("same content\n")) },
+        { path: "new-name.txt", kind: "added" },
+      ],
+    };
+
+    const patch = await buildWorkspacePatch(run);
+    expect(patch, `no deletion section:\n${patch}`).toContain("+++ /dev/null");
+
+    const out = await applyWorkspace("job-1700000000050-aabbccdd", jobDir, run);
+    expect(out.applied, out.message).toBe(true);
+    expect(existsSync(path.join(repo, "obsolete.md")), "the deletion did not land").toBe(false);
+    expect(existsSync(path.join(repo, "old-name.txt")), "the rename left both names").toBe(false);
+    expect(existsSync(path.join(repo, "new-name.txt"))).toBe(true);
+  });
+
+  it("refuses when the project has moved under the patch, even via a commit", async () => {
+    // The half of the concurrency fix that was missing. Excluding untouched
+    // files stopped one job deleting another's work, but for a file BOTH jobs
+    // touched the patch is still generated against the project as it stands at
+    // apply time — so its context always matches, git applies it cleanly, and
+    // the other job's version is simply overwritten. Apply A, COMMIT it, apply
+    // B, and A's committed line was gone with `applied: true` and no warning.
+    //
+    // The dirty check cannot catch this: committing is what it tells you to
+    // do, and a commit leaves `git status` clean.
+    const repo = await makeRepo("collision");
+    await fs.writeFile(path.join(repo, "shared.txt"), "line1\nline2\nline3\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+    const base = eolDigest(Buffer.from("line1\nline2\nline3\n"));
+
+    const mk = async (name: string, content: string): Promise<WorkspaceRun> => {
+      const wsRoot = path.join(dir, `col-${name}`);
+      const copy = path.join(wsRoot, "workspace");
+      await fs.mkdir(copy, { recursive: true });
+      await fs.writeFile(path.join(copy, "shared.txt"), content, "utf8");
+      return {
+        policy: "copy",
+        originalWorkingDir: repo,
+        effectiveWorkingDir: copy,
+        workspaceRoot: wsRoot,
+        isolated: true,
+        securityBoundary: "project_state_and_process_cwd",
+        changedFiles: [{ path: "shared.txt", kind: "modified", baseHash: base }],
+      };
+    };
+
+    const jobA = await mk("a", "line1-FROM-A\nline2\nline3\n");
+    const jobB = await mk("b", "line1\nline2\nline3-FROM-B\n");
+
+    const first = await applyWorkspace("job-1700000000051-aabbccdd", jobDir, jobA);
+    expect(first.applied, first.message).toBe(true);
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "keep A"], repo);
+
+    const second = await applyWorkspace("job-1700000000052-aabbccdd", jobDir, jobB);
+    expect(second.applied, "job B overwrote job A's committed work").toBe(false);
+    expect(second.message).toMatch(/changed in .* since the dispatch started/);
+    expect(second.message).toContain("shared.txt");
+    // A's committed line is still there.
+    expect(await readNorm(path.join(repo, "shared.txt"))).toContain("line1-FROM-A");
+
+    // force is the deliberate override, and it says what it is doing.
+    const forced = await applyWorkspace("job-1700000000052-aabbccdd", jobDir, jobB, { force: true });
+    expect(forced.applied, forced.message).toBe(true);
+  });
+
+  it("does not refuse when the project has only had line endings rewritten", async () => {
+    // The false-positive this check could produce. A checkout whose eol
+    // settings rewrote a file on the way in has not diverged in any sense the
+    // user cares about, and treating it as a conflict would refuse every apply
+    // on Windows.
+    const repo = await makeRepo("eol-only");
+    await fs.writeFile(path.join(repo, "shared.txt"), "a\r\nb\r\n", "utf8");
+    // Committed, so the DIRTY refusal is not what this test measures.
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "crlf file"], repo);
+    const wsRoot = path.join(dir, "eol-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "shared.txt"), "a\nb\nEDITED\n", "utf8");
+
+    const out = await applyWorkspace("job-1700000000053-aabbccdd", jobDir, {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      // Base recorded with LF; the project holds CRLF.
+      changedFiles: [
+        { path: "shared.txt", kind: "modified", baseHash: eolDigest(Buffer.from("a\nb\n")) },
+      ],
+    });
+    expect(out.applied, out.message).toBe(true);
   });
 
   it("does not revert a second job's committed work when applying the first", async () => {

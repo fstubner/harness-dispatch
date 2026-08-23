@@ -88,6 +88,21 @@ export type WorkspaceChangeKind = "added" | "modified" | "deleted";
 export interface WorkspaceFileChange {
   path: string;
   kind: WorkspaceChangeKind;
+  /**
+   * Digest of this file as it stood when the dispatch STARTED — the base the
+   * agent's edit was made against. Absent for an added file (there was
+   * nothing) and for policies that have a real base commit instead.
+   *
+   * A `copy` patch has no commit to anchor to, so without this there is no way
+   * to tell "the project has not moved" from "the project has moved and my
+   * patch is about to overwrite it". Two concurrent dispatches touching one
+   * file ended with the second silently reverting the first's COMMITTED work:
+   * git apply cannot conflict when the patch's context is the current file.
+   *
+   * Computed over content with CRLF collapsed to LF, so a checkout whose eol
+   * settings rewrote a file on the way in is not mistaken for a real edit.
+   */
+  baseHash?: string;
 }
 
 export interface WorkspaceRun {
