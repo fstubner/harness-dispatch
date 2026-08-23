@@ -402,6 +402,51 @@ describe("Router.pickService", () => {
     }
   });
 
+  it("says so when it drops a model, on both the forced and the scored path", async () => {
+    // Dropping a route id used as a model is right — but the tool schema said
+    // the model is "ALWAYS passed to the harness" and server.ts said
+    // "forwarded as-is", so a caller reading the response had no way to learn
+    // otherwise. The whole point of the drop is that the route runs a
+    // DIFFERENT model than the one asked for; that is a fact about the result,
+    // not an implementation detail.
+    const worker = makeService({ name: "worker_route", tier: 1, model: "route-default-model" });
+    const collides = makeService({ name: "gpt-5.6-sol", tier: 3 });
+    const dispatchers: Record<string, Dispatcher> = {
+      worker_route: new StubDispatcher("worker_route"),
+      "gpt-5.6-sol": new StubDispatcher("gpt-5.6-sol"),
+    };
+    const router = new Router(makeConfig([worker, collides]), quota, dispatchers, leaderboard);
+
+    // Forced path: the model names the forced route itself, so it is dropped.
+    const forced = await router.pickService({
+      hints: { service: "worker_route", model: "worker_route" },
+    });
+    expect(forced?.model).toBe("route-default-model");
+    expect(forced?.modelHintDropped, "the forced path dropped a model silently").toBe(true);
+
+    // Scored path: the model is a route id used as a routing nudge.
+    const scored = await router.pickService({
+      hints: { taskType: "execute", model: "worker_route" },
+    });
+    expect(scored?.service).toBe("worker_route");
+    expect(scored?.model).toBe("route-default-model");
+    expect(scored?.modelHintDropped, "the scored path dropped a model silently").toBe(true);
+
+    // And the negative, so this cannot be satisfied by always reporting true:
+    // a model that reaches the harness must not be reported as dropped.
+    const forwarded = await router.pickService({
+      hints: { service: "worker_route", model: "gpt-5.6-sol" },
+    });
+    expect(forwarded?.model).toBe("gpt-5.6-sol");
+    expect(forwarded?.modelHintDropped, "a forwarded model was reported as dropped").toBeFalsy();
+
+    const unrecognized = await router.pickService({
+      hints: { taskType: "execute", model: "some-unrecognized-model" },
+    });
+    expect(unrecognized?.model).toBe("some-unrecognized-model");
+    expect(unrecognized?.modelHintDropped).toBeFalsy();
+  });
+
   it("reports modelHintMatched from DECLARED models, not the route's name", async () => {
     // The schema says true means "the picked route actually declares this
     // model", and it is the signal an agent is told to use to decide how much
