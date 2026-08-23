@@ -114,6 +114,8 @@ class Mutex {
  */
 export class ConfigHotReloader {
   private readonly mutex = new Mutex();
+  /** Last reload failure reported, so a broken file is not logged every poll. */
+  private lastReloadError: string | undefined;
 
   constructor(
     private readonly holder: RuntimeHolder,
@@ -140,10 +142,30 @@ export class ConfigHotReloader {
         };
         if (this.configPath !== undefined) bootOpts.configPath = this.configPath;
         next = await bootstrapRuntime(bootOpts);
-      } catch {
+      } catch (err) {
         // Malformed edits shouldn't crash the server — keep the old state.
+        //
+        // But SAY SO. A bare `catch {}` here meant a config with a typo was
+        // silently ignored: the server kept routing on the previous version
+        // with nothing on stderr and nothing in status to say the file on disk
+        // was not the file in effect. The edit looks applied because the
+        // server is still up and still working — just not the way the file
+        // now reads.
+        //
+        // Rate-limited to one line per distinct message, because the reloader
+        // re-checks on a timer and a broken file would otherwise print on
+        // every poll until it was fixed.
+        const message = err instanceof Error ? err.message : String(err);
+        if (message !== this.lastReloadError) {
+          this.lastReloadError = message;
+          process.stderr.write(
+            `harness-dispatch: config reload FAILED, still running the previously loaded ` +
+              `config — ${message}\n`,
+          );
+        }
         return false;
       }
+      this.lastReloadError = undefined;
 
       // Preserve circuit-breaker state for services that still exist.
       const oldRouter = this.holder.state.router;

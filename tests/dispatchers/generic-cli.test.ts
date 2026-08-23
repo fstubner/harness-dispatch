@@ -811,6 +811,55 @@ describe("a harness that could not run its own tools is not a success", () => {
   });
 });
 
+describe("a prompt too long for the command line", () => {
+  /**
+   * Past the OS limit the spawn failed with a bare `spawn ENAMETOOLONG` —
+   * accurate, unexplained, and pointing at nothing the caller could act on.
+   * Measured live: 30k characters worked, 100k did not.
+   *
+   * Checked per route rather than at the schema because it genuinely is per
+   * route: a stdin route has no command-line limit at all, so a boundary cap
+   * would refuse work that route can do.
+   */
+  it("refuses with an actionable message instead of spawning", async () => {
+    mockFound();
+    const d = new GenericCliDispatcher(
+      svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+    );
+    const res = await d.dispatch("x".repeat(200_000), [], "/tmp");
+
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/prompt too long/i);
+    expect(res.error, "the message should say what to do instead").toMatch(/files|stdin/i);
+    // The point of catching it here: no child was ever started.
+    expect(runSubprocessMock).not.toHaveBeenCalled();
+  });
+
+  it("does not fire for a stdin route, which has no such limit", async () => {
+    // The false positive that would matter: codex reads the prompt from stdin,
+    // so a cap applied to it would refuse work it can do perfectly well.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "done" }));
+    const d = new GenericCliDispatcher(
+      svc({ args: ["exec", "-"], stdin: true, output: { mode: "text" } }),
+    );
+    const res = await d.dispatch("x".repeat(200_000), [], "/tmp");
+
+    expect(res.success, res.error).toBe(true);
+    expect(runSubprocessMock).toHaveBeenCalled();
+  });
+
+  it("leaves an ordinary prompt alone", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "fine" }));
+    const d = new GenericCliDispatcher(
+      svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+    );
+    const res = await d.dispatch("a normal prompt", [], "/tmp");
+    expect(res.success, res.error).toBe(true);
+  });
+});
+
 describe("detectRateLimit — 429 needs HTTP context", () => {
   // One flag trips the breaker with NO threshold and blocks the route for
   // 300s, so the false-positive space here is a route-availability bug, not a

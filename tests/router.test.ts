@@ -342,6 +342,50 @@ describe("Router.pickService", () => {
     expect(decision?.reason).toBe("forced");
   });
 
+  it("does not forward a ROUTE ID to the harness as a model override", async () => {
+    // `hints.model` accepts a route id — the schema says so, and it is the
+    // documented way to nudge routing. But the value was ALSO handed to
+    // whichever route won as `--model`, so hinting a route id that lost the
+    // routing decision sent a nonsense model to a real provider. Measured:
+    // one such dispatch was tried against four subscription CLIs, each
+    // rejecting `--model <route id>`, spending five calls and tripping two
+    // breakers.
+    const local = makeService({ name: "fast_local", tier: 3, model: "local-model" });
+    const other = makeService({ name: "alpha", tier: 1, model: "alpha-model" });
+    const dispatchers: Record<string, Dispatcher> = {
+      fast_local: new StubDispatcher("fast_local"),
+      alpha: new StubDispatcher("alpha"),
+    };
+    const router = new Router(makeConfig([local, other]), quota, dispatchers, leaderboard);
+
+    // The hint boosts fast_local, but force alpha so the loser's id is what
+    // would have been forwarded.
+    const decision = await router.pickService({
+      hints: { service: "alpha", model: "fast_local" },
+    });
+
+    expect(decision?.service).toBe("alpha");
+    expect(
+      decision?.model,
+      "a route id was forwarded to the harness as a model name",
+    ).not.toBe("fast_local");
+    expect(decision?.model).toBe("alpha-model");
+  });
+
+  it("still lets a route id steer routing", async () => {
+    // The other half: removing the forward must not remove the boost, which is
+    // the documented reason to pass a route id at all.
+    const local = makeService({ name: "fast_local", tier: 1 });
+    const other = makeService({ name: "alpha", tier: 1 });
+    const dispatchers: Record<string, Dispatcher> = {
+      fast_local: new StubDispatcher("fast_local"),
+      alpha: new StubDispatcher("alpha"),
+    };
+    const router = new Router(makeConfig([local, other]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({ hints: { model: "fast_local" } });
+    expect(decision?.service).toBe("fast_local");
+  });
+
   it("passes a requested model through to a forced service even if it matches nothing configured", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
