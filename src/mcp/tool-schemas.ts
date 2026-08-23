@@ -26,6 +26,13 @@ export const publicHintsSchema = z
       // against the route's configured model, so the route ran with no --model
       // flag at all and reported model: "". Nothing said so. Whitespace does
       // the same thing while also reaching the harness as a real argument.
+      //
+      // BOTH, not just the refine: .min(1) is the only half that reaches the
+      // advertised JSON Schema as `minLength: 1`. A refine alone emits a bare
+      // {"type":"string"}, so a schema-validating client stops catching "" and
+      // spends a round trip on a -32602 — the same "an agent following the
+      // schema burns a call" cost this file's `service` wording was fixed for.
+      .min(1, "hints.model must not be empty — omit it entirely for no preference")
       .refine(
         (v) => v.trim() !== "",
         "hints.model must not be empty — omit it entirely for no preference",
@@ -205,6 +212,11 @@ export const dispatchInputShape = {
     // consumed route call behind — a wasted dispatch for something the schema
     // can refuse for free.
     .min(1, "prompt must not be empty")
+    // Whitespace is empty for this purpose, and the HTTP surface has always
+    // said so (`!prompt.trim()` → 400). Here it passed .min(1) and spent a
+    // real route call producing nothing — the exact waste the line above
+    // exists to prevent, on the one field that is required.
+    .refine((v) => v.trim() !== "", "prompt must not be empty")
     // A NUL byte passed the schema and failed deep inside cross-spawn with
     // "The argument 'args[2]' must be a string without null bytes" — caught,
     // never a crash, and correctly not charged to the route's failure count,

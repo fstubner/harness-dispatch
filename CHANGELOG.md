@@ -71,9 +71,19 @@ re-opened a bug 0.7.6 had fixed.
   preference": it won against the route default, the harness ran with no model
   flag, and the response reported `model: ""` with nothing to say the request
   had been discarded. Whitespace did the same and also reached the harness as a
-  real argument. The OpenAI-compatible HTTP endpoint had always dropped a blank
-  top-level `model` but not a blank `hints.model`, so the same mistake failed
-  open on one surface only.
+  real argument, so `--model "   "` cost a provider call, a route failure and
+  breaker credit on an HTTP 200. The OpenAI protocol's own top-level `model`
+  drops a blank value rather than rejecting it — clients fill that field in
+  unconditionally — but it dropped only `""`, not whitespace, and it now drops
+  both.
+- A wrong-typed hint is rejected on the HTTP surface instead of vanishing.
+  `hints: { model: 123 }` returned 200 with the hint silently gone, and
+  `hints: "workspace_edit"` discarded EVERY hint in one go — safety ones
+  included — because a non-object failed the branch guard without a word. This
+  is the other half of the unknown-KEY rule already there.
+- A whitespace-only `prompt` is rejected on the MCP surface, which the HTTP
+  surface has always done. It passed the non-empty check and spent a real route
+  call producing nothing.
 - An environment failure is detected by SHAPE, not by how often the phrase
   appears. The detector overrides a successful exit — it charges the route a
   failure and tells the caller "any answer it gave was produced without reading

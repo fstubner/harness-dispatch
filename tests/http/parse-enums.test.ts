@@ -54,6 +54,22 @@ describe("HTTP hint values are rejected, not dropped", () => {
     expect(parsed.hints.workspacePolicy).toBeUndefined();
   });
 
+  it.each([
+    ["hints.model", { hints: { model: 123 } }, /hints\.model: expected string/],
+    ["hints.preferLargeContext", { hints: { preferLargeContext: "yes" } }, /expected boolean/],
+    ["hints.timeoutMs", { hints: { timeoutMs: "5000" } }, /expected number/],
+    ["hints itself as a string", { hints: "workspace_edit" }, /hints: must be an object/],
+    ["hints itself as an array", { hints: [] }, /hints: must be an object/],
+  ])("rejects a wrong-typed %s rather than dropping it", (_label, body, message) => {
+    // The other half of the unknown-KEY rule above. A known key with the wrong
+    // type fell through the if-chain and vanished on a 200, so the caller's
+    // hint was ignored without a word — and `hints: "x"` discarded EVERY hint
+    // in one go, safety ones included, because a non-object failed the branch
+    // guard silently. Arrays are typeof "object", so they got in and matched
+    // nothing.
+    expect(() => parseChatRequest({ ...base, ...body })).toThrow(message);
+  });
+
   it.each([["empty", ""], ["whitespace", "   "]])(
     "rejects a %s hints.model instead of unsetting the route's own",
     (_label, value) => {
@@ -66,6 +82,19 @@ describe("HTTP hint values are rejected, not dropped", () => {
       expect(() => parseChatRequest({ ...base, hints: { model: value } })).toThrow(
         /hints\.model: must not be empty/,
       );
+    },
+  );
+
+  it.each([["empty", ""], ["whitespace", "   "]])(
+    "drops a %s top-level model rather than sending it to the harness",
+    (_label, value) => {
+      // The OpenAI protocol's own field, so it is DROPPED rather than
+      // rejected — clients fill it in unconditionally, often with a
+      // placeholder. "" was always dropped; whitespace is truthy and was not,
+      // so it survived to `--model "   "` on a CLI route and cost a real
+      // provider call, a route failure and breaker credit, on an HTTP 200.
+      const parsed = parseChatRequest({ ...base, model: value });
+      expect(parsed.hints.model).toBeUndefined();
     },
   );
 });

@@ -157,17 +157,48 @@ function enumField<T extends string>(
 
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
-  if (typeof body.model === "string" && body.model !== "") hints.model = body.model;
+  // Dropped rather than rejected, unlike `hints.model` below: this is the
+  // OpenAI protocol's own field, which clients fill in unconditionally and
+  // often with a placeholder, so leniency is the point. Whitespace is dropped
+  // for the same reason "" always was — it is not a model name, and it is
+  // TRUTHY, so it survived to `--model "   "` on a CLI route and cost a real
+  // provider call, a route failure and breaker credit on an HTTP 200.
+  if (typeof body.model === "string" && body.model.trim() !== "") hints.model = body.model;
   const topSafety = enumField(body.safetyProfile, SAFETY_PROFILES, "safetyProfile");
   if (topSafety !== undefined) hints.safetyProfile = topSafety;
-  if (body.hints && typeof body.hints === "object") {
+  if (body.hints !== undefined && body.hints !== null) {
+    // `hints: "x"` / `[]` / `7` used to fall through this branch and vanish,
+    // so every hint in it — including the safety ones — was silently ignored
+    // on a 200. Arrays are typeof "object", so they got in and then matched no
+    // key. MCP rejects each by name.
+    if (typeof body.hints !== "object" || Array.isArray(body.hints)) {
+      throw new BadRequestError(`hints: must be an object, got ${JSON.stringify(body.hints)}.`);
+    }
     const raw = body.hints as Record<string, unknown>;
+    // A known key with the WRONG TYPE was dropped by the if-chain below, the
+    // same half-measure the unknown-KEY rule was added to close: parse.ts's
+    // header requires anything rejected here to be rejected the way the MCP
+    // schema rejects it, and MCP answers invalid_type for each of these.
+    // enumField already does this for the safety-bearing fields; these three
+    // are the ones it does not cover.
+    for (const [key, expected] of [
+      ["model", "string"],
+      ["preferLargeContext", "boolean"],
+      ["timeoutMs", "number"],
+    ] as const) {
+      const value = raw[key];
+      if (value !== undefined && typeof value !== expected) {
+        throw new BadRequestError(
+          `hints.${key}: expected ${expected}, got ${JSON.stringify(value)}.`,
+        );
+      }
+    }
     // Blank is REJECTED, matching the MCP surface — for the same reason the
     // unknown-key rule below exists. An empty string is not "no preference":
     // it beat the route's configured model, so the harness ran with no model
-    // flag and the response reported model: "". The OpenAI top-level `model`
-    // three lines up has always dropped "", so accepting it here left the
-    // identical mistake failing open on one surface only.
+    // flag and the response reported model: "". Rejected rather than dropped
+    // because this key is harness-dispatch's own, not the OpenAI protocol's:
+    // nobody sets it by accident, so a blank one is a mistake worth naming.
     if (typeof raw.model === "string") {
       if (raw.model.trim() === "") {
         throw new BadRequestError(
