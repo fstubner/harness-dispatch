@@ -6,6 +6,39 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-08-22
+
+Four findings from a fifth independent acceptance pass — the first to drive
+real harness CLIs rather than fakes. All four are the same shape: the tool told
+you something that was not what happened.
+
+### Fixed
+
+- A `git diff` FAILURE is no longer returned as an empty patch. git exits 1 both
+  for "there are differences" and for real errors, and the two were
+  indistinguishable here, so a copy workspace whose paths crossed Windows
+  MAX_PATH produced `error: Could not open directory <259 chars>` on stderr, an
+  empty stdout — and a patch of zero bytes, which every caller reads as "the
+  agent changed nothing". git's own explanation was discarded and never reached
+  anyone; the user was told to file a bug report instead of the actual cause.
+  `error:`/`fatal:` on stderr now surfaces as an error, with a path-length hint
+  where that is what it looks like. Routine `warning:` lines (line-ending
+  conversion) still do not count as failure.
+- `apply` can no longer report failure while leaving your project rewritten.
+  `git apply --3way` is not atomic: on conflict it writes `<<<<<<< ours` markers
+  INTO the target and then exits non-zero, and it was tried FIRST — so a failed
+  apply reported "resolve by hand" over a file it had already changed. Plain
+  apply, which applies everything or nothing, goes first now; `--3way` remains
+  for the case it exists for. If an attempt does modify the project anyway, the
+  message says so and names the files.
+- `discard` refuses to destroy changes your project does not have. `apply` could
+  end with "Do NOT discard this job — the workspace still holds the files", and
+  the very next `discard` deleted them and answered "The original project was
+  never modified." Pass `force: true` to throw them away deliberately.
+- `apply` with `force: true` names the uncommitted changes it ran over instead
+  of answering exactly like a clean apply. Forcing waives the refusal; it does
+  not license silence about what was replaced.
+
 ## [0.6.5] — 2026-08-22
 
 Three findings from a fourth independent acceptance pass. The first is the one
@@ -276,7 +309,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/fstubner/harness-dispatch/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/fstubner/harness-dispatch/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/fstubner/harness-dispatch/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/fstubner/harness-dispatch/compare/v0.6.2...v0.6.3

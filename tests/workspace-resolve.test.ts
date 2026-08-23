@@ -15,7 +15,7 @@
  */
 
 import { execFile as execFileCb } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -201,6 +201,43 @@ describe("git_worktree workspaces", () => {
     expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe(
       "const a = 99;\n",
     );
+  });
+
+  it("never reports a failed apply while leaving the project rewritten", async () => {
+    // --3way is NOT atomic: on conflict it writes `<<<<<<< ours` markers INTO
+    // the target and then exits non-zero. It used to be tried FIRST, and the
+    // failure was reported as "git apply failed … resolve by hand" — which
+    // reads as "nothing happened", while the user's file had already been
+    // rewritten with conflict markers. They had neither their change nor any
+    // idea their file had moved.
+    //
+    // Plain apply goes first now (it applies everything or nothing), and if an
+    // attempt does mutate the tree the message has to say so.
+    const run = await worktreeRun();
+    const appFile = path.join(run.originalWorkingDir, "app.js");
+    // Diverge the project on the same line, and COMMIT, so the project is
+    // clean — the dirty-project refusal must not be what stops us here.
+    await fs.writeFile(appFile, "const a = 4321; // HUMAN\n", "utf8");
+    await git(["add", "-A"], run.originalWorkingDir);
+    await git(["commit", "-qm", "human edit"], run.originalWorkingDir);
+
+    const out = await applyWorkspace("job-1700000000023-aabbccdd", jobDir, run);
+    const after = await readNorm(appFile);
+    const projectChanged = after !== "const a = 4321; // HUMAN\n";
+
+    if (out.applied) {
+      // A successful three-way merge is a fine outcome.
+      expect(projectChanged).toBe(true);
+    } else if (projectChanged) {
+      // The outcome this test exists for: mutated despite reporting failure.
+      expect(
+        out.message,
+        `project was rewritten but the message did not say so:\n${after}`,
+      ).toMatch(/YOUR PROJECT WAS MODIFIED ANYWAY/);
+      expect(out.message).toContain("app.js");
+    } else {
+      expect(out.message).toMatch(/project was not modified/i);
+    }
   });
 
   it("discard removes the worktree through git, not just the directory", async () => {
@@ -415,6 +452,43 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(await readNorm(path.join(repo, "notes.txt"))).toBe("hello-from-delegate\n");
   });
 
+  it("reports a git failure instead of returning it as an empty patch", async () => {
+    // git diff exits 1 for "there are differences" AND for real errors, and
+    // the two were indistinguishable. Live on Windows, a copy workspace whose
+    // paths crossed MAX_PATH made git exit 1 with EMPTY stdout and
+    // `error: Could not open directory <259 chars>` on stderr — read as "the
+    // agent changed nothing". The feature could not deliver and the user was
+    // told to file a bug report instead of the actual cause.
+    //
+    // Simulated by pointing the workspace at a path that does not exist, which
+    // is the same shape (git errors, stdout empty) without needing a 260-char
+    // path that the test runner itself could not create.
+    const repo = await makeRepo("git-failure");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: path.join(repo, "no-such-directory-here"),
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    await expect(buildWorkspacePatch(run)).rejects.toThrow(/could not produce a patch/i);
+  });
+
+  it("does not mistake git's line-ending warnings for a failure", async () => {
+    // The discriminator is `error:`/`fatal:` on stderr, NOT any stderr at all.
+    // git emits `warning: in the working copy of ..., LF will be replaced by
+    // CRLF` routinely, and treating that as failure would break every diff on
+    // a CRLF checkout — which is most of them on Windows.
+    const run = await nestedCopyRun();
+    const patch = await buildWorkspacePatch(run);
+    expect(patch).toContain("+const a = 5;");
+  });
+
   it("says 'already applied' on a second apply, instead of crying data loss", async () => {
     // The 0.6.3 guard fired on the one benign case with the same shape.
     // changedFiles is frozen at dispatch and the patch is recomputed live, so
@@ -444,6 +518,99 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(second.applied).toBe(false);
     expect(second.message).toMatch(/already matches/i);
     expect(second.message).not.toMatch(/silently drop|Please report/);
+  });
+
+  it("refuses to discard work the project does not have", async () => {
+    // apply can end with "Do NOT discard this job — the workspace still holds
+    // the files at …", and discard then deleted them anyway and answered "The
+    // original project was never modified." The reassuring sentence arrived at
+    // the exact moment the only copy was destroyed. Discard is the one
+    // irreversible action here, so it owes the same check apply makes.
+    const repo = await makeRepo("discard-guard");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "notes.txt"), "only-copy-of-this\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "notes.txt", kind: "added" }],
+    };
+
+    const refused = await discardWorkspace("job-1700000000020-aabbccdd", run);
+    expect(refused.discarded).toBe(false);
+    expect(refused.message).toContain("notes.txt");
+    expect(refused.message).toMatch(/only copy/i);
+    // The workspace is still there — a refusal that deleted anyway is no refusal.
+    expect(existsSync(copy)).toBe(true);
+
+    // force is the documented way through.
+    const forced = await discardWorkspace("job-1700000000020-aabbccdd", run, { force: true });
+    expect(forced.discarded).toBe(true);
+    expect(existsSync(wsRoot)).toBe(false);
+  });
+
+  it("discards without complaint once the work is in the project", async () => {
+    // The guard must not turn discard into a permanent refusal: after apply,
+    // the workspace is redundant and cleaning it up is the whole point.
+    const repo = await makeRepo("discard-after-apply");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
+    await fs.writeFile(path.join(copy, "notes.txt"), "landed\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "notes.txt", kind: "added" }],
+    };
+
+    const applied = await applyWorkspace("job-1700000000021-aabbccdd", jobDir, run);
+    expect(applied.applied, applied.message).toBe(true);
+
+    const out = await discardWorkspace("job-1700000000021-aabbccdd", run);
+    expect(out.discarded, out.message).toBe(true);
+  });
+
+  it("names what force ran over instead of reporting a plain success", async () => {
+    // force waives the uncommitted-changes refusal. It was answered with the
+    // same cheerful line as a clean apply, so a human edit the patch replaced
+    // left no trace in the response at all. The waiver covers doing it; it
+    // does not cover being quiet about it.
+    const repo = await makeRepo("force-overwrite");
+    const wsRoot = path.join(repo, ".harness-dispatch", "workspaces", "run-1");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "app.js"), "const a = 5;\n", "utf8");
+    // The human edits the same file after the agent started.
+    await fs.writeFile(path.join(repo, "app.js"), "const a = 999; // HUMAN\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+
+    const out = await applyWorkspace("job-1700000000022-aabbccdd", jobDir, run, { force: true });
+    if (out.applied) {
+      expect(out.message).toMatch(/FORCED over/);
+      expect(out.message).toContain("app.js");
+    } else {
+      // A conflict is an acceptable outcome too — but then it must say the
+      // project was or was not modified, never leave it unstated.
+      expect(out.message).toMatch(/project was (not )?modified/i);
+    }
   });
 
   it("refuses rather than claiming nothing changed when changedFiles disagrees", async () => {
