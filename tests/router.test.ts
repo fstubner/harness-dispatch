@@ -379,6 +379,59 @@ describe("Router.pickService", () => {
     expect(decision?.model).toBe("alpha-model");
   });
 
+  it("drops a model that names the FORCED route itself", async () => {
+    // Over-specifying: "use codex_cli, with codex_cli". 0.7.6 dropped it
+    // (right), 0.7.7 forwarded it (wrong) and Codex rejected `--model
+    // codex_cli` with a real failed job and a breaker event. Only the
+    // self-naming case is ambiguous; the collides-with-another-route case
+    // below must still be honoured, which is why one rule cannot cover both.
+    const worker = makeService({ name: "worker_route", tier: 1, model: "route-default-model" });
+    const dispatchers: Record<string, Dispatcher> = {
+      worker_route: new StubDispatcher("worker_route"),
+    };
+    const router = new Router(makeConfig([worker]), quota, dispatchers, leaderboard);
+
+    for (const spelling of ["worker_route", "WORKER_ROUTE"]) {
+      const decision = await router.pickService({
+        hints: { service: "worker_route", model: spelling },
+      });
+      expect(
+        decision?.model,
+        `"${spelling}" was forwarded to the harness as a model name`,
+      ).toBe("route-default-model");
+    }
+  });
+
+  it("reports modelHintMatched from DECLARED models, not the route's name", async () => {
+    // The schema says true means "the picked route actually declares this
+    // model", and it is the signal an agent is told to use to decide how much
+    // to trust a result. A route-name match reported true, so the one
+    // self-correction signal said the opposite of the truth.
+    const worker = makeService({
+      name: "worker_route",
+      tier: 1,
+      model: "route-default-model",
+    });
+    const router = new Router(
+      makeConfig([worker]),
+      quota,
+      { worker_route: new StubDispatcher("worker_route") },
+      leaderboard,
+    );
+
+    const byName = await router.pickService({
+      hints: { service: "worker_route", model: "worker_route" },
+    });
+    expect(byName?.modelHintMatched, "a route-name match was reported as a declared model").toBe(
+      false,
+    );
+
+    const byModel = await router.pickService({
+      hints: { service: "worker_route", model: "route-default-model" },
+    });
+    expect(byModel?.modelHintMatched).toBe(true);
+  });
+
   it("still honours a model on a FORCED route, even if some other route is named that", async () => {
     // The over-fire the first version of the route-id fix caused. With the
     // service already chosen by the caller, `model` cannot be a routing nudge

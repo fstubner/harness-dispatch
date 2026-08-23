@@ -138,12 +138,39 @@ const POSIX_ARG_MAX = 128 * 1024 - 2048;
  */
 const WINDOWS_CMD_SHIM_MAX = 8_000;
 
-/** The limit that applies to THIS command, not to the platform in general. */
+/**
+ * The limit that applies to THIS command, not to the platform in general.
+ *
+ * Keyed on what cross-spawn will actually DO, not on the extension string.
+ * cross-spawn routes through cmd.exe for anything that is not `.com` or `.exe`
+ * (lib/parse.js), so an extensionless target, a `.ps1`, or a hand-rolled shim
+ * gets the same 8,191-character ceiling as a `.cmd` — the first version of
+ * this listed `.cmd`/`.bat` explicitly and handed everything else the
+ * four-times-larger CreateProcess budget.
+ */
 function commandLineBudget(command: string): number {
   if (process.platform !== "win32") return POSIX_ARG_MAX;
-  const ext = command.slice(command.lastIndexOf(".")).toLowerCase();
-  return ext === ".cmd" || ext === ".bat" ? WINDOWS_CMD_SHIM_MAX : WINDOWS_CMDLINE_MAX;
+  const ext = path.extname(command).toLowerCase();
+  return ext === ".exe" || ext === ".com" ? WINDOWS_CMDLINE_MAX : WINDOWS_CMD_SHIM_MAX;
 }
+
+/**
+ * cross-spawn's own meta-character class, copied verbatim from
+ * `cross-spawn/lib/util/escape.js`.
+ *
+ * Every one of these gets a `^` prefix when the target goes through cmd.exe —
+ * INCLUDING THE SPACE, which is the character that made hand-modelling this
+ * wrong. My first version counted `"` and `\` only, so ordinary prose (~15%
+ * spaces) and JSON measured well under budget and still died with cmd.exe's
+ * own "The command line is too long." — from ~6,600 characters for prose and
+ * ~4,500 for code, against a guard that did not fire until ~7,820.
+ *
+ * Copied rather than imported because it lives in cross-spawn's internals,
+ * which are not part of its public API. The coupling is real either way; a
+ * copy at least fails visibly if cross-spawn changes, and the tests below pin
+ * the shapes that actually matter.
+ */
+const CMD_META_CHARS = /[()\][%!^"`<>&|;, *?]/g;
 
 /**
  * How long the command line will actually be once escaped.
@@ -157,10 +184,21 @@ function commandLineBudget(command: string): number {
  * errno.
  */
 function commandLineLength(command: string, args: string[]): number {
+  if (process.platform !== "win32") {
+    return args.reduce((n, a) => n + a.length + 1, command.length);
+  }
+  const viaCmd = commandLineBudget(command) === WINDOWS_CMD_SHIM_MAX;
   const escapedLength = (arg: string): number => {
-    if (process.platform !== "win32") return arg.length;
-    let n = arg.length + 2; // surrounding quotes
+    // Backslash-runs before a quote are doubled, then the quote is escaped,
+    // then the whole thing is wrapped in quotes.
+    let n = arg.length + 2;
     for (const ch of arg) if (ch === '"' || ch === "\\") n += 1;
+    // Then, for a cmd.exe target only, every meta char in the RESULT gets a
+    // `^`. Counting them on the raw argument is close enough and slightly
+    // over-reads (the added `\` and the wrapping quotes are themselves meta),
+    // which is the direction to be wrong in: refusing a borderline prompt with
+    // an explanation beats spawning one that dies with an errno.
+    if (viaCmd) n += (arg.match(CMD_META_CHARS) ?? []).length + 2;
     return n;
   };
   return args.reduce((n, a) => n + escapedLength(a) + 1, escapedLength(command));

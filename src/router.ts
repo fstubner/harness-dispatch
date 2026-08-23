@@ -148,6 +148,28 @@ function modelMatchesService(name: string, svc: ServiceConfig, model: string | u
   );
 }
 
+/**
+ * Does this route actually DECLARE this model? The route's own name does not
+ * count.
+ *
+ * Distinct from modelMatchesService, which includes the name because a route
+ * id is a legitimate routing nudge and should score like one. The reported
+ * flag is a different question, and the schema is explicit about which:
+ * "modelHintMatched: true means the picked route actually declares this
+ * model; false means it was forwarded blind and you should treat the result
+ * with more suspicion". Reporting a name match as true told the agent the
+ * opposite of the truth on the one signal the schema points it at for
+ * self-correction.
+ */
+function declaresModel(svc: ServiceConfig, model: string | undefined): boolean {
+  if (!model) return false;
+  return (
+    sameModel(svc.model, model) ||
+    sameModel(svc.leaderboardModel, model) ||
+    sameModel(svc.escalateModel, model)
+  );
+}
+
 function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
   if (!TASK_TYPES_WITH_CAPABILITY.has(taskType)) return 1.0;
   const key = taskType as "execute" | "plan" | "review";
@@ -470,16 +492,22 @@ export class Router {
         // arbitrary --model values); silently discarding the request instead
         // meant a mismatched hints.model got no error and no explanation.
         //
-        // preferredModel, NOT modelOverride: the route-id suppression belongs
-        // to the SCORING path only. Here the caller already named the service,
-        // so `model` cannot be a routing nudge — it can only be a model. The
-        // first version applied the suppression at both sites, which meant a
-        // model whose name happened to collide with some other route's id was
-        // silently swapped for the route default. The caller asked for it
-        // explicitly and got something else without a word.
-        model: preferredModel ?? resolveModel(svc, taskType),
+        // On the forced path the caller already named the service, so `model`
+        // is almost always a model — EXCEPT when it names this very route,
+        // which is just over-specifying ("use codex_cli, with codex_cli").
+        //
+        // Both extremes were shipped. Suppressing every route id here swapped
+        // a model that merely collided with SOME OTHER route's id for the
+        // route default, silently, on an explicit request. Suppressing none
+        // sent `--model codex_cli` to Codex, which rejected it with a real
+        // failed job and a breaker event — and that had worked one release
+        // earlier. Only the self-naming case is ambiguous, so only it is
+        // resolved in favour of the route's own default.
+        model: sameModel(forceService, preferredModel)
+          ? resolveModel(svc, taskType)
+          : (preferredModel ?? resolveModel(svc, taskType)),
         ...(preferredModel !== undefined
-          ? { modelHintMatched: modelMatchesService(forceService, svc, preferredModel) }
+          ? { modelHintMatched: declaresModel(svc, preferredModel) }
           : {}),
         elo: elo ?? undefined,
         finalScore,
@@ -594,7 +622,7 @@ export class Router {
         // the requested model rather than gating on modelMatchesService.
         model: modelOverride ?? resolveModel(svc, taskType),
         ...(preferredModel !== undefined
-          ? { modelHintMatched: modelMatchesService(best.name, svc, preferredModel) }
+          ? { modelHintMatched: declaresModel(svc, preferredModel) }
           : {}),
         elo: best.elo ?? undefined,
         finalScore: best.score,

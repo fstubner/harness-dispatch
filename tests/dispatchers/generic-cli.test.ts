@@ -889,6 +889,63 @@ describe("a prompt too long for the command line", () => {
     },
   );
 
+  it.runIf(process.platform === "win32")(
+    "counts SPACES and other cmd meta chars, not just quotes",
+    async () => {
+      // The character that broke the first escaped-length model. cross-spawn
+      // prefixes `^` to every meta char for a cmd.exe target, and its class
+      // (`/([()\][%!^"\`<>&|;, *?])/g`) INCLUDES THE SPACE. Counting only `"`
+      // and `\` meant ordinary prose measured well under budget and still
+      // died with cmd.exe's own "The command line is too long." — measured
+      // from ~6,600 characters, against a guard that fired at ~7,820.
+      mockFound("C:/tools/agent.cmd");
+      const prose = "the quick brown fox jumps over the lazy dog ".repeat(160); // ~7.0k, ~18% spaces
+      const d = new GenericCliDispatcher(
+        svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+      );
+      const res = await d.dispatch(prose, [], "/tmp");
+
+      expect(res.success, "a space-heavy prompt slipped past the cmd budget").toBe(false);
+      expect(res.error).toMatch(/prompt too long/i);
+      expect(runSubprocessMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "applies the cmd.exe budget to any target that is not .exe/.com",
+    async () => {
+      // cross-spawn routes through cmd.exe for everything except .com/.exe
+      // (lib/parse.js), so an extensionless shim or a .ps1 gets the same
+      // 8,191 ceiling. Listing `.cmd`/`.bat` explicitly handed those the
+      // four-times-larger CreateProcess budget.
+      mockFound("C:/tools/agent-shim");
+      const d = new GenericCliDispatcher(
+        svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+      );
+      const res = await d.dispatch("x".repeat(9_000), [], "/tmp");
+
+      expect(res.success).toBe(false);
+      expect(res.error).toMatch(/prompt too long/i);
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "still lets a native .exe take a prompt a cmd shim could not",
+    async () => {
+      // The negative for both changes above: .exe skips cmd.exe entirely, so
+      // a prompt between the two budgets must still run.
+      mockFound("C:/tools/agent.exe");
+      runSubprocessMock.mockResolvedValue(ok({ stdout: "fine" }));
+      const d = new GenericCliDispatcher(
+        svc({ args: ["-p", "{{prompt}}"], output: { mode: "text" } }),
+      );
+      const res = await d.dispatch("x".repeat(12_000), [], "/tmp");
+
+      expect(res.success, res.error).toBe(true);
+      expect(runSubprocessMock).toHaveBeenCalled();
+    },
+  );
+
   it("does not charge the route for a refused prompt", async () => {
     // The refusal happens before any process is spawned and fails identically
     // on every argv route, so one over-long prompt cascading through three

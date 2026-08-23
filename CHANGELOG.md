@@ -6,6 +6,47 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.8] — 2026-08-23
+
+**Upgrade from 0.7.7.** Two of 0.7.7's five fixes were wrong, and one of them
+re-opened a bug 0.7.6 had fixed.
+
+### Added
+
+- Publishing now requires an acceptance record for the exact version being
+  released (`acceptance/<version>.md`), checked by the publish workflow.
+
+  Every regression this project has shipped was found by an independent
+  acceptance pass — 0.7.0's wrong apply base, 0.7.2's dropped deletions,
+  0.7.3's path base, 0.7.6's two miscalibrated guards, 0.7.7's under-counted
+  escaping. Not one was missed. Every one was already on npm when the pass ran,
+  because publishing came first. The review was never the problem; the ordering
+  was, and it is mechanical now instead of remembered. A CONDITIONAL verdict
+  passes deliberately — see `acceptance/README.md` for why.
+
+### Fixed
+
+- The command-line length check counts what cmd.exe actually costs.
+  cross-spawn prefixes `^` to every meta character for a cmd.exe target and its
+  class INCLUDES THE SPACE, which the previous hand-written model did not. Prose
+  therefore failed from about 6,600 characters and JSON from about 4,500, while
+  the guard did not fire until about 7,820 — so the raw
+  "The command line is too long." went on reaching callers, and because the
+  guard stayed silent the route was charged a call, a failure and a breaker
+  event for it. The class is now taken from cross-spawn rather than guessed at.
+- The same check applies the cmd.exe budget to any target that is not `.exe` or
+  `.com`, which is what cross-spawn actually keys on. An extensionless shim or a
+  `.ps1` was given the four-times-larger CreateProcess budget.
+- A model naming the FORCED route itself is dropped again. 0.7.6 dropped it,
+  0.7.7 forwarded it, and Codex rejected `--model codex_cli` with a real failed
+  job and a breaker event. Over-specifying ("use codex_cli, with codex_cli") is
+  the one ambiguous case; a model that merely collides with some OTHER route's
+  id is still honoured, which is why one rule cannot cover both.
+- `modelHintMatched` reports declared models only. It counted a route-NAME
+  match as a match, so the one signal the tool schema tells an agent to use for
+  self-correction — "true means the picked route actually declares this model" —
+  reported the opposite of the truth.
+
 ## [0.7.7] — 2026-08-23
 
 **Upgrade from 0.7.6.** Two of 0.7.6's three guards were miscalibrated — one
@@ -601,7 +642,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...v0.7.5
