@@ -6,6 +6,29 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- The apply-time divergence check added in 0.7.3 resolved a `git_worktree` job's
+  changed-file paths against the dispatch's working directory rather than the
+  repository root, so every apply for a subdirectory dispatch was refused with
+  "deleted since dispatch". The same path-base mistake 0.7.0 fixed in the
+  neighbouring check, made again a few lines away; both call one function now.
+
+### Added
+
+- A test matrix over every isolated dispatch shape: `copy` and `git_worktree`,
+  at the repository root and in a subdirectory, for a file the agent MODIFIED,
+  CREATED, DELETED and RENAMED. It drives the real prepare/finish path rather
+  than hand-built fixtures, and asserts on the user's files on disk rather than
+  on what the tool reports — every defect this area has produced reported
+  success while doing the wrong thing.
+
+  It earns its place by catching what shipped. Reintroducing 0.7.0's wrong-base
+  bug fails 4 of its 16 cases; reintroducing 0.7.2's dropped-deletion bug fails
+  a different 4; and it found the divergence-check bug above on its first run.
+  Each of those was previously found by a reviewer rebuilding this matrix by
+  hand, after release.
+
 ## [0.7.3] — 2026-08-23
 
 **Upgrade from 0.7.2 if you use `workspace_policy: copy`.** 0.7.2 introduced a
