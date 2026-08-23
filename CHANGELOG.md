@@ -6,6 +6,43 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.7] — 2026-08-23
+
+**Upgrade from 0.7.6.** Two of 0.7.6's three guards were miscalibrated — one
+under-fired on the shipped Cursor route, one over-fired on an explicit request.
+
+### Fixed
+
+- The long-prompt check budgets a `.cmd`/`.bat` target at cmd.exe's 8,191
+  characters instead of CreateProcess's 32,767. The shipped Cursor route is a
+  `cursor-agent.CMD` PowerShell wrapper — not an npm shim — so cross-spawn
+  re-spawns it through cmd.exe. A 9,031-character prompt therefore sailed past
+  0.7.6's check and still failed with the bare "The command line is too long."
+  that check exists to replace.
+- The same check counts a prompt at its ESCAPED length. Windows escapes every
+  `"` to `\"`, so a raw character count under-reads any JSON or source-code
+  prompt: 31,000 characters at ~10% quotes measured under budget and threw
+  `spawn ENAMETOOLONG` anyway.
+- A model named on a FORCED route reaches the harness again. 0.7.6 stopped
+  forwarding a route id as a model override, which was right on the scoring
+  path and wrong on the forced one — there the caller has already chosen the
+  route, so the value can only be a model, and a model whose name collided with
+  some other route's id was silently swapped for the route default.
+- A refused prompt is not charged to the route. The refusal happens before any
+  process is spawned and fails identically on every argv route, so one over-long
+  prompt cascading through three routes recorded three calls and three failures
+  — and three such dispatches opened healthy routes for 300 seconds. The route
+  was never asked to do anything.
+- A background dispatch is refused outright when the config file no longer
+  loads, instead of being reported orphaned 90 seconds later. The detached
+  runner bootstraps from the config FILE, so a file the server can no longer
+  load means no runner can start; the job then sat untouched until the orphan
+  threshold declared it dead. Observed: a caller told "ended without a result
+  (status: orphaned)" about a job whose own status.json later read
+  completed/success. The server keeps the last config that loaded cleanly, which
+  is why it could accept the dispatch at all — that divergence is the bug, and
+  it is now named at the point of refusal.
+
 ## [0.7.6] — 2026-08-23
 
 The three items an acceptance pass left open as judgement calls rather than
@@ -564,7 +601,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...v0.7.4

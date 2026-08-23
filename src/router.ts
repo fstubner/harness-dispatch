@@ -469,7 +469,15 @@ export class Router {
         // "doesn't recognize" a model for may still support it (CLIs accept
         // arbitrary --model values); silently discarding the request instead
         // meant a mismatched hints.model got no error and no explanation.
-        model: modelOverride ?? resolveModel(svc, taskType),
+        //
+        // preferredModel, NOT modelOverride: the route-id suppression belongs
+        // to the SCORING path only. Here the caller already named the service,
+        // so `model` cannot be a routing nudge — it can only be a model. The
+        // first version applied the suppression at both sites, which meant a
+        // model whose name happened to collide with some other route's id was
+        // silently swapped for the route default. The caller asked for it
+        // explicitly and got something else without a word.
+        model: preferredModel ?? resolveModel(svc, taskType),
         ...(preferredModel !== undefined
           ? { modelHintMatched: modelMatchesService(forceService, svc, preferredModel) }
           : {}),
@@ -1150,6 +1158,21 @@ export class Router {
     decision?: RoutingDecision | null,
   ): void {
     logDispatch(service, result, decision);
+
+    // A rejected INPUT says nothing about the route.
+    //
+    // The prompt-too-long refusal happens before any process is spawned, and
+    // it fails identically on every argv route — so a single over-long prompt
+    // cascading through three routes counted three calls and three failures,
+    // and three such dispatches opened healthy routes for 300 seconds. The
+    // route was never asked to do anything. Counting it is the shape
+    // PRODUCT.md names as a counter-signal: usage numbers that make a working
+    // route look unreliable.
+    //
+    // Still logged, so the dispatch is visible in the dispatch log; simply not
+    // charged to the route's counters or its breaker.
+    if (result.inputRejected) return;
+
     this.quota.recordResult(service, result);
     const breaker = this.breakers.get(service);
     if (!breaker) return;

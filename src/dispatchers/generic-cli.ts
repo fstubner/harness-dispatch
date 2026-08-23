@@ -124,6 +124,47 @@ export function detectHarnessEnvironmentFailure(text: string): string | undefine
  */
 const WINDOWS_CMDLINE_MAX = 32_000;
 const POSIX_ARG_MAX = 128 * 1024 - 2048;
+/**
+ * cmd.exe's own limit, and the one that actually binds on Windows more often
+ * than the CreateProcess figure above.
+ *
+ * A `.cmd`/`.bat` target is re-spawned through `cmd.exe`, which caps a command
+ * line at 8,191 characters — a quarter of the CreateProcess limit. The first
+ * version of this check budgeted 32,000 for everything, so the shipped Cursor
+ * route (a `cursor-agent.CMD` PowerShell wrapper, not an npm shim, handed
+ * straight to cross-spawn) still failed at ~9k characters with the bare
+ * "The command line is too long." this check exists to replace. Measured on a
+ * stock install.
+ */
+const WINDOWS_CMD_SHIM_MAX = 8_000;
+
+/** The limit that applies to THIS command, not to the platform in general. */
+function commandLineBudget(command: string): number {
+  if (process.platform !== "win32") return POSIX_ARG_MAX;
+  const ext = command.slice(command.lastIndexOf(".")).toLowerCase();
+  return ext === ".cmd" || ext === ".bat" ? WINDOWS_CMD_SHIM_MAX : WINDOWS_CMDLINE_MAX;
+}
+
+/**
+ * How long the command line will actually be once escaped.
+ *
+ * Counting raw characters under-reads on Windows, where every `"` in an
+ * argument is escaped to `\"` and every argument containing whitespace is
+ * wrapped in quotes. A 31,000-character prompt that is ~10% quote characters —
+ * ordinary for JSON or source code — measured under the budget and then threw
+ * `spawn ENAMETOOLONG` anyway. Deliberately an over-estimate: refusing a
+ * borderline prompt with an explanation beats spawning one that dies with an
+ * errno.
+ */
+function commandLineLength(command: string, args: string[]): number {
+  const escapedLength = (arg: string): number => {
+    if (process.platform !== "win32") return arg.length;
+    let n = arg.length + 2; // surrounding quotes
+    for (const ch of arg) if (ch === '"' || ch === "\\") n += 1;
+    return n;
+  };
+  return args.reduce((n, a) => n + escapedLength(a) + 1, escapedLength(command));
+}
 
 /** Walk a nested object by dotted path, e.g. "message.content". */
 function getPath(value: unknown, path: string): unknown {
@@ -451,8 +492,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // would refuse work that route can do. Saying which routes CAN take it is
     // the useful half of the message.
     if (!protocol.stdin) {
-      const budget = process.platform === "win32" ? WINDOWS_CMDLINE_MAX : POSIX_ARG_MAX;
-      const commandLineChars = args.reduce((n, a) => n + a.length + 1, resolved.command.length);
+      const budget = commandLineBudget(resolved.command);
+      const commandLineChars = commandLineLength(resolved.command, args);
       if (commandLineChars > budget) {
         yield {
           type: "completion",
@@ -461,11 +502,14 @@ export class GenericCliDispatcher extends BaseDispatcher {
             service: this.id,
             success: false,
             error:
-              `prompt too long for ${this.id}: the command line would be ` +
-              `${commandLineChars.toLocaleString()} characters and this platform allows ` +
-              `${budget.toLocaleString()}. ${this.id} passes the prompt as a command-line ` +
-              `argument. Send the bulk as files instead of inline text, shorten the prompt, ` +
-              `or use a route that reads the prompt from stdin (codex does).`,
+              `prompt too long for ${this.id}: the command line would be about ` +
+              `${commandLineChars.toLocaleString()} characters once escaped, and this ` +
+              `command accepts ${budget.toLocaleString()}. ${this.id} passes the prompt as a ` +
+              `command-line argument. Send the bulk as files instead of inline text, shorten ` +
+              `the prompt, or use a route that reads the prompt from stdin (codex does).`,
+            // Not the route's fault, so not the route's failure. See
+            // DispatchResult.inputRejected.
+            inputRejected: true,
             durationMs: 0,
           },
         };

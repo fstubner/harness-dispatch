@@ -91,6 +91,39 @@ describe("a failed config reload is reported, not swallowed", () => {
     expect(afterSecond).toBe(1);
   }, 30_000);
 
+  it("refuses a background dispatch instead of reporting the job orphaned 90s later", async () => {
+    // The detached runner bootstraps from the config FILE, so a file this
+    // server can no longer load means no runner can start — and the job sat
+    // untouched until the 90s orphan threshold declared it dead. Observed: a
+    // caller told "ended without a result (status: orphaned)" about a job
+    // whose own status.json later read completed/success. Two false statements
+    // from one broken file.
+    //
+    // The server is fine — a failed reload keeps the last good config in
+    // memory, which is why it can still accept the dispatch. That divergence
+    // between what the server runs and what a runner would read is the bug.
+    const state = await bootstrapRuntime({ configPath });
+    const holder = new RuntimeHolder(state);
+    const { startAsyncJobTracked } = await import("../src/jobs.js");
+
+    await rewriteConfig("clis:\n  - name: probe\n   bad indentation: [oops\n");
+
+    await expect(
+      startAsyncJobTracked({ holder }, { prompt: "hi", workingDir: dir }),
+    ).rejects.toThrow(/cannot start a background run/i);
+  }, 30_000);
+
+  it("still accepts a dispatch when the config on disk is fine", async () => {
+    // The negative. This check runs on every background dispatch, so a false
+    // positive would refuse all of them.
+    const state = await bootstrapRuntime({ configPath });
+    const holder = new RuntimeHolder(state);
+    const { startAsyncJobTracked } = await import("../src/jobs.js");
+
+    const started = await startAsyncJobTracked({ holder }, { prompt: "hi", workingDir: dir });
+    expect(started.status.jobId).toMatch(/^job-\d+-[0-9a-f]{8}$/);
+  }, 30_000);
+
   it("stays silent when the edit is fine", async () => {
     // The guard must not cry wolf on a working reload.
     const state = await bootstrapRuntime({ configPath });

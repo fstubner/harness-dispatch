@@ -954,6 +954,31 @@ function spawnDetachedRunner(runnerPath: string, jobDir: string, configPath: str
 
 
 
+/**
+ * Why a detached runner would fail to bootstrap from this config path, if it
+ * would. `undefined` means the file loads (or there is none, which is the
+ * auto-detect case and always fine).
+ *
+ * Deliberately re-reads rather than trusting the server's in-memory config:
+ * the two disagreeing is exactly the condition being detected.
+ */
+async function configLoadError(configPath: string | undefined): Promise<string | undefined> {
+  if (configPath === undefined) return undefined;
+  const { loadConfig } = await import("./config.js");
+  try {
+    await loadConfig(configPath);
+    return undefined;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return (
+      `cannot start a background run: ${configPath} no longer loads, so the detached ` +
+      `runner this dispatch needs cannot start — ${detail}. This server is still using the ` +
+      `last config that loaded cleanly, which is why it accepted the request at all. Fix the ` +
+      `file (harness-dispatch doctor --config "${configPath}" reports the problem) and retry.`
+    );
+  }
+}
+
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
   return (await startAsyncJobTracked(deps, input)).status;
 }
@@ -965,6 +990,22 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // point at which failing leaves no half-built job directory behind.
   const workingDirError = validateWorkingDir(input.workingDir);
   if (workingDirError !== undefined) throw new Error(workingDirError);
+
+  // The runner reads the config FILE, so a file this server can no longer load
+  // means no runner can start — and the job would sit untouched until the 90s
+  // orphan threshold reported it dead. Observed: a caller told
+  // "ended without a result (status: orphaned)" about a job whose own
+  // status.json later read completed/success. Two false statements from one
+  // broken file, ninety seconds apart.
+  //
+  // The server itself is fine: a failed hot-reload keeps the previous config
+  // in memory, which is why it can still accept the dispatch at all. That
+  // divergence between what the server runs and what the runner would read is
+  // the whole bug, so it is refused here, immediately, naming the real cause —
+  // before a job directory exists to be misreported.
+  const configError = await configLoadError(deps.holder.state.configPath);
+  if (configError !== undefined) throw new Error(configError);
+
   await pruneStaleJobs();
   const jobId = newJobId();
   const root = jobsRoot();
