@@ -110,8 +110,14 @@ async function actAsAgent(workDir: string, kind: Kind): Promise<void> {
   }
 }
 
-/** What the PROJECT must look like afterwards, as [relative path, content|null]. */
-function expectedAfterApply(kind: Kind): Array<[string, string | null]> {
+/**
+ * What the PROJECT must look like afterwards, as [relative path, content], with
+ * `null` meaning the file must NOT exist.
+ *
+ * Every kind names both what must appear and what must be gone, so there is no
+ * expectation that can be satisfied by doing nothing.
+ */
+function expectedAfterApply(kind: Kind, label: "ROOT" | "PKG"): Array<[string, string | null]> {
   switch (kind) {
     case "modified":
       return [["edit-me.txt", "AGENT EDITED\n"]];
@@ -122,8 +128,46 @@ function expectedAfterApply(kind: Kind): Array<[string, string | null]> {
     case "renamed":
       return [
         ["rename-me.txt", null],
-        ["renamed.txt", null], // content asserted loosely: only presence matters
+        ["renamed.txt", `${label} to be renamed\n`], // content carried by the rename
       ];
+  }
+}
+
+/** The filenames a patch for this kind must mention. */
+function touchedBy(kind: Kind): string[] {
+  switch (kind) {
+    case "modified":
+      return ["edit-me.txt"];
+    case "created":
+      return ["brand-new.txt"];
+    case "deleted":
+      return ["remove-me.txt"];
+    case "renamed":
+      return ["rename-me.txt", "renamed.txt"];
+  }
+}
+
+/**
+ * Assert the project matches, absences included.
+ *
+ * Shared by the post-apply and post-discard checks precisely so the two cannot
+ * drift: the post-discard version once skipped every expectation whose value
+ * was `null`, which silently excused the DELETED and RENAMED rows from being
+ * checked at all.
+ */
+async function assertProjectMatches(
+  workingDir: string,
+  kind: Kind,
+  label: "ROOT" | "PKG",
+  when: string,
+): Promise<void> {
+  for (const [rel, content] of expectedAfterApply(kind, label)) {
+    const actual = await readNorm(path.join(workingDir, rel));
+    if (content === null) {
+      expect(actual, `${when}: ${rel} should not exist`).toBeNull();
+    } else {
+      expect(actual, `${when}: ${rel} has the wrong content`).toBe(content);
+    }
   }
 }
 
@@ -148,6 +192,7 @@ describe("isolated workspace lifecycle — every policy x location x change kind
     const workingDir = location === "repo root" ? repo : path.join(repo, "pkg");
     // The level the change must NOT touch.
     const otherDir = location === "repo root" ? path.join(repo, "pkg") : repo;
+    const hereLabel = location === "repo root" ? ("ROOT" as const) : ("PKG" as const);
 
     const prepared = await prepareWorkspace({ routeName: "matrix", policy, workingDir, files: [] });
     expect(prepared.isolated, `${policy} did not isolate`).toBe(true);
@@ -164,28 +209,25 @@ describe("isolated workspace lifecycle — every policy x location x change kind
     expect(existsSync(path.join(workingDir, "remove-me.txt"))).toBe(true);
     expect(existsSync(path.join(workingDir, "brand-new.txt"))).toBe(false);
 
-    // 2. DIFF is non-empty and names the file the agent touched.
+    // 2. DIFF is non-empty AND names the file the agent touched.
+    //
+    // `bytes > 0` alone was the whole assertion here once, under a comment
+    // claiming this much — which is the failure this file exists to prevent,
+    // committed in the file itself. A patch of the wrong file is non-empty.
     const diff = await workspaceDiff("job-1700000000060-aabbccdd", jobDir, run);
     expect(diff.bytes, `empty patch for a ${kind} under ${policy}:\n${diff.patch}`).toBeGreaterThan(
       0,
     );
+    for (const named of touchedBy(kind)) {
+      expect(diff.patch, `patch does not mention ${named}:\n${diff.patch}`).toContain(named);
+    }
 
     // 3. APPLY lands it.
     const applied = await applyWorkspace("job-1700000000060-aabbccdd", jobDir, run);
     expect(applied.applied, applied.message).toBe(true);
 
     // 4. The PROJECT on disk is what it should be — at the right level.
-    for (const [rel, content] of expectedAfterApply(kind)) {
-      const actual = await readNorm(path.join(workingDir, rel));
-      if (content === null && rel.startsWith("rename")) {
-        // rename-me.txt must be gone; renamed.txt must exist.
-        if (rel === "rename-me.txt") expect(actual, "the rename left the old name").toBeNull();
-        else expect(actual, "the rename did not produce the new name").not.toBeNull();
-        continue;
-      }
-      if (content === null) expect(actual, `${rel} should be gone`).toBeNull();
-      else expect(actual, `${rel} did not land`).toBe(content);
-    }
+    await assertProjectMatches(workingDir, kind, hereLabel, "after apply");
 
     // 5. THE OTHER LEVEL IS UNTOUCHED. This is the assertion the 0.7.0
     //    regression needed and no test had: a patch applied at the wrong base
@@ -209,15 +251,17 @@ describe("isolated workspace lifecycle — every policy x location x change kind
     ).toBe(false);
 
     // 6. DISCARD cleans up and leaves the applied work in place.
+    //
+    // Every expectation is re-checked, INCLUDING the ones whose expected state
+    // is absence. `if (content === null) continue;` used to skip exactly those,
+    // so the DELETED and RENAMED rows verified nothing after discard at all —
+    // a discard that resurrected a deleted file passed. The rows that assert a
+    // file is GONE are the ones a resurrection bug would show up in, so
+    // skipping them removed the only cases that could catch it.
     const discarded = await discardWorkspace("job-1700000000060-aabbccdd", run);
     expect(discarded.discarded, discarded.message).toBe(true);
     expect(existsSync(run.workspaceRoot!)).toBe(false);
-    for (const [rel, content] of expectedAfterApply(kind)) {
-      if (content === null) continue;
-      expect(await readNorm(path.join(workingDir, rel)), `${rel} was undone by discard`).toBe(
-        content,
-      );
-    }
+    await assertProjectMatches(workingDir, kind, hereLabel, "after discard");
     // A worktree must be gone from git's registry too, not just from disk.
     if (policy === "git_worktree") {
       const { stdout } = await git(["worktree", "list"], repo);
