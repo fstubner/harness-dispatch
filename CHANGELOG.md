@@ -6,6 +6,32 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.5] — 2026-08-23
+
+### Fixed
+
+- `usage` reports token totals on a long-running server, not just in a freshly
+  started process. The cross-process refresh re-read calls, successes, failures
+  and rate limits from disk and left the two token counters behind, so a server
+  that had itself dispatched the work answered `inputTokens: 0` while the state
+  file held 45,345. Only a later process showed the truth — which is the exact
+  failure the refresh was written to fix, fixed for four fields out of six. The
+  cross-process test asserted nothing about tokens, which is why it shipped.
+
+### Changed
+
+- Two assertions in the isolated-dispatch matrix now check what their comments
+  already claimed. One said the patch "names the file the agent touched" while
+  only asserting the patch was non-empty — a patch of the WRONG file is
+  non-empty. The other skipped every expectation whose expected state was
+  absence, so the DELETED and RENAMED rows verified nothing after discard at
+  all, and a discard that resurrected a deleted file would have passed. The
+  rows asserting a file is gone are the only ones such a bug could show up in.
+
+  Both were found by an independent reviewer reading the file, one day after it
+  was added to stop exactly this class of miss. A test that asserts less than
+  it claims is worse than no test: it buys confidence that is not there.
+
 ## [0.7.4] — 2026-08-23
 
 **Upgrade from 0.7.3 if you dispatch `git_worktree` jobs from a subdirectory.**
@@ -505,7 +531,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...v0.7.2

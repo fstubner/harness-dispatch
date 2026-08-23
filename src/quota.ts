@@ -326,6 +326,15 @@ export class QuotaCache {
    * documented read-modify-write race (counters are informational and never
    * consulted by routing). Taking the larger value means a lost write shows a
    * stale count rather than losing one this process definitely made.
+   *
+   * ALL SIX counters, not four. The first version refreshed calls, success,
+   * failure and rateLimited and left the two token totals behind — so the bug
+   * described above went on happening for tokens alone: a real dispatch
+   * returned 45,345 input tokens, the state file held them, and `usage` in
+   * that same long-lived server answered 0. Only a freshly started process
+   * showed the truth, which is exactly the shape this docstring says was
+   * fixed. A partial fix that reads as a complete one is worse than none,
+   * because the docstring stops anyone looking again.
    */
   private refreshLocalCounts(): void {
     const disk = this.loadLocalCounts();
@@ -343,6 +352,12 @@ export class QuotaCache {
         this.localRateLimitedCounts[service] ?? 0,
         count,
       );
+    }
+    for (const [service, count] of Object.entries(disk.inputTokens)) {
+      this.localInputTokens[service] = Math.max(this.localInputTokens[service] ?? 0, count);
+    }
+    for (const [service, count] of Object.entries(disk.outputTokens)) {
+      this.localOutputTokens[service] = Math.max(this.localOutputTokens[service] ?? 0, count);
     }
   }
 

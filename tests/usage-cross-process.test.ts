@@ -40,6 +40,8 @@ async function writeCountsAsAnotherProcess(counts: {
   success: number;
   failure?: number;
   rateLimited?: number;
+  inputTokens?: number;
+  outputTokens?: number;
 }): Promise<void> {
   await fs.writeFile(
     path.join(stateDir, "quota_state.json"),
@@ -49,6 +51,8 @@ async function writeCountsAsAnotherProcess(counts: {
         local_success: counts.success,
         local_failure: counts.failure ?? 0,
         local_rate_limited: counts.rateLimited ?? 0,
+        local_input_tokens: counts.inputTokens ?? 0,
+        local_output_tokens: counts.outputTokens ?? 0,
       },
     }),
     "utf8",
@@ -63,6 +67,26 @@ describe("QuotaCache reports counts written by other processes", () => {
     const status = (await quota.fullStatus())["fake"]!;
     expect(status.localCallCount).toBe(3);
     expect(status.localSuccessCount).toBe(3);
+  });
+
+  it("picks up TOKEN totals written by other processes, not just call counts", async () => {
+    // The refresh re-read four counters and left the two token totals behind,
+    // so a long-lived server answered inputTokens: 0 while the state file held
+    // 45,345 from a dispatch it had itself started. Only a freshly started
+    // process showed the truth — the exact shape the refresh exists to fix,
+    // fixed for four fields out of six. This file asserting nothing about
+    // tokens is why that shipped.
+    const quota = new QuotaCache(dispatchers);
+    await writeCountsAsAnotherProcess({
+      calls: 1,
+      success: 1,
+      inputTokens: 45_345,
+      outputTokens: 5,
+    });
+
+    const status = (await quota.fullStatus())["fake"]!;
+    expect(status.localInputTokens).toBe(45_345);
+    expect(status.localOutputTokens).toBe(5);
   });
 
   it("keeps failure and rate-limited counts distinct across processes", async () => {
