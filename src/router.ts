@@ -170,6 +170,42 @@ function declaresModel(svc: ServiceConfig, model: string | undefined): boolean {
   );
 }
 
+/**
+ * Resolve a caller's `model` against a route the caller NAMED — the forced
+ * path (`hints.service`) and the explicit path (the top-level `service`
+ * param, which reaches `streamTo`/`routeTo`).
+ *
+ * With the service already chosen, `model` can only be a model, so a value
+ * that merely collides with SOME OTHER route's id must still reach the
+ * harness. The one exception is a value naming THIS route: that is
+ * over-specifying ("use codex_cli, with codex_cli"), and forwarding it sent
+ * `--model codex_cli` to Codex, which rejected it with a real failed job and
+ * a breaker event.
+ *
+ * Shared because it was not. The explicit path never had the suppression and
+ * reported neither field, so 0.7.8's schema text — "a value that names a
+ * configured route is NOT sent on as a model" — was true on the forced path
+ * and false here, on the parameter the docs are written about. Three
+ * independent copies of one rule is how they diverged; keep it in one place.
+ *
+ * The SCORED path deliberately differs: no service was named there, so any
+ * route id is a routing nudge rather than a model.
+ */
+function resolveNamedRouteModel(
+  serviceName: string,
+  svc: ServiceConfig,
+  requested: string | undefined,
+  taskType: TaskType,
+): { model: string | undefined; modelHintMatched?: boolean; modelHintDropped?: boolean } {
+  const routeDefault = resolveModel(svc, taskType);
+  if (requested === undefined) return { model: routeDefault };
+  const matched = declaresModel(svc, requested);
+  if (sameModel(serviceName, requested)) {
+    return { model: routeDefault, modelHintMatched: matched, modelHintDropped: true };
+  }
+  return { model: requested, modelHintMatched: matched };
+}
+
 function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
   if (!TASK_TYPES_WITH_CAPABILITY.has(taskType)) return 1.0;
   const key = taskType as "execute" | "plan" | "review";
@@ -484,32 +520,12 @@ export class Router {
         cliCapability: svc.cliCapability,
         capabilityScore: capScore,
         taskType,
-        // Always pass through a requested model, even if it doesn't match
-        // anything this route statically declares — modelMatchesService only
-        // affects scoring (which route gets picked), not whether the
-        // caller's request reaches the dispatcher. A route the router
-        // "doesn't recognize" a model for may still support it (CLIs accept
-        // arbitrary --model values); silently discarding the request instead
-        // meant a mismatched hints.model got no error and no explanation.
-        //
-        // On the forced path the caller already named the service, so `model`
-        // is almost always a model — EXCEPT when it names this very route,
-        // which is just over-specifying ("use codex_cli, with codex_cli").
-        //
-        // Both extremes were shipped. Suppressing every route id here swapped
-        // a model that merely collided with SOME OTHER route's id for the
-        // route default, silently, on an explicit request. Suppressing none
-        // sent `--model codex_cli` to Codex, which rejected it with a real
-        // failed job and a breaker event — and that had worked one release
-        // earlier. Only the self-naming case is ambiguous, so only it is
-        // resolved in favour of the route's own default.
-        model: sameModel(forceService, preferredModel)
-          ? resolveModel(svc, taskType)
-          : (preferredModel ?? resolveModel(svc, taskType)),
-        ...(preferredModel !== undefined
-          ? { modelHintMatched: declaresModel(svc, preferredModel) }
-          : {}),
-        ...(sameModel(forceService, preferredModel) ? { modelHintDropped: true } : {}),
+        // A requested model is passed through even when this route declares
+        // nothing like it — the router not recognizing a model does not mean
+        // the CLI rejects it, and silently discarding the request gave a
+        // mismatched hints.model no error and no explanation. See
+        // resolveNamedRouteModel for the one case that is suppressed.
+        ...resolveNamedRouteModel(forceService, svc, preferredModel, taskType),
         elo: elo ?? undefined,
         finalScore,
         reason: "forced",
@@ -863,7 +879,7 @@ export class Router {
       cliCapability: svc.cliCapability,
       capabilityScore: capScore,
       taskType,
-      model: opts.model ?? resolveModel(svc, taskType),
+      ...resolveNamedRouteModel(service, svc, opts.model, taskType),
       elo: elo ?? undefined,
       finalScore: qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight,
       reason: "explicit",
@@ -1139,7 +1155,7 @@ export class Router {
       cliCapability: svc.cliCapability,
       capabilityScore: capScore,
       taskType,
-      model: opts.model ?? resolveModel(svc, taskType),
+      ...resolveNamedRouteModel(service, svc, opts.model, taskType),
       elo: elo ?? undefined,
       finalScore: qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight,
       reason: "explicit",

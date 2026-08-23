@@ -127,6 +127,12 @@ Every surface has to be right in these, not just the happy one:
 | Input | Expected |
 |---|---|
 | `jobId: "../../etc/passwd"` | Rejected; nothing read outside the jobs root |
+| A prompt near the command-line limit | Refused with a message naming the limit and what to do, BEFORE spawning — never the raw "The command line is too long." The route is not charged. The budget is measured against cross-spawn's real escaping, not estimated; two releases shipped a wrong estimate, once too loose and once too tight |
+| `hints.model` naming a configured route | Steers routing; the route runs its own model, and `routing.modelHintDropped: true` says so. `modelHintMatched: false` alone is NOT this case — it is documented as "forwarded blind" |
+| `service: "a"` with `hints.model: "a"` | Same drop, same report. This path is separate in the code and had neither until 2026-08-23 |
+| `service: "a"` with `hints.model: "b"` (another route's id) | Forwarded as a real model request — the caller already chose the route, so the value can only be a model |
+| `hints.model: ""` | Rejected at the boundary. It used to win against the route's configured model, so the harness ran with no model flag and the response reported `model: ""` |
+| A delegate's answer that discusses `CreateProcessAsUserW` | Reported as the success it was. The environment detector overrides a successful exit, so it keys on the harness's own diagnostic form on two separate lines, not on the phrase appearing in prose |
 | 500 entries in `files` | Rejected at the boundary (cap 64) on BOTH the MCP and HTTP surfaces. HTTP accepted unbounded lists until 2026-08-19 |
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |

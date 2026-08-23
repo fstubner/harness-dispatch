@@ -46,6 +46,38 @@ re-opened a bug 0.7.6 had fixed.
   match as a match, so the one signal the tool schema tells an agent to use for
   self-correction — "true means the picked route actually declares this model" —
   reported the opposite of the truth.
+- The long-prompt check MEASURES the command line instead of estimating it.
+  Two releases running the escaping was hand-modelled and wrong in opposite
+  directions: 0.7.6 under-counted spaces, 0.7.7 then over-counted backslashes
+  and REFUSED an ~800-character band of prompts that ran fine on the Cursor
+  route the check exists for. It now replicates cross-spawn's own escaping and
+  measures the result, wrapper included, so the budget (8,180 of a measured
+  ceiling of 8,191) buys margin rather than paying for a wrong model. A test
+  pins it against cross-spawn's real output.
+- A `node_modules/.bin/*.cmd` target is counted at its DOUBLE-escaped length,
+  which is what cross-spawn does to npm shims. Such a target failed from about
+  5,300 characters while the check said 6,400.
+- `routing.modelHintDropped` tells you when a model you asked for was not sent
+  on. Until now the only signal was `modelHintMatched: false`, documented as
+  "forwarded blind — treat the result with more suspicion", which is the
+  opposite of what happened: it was not forwarded at all.
+- The top-level `service` parameter drops a self-naming model too. It took a
+  third code path that never had the rule, so `service: "codex", hints.model:
+  "codex"` still sent `--model codex` to the harness — the failure the forced
+  path was fixed for — and reported neither field. All three paths now share
+  one function.
+- `hints.model: ""` is rejected instead of silently unsetting the route's
+  configured model. An empty string is not "no preference": it won against the
+  route default, the harness ran with no model flag, and the response reported
+  `model: ""` with nothing to say the request had been discarded.
+- An environment failure is detected by SHAPE, not by how often the phrase
+  appears. The detector overrides a successful exit — it charges the route a
+  failure and tells the caller "any answer it gave was produced without reading
+  or running anything" — so a delegate that merely WROTE about
+  `CreateProcessAsUserW` was given a fabricated diagnosis of a run that worked.
+  It now requires the harness's own diagnostic form (with errno) on two
+  separate lines, and scans each stream's tail separately so a wall of stderr
+  cannot bury a real failure on stdout.
 
 ## [0.7.7] — 2026-08-23
 

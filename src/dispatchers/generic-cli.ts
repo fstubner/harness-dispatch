@@ -100,25 +100,35 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
  * reporting that it could not START a process at all, which no prompt can
  * work around.
  */
-export function detectHarnessEnvironmentFailure(text: string): string | undefined {
-  // TWO occurrences, in the TAIL only.
+export function detectHarnessEnvironmentFailure(...streams: string[]): string | undefined {
+  // TWO DIAGNOSTIC LINES, in each stream's TAIL.
   //
-  // The first version matched a single mention anywhere in an unbounded
-  // transcript, and it overrides a successful exit code — so a delegate that
-  // merely WROTE about the error was marked failed, charged a route failure,
-  // and told "any answer it gave was produced without reading or running
-  // anything", which was a fabricated diagnosis about a run that had worked.
-  // Reproduced with a CLI exiting 0 while printing one sentence about this
-  // very function.
+  // This overrides a SUCCESSFUL exit code, so a false positive is expensive:
+  // it charges the route a failure, counts toward the breaker, and tells the
+  // caller "any answer it gave was produced without reading or running
+  // anything" — a fabricated diagnosis about a run that worked.
   //
-  // A single mention is the agent talking. A sandbox that cannot spawn fails
-  // EVERY attempt — the run this detector was built from logged six. The tail
-  // limit matches the rate-limit scanner's, for the same reason: a 10 MB
-  // transcript is mostly the agent's own work, and scanning all of it only
-  // adds chances to misread it.
-  const scanned = rateLimitScanTail(text);
-  const occurrences = scanned.match(/CreateProcessAsUserW failed/gi)?.length ?? 0;
-  if (occurrences >= 2) {
+  // Counting bare mentions does not separate the two cases. The first version
+  // fired on one mention anywhere; raising it to two still fired on a
+  // delegate's prose ABOUT this function, which is a realistic thing to
+  // receive — this project delegates work on this very file. Both versions
+  // were reproduced with a CLI exiting 0 while printing sentences.
+  //
+  // What actually separates them is SHAPE, not volume. The harness emits its
+  // own diagnostic with the errno attached ("CreateProcessAsUserW failed: 5
+  // (Access is denied)"); prose quotes the bare phrase. Requiring the errno
+  // form on two separate LINES needs a real diagnostic, repeated — and a
+  // sandbox that cannot spawn fails EVERY attempt, so it repeats by
+  // definition (the run this was built from logged six). The remaining false
+  // negative is a harness that prints the diagnostic exactly once and gives
+  // up, which the retry behaviour above makes close to unreachable.
+  //
+  // Each stream is tailed SEPARATELY, like the rate-limit scanner: six real
+  // occurrences on stdout followed by a wall of stderr noise would otherwise
+  // fall off the end of a single joined tail.
+  const lines = streams.flatMap((s) => rateLimitScanTail(s).split(/\r?\n/));
+  const diagnostics = lines.filter((line) => /CreateProcessAsUserW failed:\s*\d+/i.test(line));
+  if (diagnostics.length >= 2) {
     return (
       "the harness could not spawn any child process — its sandbox refused " +
       "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
@@ -157,6 +167,14 @@ const POSIX_ARG_MAX = 128 * 1024 - 2048;
  * estimates — it builds cross-spawn's own escaped forms and measures them, so
  * the slack that used to cover a wrong model is not needed and was costing
  * ~10% of the usable prompt.
+ *
+ * One case that margin would NOT cover: cross-spawn keys its escaping on the
+ * SHEBANG-RESOLVED file, and unshifts the resolved interpreter path as an
+ * extra argument. This keys on the raw command, so a shebang script would go
+ * ~60 characters uncounted. It cannot happen through the dispatchers here —
+ * resolveCliCommand hands over a fully `which`-resolved path, and reaching
+ * cross-spawn's shebang branch on Windows needs an extensionless PATHEXT hit
+ * — but a future caller passing an unresolved command is the way in.
  */
 const WINDOWS_CMD_SHIM_MAX = 8_180;
 
@@ -792,7 +810,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // reports this on whichever one it likes while its real payload goes to
     // the other, and a lenient exit-0 route would otherwise return the
     // delegate's uninformed answer as a success.
-    const envFailure = detectHarnessEnvironmentFailure(`${stdout}\n${stderr}`);
+    const envFailure = detectHarnessEnvironmentFailure(stdout, stderr);
 
     // A structured error overrides exit code entirely — a CLI that reports
     // failure in its own response body (is_error, a turn.failed event) is
