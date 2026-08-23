@@ -35,7 +35,9 @@ const SERVER_INSTRUCTIONS =
   "call; omitting either degrades routing or runs the task in the wrong directory. " +
   "Check the `usage` tool before passing an unfamiliar model or route name — " +
   "semantics differ per field: hints.model is forwarded to the picked harness as-is " +
-  "(routing.modelHintMatched tells you whether it also matched a route), fanout " +
+  "UNLESS it names a configured route, in which case it steers routing only and the " +
+  "route runs its own model (routing.modelHintDropped reports that; " +
+  "routing.modelHintMatched reports whether the picked route declares it), fanout " +
   "`models` only selects which routes run (it does not set their model), and forcing " +
   "a specific backend is done with the top-level `service` param. Read " +
   "harness-dispatch://status or harness-dispatch://status.json for route readiness, " +

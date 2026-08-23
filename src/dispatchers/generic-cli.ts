@@ -101,7 +101,24 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
  * work around.
  */
 export function detectHarnessEnvironmentFailure(text: string): string | undefined {
-  if (/CreateProcessAsUserW failed/i.test(text)) {
+  // TWO occurrences, in the TAIL only.
+  //
+  // The first version matched a single mention anywhere in an unbounded
+  // transcript, and it overrides a successful exit code — so a delegate that
+  // merely WROTE about the error was marked failed, charged a route failure,
+  // and told "any answer it gave was produced without reading or running
+  // anything", which was a fabricated diagnosis about a run that had worked.
+  // Reproduced with a CLI exiting 0 while printing one sentence about this
+  // very function.
+  //
+  // A single mention is the agent talking. A sandbox that cannot spawn fails
+  // EVERY attempt — the run this detector was built from logged six. The tail
+  // limit matches the rate-limit scanner's, for the same reason: a 10 MB
+  // transcript is mostly the agent's own work, and scanning all of it only
+  // adds chances to misread it.
+  const scanned = rateLimitScanTail(text);
+  const occurrences = scanned.match(/CreateProcessAsUserW failed/gi)?.length ?? 0;
+  if (occurrences >= 2) {
     return (
       "the harness could not spawn any child process — its sandbox refused " +
       "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
@@ -134,9 +151,14 @@ const POSIX_ARG_MAX = 128 * 1024 - 2048;
  * route (a `cursor-agent.CMD` PowerShell wrapper, not an npm shim, handed
  * straight to cross-spawn) still failed at ~9k characters with the bare
  * "The command line is too long." this check exists to replace. Measured on a
- * stock install.
+ * stock install; the true ceiling was then bisected at exactly 8,191.
+ *
+ * Only eleven characters of margin, because commandLineLength no longer
+ * estimates — it builds cross-spawn's own escaped forms and measures them, so
+ * the slack that used to cover a wrong model is not needed and was costing
+ * ~10% of the usable prompt.
  */
-const WINDOWS_CMD_SHIM_MAX = 8_000;
+const WINDOWS_CMD_SHIM_MAX = 8_180;
 
 /**
  * The limit that applies to THIS command, not to the platform in general.
@@ -170,7 +192,76 @@ function commandLineBudget(command: string): number {
  * copy at least fails visibly if cross-spawn changes, and the tests below pin
  * the shapes that actually matter.
  */
-const CMD_META_CHARS = /[()\][%!^"`<>&|;, *?]/g;
+const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
+
+/**
+ * cross-spawn double-escapes meta chars for an npm-style cmd shim
+ * (`node_modules/.bin/x.cmd`) — `isCmdShimRegExp` in its `lib/parse.js`.
+ *
+ * Counting them once meant such a target died at ~5,300 characters while the
+ * estimate said 6,400 against a budget of 8,000, so the guard stayed silent
+ * and the bare "The command line is too long." reached the caller anyway.
+ */
+const CMD_SHIM_DOUBLE_ESCAPE_RE = /node_modules[\\/].bin[\\/][^\\/]+\.cmd$/i;
+
+/**
+ * `<comspec> /d /s /c "` … `"` — what cross-spawn actually spawns, and it
+ * counts against the same ceiling.
+ *
+ * comspec, not the literal "cmd.exe": cross-spawn uses
+ * `process.env.comspec || "cmd.exe"`, which on a normal Windows install is the
+ * full `C:\WINDOWS\system32\cmd.exe` — twenty characters longer than the
+ * constant this started as. The drift test below caught that on its first run.
+ */
+function cmdWrapperOverhead(): number {
+  return `${process.env["comspec"] || "cmd.exe"} /d /s /c ""`.length;
+}
+
+/**
+ * cross-spawn's `escapeCommand`, replicated: meta chars only, no quoting.
+ */
+function escapeCmdCommand(command: string): string {
+  return command.replace(CMD_META_CHARS, "^$1");
+}
+
+/**
+ * cross-spawn's `escapeArgument`, replicated from `lib/util/escape.js`.
+ *
+ * REPLICATED, NOT ESTIMATED. The previous version added one character per
+ * backslash, but backslashes are only doubled in a run immediately before a
+ * quote or the end of the argument — so prompts full of Windows paths (~9%
+ * backslashes) were over-counted and REFUSED although they ran: an
+ * 804-character band, about 10% of the usable prompt, on the very route the
+ * check was written for. Before that the same function under-counted spaces.
+ * Both are the cost of hand-modelling something that already exists.
+ */
+function escapeCmdArgument(arg: string, doubleEscapeMetaChars: boolean): string {
+  let out = quoteWindowsArgument(arg);
+  out = out.replace(CMD_META_CHARS, "^$1");
+  if (doubleEscapeMetaChars) out = out.replace(CMD_META_CHARS, "^$1");
+  return out;
+}
+
+/**
+ * The quoting half, which applies to EVERY Windows spawn — cmd.exe target or
+ * not. Only the `^` meta escaping above is cmd-specific.
+ *
+ * Split out because the first version of the non-cmd branch counted
+ * `arg.length + 3` and so ignored quote escaping entirely, which under-read a
+ * quote-heavy prompt heading for a native `.exe`. Caught by the test written
+ * for exactly that case one release earlier — the two branches need the same
+ * quoting and differ only in what comes after it.
+ */
+function quoteWindowsArgument(arg: string): string {
+  let out = String(arg);
+  // A run of backslashes followed by a double quote: double the run, escape
+  // the quote.
+  out = out.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
+  // A run of backslashes at the end (about to be followed by the closing
+  // quote): double it.
+  out = out.replace(/(?=(\\+?)?)\1$/, "$1$1");
+  return `"${out}"`;
+}
 
 /**
  * How long the command line will actually be once escaped.
@@ -187,21 +278,19 @@ function commandLineLength(command: string, args: string[]): number {
   if (process.platform !== "win32") {
     return args.reduce((n, a) => n + a.length + 1, command.length);
   }
-  const viaCmd = commandLineBudget(command) === WINDOWS_CMD_SHIM_MAX;
-  const escapedLength = (arg: string): number => {
-    // Backslash-runs before a quote are doubled, then the quote is escaped,
-    // then the whole thing is wrapped in quotes.
-    let n = arg.length + 2;
-    for (const ch of arg) if (ch === '"' || ch === "\\") n += 1;
-    // Then, for a cmd.exe target only, every meta char in the RESULT gets a
-    // `^`. Counting them on the raw argument is close enough and slightly
-    // over-reads (the added `\` and the wrapping quotes are themselves meta),
-    // which is the direction to be wrong in: refusing a borderline prompt with
-    // an explanation beats spawning one that dies with an errno.
-    if (viaCmd) n += (arg.match(CMD_META_CHARS) ?? []).length + 2;
-    return n;
-  };
-  return args.reduce((n, a) => n + escapedLength(a) + 1, escapedLength(command));
+  if (commandLineBudget(command) !== WINDOWS_CMD_SHIM_MAX) {
+    // Straight to CreateProcess: the same quoting, without cmd.exe's escaping.
+    return args.reduce((n, a) => n + quoteWindowsArgument(a).length + 1, command.length);
+  }
+  // cmd.exe target. Build the escaped forms and MEASURE them, rather than
+  // estimating from character counts — two releases running, the estimate was
+  // wrong in one direction and then the other.
+  const double = CMD_SHIM_DOUBLE_ESCAPE_RE.test(command);
+  const parts = [escapeCmdCommand(command), ...args.map((a) => escapeCmdArgument(a, double))];
+  // `cmd.exe /d /s /c "<line>"` — the wrapper cross-spawn actually spawns, and
+  // it counts against the same 8,191 ceiling. Uncounted before, which put the
+  // estimate a constant ~29 characters under the truth.
+  return cmdWrapperOverhead() + parts.join(" ").length;
 }
 
 /** Walk a nested object by dotted path, e.g. "message.content". */
@@ -778,3 +867,6 @@ export class GenericCliDispatcher extends BaseDispatcher {
     yield { type: "completion", result };
   }
 }
+
+/** Exported for the drift test against cross-spawn. Not part of the API. */
+export const __commandLineLengthForTest = commandLineLength;

@@ -548,6 +548,18 @@ export interface RoutingDecision {
    * might have a typo" without guessing from `model` alone.
    */
   modelHintMatched?: boolean;
+  /**
+   * `hints.model` was NOT sent to the harness, because it named a configured
+   * route rather than a model.
+   *
+   * Without this the drop was invisible: the tool schema said the model is
+   * "ALWAYS passed to the harness as an override either way", and
+   * `modelHintMatched: false` is documented as "it was forwarded blind" — so a
+   * caller whose model was silently discarded read a response that said the
+   * opposite twice over. Suppressing the value is right; saying nothing about
+   * it is the same failure this project keeps finding elsewhere.
+   */
+  modelHintDropped?: boolean;
   elo: number | undefined;
   finalScore: number;
   reason: string;

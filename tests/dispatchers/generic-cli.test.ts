@@ -1004,3 +1004,120 @@ describe("detectRateLimit — 429 needs HTTP context", () => {
     expect(r).toEqual({ rateLimited: true, retryAfter: 42 });
   });
 });
+
+describe("the command-line estimate against cross-spawn's real output", () => {
+  /**
+   * Two releases running, this was hand-modelled and wrong — first
+   * under-counting spaces (prose died at ~6,600 while the guard slept until
+   * ~7,820), then over-counting backslashes (an 804-character band, ~10% of
+   * the usable prompt, refused although it ran).
+   *
+   * So stop asserting on my model and compare it against the thing it models.
+   * cross-spawn's escaping is not public API, which is exactly why a drift
+   * detector is worth having: if it changes, this fails instead of a user's
+   * prompt failing.
+   */
+  it.runIf(process.platform === "win32")("matches on the shapes that broke it", async () => {
+    const parse = (await import("cross-spawn/lib/parse.js")).default as (
+      c: string,
+      a: string[],
+      o?: unknown,
+    ) => { command: string; args: string[] };
+    const { __commandLineLengthForTest } = (await import(
+      "../../src/dispatchers/generic-cli.js"
+    )) as unknown as { __commandLineLengthForTest: (c: string, a: string[]) => number };
+
+    const samples: Array<[string, string]> = [
+      ["plain", "x".repeat(400)],
+      ["prose with spaces", "the quick brown fox jumps over the lazy dog ".repeat(12)],
+      ["windows paths", String.raw`C:\Users\x\AppData\Local\Temp\project\src\file.ts `.repeat(12)],
+      ["json", '{"key":"value","n":1}'.repeat(24)],
+      // A backslash run immediately before the end of the argument — the case
+      // cross-spawn doubles and the over-counting version got wrong.
+      ["trailing backslashes", ("a" + "\\".repeat(3)).repeat(40)],
+      ["meta soup", "a&b|c>d<e^f(g)h[i]j%k!l,m n*o?p`q".repeat(12)],
+    ];
+    // REAL files on disk. cross-spawn only applies its escaping to a command
+    // it can resolve, so pointing this at paths that do not exist made the
+    // "real" baseline just the unescaped string — a drift test measuring
+    // nothing, which is the failure this suite keeps finding elsewhere.
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const nodePath = await import("node:path");
+    const dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "hr-cmdlen-"));
+    const binDir = nodePath.join(dir, "node_modules", ".bin");
+    await fsp.mkdir(binDir, { recursive: true });
+    const plainCmd = nodePath.join(dir, "agent.cmd");
+    const shimCmd = nodePath.join(binDir, "agent.cmd");
+    const exe = nodePath.join(dir, "agent.exe");
+    for (const f of [plainCmd, shimCmd, exe]) await fsp.writeFile(f, "@echo off\r\n", "utf8");
+
+    // cmd targets ONLY. For those, cross-spawn builds the escaped command line
+    // itself, so its output IS what reaches CreateProcess and can be compared
+    // against. A native .exe is passed through unescaped and libuv does the
+    // quoting later, so parse() output is not the real command line and
+    // comparing to it would assert nothing. The .exe path is covered
+    // behaviourally above instead ("still lets a native .exe take a prompt a
+    // cmd shim could not").
+    const targets = [plainCmd, shimCmd];
+    void exe;
+
+    for (const target of targets) {
+      for (const [label, prompt] of samples) {
+        const args = ["-p", prompt];
+        const parsed = parse(target, args, {});
+        // What cross-spawn will hand the OS, including the cmd.exe wrapper it
+        // synthesises for a shim target.
+        const real = [parsed.command, ...parsed.args].join(" ").length;
+        const mine = __commandLineLengthForTest(target, args);
+
+        // Never UNDER-read: that is the failure where the guard stays silent
+        // and the raw OS error reaches the caller.
+        expect(mine, `${target} / ${label}: under-read (${mine} < ${real})`).toBeGreaterThanOrEqual(
+          real,
+        );
+        // Never wildly over-read: that is the failure where working prompts
+        // are refused. 2% covers the wrapper accounting without hiding a
+        // modelling mistake.
+        expect(mine, `${target} / ${label}: over-read (${mine} vs ${real})`).toBeLessThanOrEqual(
+          Math.ceil(real * 1.02) + 8,
+        );
+      }
+    }
+  });
+});
+
+describe("an environment failure is the harness's, not the agent's prose", () => {
+  /**
+   * This detector OVERRIDES a successful exit code, so a false positive marks
+   * a working run as failed, charges the route, and tells the caller "any
+   * answer it gave was produced without reading or running anything" — a
+   * specific, fabricated claim about a run that worked. Reproduced with a CLI
+   * exiting 0 while writing one sentence about this very function.
+   */
+  it("ignores a single mention in the delegate's own answer", () => {
+    const answer =
+      "The bug is that CreateProcessAsUserW failed is matched too broadly. " +
+      "I fixed it in generic-cli.ts and added a test.";
+    expect(detectHarnessEnvironmentFailure(answer)).toBeUndefined();
+  });
+
+  it("still catches a sandbox that could not spawn anything", () => {
+    // The real run this was built from logged six. A sandbox that cannot
+    // spawn fails EVERY attempt, which is what separates it from prose.
+    const broken = Array.from(
+      { length: 6 },
+      () => "CreateProcessAsUserW failed: 5 (Access is denied)",
+    ).join("\n");
+    expect(detectHarnessEnvironmentFailure(broken)).toMatch(/could not spawn/i);
+  });
+
+  it("does not scan an unbounded transcript", () => {
+    // Two real occurrences, buried far enough back that only an unbounded
+    // scan would reach them — the same tail rule the rate-limit scanner uses,
+    // for the same reason.
+    const buried =
+      "CreateProcessAsUserW failed\nCreateProcessAsUserW failed\n" + "x".repeat(64 * 1024);
+    expect(detectHarnessEnvironmentFailure(buried)).toBeUndefined();
+  });
+});
