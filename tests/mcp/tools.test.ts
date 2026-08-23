@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { z } from "zod";
 import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
@@ -301,6 +302,32 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool("dispatch", { prompt: "hi", hints: { model: "   " } }, { holder }),
     ).rejects.toThrow(/must not be empty/i);
+  });
+
+  it("rejects a whitespace-only prompt, like the HTTP surface always has", async () => {
+    // parse.ts's header requires anything rejected there to be rejected the
+    // same way here, and it answers 400 on `!prompt.trim()`. This passed
+    // .min(1) and spent a real route call producing nothing — the exact waste
+    // .min(1) was added to prevent, on the one required field.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+    await expect(
+      invokeTool("dispatch", { prompt: "   ", workingDir: process.cwd() }, { holder }),
+    ).rejects.toThrow(/prompt must not be empty/i);
+  });
+
+  it("still ADVERTISES the non-empty model rule, not just enforces it", () => {
+    // A .refine alone emits a bare {"type":"string"}: enforcement gets
+    // stronger while the advertised JSON Schema gets weaker, so a
+    // schema-validating client stops catching "" locally and spends a round
+    // trip on a -32602. Same "an agent following the schema burns a call"
+    // cost as the phantom hints.service below, one layer down.
+    const json = z.toJSONSchema(publicHintsSchema, { io: "input" }) as {
+      properties?: { model?: { minLength?: number } };
+    };
+    expect(json.properties?.model?.minLength).toBe(1);
   });
 
   it("does not advertise a hints.service the strict schema rejects", () => {
