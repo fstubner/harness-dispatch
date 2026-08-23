@@ -1095,11 +1095,40 @@ describe("an environment failure is the harness's, not the agent's prose", () =>
    * specific, fabricated claim about a run that worked. Reproduced with a CLI
    * exiting 0 while writing one sentence about this very function.
    */
-  it("ignores a single mention in the delegate's own answer", () => {
+  it("ignores the delegate's own prose, however many times it says it", () => {
+    // Counting mentions does not separate the cases. A threshold of one fired
+    // on a single sentence; two fired on a paragraph. This project delegates
+    // work on this very file, so a report that discusses the error repeatedly
+    // is a realistic thing to receive — and it exits 0 having done real work.
     const answer =
       "The bug is that CreateProcessAsUserW failed is matched too broadly. " +
-      "I fixed it in generic-cli.ts and added a test.";
+      "Any transcript mentioning CreateProcessAsUserW failed gets flagged. " +
+      "I narrowed the CreateProcessAsUserW failed check and added a test.";
     expect(detectHarnessEnvironmentFailure(answer)).toBeUndefined();
+  });
+
+  it("ignores a multi-line report that mentions the phrase on several lines", () => {
+    // The shape that defeats line-counting alone, and the realistic one: a
+    // delegate's markdown report on this file, exiting 0 after real work.
+    // Counting matching LINES without requiring the harness's own diagnostic
+    // form flags this at three, exactly as counting mentions flagged it.
+    const report = [
+      "## Findings",
+      "",
+      "- `detectHarnessEnvironmentFailure` matches CreateProcessAsUserW failed too broadly.",
+      "- Any transcript mentioning CreateProcessAsUserW failed is treated as an environment fault.",
+      "- I narrowed it so CreateProcessAsUserW failed must appear as a real diagnostic.",
+    ].join("\n");
+    expect(detectHarnessEnvironmentFailure(report)).toBeUndefined();
+  });
+
+  it("ignores prose that quotes the diagnostic in full, once", () => {
+    // A CHANGELOG entry or a bug report quotes the whole thing, errno and
+    // all. One such line is someone writing about the error.
+    const quoted =
+      "Observed live: `CreateProcessAsUserW failed: 5 (Access is denied)`, which " +
+      "the router now treats as an environment failure rather than a bad answer.";
+    expect(detectHarnessEnvironmentFailure(quoted)).toBeUndefined();
   });
 
   it("still catches a sandbox that could not spawn anything", () => {
@@ -1112,12 +1141,26 @@ describe("an environment failure is the harness's, not the agent's prose", () =>
     expect(detectHarnessEnvironmentFailure(broken)).toMatch(/could not spawn/i);
   });
 
+  it("scans each stream's tail, not one joined tail", () => {
+    // The failure is on stdout; stderr then buries it under progress noise.
+    // Joining first put the real diagnostics past the end of a single tail
+    // and returned nothing — on a run that genuinely could not spawn.
+    const stdout = Array.from(
+      { length: 6 },
+      () => "CreateProcessAsUserW failed: 5 (Access is denied)",
+    ).join("\n");
+    const stderr = "x".repeat(64 * 1024);
+    expect(detectHarnessEnvironmentFailure(stdout, stderr)).toMatch(/could not spawn/i);
+  });
+
   it("does not scan an unbounded transcript", () => {
-    // Two real occurrences, buried far enough back that only an unbounded
-    // scan would reach them — the same tail rule the rate-limit scanner uses,
-    // for the same reason.
+    // Real diagnostics buried far enough back that only an unbounded scan
+    // would reach them — the same tail rule the rate-limit scanner uses, for
+    // the same reason.
     const buried =
-      "CreateProcessAsUserW failed\nCreateProcessAsUserW failed\n" + "x".repeat(64 * 1024);
+      "CreateProcessAsUserW failed: 5 (Access is denied)\n" +
+      "CreateProcessAsUserW failed: 5 (Access is denied)\n" +
+      "x".repeat(64 * 1024);
     expect(detectHarnessEnvironmentFailure(buried)).toBeUndefined();
   });
 });

@@ -115,6 +115,16 @@ export interface RouteResponse {
      * from "might have a typo" without comparing strings yourself.
      */
     modelHintMatched?: boolean;
+    /**
+     * true when hints.model named the route that ran and was therefore NOT
+     * sent on as a model — the route ran its own. `model` above is what
+     * actually ran.
+     *
+     * Without this the only signal was modelHintMatched: false, documented as
+     * "forwarded blind, treat with suspicion" — the opposite of what
+     * happened. It was not forwarded at all.
+     */
+    modelHintDropped?: boolean;
   };
 }
 
@@ -283,6 +293,9 @@ function routeResponse(
     if (decision.elo !== undefined) response.routing.elo = decision.elo;
     if (decision.modelHintMatched !== undefined) {
       response.routing.modelHintMatched = decision.modelHintMatched;
+    }
+    if (decision.modelHintDropped !== undefined) {
+      response.routing.modelHintDropped = decision.modelHintDropped;
     }
     if (decision.skippedRoutes !== undefined && decision.skippedRoutes.length > 0) {
       response.skippedRoutes = decision.skippedRoutes;

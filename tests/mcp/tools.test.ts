@@ -210,6 +210,92 @@ describe("MCP tools — dispatch", () => {
     expect(data.routing?.modelHintMatched).toBe(false);
   });
 
+  it("surfaces modelHintDropped on the RESPONSE, not just the routing decision", async () => {
+    // The whole point of the drop is that the route ran a DIFFERENT model
+    // than the caller asked for. 0.7.8 computed it correctly in router.ts and
+    // never copied it into the response builder, so no caller could ever see
+    // it — while the tool schema had just been changed to promise the field.
+    // The router-level test passed throughout, because it asserts one layer
+    // below the one that was broken.
+    //
+    // Worse than absent: the field that WAS present, modelHintMatched: false,
+    // is documented as "forwarded blind, treat with suspicion". It was not
+    // forwarded at all.
+    const holder = buildHolder(
+      { a: makeService("a", { model: "a-real-model" }) },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", hints: { model: "a", taskType: "plan" } },
+      { holder },
+    );
+    const data = r.data as {
+      model?: string;
+      routing?: { modelHintDropped?: boolean; modelHintMatched?: boolean };
+    };
+    expect(data.routing?.modelHintDropped, "the drop never reached the caller").toBe(true);
+    expect(data.model, "the response must report the model that actually ran").toBe("a-real-model");
+  });
+
+  it("does not drop a model on the explicit `service` path, and says so either way", async () => {
+    // The public `service` param takes a third code path (streamTo/routeTo,
+    // reason: "explicit") that never had the route-id rule at all. It
+    // forwarded a route id straight through as --model — the exact failure
+    // the forced path was fixed for — and reported neither field, so the
+    // schema text was true on one path and false on the parameter the docs
+    // are written about.
+    const holder = buildHolder(
+      { a: makeService("a", { model: "a-real-model" }), b: makeService("b") },
+      {
+        a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
+        b: new FakeDispatcher("b", { output: "from b", service: "b", success: true }),
+      },
+    );
+
+    // Names its own route: dropped, and reported.
+    const selfNamed = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", hints: { model: "a", taskType: "plan" } },
+      { holder },
+    );
+    const dropped = selfNamed.data as {
+      model?: string;
+      routing?: { reason?: string; modelHintDropped?: boolean };
+    };
+    expect(dropped.routing?.reason).toBe("explicit");
+    expect(dropped.model, "a route id was sent to the harness as --model").toBe("a-real-model");
+    expect(dropped.routing?.modelHintDropped).toBe(true);
+
+    // Collides with a DIFFERENT route's id: still a real model request.
+    const collides = await invokeTool(
+      "dispatch",
+      { prompt: "hi", service: "a", hints: { model: "b", taskType: "plan" } },
+      { holder },
+    );
+    const forwarded = collides.data as {
+      model?: string;
+      routing?: { modelHintDropped?: boolean };
+    };
+    expect(forwarded.model, "an explicitly requested model was swapped for the default").toBe("b");
+    expect(forwarded.routing?.modelHintDropped).toBeFalsy();
+  });
+
+  it("rejects an empty hints.model instead of silently unsetting the route's own", async () => {
+    // `??` does not catch "", so the empty string won against the configured
+    // model: the route ran with no --model flag and reported model: "".
+    // Nothing in the response said the request had been discarded.
+    const holder = buildHolder(
+      { a: makeService("a", { model: "a-real-model" }) },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", hints: { model: "" } }, { holder }),
+    ).rejects.toThrow(/must not be empty/i);
+  });
+
   it("surfaces skipped routes in single mode", async () => {
     const holder = buildHolder(
       {
