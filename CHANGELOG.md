@@ -6,6 +6,11 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-08-23
+
+**Upgrade from 0.7.3 if you dispatch `git_worktree` jobs from a subdirectory.**
+0.7.3's new divergence check refused every apply for those.
+
 ### Fixed
 
 - The apply-time divergence check added in 0.7.3 resolved a `git_worktree` job's
@@ -500,7 +505,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/fstubner/harness-dispatch/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/fstubner/harness-dispatch/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/fstubner/harness-dispatch/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/fstubner/harness-dispatch/compare/v0.7.0...v0.7.1
