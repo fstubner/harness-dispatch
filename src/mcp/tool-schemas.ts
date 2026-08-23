@@ -26,12 +26,17 @@ export const publicHintsSchema = z
       .describe(
         "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
           "'gpt-5.6-sol'). Routes that statically declare this model get a scoring " +
-          "boost; the model is ALWAYS passed to the harness as an override either way, " +
-          "even on a route that doesn't recognize it — NOT validated, so an unfamiliar " +
-          "or misspelled name can still fail at dispatch time if the harness doesn't " +
-          "support it. Check the response's routing.modelHintMatched: true means the " +
-          "picked route actually declares this model; false means it was forwarded " +
-          "blind and you should treat the result with more suspicion (or check why). " +
+          "boost. A value that names a CONFIGURED ROUTE is treated as a routing nudge " +
+          "and is NOT sent on as a model — a route id is not a model name, and sending " +
+          "one cost real provider calls before this was separated. Anything else IS " +
+          "passed to the harness as an override, even on a route that doesn't recognize " +
+          "it — NOT validated, so an unfamiliar or misspelled name can still fail at " +
+          "dispatch time if the harness doesn't support it. Two response fields tell " +
+          "you which happened: routing.modelHintDropped: true means it named a route " +
+          "and was used for routing only, so the route ran its own default model; " +
+          "routing.modelHintMatched: true means the picked route actually declares " +
+          "this model, and false means it was forwarded blind and you should treat the " +
+          "result with more suspicion (or check why). " +
           "Call the `usage` tool first to see valid route ids, their default models, " +
           "and a modelHint per route pointing to where that harness's real model " +
           "catalog is documented (or how to list it) — use it to pick correctly up " +

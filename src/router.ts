@@ -509,6 +509,7 @@ export class Router {
         ...(preferredModel !== undefined
           ? { modelHintMatched: declaresModel(svc, preferredModel) }
           : {}),
+        ...(sameModel(forceService, preferredModel) ? { modelHintDropped: true } : {}),
         elo: elo ?? undefined,
         finalScore,
         reason: "forced",
@@ -624,6 +625,7 @@ export class Router {
         ...(preferredModel !== undefined
           ? { modelHintMatched: declaresModel(svc, preferredModel) }
           : {}),
+        ...(modelIsRouteId && preferredModel !== undefined ? { modelHintDropped: true } : {}),
         elo: best.elo ?? undefined,
         finalScore: best.score,
         reason,

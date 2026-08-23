@@ -12,12 +12,22 @@
  * mechanical: `npm publish` cannot run for a version with no acceptance record
  * naming it.
  *
- * WHAT IT DOES AND DOES NOT PROVE. It proves a pass ran against this exact
- * version and someone wrote down what it concluded. It cannot judge whether
- * the pass was thorough, and a CONDITIONAL verdict deliberately passes — most
- * of this project's passes are CONDITIONAL and shipping on one is a real
- * decision, not a rubber stamp. What it stops is publishing a version nobody
- * reviewed at all, which is the failure that actually happened, six times.
+ * WHAT IT DOES AND DOES NOT PROVE. It proves a file naming this version exists
+ * and records a verdict. It does NOT prove a pass ran, that the pass was
+ * thorough, or that the record describes the commit being tagged — the record
+ * can be committed and further commits pushed before the tag. Four
+ * `- key: value` lines satisfy it.
+ *
+ * That is deliberate: the checkable part is the ordering, and the ordering is
+ * what failed. A CONDITIONAL verdict passes, because most of this project's
+ * passes are CONDITIONAL and shipping on one is a real decision rather than a
+ * rubber stamp. What this stops is publishing a version nobody reviewed at
+ * all, which is the failure that actually happened, six times. Claiming more
+ * than that would make this the same kind of reassuring-but-wrong signal it
+ * exists to prevent.
+ *
+ * It is also not the only way to publish: `npm publish` run by hand bypasses
+ * the workflow entirely, as 0.4.0 was.
  *
  * Usage: node scripts/check-acceptance.mjs [version]
  *   version defaults to the one in package.json.
@@ -49,9 +59,15 @@ try {
   );
 }
 
-/** `- key: value` lines at the top of the record. */
+/**
+ * `- key: value` from the HEADER — the run of list lines before the first
+ * blank-line-separated prose. Anchoring matters: an unanchored search takes
+ * the first match anywhere, so a quoted template or an example block later in
+ * the file would be parsed as the record itself.
+ */
+const header = body.split(/\r?\n\s*\r?\n/).find((block) => /^-\s*\w+:/m.test(block)) ?? "";
 const field = (name) => {
-  const m = new RegExp(`^-\\s*${name}:\\s*(.+)$`, "im").exec(body);
+  const m = new RegExp(`^-\\s*${name}:\\s*(.+)$`, "im").exec(header);
   return m?.[1]?.trim();
 };
 
