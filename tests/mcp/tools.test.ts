@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
@@ -294,6 +295,26 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool("dispatch", { prompt: "hi", hints: { model: "" } }, { holder }),
     ).rejects.toThrow(/must not be empty/i);
+
+    // Whitespace does the same thing AND reaches the harness as a real
+    // argument, so it cannot be waved through as "close enough to empty".
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", hints: { model: "   " } }, { holder }),
+    ).rejects.toThrow(/must not be empty/i);
+  });
+
+  it("does not advertise a hints.service the strict schema rejects", () => {
+    // The 0.7.8 correction to this description invented one: "when you ALSO
+    // name a route (top-level `service`, or hints.service)". publicHintsSchema
+    // has no such key and is .strict(), so an agent following the description
+    // burns a call on a validation error. Same class as the field that was
+    // promised but never serialized — a schema describing a surface it does
+    // not have — just cheap instead of silent.
+    const described = JSON.stringify(publicHintsSchema.shape.model.description ?? "");
+    expect(described).not.toMatch(/hints\.service/);
+    expect(() =>
+      publicHintsSchema.parse({ service: "a" } as unknown as Record<string, unknown>),
+    ).toThrow(/[Uu]nrecognized key/);
   });
 
   it("surfaces skipped routes in single mode", async () => {

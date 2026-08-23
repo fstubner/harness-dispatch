@@ -22,10 +22,14 @@ export const publicHintsSchema = z
   .object({
     model: z
       .string()
-      // An empty string is not "no preference" — it survived as a value and
-      // won the `??` against the route's configured model, so the route ran
-      // with no --model flag at all and reported model: "". Nothing said so.
-      .min(1, "hints.model must not be empty — omit it entirely for no preference")
+      // Blank is not "no preference" — it survived as a value and won the `??`
+      // against the route's configured model, so the route ran with no --model
+      // flag at all and reported model: "". Nothing said so. Whitespace does
+      // the same thing while also reaching the harness as a real argument.
+      .refine(
+        (v) => v.trim() !== "",
+        "hints.model must not be empty — omit it entirely for no preference",
+      )
       .optional()
       .describe(
         "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
@@ -33,7 +37,7 @@ export const publicHintsSchema = z
           "boost. A value that names a CONFIGURED ROUTE steers routing rather than " +
           "being sent on as a model — a route id is not a model name, and sending one " +
           "cost real provider calls before this was separated. When you ALSO name a " +
-          "route (top-level `service`, or hints.service), only a value naming THAT " +
+          "route with the top-level `service` param, only a value naming THAT " +
           "route is dropped; one that merely collides with a different route's id is a " +
           "real model request and is still passed on. Anything else IS " +
           "passed to the harness as an override, even on a route that doesn't recognize " +

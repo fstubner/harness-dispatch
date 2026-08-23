@@ -114,14 +114,23 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   // receive — this project delegates work on this very file. Both versions
   // were reproduced with a CLI exiting 0 while printing sentences.
   //
-  // What actually separates them is SHAPE, not volume. The harness emits its
+  // What separates them better than volume is SHAPE. The harness emits its
   // own diagnostic with the errno attached ("CreateProcessAsUserW failed: 5
-  // (Access is denied)"); prose quotes the bare phrase. Requiring the errno
-  // form on two separate LINES needs a real diagnostic, repeated — and a
-  // sandbox that cannot spawn fails EVERY attempt, so it repeats by
-  // definition (the run this was built from logged six). The remaining false
-  // negative is a harness that prints the diagnostic exactly once and gives
-  // up, which the retry behaviour above makes close to unreachable.
+  // (Access is denied)"), which prose usually shortens to the bare phrase, so
+  // requiring the errno form on two separate LINES needs a real diagnostic,
+  // repeated — and a sandbox that cannot spawn fails EVERY attempt, so it
+  // repeats by definition (the run this was built from logged six).
+  //
+  // Narrower, not closed, and worth being exact about both ways:
+  //  - Prose QUOTING the full diagnostic on two lines still fires. A report
+  //    on this file can do that, including a diff of this function's own
+  //    tests. Nothing in the text distinguishes those cases; only the source
+  //    of the stream would, and we do not have it here.
+  //  - Only `failed: <digits>` matches. `failed (5)`, `failed with error 5`,
+  //    or the errno on the next line are all missed. That is deliberate
+  //    rather than an oversight: the form above is the one observed live, and
+  //    inventing variants would widen a false-positive surface that has
+  //    already misfired twice to cover output nobody has seen.
   //
   // Each stream is tailed SEPARATELY, like the rate-limit scanner: six real
   // occurrences on stdout followed by a wall of stderr noise would otherwise
