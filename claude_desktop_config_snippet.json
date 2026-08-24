@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "harness-dispatch": {
-      "command": "npx",
-      "args": ["harness-dispatch", "--config", "/path/to/your/config.yaml"]
-    }
-  }
-}
