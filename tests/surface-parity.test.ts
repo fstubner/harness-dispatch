@@ -27,6 +27,7 @@ import { z } from "zod";
 
 import { buildMcpServer } from "../src/mcp/server.js";
 import { dispatchInputShape } from "../src/mcp/tool-schemas.js";
+import { workspacePolicyFromInput } from "../src/mcp/tools.js";
 import { BadRequestError, parseChatRequest } from "../src/http/parse.js";
 import type { RouteHints } from "../src/types.js";
 
@@ -302,8 +303,13 @@ describe("both surfaces answer the same input the same way", () => {
       workspacePolicy: "shared",
       hints: { workspacePolicy: "git_worktree" },
     };
+    // Through the REAL resolver, not a copy of its rule. Asserting
+    // `mcp.workspacePolicy ?? mcp.hints?.workspacePolicy` here re-derived the
+    // very thing under test, so flipping tools.ts to nested-first would have
+    // left this row green — the same shape that let a fanout fail-open ship
+    // under two passing rows.
     const mcp = z.object(dispatchInputShape).parse(body);
-    expect(mcp.workspacePolicy ?? mcp.hints?.workspacePolicy).toBe("shared");
+    expect(workspacePolicyFromInput(mcp)).toBe("shared");
     expect(parseChatRequest(body).hints.workspacePolicy).toBe("shared");
   });
 

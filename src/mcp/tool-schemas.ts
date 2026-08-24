@@ -222,7 +222,7 @@ function hintKeyTrap(key: string) {
 }
 
 /**
- * The config.yaml spelling, at the top level.
+ * A snake_case near-miss at the top level.
  *
  * `hints` is .strict() because `hints: { safety_profile }` silently disabled a
  * safety limit. The OUTER object cannot be strict — the SDK carries `_meta`
@@ -230,24 +230,39 @@ function hintKeyTrap(key: string) {
  * slip one level up stayed silent on both surfaces, and parity held while both
  * were wrong. A named list, because an unknown top-level key is tolerated by
  * design and a near-miss is not.
+ *
+ * `where` is per key and not a constant. The first version said "inside
+ * `hints`" for all eight, but `workingDir` and `contextJobs` are top-level
+ * dispatch parameters — so following the advice produced a SECOND error
+ * ("Unrecognized key"). A refusal that confidently points at the wrong landing
+ * spot costs the round trip it exists to save.
  */
-function snakeCaseTrap(wrong: string, right: string) {
+function snakeCaseTrap(wrong: string, right: string, where: string) {
   return misplacedKeyTrap(
-    `${wrong} is the config.yaml spelling — this tool uses ${right}, inside \`hints\`. ` +
-      `At the top level it does nothing, which for a safety setting means the dispatch ` +
-      `runs with MORE access than you asked for.`,
+    `${wrong} is not a field — this tool spells it ${right}, ${where}. As written it ` +
+      `does nothing, which for a safety setting means the dispatch runs with MORE ` +
+      `access than you asked for.`,
   );
 }
 
+const IN_HINTS = "inside `hints`";
+const TOP_LEVEL = "at the top level";
+
 export const misplacedTopLevelKeys = {
-  safety_profile: snakeCaseTrap("safety_profile", "safetyProfile"),
-  route_policy: snakeCaseTrap("route_policy", "routePolicy"),
-  task_type: snakeCaseTrap("task_type", "taskType"),
-  workspace_policy: snakeCaseTrap("workspace_policy", "workspacePolicy"),
-  prefer_large_context: snakeCaseTrap("prefer_large_context", "preferLargeContext"),
-  timeout_ms: snakeCaseTrap("timeout_ms", "timeoutMs"),
-  working_dir: snakeCaseTrap("working_dir", "workingDir"),
-  context_jobs: snakeCaseTrap("context_jobs", "contextJobs"),
+  safety_profile: snakeCaseTrap("safety_profile", "safetyProfile", IN_HINTS),
+  route_policy: snakeCaseTrap("route_policy", "routePolicy", IN_HINTS),
+  task_type: snakeCaseTrap("task_type", "taskType", IN_HINTS),
+  prefer_large_context: snakeCaseTrap("prefer_large_context", "preferLargeContext", IN_HINTS),
+  timeout_ms: snakeCaseTrap("timeout_ms", "timeoutMs", IN_HINTS),
+  // Accepted in BOTH placements — a real top-level parameter as well as a
+  // hint, with the top-level value winning when both are given.
+  workspace_policy: snakeCaseTrap(
+    "workspace_policy",
+    "workspacePolicy",
+    `${TOP_LEVEL} or ${IN_HINTS}`,
+  ),
+  working_dir: snakeCaseTrap("working_dir", "workingDir", TOP_LEVEL),
+  context_jobs: snakeCaseTrap("context_jobs", "contextJobs", TOP_LEVEL),
   safetyProfile: hintKeyTrap("safetyProfile"),
   routePolicy: hintKeyTrap("routePolicy"),
   taskType: hintKeyTrap("taskType"),

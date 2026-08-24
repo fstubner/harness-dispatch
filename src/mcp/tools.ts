@@ -205,7 +205,13 @@ function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
   return out;
 }
 
-function workspacePolicyFromInput(input: {
+/**
+ * Exported for the parity test, which re-implemented this rule inline and so
+ * would have stayed green if the real resolver flipped — the same
+ * assert-the-derivation-not-the-behaviour shape that let a fanout fail-open
+ * ship under two passing rows.
+ */
+export function workspacePolicyFromInput(input: {
   workspacePolicy?: WorkspacePolicy | undefined;
   hints?: { workspacePolicy?: WorkspacePolicy | undefined } | undefined;
 }): WorkspacePolicy | undefined {

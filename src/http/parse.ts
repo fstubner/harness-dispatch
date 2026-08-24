@@ -277,21 +277,25 @@ function parseHints(body: ChatRequest): RouteHints {
   // hints, so a caller who learns that placement works is a caller who can
   // make this exact mistake. A named list rather than a general rule, because
   // an unknown top-level key is legitimate here and a near-miss is not.
-  for (const [wrong, right] of [
-    ["safety_profile", "safetyProfile"],
-    ["route_policy", "routePolicy"],
-    ["task_type", "taskType"],
-    ["workspace_policy", "workspacePolicy"],
-    ["prefer_large_context", "preferLargeContext"],
-    ["timeout_ms", "timeoutMs"],
-    ["working_dir", "workingDir"],
-    ["context_jobs", "contextJobs"],
+  // The advice is per key. Naming a landing spot that also refuses just costs
+  // the caller the second round trip this check exists to save — `contextJobs`
+  // is not implemented on this surface at all, so pointing at it would be
+  // worse than saying nothing.
+  for (const [wrong, advice] of [
+    ["safety_profile", "this API spells it safetyProfile"],
+    ["route_policy", "this API spells it routePolicy"],
+    ["task_type", "this API spells it taskType"],
+    ["workspace_policy", "this API spells it workspacePolicy"],
+    ["prefer_large_context", "this API spells it preferLargeContext"],
+    ["timeout_ms", "this API spells it timeoutMs"],
+    ["working_dir", "this API spells it workingDir"],
+    ["context_jobs", "contextJobs is an MCP tool parameter and is not supported here"],
   ] as const) {
     if ((body as Record<string, unknown>)[wrong] !== undefined) {
       throw new BadRequestError(
-        `${wrong} is the config.yaml spelling — this API uses ${right}. It was ` +
-          `previously accepted and silently ignored, which for a safety setting ` +
-          `means the dispatch ran with MORE access than you asked for.`,
+        `${wrong} is not a field — ${advice}. It was previously accepted and ` +
+          `silently ignored, which for a safety setting means the dispatch ran ` +
+          `with MORE access than you asked for.`,
       );
     }
   }

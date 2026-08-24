@@ -273,6 +273,19 @@ describe("HTTP server", () => {
       expect(text, `${mode} mode ran a dispatch the caller had blocked`).not.toMatch(
         /hello response/,
       );
+
+      // The route must be REPORTED skipped, not merely not-run.
+      //
+      // There are two enforcement points — eligibleRoutes filters, and routeTo
+      // refuses whatever reaches it — and each alone keeps the upstream call
+      // count at zero, so the assertion above passes with either one removed.
+      // They are not interchangeable: only the filter produces skippedRoutes.
+      // Drop it and the refusal survives as per-row `error` strings with an
+      // empty skippedRoutes, which is the "reads correctly, reports nothing"
+      // shape this file keeps finding.
+      expect(text, `${mode} mode did not report WHY the route was skipped`).toMatch(
+        /route_policy/,
+      );
     },
     30000,
   );
