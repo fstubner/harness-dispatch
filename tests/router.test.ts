@@ -402,6 +402,51 @@ describe("Router.pickService", () => {
     }
   });
 
+  it("refuses a routeTo whose routePolicy blocks the route, without pre-filtering", async () => {
+    // routeTo enforces routePolicy itself, and that is NOT redundant with the
+    // HTTP fanout filter even though the filter runs first on the shipped
+    // path: routeTo is a public Router method, so a caller reaching it
+    // directly gets the refusal or gets nothing.
+    //
+    // Pinned because it was unverified. Removing routePolicy from
+    // explicitOptsFromHints left the whole suite green — the filter caught
+    // every case — so the second enforcement point existed on trust. A guard
+    // no test can distinguish from its own absence is one someone deletes.
+    const a = makeService({ name: "alpha", tier: 1 });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+
+    const { result } = await router.routeTo("alpha", "hi", [], process.cwd(), {
+      routePolicy: "blocked",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.skippedRoutes?.[0]?.code).toBe("route_policy");
+    expect(result.output, "a blocked route still produced output").toBe("");
+  });
+
+  it("refuses a streamTo whose routePolicy blocks the route", async () => {
+    // The same check one method over, and the one that matters more: jobs.ts
+    // dispatches through streamTo, so this is the path every MCP `dispatch`
+    // takes. Found while pinning routeTo — sabotaging streamTo's copy left the
+    // whole suite green, so the enforcement MCP relies on was resting on the
+    // HTTP filter having caught it first, which for MCP is not true at all.
+    const a = makeService({ name: "alpha", tier: 1 });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+
+    let final: DispatchResult | null = null;
+    for await (const event of router.streamTo("alpha", "hi", [], process.cwd(), {
+      routePolicy: "blocked",
+    })) {
+      if (event.event.type === "completion") final = event.event.result;
+    }
+
+    expect(final?.success).toBe(false);
+    expect(final?.skippedRoutes?.[0]?.code).toBe("route_policy");
+    expect(final?.output, "a blocked route still produced output").toBe("");
+  });
+
   it("says so when it drops a model, on both the forced and the scored path", async () => {
     // Dropping a route id used as a model is right — but the tool schema said
     // the model is "ALWAYS passed to the harness" and server.ts said
