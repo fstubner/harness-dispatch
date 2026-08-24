@@ -117,6 +117,38 @@ describe("CLI parser", () => {
     expect(result.stdout).not.toContain("dashboard");
   });
 
+  it.each([["--version"], ["-v"]])(
+    "prints the version for %s, without loading config",
+    async (flag) => {
+      // `--version` exited 1 with "unknown option", which reads like the
+      // binary is broken rather than like the flag is missing. The MCP
+      // handshake has always carried the version, so an agent could see it; a
+      // human diagnosing an install could not ask.
+      //
+      // No --config here on purpose: a version is what you ask for when
+      // something is already wrong, so it must not depend on a loadable
+      // config, a readable jobs root, or any route being reachable.
+      const result = await capture(() => main([flag]));
+      expect(result.code).toBe(0);
+      expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    },
+  );
+
+  it("reports git as its own doctor check rather than failing later at workspace diff", async () => {
+    // Without git, a delegate's work COMPLETES in an isolated workspace and
+    // then `workspace diff` dies with `spawn git ENOENT` — a message about a
+    // program the user was never told they needed. Reported at setup instead.
+    //
+    // Not a hard requirement: dispatch works fine without it, and the response
+    // carries workspaceRoot so the changes are recoverable by hand. So this
+    // asserts the check EXISTS and explains itself, not that it passes.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const config = await writeConfig();
+    const result = await capture(() => main(["doctor", "--config", config]));
+    expect(result.stdout).toMatch(/\bgit\b/);
+    expect(result.stdout).toMatch(/workspace|worktree/i);
+  });
+
   it("supports status --json", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();

@@ -13,6 +13,8 @@ import yaml from "js-yaml";
 import { ensureHttpToken, maskToken, readHttpToken, rotateHttpToken, tokenPath } from "./auth.js";
 import { AUTO_DETECT_COMMANDS, loadConfig, resolveConfigPath } from "./config.js";
 import { LeaderboardCache } from "./leaderboard.js";
+import { VERSION } from "./version.js";
+import { commandAvailable } from "./dispatchers/shared/which-available.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
 import { initObservability } from "./observability/index.js";
@@ -74,6 +76,7 @@ function printUsage(): void {
       "  --force               configure: overwrite an existing config file.",
       "  --allow-paid          Allow doctor --live to probe paid or unknown-paid routes.",
       "  -h, --help            Show help.",
+      "  -v, --version         Print the version and exit.",
       "",
     ].join("\n"),
   );
@@ -321,6 +324,28 @@ async function cmdDoctor(
       ok: Object.keys(runtime.config.services).length > 0,
       detail: `${Object.keys(runtime.config.services).length} configured route(s)`,
     },
+    // Not required to dispatch — reported, never a hard fail.
+    //
+    // The `workspace` tool shells out to git for diff/apply, so without it a
+    // delegate's work COMPLETES in an isolated workspace and then the tool
+    // that retrieves it dies with `spawn git ENOENT` wrapped as "could not
+    // diff <file> for this workspace" — a message about a program the user was
+    // never told they needed. README lists the requirements as Node plus a
+    // harness. The changes are recoverable by hand via workspaceRoot in the
+    // response, which is why this warns here instead of failing the install.
+    (() => {
+      const gitOk = commandAvailable("git");
+      return {
+        name: "git",
+        ok: gitOk,
+        detail: gitOk
+          ? "available — workspace diff/apply and git_worktree isolation can run"
+          : "NOT FOUND — dispatch still works, but the `workspace` tool cannot " +
+            "diff or apply an isolated run's changes, and the git_worktree " +
+            "policy is unavailable. Retrieve changes by hand from the " +
+            "workspaceRoot in the dispatch response.",
+      };
+    })(),
     {
       name: "config-warnings",
       ok: (runtime.config.configWarnings?.length ?? 0) === 0,
@@ -539,6 +564,7 @@ export async function main(argv: string[]): Promise<number> {
     options: {
       config: { type: "string" },
       help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
       json: { type: "boolean" },
       live: { type: "boolean" },
       "allow-paid": { type: "boolean" },
@@ -561,7 +587,7 @@ export async function main(argv: string[]): Promise<number> {
   // got garbage AND a success code. PRODUCT.md names automation as a user, and
   // a wrong exit code is the one thing automation cannot recover from.
   const knownFlags = new Set([
-    "help", "config", "json", "live", "allow-paid", "watch", "interval",
+    "help", "version", "config", "json", "live", "allow-paid", "watch", "interval",
     "port", "host", "print", "yes", "force", "http",
   ]);
   const unknownFlags = Object.keys(values).filter((k) => !knownFlags.has(k));
@@ -570,6 +596,19 @@ export async function main(argv: string[]): Promise<number> {
       `unknown option${unknownFlags.length > 1 ? "s" : ""}: ` +
         `${unknownFlags.map((f) => `--${f}`).join(", ")}. Run --help for the list.`,
     );
+  }
+
+  // Before --help, and before anything that can fail: a version is what you
+  // ask for when something is already wrong, so it must not depend on config
+  // loading, a readable jobs root, or any route being reachable.
+  //
+  // The MCP handshake has always reported this in serverInfo, so an agent
+  // consumer could see it. A human diagnosing an install had no way to ask —
+  // `--version` exited 1 with "unknown option", which reads like the binary is
+  // broken rather than like the flag is missing.
+  if (values.version) {
+    process.stdout.write(`${VERSION}\n`);
+    return 0;
   }
 
   if (values.help) {
