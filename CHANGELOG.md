@@ -12,12 +12,22 @@ pre-1.0, so minor versions can carry behaviour changes.
   binary is broken rather than like the flag is missing. Answered before config
   loading, because a version is what you ask for when something is already
   wrong.
-- `doctor` reports whether `git` is on PATH. Dispatch never needed it, but the
+- `doctor` reports whether `git` is on PATH, without failing over it — a
+  machine without git is supported, so it must not change the exit code.
+  Dispatch never needed it, but the
   `workspace` tool shells out to git to diff and apply an isolated run's
   changes — so without it a delegate's work COMPLETED and the tool that
   retrieves it died with `spawn git ENOENT`, naming a program the README never
   said you needed. Reported at setup, not a hard failure: the response carries
   `workspaceRoot`, so the changes are recoverable by hand.
+
+### Fixed
+
+- The plugin manifest claimed version 0.4.0 while bundling the 0.7.x server.
+  Last touched at the rename and never bumped through three minor versions —
+  and unlike `package.json`, which the publish workflow rewrites at tag time,
+  nothing corrected it. Now pinned to `package.json` by a test, because
+  "remember to bump the other file" is what produced the drift.
 
 ## [0.7.8] — 2026-08-23
 

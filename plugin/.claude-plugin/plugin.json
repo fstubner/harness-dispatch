@@ -1,6 +1,6 @@
 {
   "name": "harness-dispatch",
-  "version": "0.4.0",
+  "version": "0.7.8",
   "description": "Delegate bounded coding tasks to your existing AI subscriptions (Claude Code, Codex, Cursor, Antigravity, local endpoints) with billing- and safety-aware routing. Bundles the harness-dispatch MCP server, a delegation skill, and /route + /jobs commands.",
   "author": {
     "name": "Felix Stubner"

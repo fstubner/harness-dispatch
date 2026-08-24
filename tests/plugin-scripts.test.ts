@@ -54,6 +54,30 @@ function runInstaller(args: string[], cwd: string): { status: number; out: strin
   }
 }
 
+describe("the plugin manifest's version", () => {
+  it("matches package.json, because it is a published claim about what it bundles", async () => {
+    // It said 0.4.0 while bundling the 0.7.x MCP server — last touched at the
+    // rename and never bumped through 0.5.x, 0.6.x or 0.7.x. Unlike
+    // package.json lagging main between releases (which the publish workflow
+    // corrects at tag time), nothing corrects this one: whatever is in the
+    // file is what a user installing the plugin is told they have.
+    //
+    // Pinned rather than fixed once, because "remember to bump the other
+    // file" is exactly the instruction that produced three minor versions of
+    // drift.
+    const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8")) as {
+      version: string;
+    };
+    const manifest = JSON.parse(
+      await fs.readFile(
+        path.join(repoRoot, "plugin", ".claude-plugin", "plugin.json"),
+        "utf8",
+      ),
+    ) as { version: string };
+    expect(manifest.version, "plugin.json drifted from package.json").toBe(pkg.version);
+  });
+});
+
 describe("install-codex.mjs — --config handling", () => {
   it("resolves a relative --config to an absolute path before persisting it", async () => {
     // The persisted value is read back much later by launch-mcp.mjs, in a

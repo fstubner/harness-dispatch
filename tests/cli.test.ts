@@ -147,6 +147,30 @@ describe("CLI parser", () => {
     const result = await capture(() => main(["doctor", "--config", config]));
     expect(result.stdout).toMatch(/\bgit\b/);
     expect(result.stdout).toMatch(/workspace|worktree/i);
+    // The property the first version of this test missed. It asserted the
+    // check EXISTED and said nothing about the exit code — so the check
+    // shipped setting ok:false, and `doctor` exited 1 on a machine with no
+    // git, contradicting its own comment, the CHANGELOG and the README, all
+    // three of which call git optional. An install script gating on this exit
+    // code would have failed a working install.
+    expect(result.code, "doctor failed overall on an otherwise healthy install").toBe(0);
+  });
+
+  it("keeps doctor's exit code at 0 when git is missing, because git is optional", async () => {
+    // Same assertion with git genuinely absent — the case that was broken.
+    // Mocked rather than PATH-stripped: removing PATH also breaks harness
+    // detection and config-warnings, so the run fails for reasons that have
+    // nothing to do with git and the test proves nothing.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const whichAvailable = await import("../src/dispatchers/shared/which-available.js");
+    vi.spyOn(whichAvailable, "commandAvailable").mockImplementation((cmd: string) =>
+      cmd === "git" ? false : true,
+    );
+    const config = await writeConfig();
+    const result = await capture(() => main(["doctor", "--config", config]));
+    expect(result.stdout).toMatch(/NOT FOUND/);
+    expect(result.stdout).toMatch(/optional/i);
+    expect(result.code, "a machine without git is a supported configuration").toBe(0);
   });
 
   it("supports status --json", async () => {

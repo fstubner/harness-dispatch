@@ -333,19 +333,25 @@ async function cmdDoctor(
     // never told they needed. README lists the requirements as Node plus a
     // harness. The changes are recoverable by hand via workspaceRoot in the
     // response, which is why this warns here instead of failing the install.
-    (() => {
-      const gitOk = commandAvailable("git");
-      return {
-        name: "git",
-        ok: gitOk,
-        detail: gitOk
-          ? "available — workspace diff/apply and git_worktree isolation can run"
-          : "NOT FOUND — dispatch still works, but the `workspace` tool cannot " +
-            "diff or apply an isolated run's changes, and the git_worktree " +
-            "policy is unavailable. Retrieve changes by hand from the " +
-            "workspaceRoot in the dispatch response.",
-      };
-    })(),
+    //
+    // `ok: true` UNCONDITIONALLY, matching http-auth / billing-policy /
+    // safety-policy below: doctor's exit code is the sum of every check, so a
+    // false here made `doctor` exit 1 on a machine with no git — a
+    // configuration the README calls supported. Any install script or CI step
+    // gating on that exit code would fail a working install, and the code
+    // would stop distinguishing "your install is broken" from "an optional
+    // tool is missing". The advice belongs in `detail`, which is where the
+    // other advisory checks put theirs.
+    {
+      name: "git",
+      ok: true,
+      detail: commandAvailable("git")
+        ? "available — workspace diff/apply and git_worktree isolation can run"
+        : "NOT FOUND — optional. Dispatch still works, but the `workspace` tool " +
+          "cannot diff or apply an isolated run's changes, and the git_worktree " +
+          "policy is unavailable. Retrieve changes by hand from the " +
+          "workspaceRoot in the dispatch response.",
+    },
     {
       name: "config-warnings",
       ok: (runtime.config.configWarnings?.length ?? 0) === 0,
