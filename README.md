@@ -55,6 +55,11 @@ timeout — or to the server itself restarting mid-run.**
 
 Needs Node.js `>=22.22.2` (so current LTS works) and at least one harness or endpoint.
 
+`git` is optional but recommended: dispatch works without it, but the
+`workspace` tool shells out to git to diff and apply an isolated run's changes,
+and the `git_worktree` isolation policy needs it. `doctor` reports whether it
+found one.
+
 ```bash
 npm install -g harness-dispatch
 harness-dispatch configure --yes

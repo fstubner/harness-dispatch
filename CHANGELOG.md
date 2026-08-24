@@ -6,6 +6,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- `--version` / `-v`. It exited 1 with "unknown option", which reads like the
+  binary is broken rather than like the flag is missing. Answered before config
+  loading, because a version is what you ask for when something is already
+  wrong.
+- `doctor` reports whether `git` is on PATH. Dispatch never needed it, but the
+  `workspace` tool shells out to git to diff and apply an isolated run's
+  changes — so without it a delegate's work COMPLETED and the tool that
+  retrieves it died with `spawn git ENOENT`, naming a program the README never
+  said you needed. Reported at setup, not a hard failure: the response carries
+  `workspaceRoot`, so the changes are recoverable by hand.
+
 ## [0.7.8] — 2026-08-23
 
 **Upgrade from 0.7.7.** Two of 0.7.7's five fixes were wrong, and one of them
