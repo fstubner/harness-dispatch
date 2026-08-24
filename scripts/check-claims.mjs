@@ -33,6 +33,11 @@
  *
  * Usage: node scripts/check-claims.mjs
  *   Requires dist/ (npm run build) to read the live schema shape.
+ *
+ * (This file's own doc blocks name example keys and paths that do not exist,
+ * so they carry the opt-out. It found itself the moment it was committed —
+ * having passed locally only because the file was still untracked, so
+ * `git ls-files` never handed it to itself. claims-check-ignore)
  */
 
 import { execFileSync } from "node:child_process";
@@ -56,7 +61,7 @@ const SCANNED_EXTENSIONS = new Set([".ts", ".mjs", ".js", ".astro", ".css", ".md
  */
 const PATH_RE = new RegExp(`\\b(?:${REPO_DIRS.join("|")})/[A-Za-z0-9._/-]+\\.[A-Za-z0-9]+`, "g");
 
-/** `hints.foo` / `routing.foo` as written in prose. */
+/** `hints.foo` / `routing.foo` as written in prose. claims-check-ignore */
 const HINTS_RE = /\bhints\.([a-zA-Z][a-zA-Z0-9_]*)/g;
 const ROUTING_RE = /\brouting\.([a-zA-Z][a-zA-Z0-9_]*)/g;
 
@@ -89,7 +94,7 @@ const OPT_OUT = "claims-check-ignore";
  * lines removed exactly the coverage this was built for: with the phantom
  * `hints.service` reintroduced inside a `.describe()`, the checker printed a
  * confident pass. Caught by sabotage, which is the only reason it is not still
- * doing that.
+ * doing that. claims-check-ignore
  */
 function isProse(line, ext, userFacing) {
   if (ext === ".md") return true;
@@ -105,6 +110,7 @@ function isProse(line, ext, userFacing) {
  * `hints.service`, a real RouteHints field that simply is not part of the
  * public surface. That distinction is exactly what shipped wrong: `service` is
  * real internally and was advertised externally, where it is refused.
+ * claims-check-ignore
  */
 const USER_FACING = new Set([
   "src/mcp/tool-schemas.ts",
@@ -223,7 +229,7 @@ for (const file of trackedFiles()) {
     for (const match of line.matchAll(PATH_RE)) {
       const raw = match[0].replace(/[.,;:)]+$/, "");
       // Repo-root OR relative to the file that names it — plugin/README.md
-      // says `scripts/install-codex.mjs` and means its own sibling.
+      // names a sibling script, not a repo-root one. claims-check-ignore
       if (existsSync(path.join(repoRoot, raw)) || existsSync(path.join(fileDir, raw))) continue;
       record(file, lineNo, `names a path that does not exist: ${raw}`);
     }
