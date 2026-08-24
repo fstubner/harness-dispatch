@@ -28,6 +28,7 @@ import { z } from "zod";
 import { buildMcpServer } from "../src/mcp/server.js";
 import { dispatchInputShape } from "../src/mcp/tool-schemas.js";
 import { BadRequestError, parseChatRequest } from "../src/http/parse.js";
+import type { RouteHints } from "../src/types.js";
 
 let dir: string;
 let client: Client;
@@ -184,6 +185,19 @@ describe("both surfaces answer the same input the same way", () => {
     ["a typo'd mode", { prompt: "hi", mode: "fanou" }],
     ["a non-string files entry", { prompt: "hi", files: [1] }],
     ["a non-string models entry", { prompt: "hi", models: [1] }],
+    // setTimeout clamps anything past this to 1ms, so the longest timeout
+    // askable becomes the shortest possible — the child dies on the first tick
+    // and the ROUTE is blamed. Accepted on HTTP until 2026-08-24 because
+    // zod's .int() stops at MAX_SAFE_INTEGER, far past where it breaks.
+    ["an over-large hints.timeoutMs", { prompt: "hi", hints: { timeoutMs: 1e21 } }],
+    ["a hints.timeoutMs past setTimeout's ceiling", { prompt: "hi", hints: { timeoutMs: 2_147_483_648 } }],
+    // argv-bound strings. Only `prompt` was guarded, on BOTH surfaces — so
+    // parity held while both were wrong, which is the one shape a parity row
+    // cannot catch and the reason these are listed individually.
+    ["a NUL in files", { prompt: "hi", files: [`a${String.fromCharCode(0)}b`] }],
+    ["a NUL in models", { prompt: "hi", models: [`a${String.fromCharCode(0)}b`] }],
+    ["a NUL in hints.model", { prompt: "hi", hints: { model: `a${String.fromCharCode(0)}b` } }],
+    ["escalate, which is per-route config and not a dispatch field", { prompt: "hi", escalate: true }],
   ];
 
   it.each(REJECTED)("both reject %s", async (_label, body) => {
@@ -192,25 +206,77 @@ describe("both surfaces answer the same input the same way", () => {
     expect(() => parseChatRequest({ workingDir: dir, ...body })).toThrow(BadRequestError);
   });
 
-  const ACCEPTED: Array<[label: string, body: Record<string, unknown>]> = [
+  /**
+   * Accepted AND honoured — the value has to come out the far side.
+   *
+   * An earlier version asserted only `not.toThrow()`, which cannot catch
+   * accept-then-silently-drop. That is the shape of nearly every divergence
+   * this file has found: `{"routePolicy":"local_only"}` returned 200 and the
+   * dispatch left the machine anyway. A row that only proves "no error" would
+   * have passed on every one of them.
+   *
+   * `read` pulls the value from each surface's own parsed output, so the row
+   * fails if either side quietly discards it.
+   */
+  const HONOURED: Array<[label: string, body: Record<string, unknown>, read: (h: RouteHints) => unknown, want: unknown]> = [
     // Documented as the default in the MCP description, and absent from the
     // HTTP enum list until 2026-08-23 — so copying the documented value into
     // an HTTP body was an error for naming the thing that already happens.
-    ["routePolicy: standard", { hints: { routePolicy: "standard" } }],
-    ["a prompt padded with whitespace", { prompt: "  real work  " }],
-    ["hints omitted entirely", {}],
-    ["an empty hints object", { hints: {} }],
-    ["a positive integer timeoutMs", { hints: { timeoutMs: 5000 } }],
+    ["routePolicy in hints", { hints: { routePolicy: "local_only" } }, (h) => h.routePolicy, "local_only"],
+    ["routePolicy: standard in hints", { hints: { routePolicy: "standard" } }, (h) => h.routePolicy, "standard"],
+    ["taskType in hints", { hints: { taskType: "review" } }, (h) => h.taskType, "review"],
+    ["safetyProfile in hints", { hints: { safetyProfile: "read_only" } }, (h) => h.safetyProfile, "read_only"],
+    ["timeoutMs in hints", { hints: { timeoutMs: 5000 } }, (h) => h.timeoutMs, 5000],
+    ["preferLargeContext in hints", { hints: { preferLargeContext: true } }, (h) => h.preferLargeContext, true],
+    ["the largest timeoutMs setTimeout can hold", { hints: { timeoutMs: 2_147_483_647 } }, (h) => h.timeoutMs, 2_147_483_647],
   ];
 
-  it.each(ACCEPTED)("both accept %s", (_label, body) => {
-    // Asserted through the SCHEMA rather than a live dispatch: accepting means
-    // the run starts, and starting twenty runs to prove twenty inputs parse
-    // would test the job runner, not the boundary.
-    expect(() =>
-      z.object(dispatchInputShape).parse({ prompt: "hi", workingDir: dir, ...body }),
-    ).not.toThrow();
-    expect(() => parseChatRequest({ prompt: "hi", workingDir: dir, ...body })).not.toThrow();
+  it.each(HONOURED)("both honour %s", (_label, body, read, want) => {
+    // Asserted through each surface's parse rather than a live dispatch:
+    // accepting means the run starts, and starting a dozen runs to prove a
+    // dozen inputs parse would test the job runner, not the boundary.
+    const mcp = z.object(dispatchInputShape).parse({ prompt: "hi", workingDir: dir, ...body });
+    expect(read((mcp.hints ?? {}) as RouteHints), "MCP dropped it").toEqual(want);
+    const http = parseChatRequest({ prompt: "hi", workingDir: dir, ...body });
+    expect(read(http.hints), "HTTP dropped it").toEqual(want);
+  });
+
+  /**
+   * The SAME hints at the TOP LEVEL of an HTTP body.
+   *
+   * MCP refuses top-level placement outright, and that is right there: a key
+   * the SDK strips is a safety setting that silently does nothing. This
+   * surface speaks the OpenAI wire format, where bodies are flat — and it
+   * already honoured `safetyProfile` and `workspacePolicy` there, which taught
+   * callers the placement works. The other four were DROPPED on a 200.
+   *
+   * So the placement rule diverges on purpose and the GUARANTEE does not: on
+   * both surfaces, a hint you set either takes effect or you are told.
+   */
+  it.each([
+    ["taskType", { taskType: "review" }, (h: RouteHints) => h.taskType, "review"],
+    ["routePolicy", { routePolicy: "local_only" }, (h: RouteHints) => h.routePolicy, "local_only"],
+    ["safetyProfile", { safetyProfile: "read_only" }, (h: RouteHints) => h.safetyProfile, "read_only"],
+    ["timeoutMs", { timeoutMs: 5000 }, (h: RouteHints) => h.timeoutMs, 5000],
+    ["preferLargeContext", { preferLargeContext: true }, (h: RouteHints) => h.preferLargeContext, true],
+    ["workspacePolicy", { workspacePolicy: "copy" }, (h: RouteHints) => h.workspacePolicy, "copy"],
+  ])("HTTP honours a top-level %s, and MCP refuses the placement by name", async (label, body, read, want) => {
+    const http = parseChatRequest({ prompt: "hi", workingDir: dir, ...body });
+    expect(read(http.hints), `top-level ${label} was dropped`).toEqual(want);
+
+    // workspacePolicy is a real top-level MCP param, not a trap.
+    if (label === "workspacePolicy") return;
+    const err = await dispatchError({ prompt: "hi", workingDir: dir, ...body });
+    expect(err, `MCP silently accepted a top-level ${label}`).toBeDefined();
+  });
+
+  it("prefers the nested hint when both placements are given, on both surfaces", () => {
+    const body = { prompt: "hi", workingDir: dir, taskType: "plan", hints: { taskType: "review" } };
+    const mcp = z.object(dispatchInputShape).safeParse(body);
+    // MCP refuses the top-level half outright, so "nested wins" is trivially
+    // true there; this pins that it refuses rather than silently preferring.
+    expect(mcp.success).toBe(false);
+    expect(parseChatRequest(body).hints.taskType).toBe("review");
   });
 
   /**

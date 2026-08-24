@@ -98,8 +98,29 @@ re-opened a bug 0.7.6 had fixed.
 - `routePolicy: "standard"` is accepted over HTTP. It is the router's own
   default and the documented one, so copying it out of the docs into an HTTP
   body was an error for naming the thing that already happens.
-- A NUL byte in `prompt` is refused at the HTTP boundary instead of surfacing
-  as a raw Node internal from deep inside process spawning.
+- A NUL byte is refused on both surfaces for every field that becomes a
+  command-line argument — `prompt`, `files`, `models` and `hints.model` — not
+  just `prompt`. The rest surfaced as a raw Node internal from deep inside
+  process spawning.
+- Top-level routing hints over HTTP take effect instead of being discarded.
+  `{"routePolicy":"local_only"}` returned 200 and the dispatch left the machine
+  anyway; `taskType`, `timeoutMs` and `preferLargeContext` were dropped the same
+  way, while `safetyProfile` and `workspacePolicy` in the same position had
+  always worked — which is what taught callers the placement was fine. OpenAI
+  request bodies are flat, so this surface accepts flat hints; the MCP tool
+  still refuses the placement by name, and on both a hint you set now either
+  takes effect or you are told.
+- `timeoutMs` is capped at what a timer can actually hold (2147483647). Above
+  that Node clamps to 1 millisecond, so the longest timeout you could ask for
+  became the shortest possible: the harness was killed immediately and the
+  ROUTE was blamed. Both surfaces accepted values in that range.
+- `contextJobs` and `service` are refused over HTTP rather than accepted and
+  ignored. They are MCP tool parameters this surface does not implement — a
+  caller passing `contextJobs` got a delegate running without the prior work
+  they believed they had sent, and one passing `service` got whatever route the
+  router picked.
+- `escalate` is refused on both surfaces. It has never been a per-call field;
+  escalation is per-route configuration.
 - An environment failure is detected by SHAPE, not by how often the phrase
   appears. The detector overrides a successful exit — it charges the route a
   failure and tells the caller "any answer it gave was produced without reading
