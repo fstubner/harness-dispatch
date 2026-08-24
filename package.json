@@ -45,7 +45,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.json",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm test && node scripts/check-claims.mjs",
     "dev": "tsx src/bin.ts",
     "smoke": "node scripts/smoke.mjs",
     "smoke:agents": "node scripts/smoke-agents.mjs",
@@ -56,7 +56,8 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build",
     "prepack": "npm run build",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "check:claims": "npm run build && node scripts/check-claims.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
