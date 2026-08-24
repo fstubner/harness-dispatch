@@ -1,8 +1,10 @@
 /**
  * HTTP rate-limit header parsers.
  *
- * Ported from `src/coding_agent/dispatchers/utils.py` (parse_remaining,
- * parse_limit, parse_retry_after). Preserves the same key order and semantics:
+ * Ported from the Python v1's `src/coding_agent/dispatchers/utils.py`
+ * (parse_remaining, parse_limit, parse_retry_after) — a path that no longer
+ * exists in this repo, kept as provenance. claims-check-ignore
+ * Preserves the same key order and semantics:
  * - matching is case-insensitive (headers are normalized to lowercase)
  * - numeric strings with commas are NOT supported here (matches Python)
  * - Retry-After may be a delta-seconds number or an HTTP-date

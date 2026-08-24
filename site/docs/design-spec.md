@@ -60,11 +60,11 @@ User asks for a backoff refactor + SLA check + test review. Agent:
   rendered; rules 2/3/5/6 are enforced here structurally.
 - `site/src/styles/tokens.css` — the ONLY place colors/spacing/type live.
 - `pages.yml` builds `site/` and deploys `site/dist`.
-- `docs/index.html` + `docs/styles.css` are removed once the Astro build
-  reaches content parity.
+- The pre-Astro `docs/index.html` + `docs/styles.css` have since been removed;
+  `site/` is the only source of the page now. claims-check-ignore
 
-## Page sections (content ported from current docs/index.html, already
-accuracy-corrected this session)
+## Page sections (content ported from the pre-Astro docs/index.html, already
+accuracy-corrected at the time) claims-check-ignore
 
 Hero (transcript) → How it works (routing/billing/safety/quota) → Setup →
 Surface (dispatch/job_status/usage + resources + REST) → FAQ → CTA/footer.

@@ -4,8 +4,9 @@
 
 This project has no application UI. Its interfaces are:
 
-1. **Terminal output** — `status`, `doctor`, `usage`, and the live dashboard
-   (`src/dashboard/live.ts`, a pure `state -> ANSI string` renderer).
+1. **Terminal output** — `status`, `doctor` and `usage`. (`dashboard` and
+   `list-services` survive as aliases of `status`; the separate
+   `state -> ANSI string` renderer they once had no longer exists.)
 2. **A documentation site** — `site/`, Astro, published to GitHub Pages.
 
 The primary consumer of the *product* is an agent reading JSON over MCP. Every
