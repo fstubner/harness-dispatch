@@ -39,6 +39,19 @@ config.yaml
 # stay out of public history.
 notes/
 
+# And by name as well, because the directory rule only protects a file once
+# it is already in notes/. R1-HANDOFF.md was committed before a by-name rule
+# was added to stop the recurrence; deleting that rule to "simplify" removed
+# the guard against the exact mistake it was added for. Writing ASSESSMENT.md
+# to the repo root again shows up as untracked-and-unignored, which `git add
+# -A` would stage — into a PUBLIC repo, carrying unfixed security findings.
+# Belt and braces costs six lines.
+ASSESSMENT.md
+HANDOVER.md
+IMPLEMENTATION_PLAN.md
+LAUNCH-PLAN.md
+BILLING_AUTH_AUDIT.md
+
 # Editor + OS
 .vscode/
 .idea/

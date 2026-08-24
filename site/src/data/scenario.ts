@@ -1,7 +1,7 @@
 /**
  * The canonical hero scenario — the ONLY source of hero-transcript content.
  *
- * Rule 1 + 6 of docs/superpowers/specs/2026-07-23-landing-page-design.md:
+ * Rule 1 + 6 of site/docs/design-spec.md:
  * everything here mirrors what the live MCP surface (src/mcp/tools.ts —
  * DispatchResponse / DispatchPollResponse) can actually return at each
  * moment. Constraints encoded below, do not violate when editing:

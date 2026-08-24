@@ -1,6 +1,6 @@
 /*
  * Design tokens the hero transcript adds on top of global.css's :root set.
- * Rule 5 (docs/superpowers/specs/2026-07-23-landing-page-design.md): colors
+ * Rule 5 (site/docs/design-spec.md): colors
  * live here and in global.css's :root — nowhere else. Components reference
  * var(--*) only.
  */
