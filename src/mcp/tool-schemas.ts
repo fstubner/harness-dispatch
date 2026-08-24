@@ -13,6 +13,27 @@
 
 import { z } from "zod";
 
+/**
+ * setTimeout's real ceiling. Above it Node emits TimeoutOverflowWarning and
+ * CLAMPS TO 1ms, so the longest timeout a caller can ask for becomes the
+ * shortest one possible: the child is SIGTERMed on the first tick and the run
+ * is recorded as a route failure with breaker credit. `.int()` alone stops at
+ * Number.MAX_SAFE_INTEGER, far past the point it breaks.
+ *
+ * Lives here because this file is the contract; http/parse.ts mirrors it.
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * A string that ends up in an argv array. A NUL fails deep inside cross-spawn
+ * with "The argument 'args[N]' must be a string without null bytes" — the raw
+ * Node internal these boundary rejections exist to replace. `prompt` was
+ * guarded and the rest were not, on BOTH surfaces, so parity held while both
+ * were wrong.
+ */
+const noNul = (v: string) => !v.includes("\u0000");
+const NO_NUL_MESSAGE = "must not contain NUL bytes";
+
 export const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
 export const safetyProfileSchema = z.enum(["read_only", "workspace_edit", "full_auto"]);
 export const workspacePolicySchema = z.enum(["shared", "shared_locked", "copy", "git_worktree"]);
@@ -40,6 +61,7 @@ export const publicHintsSchema = z
         (v) => v === "" || v.trim() !== "",
         "hints.model must not be empty — omit it entirely for no preference",
       )
+      .refine(noNul, `hints.model ${NO_NUL_MESSAGE}`)
       .optional()
       .describe(
         "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
@@ -98,6 +120,15 @@ export const publicHintsSchema = z
       .number()
       .int()
       .positive()
+      // setTimeout CLAMPS anything above this to 1ms after emitting
+      // TimeoutOverflowWarning, so the longest timeout a caller can ask for
+      // becomes the shortest one possible: the child is killed on the first
+      // tick and the run is recorded as a route failure. `.int()` alone stops
+      // at Number.MAX_SAFE_INTEGER, which is far past the point it breaks.
+      .max(
+        MAX_TIMEOUT_MS,
+        `timeoutMs must be at most ${MAX_TIMEOUT_MS} (setTimeout clamps anything larger to 1ms)`,
+      )
       .optional()
       .describe(
         "Override the background run's hard ceiling (milliseconds). Every dispatch " +
@@ -254,7 +285,7 @@ export const dispatchInputShape = {
         "and re-summarising it. Use this to chain delegated work.",
     ),
   files: z
-    .array(z.string())
+    .array(z.string().refine(noNul, NO_NUL_MESSAGE))
     .max(MAX_CONTEXT_FILES)
     .optional()
     .describe(
@@ -269,7 +300,7 @@ export const dispatchInputShape = {
   hints: publicHintsSchema.optional(),
   ...misplacedTopLevelKeys,
   models: z
-    .array(z.string())
+    .array(z.string().refine(noNul, NO_NUL_MESSAGE))
     .optional()
     .describe(
       "Route ids or model names to fan out to (fanout mode only). This is the ONLY " +

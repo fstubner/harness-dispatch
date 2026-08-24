@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 
 import type { RouteHints, WorkspacePolicy } from "../types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
+import { MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
 
 /** Raised for anything the caller can fix; mapped to HTTP 400 by the server. */
 export class PayloadTooLargeError extends Error {}
@@ -38,8 +39,18 @@ export interface ChatRequest {
   mode?: unknown;
   models?: unknown;
   hints?: unknown;
+  // Hints this surface also accepts at the top level, because OpenAI bodies
+  // are flat. See parseHints for why the placement rule diverges from MCP.
   safetyProfile?: unknown;
   workspacePolicy?: unknown;
+  taskType?: unknown;
+  routePolicy?: unknown;
+  preferLargeContext?: unknown;
+  timeoutMs?: unknown;
+  // Accepted by the MCP tool, refused here rather than silently discarded.
+  contextJobs?: unknown;
+  service?: unknown;
+  escalate?: unknown;
 }
 
 // Local-only server, but still worth bounding: an unbounded body read lets
@@ -132,6 +143,24 @@ const ROUTE_POLICIES = ["standard", "local_only", "approval_required", "blocked"
 
 const MODES = ["single", "fanout"] as const;
 
+/**
+ * A positive integer of milliseconds, bounded by what setTimeout can hold —
+ * the SAME bound the MCP schema advertises, imported rather than restated so
+ * the two cannot drift. Above it Node clamps to 1ms, so the longest timeout a
+ * caller can ask for becomes the shortest possible: identical harm to the `0`
+ * case, from the opposite end, and a ms/µs unit slip lands in that range
+ * easily.
+ */
+function timeoutField(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > MAX_TIMEOUT_MS) {
+    throw new BadRequestError(
+      `${field}: expected an integer from 1 to ${MAX_TIMEOUT_MS}, got ${JSON.stringify(value)}.`,
+    );
+  }
+  return value as number;
+}
+
 /** A boolean field: rejected when it is a non-boolean, not coerced. */
 function boolField(value: unknown, field: string): boolean {
   if (value === undefined || value === null) return false;
@@ -141,9 +170,23 @@ function boolField(value: unknown, field: string): boolean {
   return value;
 }
 
+/**
+ * Every one of these ends up in an argv array — `files` as `--add-dir`
+ * grants, `models` as route ids, `hints.model` as `--model`. A NUL fails deep
+ * inside cross-spawn with "The argument 'args[N]' must be a string without
+ * null bytes", which is the raw Node internal a boundary rejection replaces.
+ * The prompt was guarded and these three were not, on BOTH surfaces — so
+ * parity held while both were wrong, which no parity row can catch.
+ */
+export function noNul(value: string, field: string): void {
+  if (value.includes("\u0000")) {
+    throw new BadRequestError(`${field}: must not contain NUL bytes.`);
+  }
+}
+
 /** A string array: rejected entry by entry rather than silently filtered. */
 function stringArray(value: unknown, field: string): string[] {
-  if (value === undefined || value === null) return [];
+  if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new BadRequestError(`${field}: must be an array of strings.`);
   }
@@ -153,6 +196,7 @@ function stringArray(value: unknown, field: string): string[] {
       `${field}[${bad}]: expected string, got ${JSON.stringify(value[bad])}.`,
     );
   }
+  (value as string[]).forEach((v, i) => noNul(v, `${field}[${i}]`));
   return value as string[];
 }
 
@@ -186,8 +230,55 @@ function enumField<T extends string>(
   );
 }
 
+/**
+ * Hints this surface accepts at the TOP LEVEL as well as inside `hints`.
+ *
+ * MCP refuses top-level placement outright (misplacedTopLevelKeys), because
+ * there a stripped key is a safety setting that silently does nothing. This
+ * surface speaks the OpenAI wire format, where bodies are flat and callers
+ * reasonably reach for a flat key — and it already honoured `safetyProfile`
+ * and `workspacePolicy` there, which taught exactly that. The other four were
+ * DROPPED on a 200: `{"routePolicy":"local_only"}` returned success and the
+ * dispatch left the machine anyway.
+ *
+ * So the placement rule diverges from MCP deliberately and the guarantee does
+ * not: on both surfaces a hint you set either takes effect or you are told.
+ * Nested wins when both are given — the more specific one — on both surfaces.
+ */
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
+  // `escalate` is honoured nowhere: escalation is per-route config
+  // (escalate_model / escalate_on), never per call. MCP says so by name; this
+  // surface swallowed it, so a caller could believe they had asked for it.
+  if ((body as Record<string, unknown>)["escalate"] !== undefined) {
+    throw new BadRequestError(
+      "escalate is not a dispatch field — escalation is configured per route in " +
+        "config.yaml (escalate_model / escalate_on), not per call.",
+    );
+  }
+  // MCP parameters this surface does not implement. Both were accepted and
+  // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior
+  // work the caller believed it had sent — the same harm that justified
+  // rejecting a non-string `files` entry — and `service` meant an explicit
+  // route choice was silently overridden by the router's pick. Refused by name
+  // until this surface implements them; saying so is the whole contract.
+  for (const key of ["contextJobs", "service"] as const) {
+    if ((body as Record<string, unknown>)[key] !== undefined) {
+      throw new BadRequestError(
+        `${key} is not supported on the HTTP surface — it is an MCP tool parameter. ` +
+          `It was previously accepted and silently ignored.`,
+      );
+    }
+  }
+  const topTaskType = enumField(body.taskType, TASK_TYPES, "taskType");
+  if (topTaskType !== undefined) hints.taskType = topTaskType;
+  const topRoutePolicy = enumField(body.routePolicy, ROUTE_POLICIES, "routePolicy");
+  if (topRoutePolicy !== undefined) hints.routePolicy = topRoutePolicy;
+  if (body.preferLargeContext !== undefined && body.preferLargeContext !== null) {
+    hints.preferLargeContext = boolField(body.preferLargeContext, "preferLargeContext");
+  }
+  const topTimeout = timeoutField(body.timeoutMs, "timeoutMs");
+  if (topTimeout !== undefined) hints.timeoutMs = topTimeout;
   // Dropped rather than rejected, unlike `hints.model` below: this is the
   // OpenAI protocol's own field, which clients fill in unconditionally and
   // often with a placeholder, so leniency is the point. Whitespace is dropped
@@ -236,6 +327,7 @@ function parseHints(body: ChatRequest): RouteHints {
           `hints.model: must not be empty — omit it entirely for no preference.`,
         );
       }
+      noNul(raw.model, "hints.model");
       hints.model = raw.model;
     }
     const taskType = enumField(raw.taskType, TASK_TYPES, "hints.taskType");
@@ -259,20 +351,13 @@ function parseHints(body: ChatRequest): RouteHints {
     // nothing at runtime its own counter-signal.
     const routePolicy = enumField(raw.routePolicy, ROUTE_POLICIES, "hints.routePolicy");
     if (routePolicy !== undefined) hints.routePolicy = routePolicy;
-    // The VALUE, not just the type. MCP advertises
-    // {"type":"integer","exclusiveMinimum":0} and refuses 0, -5, 1.5 and 1e21;
-    // Number.isFinite let all four through. `0` is not nullish, so it won
-    // every coalesce down to setTimeout, fired on the first tick, SIGTERMed
-    // the child, and came back "Timed out after 0ms" — recorded as a route
-    // failure with breaker credit, behind an HTTP 200.
-    if (raw.timeoutMs !== undefined) {
-      if (!Number.isInteger(raw.timeoutMs) || (raw.timeoutMs as number) <= 0) {
-        throw new BadRequestError(
-          `hints.timeoutMs: expected a positive integer, got ${JSON.stringify(raw.timeoutMs)}.`,
-        );
-      }
-      hints.timeoutMs = raw.timeoutMs as number;
-    }
+    // The VALUE, not just the type. `0` is not nullish, so it won every
+    // coalesce down to setTimeout, fired on the first tick, SIGTERMed the
+    // child, and came back "Timed out after 0ms" — recorded as a route failure
+    // with breaker credit, behind an HTTP 200. See timeoutField for the upper
+    // bound, which does the same damage from the other end.
+    const nestedTimeout = timeoutField(raw.timeoutMs, "hints.timeoutMs");
+    if (nestedTimeout !== undefined) hints.timeoutMs = nestedTimeout;
     // Unknown keys are REJECTED, matching the MCP surface. The whole point of
     // making hints strict there was that `safety_profile` (the config
     // spelling) silently disabled a safety limit; accepting it here left the
