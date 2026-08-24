@@ -16,6 +16,7 @@ import { buildStatus, buildUsage } from "../status.js";
 import type { RouteHints, RouteSkip } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
 import type { Router } from "../router.js";
+import { explicitOptsFromHints } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { workingDirWarning } from "../working-dir.js";
 import { getAsyncJob, startAsyncJobTracked } from "../jobs.js";
@@ -98,15 +99,13 @@ async function runFanoutArms(
 > {
   const settled = await Promise.allSettled(
     routes.map((route) =>
-      router.routeTo(route, parsed.prompt, parsed.files, parsed.workingDir, {
-        ...(parsed.hints.safetyProfile !== undefined
-          ? { safetyProfile: parsed.hints.safetyProfile }
-          : {}),
-        ...(parsed.hints.workspacePolicy !== undefined
-          ? { workspacePolicy: parsed.hints.workspacePolicy }
-          : {}),
-        ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
-      }),
+      router.routeTo(
+        route,
+        parsed.prompt,
+        parsed.files,
+        parsed.workingDir,
+        explicitOptsFromHints(parsed.hints),
+      ),
     ),
   );
   return settled.map((s, i) => {
@@ -184,11 +183,17 @@ async function handleChatCompletions(
       }
       const dispatcher = state.dispatchers[route];
       const breaker = state.router.getBreaker(route);
+      // routePolicy is the half that decides ELIGIBILITY — local_only,
+      // approval_required and blocked are enforced here, not in routeTo. It
+      // was omitted, so a fanout arm ran whatever the policy forbade.
       const policy = evaluateRoutePolicy(route, svc, {
         ...(dispatcher !== undefined ? { dispatcher } : {}),
         circuitBroken: Boolean(breaker?.isTripped),
         ...(parsed.hints.safetyProfile !== undefined
           ? { requestedSafetyProfile: parsed.hints.safetyProfile }
+          : {}),
+        ...(parsed.hints.routePolicy !== undefined
+          ? { routePolicy: parsed.hints.routePolicy }
           : {}),
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);

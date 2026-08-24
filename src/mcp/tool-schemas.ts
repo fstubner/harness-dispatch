@@ -221,7 +221,33 @@ function hintKeyTrap(key: string) {
   );
 }
 
+/**
+ * The config.yaml spelling, at the top level.
+ *
+ * `hints` is .strict() because `hints: { safety_profile }` silently disabled a
+ * safety limit. The OUTER object cannot be strict — the SDK carries `_meta`
+ * here and the HTTP surface must tolerate OpenAI's own fields — so the same
+ * slip one level up stayed silent on both surfaces, and parity held while both
+ * were wrong. A named list, because an unknown top-level key is tolerated by
+ * design and a near-miss is not.
+ */
+function snakeCaseTrap(wrong: string, right: string) {
+  return misplacedKeyTrap(
+    `${wrong} is the config.yaml spelling — this tool uses ${right}, inside \`hints\`. ` +
+      `At the top level it does nothing, which for a safety setting means the dispatch ` +
+      `runs with MORE access than you asked for.`,
+  );
+}
+
 export const misplacedTopLevelKeys = {
+  safety_profile: snakeCaseTrap("safety_profile", "safetyProfile"),
+  route_policy: snakeCaseTrap("route_policy", "routePolicy"),
+  task_type: snakeCaseTrap("task_type", "taskType"),
+  workspace_policy: snakeCaseTrap("workspace_policy", "workspacePolicy"),
+  prefer_large_context: snakeCaseTrap("prefer_large_context", "preferLargeContext"),
+  timeout_ms: snakeCaseTrap("timeout_ms", "timeoutMs"),
+  working_dir: snakeCaseTrap("working_dir", "workingDir"),
+  context_jobs: snakeCaseTrap("context_jobs", "contextJobs"),
   safetyProfile: hintKeyTrap("safetyProfile"),
   routePolicy: hintKeyTrap("routePolicy"),
   taskType: hintKeyTrap("taskType"),

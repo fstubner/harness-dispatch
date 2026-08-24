@@ -236,6 +236,47 @@ describe("HTTP server", () => {
     expect(res.status).toBe(413);
   }, 20000);
 
+  it.each([["single"], ["fanout"]])(
+    "enforces routePolicy in %s mode, not just in the one that was tested",
+    async (mode) => {
+      // The parity table asserts routePolicy is HONOURED and passes — but it
+      // reads parseChatRequest's output, so it can only see that the parser
+      // kept the value. It cannot see past the parser, and fanout dropped it
+      // AFTER parsing: runFanoutArms named three hint fields inline and
+      // routeTo never learned about the fourth.
+      //
+      // So `{"mode":"fanout","hints":{"routePolicy":"blocked"}}` — documented
+      // as "dry-run: block everything" — returned 200 having run a live agent
+      // in the caller's working tree, while the identical single-mode request
+      // was refused. One surface disagreeing with itself, under a green row.
+      //
+      // Asserted end-to-end against a real server and a real upstream,
+      // because that is the only place the gap was visible.
+      const fake = await startFakeOpenAi();
+      fakes.push(fake);
+      const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      handles.push(handle);
+
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt: "hi",
+          workingDir: process.cwd(),
+          mode,
+          hints: { routePolicy: "blocked" },
+        }),
+      });
+
+      const text = await res.text();
+      expect(text, `${mode} mode ran a dispatch the caller had blocked`).not.toMatch(
+        /hello response/,
+      );
+    },
+    30000,
+  );
+
   it("serves REST status and non-streaming chat completions", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);

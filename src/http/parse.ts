@@ -152,7 +152,11 @@ const MODES = ["single", "fanout"] as const;
  * easily.
  */
 function timeoutField(value: unknown, field: string): number | undefined {
-  if (value === undefined || value === null) return undefined;
+  // `null` is a VALUE, refused like any other wrong one. enumField already
+  // refuses it, so treating it as absent here made the same key at the same
+  // placement answer two different ways — the accept-then-discard shape, in
+  // the block written to remove it.
+  if (value === undefined) return undefined;
   if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > MAX_TIMEOUT_MS) {
     throw new BadRequestError(
       `${field}: expected an integer from 1 to ${MAX_TIMEOUT_MS}, got ${JSON.stringify(value)}.`,
@@ -163,7 +167,7 @@ function timeoutField(value: unknown, field: string): number | undefined {
 
 /** A boolean field: rejected when it is a non-boolean, not coerced. */
 function boolField(value: unknown, field: string): boolean {
-  if (value === undefined || value === null) return false;
+  if (value === undefined) return false;
   if (typeof value !== "boolean") {
     throw new BadRequestError(`${field}: expected boolean, got ${JSON.stringify(value)}.`);
   }
@@ -243,7 +247,12 @@ function enumField<T extends string>(
  *
  * So the placement rule diverges from MCP deliberately and the guarantee does
  * not: on both surfaces a hint you set either takes effect or you are told.
- * Nested wins when both are given — the more specific one — on both surfaces.
+ *
+ * When BOTH placements are given, nested wins — the more specific one — with
+ * one exception: `workspacePolicy` takes the top-level value, because there it
+ * is a real MCP parameter rather than a trap and `workspacePolicyFromInput`
+ * has always resolved it that way. Both surfaces agree on all seven, which is
+ * what matters; the exception is pinned by a test so it stays a decision.
  */
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
@@ -255,6 +264,36 @@ function parseHints(body: ChatRequest): RouteHints {
       "escalate is not a dispatch field — escalation is configured per route in " +
         "config.yaml (escalate_model / escalate_on), not per call.",
     );
+  }
+  // The config.yaml spelling of a hint, at the TOP level.
+  //
+  // `hints` is .strict() on both surfaces because `hints: { safety_profile }`
+  // silently disabled a safety limit. The outer object cannot be strict — MCP
+  // carries `_meta`, and this surface must tolerate OpenAI's own fields — so
+  // the same slip one level up stayed silent on BOTH surfaces. Parity held
+  // while both were wrong, which is the one shape a parity row cannot catch.
+  //
+  // It also got more reachable, not less: this surface now honours top-level
+  // hints, so a caller who learns that placement works is a caller who can
+  // make this exact mistake. A named list rather than a general rule, because
+  // an unknown top-level key is legitimate here and a near-miss is not.
+  for (const [wrong, right] of [
+    ["safety_profile", "safetyProfile"],
+    ["route_policy", "routePolicy"],
+    ["task_type", "taskType"],
+    ["workspace_policy", "workspacePolicy"],
+    ["prefer_large_context", "preferLargeContext"],
+    ["timeout_ms", "timeoutMs"],
+    ["working_dir", "workingDir"],
+    ["context_jobs", "contextJobs"],
+  ] as const) {
+    if ((body as Record<string, unknown>)[wrong] !== undefined) {
+      throw new BadRequestError(
+        `${wrong} is the config.yaml spelling — this API uses ${right}. It was ` +
+          `previously accepted and silently ignored, which for a safety setting ` +
+          `means the dispatch ran with MORE access than you asked for.`,
+      );
+    }
   }
   // MCP parameters this surface does not implement. Both were accepted and
   // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior
@@ -274,7 +313,7 @@ function parseHints(body: ChatRequest): RouteHints {
   if (topTaskType !== undefined) hints.taskType = topTaskType;
   const topRoutePolicy = enumField(body.routePolicy, ROUTE_POLICIES, "routePolicy");
   if (topRoutePolicy !== undefined) hints.routePolicy = topRoutePolicy;
-  if (body.preferLargeContext !== undefined && body.preferLargeContext !== null) {
+  if (body.preferLargeContext !== undefined) {
     hints.preferLargeContext = boolField(body.preferLargeContext, "preferLargeContext");
   }
   const topTimeout = timeoutField(body.timeoutMs, "timeoutMs");

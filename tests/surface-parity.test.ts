@@ -198,6 +198,17 @@ describe("both surfaces answer the same input the same way", () => {
     ["a NUL in models", { prompt: "hi", models: [`a${String.fromCharCode(0)}b`] }],
     ["a NUL in hints.model", { prompt: "hi", hints: { model: `a${String.fromCharCode(0)}b` } }],
     ["escalate, which is per-route config and not a dispatch field", { prompt: "hi", escalate: true }],
+    // The config.yaml spelling one level up. `hints` is strict on both
+    // surfaces because this slip disabled a safety limit; the OUTER object
+    // cannot be (MCP carries _meta, HTTP carries OpenAI's own fields), so the
+    // same typo stayed silent on BOTH — parity holding while both were wrong,
+    // the one shape a parity row cannot find. Named rows are the answer.
+    ["a top-level safety_profile", { prompt: "hi", safety_profile: "read_only" }],
+    ["a top-level route_policy", { prompt: "hi", route_policy: "local_only" }],
+    ["a top-level task_type", { prompt: "hi", task_type: "review" }],
+    ["a top-level working_dir", { prompt: "hi", working_dir: "/tmp" }],
+    ["a null timeoutMs", { prompt: "hi", hints: { timeoutMs: null } }],
+    ["a null preferLargeContext", { prompt: "hi", hints: { preferLargeContext: null } }],
   ];
 
   it.each(REJECTED)("both reject %s", async (_label, body) => {
@@ -277,6 +288,23 @@ describe("both surfaces answer the same input the same way", () => {
     // true there; this pins that it refuses rather than silently preferring.
     expect(mcp.success).toBe(false);
     expect(parseChatRequest(body).hints.taskType).toBe("review");
+  });
+
+  it("takes workspacePolicy from the TOP level when both are given, on both surfaces", () => {
+    // The one exception to "nested wins", and the source claimed otherwise
+    // for a release. `workspacePolicy` is a real top-level MCP parameter
+    // rather than a trap, and workspacePolicyFromInput has always resolved it
+    // top-level-first — so both surfaces agree, and only the comment was
+    // wrong. Pinned so it stays a decision rather than the next divergence.
+    const body = {
+      prompt: "hi",
+      workingDir: dir,
+      workspacePolicy: "shared",
+      hints: { workspacePolicy: "git_worktree" },
+    };
+    const mcp = z.object(dispatchInputShape).parse(body);
+    expect(mcp.workspacePolicy ?? mcp.hints?.workspacePolicy).toBe("shared");
+    expect(parseChatRequest(body).hints.workspacePolicy).toBe("shared");
   });
 
   /**

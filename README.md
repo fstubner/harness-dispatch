@@ -663,7 +663,9 @@ decide which of your local CLIs to run.
 ## Chaining delegated work
 
 Pass the jobIds of earlier dispatches as `contextJobs` and their prompts and
-outputs are rendered into the new prompt directly:
+outputs are rendered into the new prompt directly — arguments to the `dispatch`
+MCP tool, not an HTTP body (the OpenAI-compatible endpoint does not implement
+`contextJobs`, and refuses it rather than accepting it and ignoring it):
 
 ```json
 { "prompt": "Now write the migration.", "contextJobs": ["job-1786977300001-0f0aaaaa"] }
