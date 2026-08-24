@@ -121,6 +121,22 @@ re-opened a bug 0.7.6 had fixed.
   router picked.
 - `escalate` is refused on both surfaces. It has never been a per-call field;
   escalation is per-route configuration.
+- `routePolicy` is enforced in FANOUT mode over HTTP, not only in single mode.
+  `{"mode":"fanout","hints":{"routePolicy":"blocked"}}` — documented as
+  "dry-run: block everything" — returned 200 having run live agents in the
+  caller's working tree, and `local_only` let a metered route run and bill.
+  The fanout path built its dispatch options by naming three hint fields
+  inline and missed two, so `timeoutMs` never reached the child there either.
+  Every applicable hint now comes from one function, so a new one reaches
+  every caller instead of whichever call sites someone remembered.
+- The config.yaml spelling of a hint is refused at the TOP level on both
+  surfaces — `safety_profile`, `route_policy`, `task_type` and the rest. The
+  nested spelling has been refused since 0.6.x because it silently disabled a
+  safety limit; one level up it stayed silent, and 0.7.8 made that placement
+  more reachable by starting to honour top-level hints.
+- A `null` hint value is refused rather than treated as absent, consistently.
+  `{"timeoutMs":null}` returned 200 with the hint gone while
+  `{"hints":{"timeoutMs":null}}` was a 400 — the same key, two answers.
 - An environment failure is detected by SHAPE, not by how often the phrase
   appears. The detector overrides a successful exit — it charges the route a
   failure and tells the caller "any answer it gave was produced without reading
