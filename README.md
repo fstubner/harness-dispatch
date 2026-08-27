@@ -388,7 +388,11 @@ carries a `warning` field saying so.
 immediately, then waits up to `graceSeconds` (default 25) for it to finish. Within the
 window you get the complete result inline, exactly as if the call had blocked. Past it
 you get the `jobId` — call `job_status` with that `jobId` to see a `partialOutput` tail
-while it runs and the full `result` once `completed`. Because the run never depends on
+while it runs and the full `result` once `completed`. Expect the `jobId` path to be
+ordinary rather than exceptional: real agent-CLI work regularly runs for minutes, so on
+this maintainer's install a little over half of live dispatches finish past the default
+window. Treat a `completed: false` as the normal shape of a substantial task, not as a
+sign anything went wrong. Because the run never depends on
 the MCP call staying open, a client-side timeout costs you the inline reply, never the
 work. Background runs default to a generous 60-minute ceiling meant only to catch a
 genuinely hung process (stuck waiting on input, a stalled network call), not to cap

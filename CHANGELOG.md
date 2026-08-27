@@ -23,6 +23,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- A harness that streams and then stops now says so, instead of handing back its
+  own output as the error. Found in a month of real dispatch logs: nine Codex
+  failures on one day recorded ~300 characters of raw JSONL — truncated
+  mid-sentence — as the caller's only explanation, after waits of 11 to 88
+  seconds. The message now names what happened (how many events streamed, the
+  last one, the exit code) and says plainly that the output is not an error
+  message and there was no result to return.
+
+  Deliberately NOT a new event rule for the nested error frame those streams
+  carry, which is the obvious-looking fix: a structured error overrides the
+  exit code, so the benign notice in that frame ("Codex can still see every
+  skill") would mark HEALTHY runs failed, charge the route and move the
+  breaker. A test pins that negative.
 - The plugin manifest claimed version 0.4.0 while bundling the 0.7.x server.
   Last touched at the rename and never bumped through three minor versions —
   and unlike `package.json`, which the publish workflow rewrites at tag time,

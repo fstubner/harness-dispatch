@@ -431,6 +431,17 @@ class JsonlAccumulator {
   outputTokens = 0;
   sawUsage = false;
   sawAnyJson = false;
+  /** Parsed event lines, for diagnosing a run that streamed and then produced nothing. */
+  eventCount = 0;
+  /**
+   * The last `type` seen, whatever it was.
+   *
+   * A stream that stops after `turn.started` failed differently from one that
+   * stops after `item.completed`, and neither is visible in an exit code. This
+   * is diagnosis only — it never decides success, so a benign frame cannot
+   * fail a healthy run.
+   */
+  lastEventType: string | undefined;
   /** Set by the first matching emit: "error" rule; last one wins if several match across the stream. */
   errorMessage: string | undefined;
 
@@ -447,6 +458,9 @@ class JsonlAccumulator {
       return out;
     }
     this.sawAnyJson = true;
+    this.eventCount += 1;
+    const eventType = getPath(event, "type");
+    if (typeof eventType === "string") this.lastEventType = eventType;
 
     for (const rule of this.rules) {
       const matches = Object.entries(rule.when).every(([field, value]) => getPath(event, field) === value);
@@ -859,6 +873,26 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // structuredError still wins — a turn.failed reason beats the last
     // message — and rawErrorFallback still covers the nothing-parsed case.
     const parsedErrorDetail = eventDriven ? parsedOutput : undefined;
+    // And when NOTHING parsed either, say what happened instead of dumping the
+    // stream. That is the case the 9 failures above actually hit: no
+    // agent_message was ever emitted, so parsedErrorDetail was undefined too
+    // and rawErrorFallback won — 300 characters of JSONL, truncated
+    // mid-sentence, as the caller's only explanation.
+    //
+    // Deliberately NOT a new event rule for Codex's nested
+    // {"item":{"type":"error"}} frame, which is the obvious-looking fix and is
+    // wrong: structuredError overrides the exit code, so the benign notice
+    // that frame carries ("Skill descriptions were shortened... Codex can
+    // still see every skill") would mark HEALTHY runs failed, charge the route
+    // and move the breaker. This path only ever runs on a run that already
+    // failed with nothing to show for it, so it cannot do that.
+    const streamedNothing =
+      eventDriven && acc && parsedOutput === undefined && acc.sawAnyJson
+        ? `the harness streamed ${acc.eventCount} event${acc.eventCount === 1 ? "" : "s"} ` +
+          `(last: ${acc.lastEventType ?? "unknown"}) and then stopped without producing an ` +
+          `answer — exit code ${exitCode}. Its output is not an error message; there was no ` +
+          `result to return. Retry, or send this task to a different route.`
+        : undefined;
     // envFailure leads: it explains WHY whatever else is here is untrustworthy,
     // and the delegate's own last message ("Unable to read file.") is a symptom
     // that reads like a normal answer on its own.
@@ -866,6 +900,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
       envFailure ??
       structuredError ??
       parsedErrorDetail ??
+      streamedNothing ??
       (rawErrorFallback || `Exit code ${exitCode}`);
     // Scan BOTH streams, not just whichever one errorDetail resolved to.
     // e78c87a narrowed this to detectRateLimit(errorDetail) while adding
