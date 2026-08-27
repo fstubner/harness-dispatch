@@ -526,6 +526,67 @@ describe("GenericCliDispatcher", () => {
       expect(res.output).toBe("final answer");
     });
 
+    it("diagnoses a stream that stopped, instead of returning the stream as the error", async () => {
+      // Rebuilt from a real logged failure: 9 dispatches on 2026-08-03, 11-88s
+      // each, every one recording ~300 characters of raw JSONL — truncated
+      // mid-sentence — as the caller's only explanation. No agent_message was
+      // ever emitted, so there was nothing to fall back to but the stream.
+      //
+      // The last frame carries Codex's benign skills notice, which is why the
+      // obvious fix is wrong and is not the one applied: a rule matching that
+      // nested item.type would set structuredError, which OVERRIDES the exit
+      // code, so this exact text would mark healthy exit-0 runs as failed.
+      // The negative below pins that.
+      mockFound();
+      const lines = [
+        JSON.stringify({ type: "thread.started", thread_id: "019fc90f" }),
+        JSON.stringify({ type: "turn.started" }),
+        JSON.stringify({
+          type: "item.completed",
+          item: { id: "item_0", type: "error", message: "Skill descriptions were shortened" },
+        }),
+      ];
+      runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n", exitCode: 1 }));
+      const d = new GenericCliDispatcher(
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+
+      expect(res.success).toBe(false);
+      expect(res.error, "the raw stream was still returned as the error").not.toMatch(
+        /thread\.started/,
+      );
+      expect(res.error).toMatch(/streamed 3 events/);
+      expect(res.error).toMatch(/item\.completed/);
+      expect(res.error, "a caller cannot tell this from a real error message").toMatch(
+        /not an error message/,
+      );
+    });
+
+    it("does not fail a healthy run over a benign notice in the stream", async () => {
+      // The negative for the fix above. Same skills notice, but the run exits
+      // 0 with a real answer: it must stay a success. If a future edit adds an
+      // event rule for `item.type: "error"`, structuredError overrides the
+      // exit code and this flips to failed — charging the route and moving the
+      // breaker on a run that worked.
+      mockFound();
+      const lines = [
+        JSON.stringify({
+          type: "item.completed",
+          item: { id: "item_0", type: "error", message: "Skill descriptions were shortened" },
+        }),
+        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "the answer" } }),
+      ];
+      runSubprocessMock.mockResolvedValue(ok({ stdout: lines.join("\n") + "\n" }));
+      const d = new GenericCliDispatcher(
+        svc({ args: ["{{prompt}}"], stdin: true, output: { mode: "jsonl_stream", eventRules: codexLikeRules } }),
+      );
+      const res = await d.dispatch("go", [], "/tmp");
+
+      expect(res.success, "a benign in-stream notice failed a working run").toBe(true);
+      expect(res.output).toBe("the answer");
+    });
+
     it("emits tool_use and thinking events mid-stream, before the completion event", async () => {
       mockFound();
       const lines = [
