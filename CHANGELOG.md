@@ -6,6 +6,12 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.7.9] — 2026-08-27
+
+**Upgrade from 0.7.8.** Fixes found by using the thing: two from the release
+pass 0.7.8 shipped with as open, the rest from reading a month of real
+dispatch logs.
+
 ### Added
 
 - `--version` / `-v`. It exited 1 with "unknown option", which reads like the
