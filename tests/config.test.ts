@@ -445,6 +445,34 @@ overrides:
     expect(cfg.services.claude_code_cli!.model).toBe("custom-model-1");
   });
 
+  it("reads Claude's prompt from stdin, so the cmd.exe ceiling cannot apply to it", async () => {
+    // Every command-line defect this project has fixed — replicating
+    // cross-spawn's escaping, the 8,191-character cmd.exe cap, the npm-shim
+    // double-escape, a refusal band that was too tight and then too loose —
+    // applies only to routes that pass the prompt as an ARGUMENT.
+    // generic-cli.ts skips the length check entirely when `stdin: true`
+    // (`if (!protocol.stdin)`), so this one config value is what keeps that
+    // whole class away from this route.
+    //
+    // Verified live at the time of the change: a 21,670-character prompt —
+    // 2.7x the cmd.exe ceiling, and measured at 20,064 characters as argv,
+    // which the old config refused outright — dispatched and answered.
+    //
+    // Pinned because a plausible-looking edit putting {{prompt}} back in args
+    // would silently reinstate the limit, and nothing else would notice.
+    const p = await writeTmpYaml(
+      "claude-stdin.yaml",
+      "clis:\n  - name: probe\n    harness: claude_code\n",
+    );
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const protocol = cfg.services.probe!.protocol!;
+    expect(protocol.stdin, "the prompt went back into argv").toBe(true);
+    expect(
+      JSON.stringify(protocol.args ?? []),
+      "{{prompt}} is in args again — the ceiling applies once more",
+    ).not.toContain("{{prompt}}");
+  });
+
   it("carries Claude's cache token fields from the shipped defaults into the protocol", async () => {
     // The mechanism is tested in generic-cli.test.ts; this tests the WIRING,
     // which is the half that has failed repeatedly here — a correctly spelled,
