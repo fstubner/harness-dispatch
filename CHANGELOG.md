@@ -8,6 +8,11 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- The dispatch log records `candidates` — what the picked route beat — so the
+  question the field was added to answer can be asked of a month of history
+  rather than one response. It recorded `reason` ("tier 1 best (3 available)")
+  and never what the choice was between, so the log could show the router had
+  been used and not whether it chose well.
 - `doctor` fails when an MCP client on this machine is configured to launch
   this server from a path that does not exist.
 
