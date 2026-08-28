@@ -65,13 +65,30 @@ a routing tool in which nothing was ever routed.
 The shape, kept deliberately small so the cost stays near zero and nobody is
 tempted to skip it:
 
-- ONE dispatch. Not a fanout, not a sweep across routes.
+- ONE *successful* dispatch. A route that refuses before running — rate
+  limited, not logged in — costs nothing and does not count against this;
+  try the next subscription route and say which ones refused. The first pass
+  to follow this rule hit a rate-limited Codex and would otherwise have had to
+  stop at "unavailable today" with a working harness sitting next to it.
+- Not a fanout, not a sweep across routes.
 - A subscription-backed CLI route — flat-rate, so the marginal cost is nil.
 - `hints.safetyProfile: "read_only"` and a short prompt.
 - NEVER a metered route, and never `--allow-paid`. A pass must not be able to
   spend money.
 - `doctor --live` stays optional; it probes every eligible route and can burn a
   subscription window, which is the cost this rule is trying not to pay.
+
+The one-liner, which runs the build in the working tree rather than whatever
+MCP server happens to be connected:
+
+```
+node dist/bin.js dispatch --service <route> --safety read_only --no-fallback "Reply with exactly one word: pong"
+```
+
+`--service` goes through `routeTo`, so it runs exactly that route and cannot
+fall onto another. That distinction matters here: the plain `route`/`dispatch`
+path hardcoded `execute` with two fallbacks until 0.7.10, so a pass asking for
+one read-only call could get an execute-profile run on up to three.
 
 Record it under **Verified**, naming the route and what came back. If no
 harness is installed or all of them are rate-limited, say that under what was
