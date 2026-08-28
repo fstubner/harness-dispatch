@@ -125,6 +125,13 @@ export interface RouteResponse {
      * happened. It was not forwarded at all.
      */
     modelHintDropped?: boolean;
+    /**
+     * What the picked route beat, best first, winner included — present only
+     * when the router chose. `reason` counts the candidates ("tier 1 best (3
+     * available)"); this says which three and by how much, so an automatic
+     * choice can be argued with instead of taken on faith.
+     */
+    candidates?: Array<{ route: string; score: number }>;
   };
 }
 
@@ -302,6 +309,9 @@ function routeResponse(
     }
     if (decision.modelHintDropped !== undefined) {
       response.routing.modelHintDropped = decision.modelHintDropped;
+    }
+    if (decision.candidates !== undefined && decision.candidates.length > 0) {
+      response.routing.candidates = decision.candidates;
     }
     if (decision.skippedRoutes !== undefined && decision.skippedRoutes.length > 0) {
       response.skippedRoutes = decision.skippedRoutes;

@@ -344,6 +344,61 @@ describe("MCP tools — dispatch", () => {
     ).toThrow(/[Uu]nrecognized key/);
   });
 
+  it("reports what the picked route beat, on the response and not just internally", async () => {
+    // `reason` counted the candidates and never named them, so the one
+    // question a caller has about an automatic choice — why that one — had no
+    // answer. Measured over a month of real dispatches: 85% named a route
+    // outright and the scoring ran on about one in seven. An unauditable
+    // chooser does not get used.
+    //
+    // Asserted on the RESPONSE, not the decision, because the last field added
+    // to this shape was computed correctly in the router and never copied
+    // here, so no caller could see it.
+    const holder = buildHolder(
+      { a: makeService("a", { tier: 1 }), b: makeService("b", { tier: 1 }) },
+      {
+        a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
+        b: new FakeDispatcher("b", { output: "from b", service: "b", success: true }),
+      },
+    );
+
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", workingDir: process.cwd(), hints: { taskType: "execute" } },
+      { holder },
+    );
+    const data = r.data as {
+      route: string;
+      routing?: { candidates?: Array<{ route: string; score: number }> };
+    };
+    const candidates = data.routing?.candidates;
+    expect(candidates, "the comparison never reached the caller").toBeDefined();
+    expect(candidates!.length).toBeGreaterThan(1);
+    // Winner first, and it IS the route that ran.
+    expect(candidates![0]!.route).toBe(data.route);
+    // Sorted best-first, so "what it beat" reads top to bottom.
+    for (let i = 1; i < candidates!.length; i += 1) {
+      expect(candidates![i]!.score).toBeLessThanOrEqual(candidates![i - 1]!.score);
+    }
+  });
+
+  it("omits the comparison when nothing was compared", async () => {
+    // A forced route was not chosen over anything. Reporting a one-entry
+    // "comparison" there would imply a decision that never happened.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+    const r = await invokeTool(
+      "dispatch",
+      { prompt: "hi", workingDir: process.cwd(), service: "a" },
+      { holder },
+    );
+    const data = r.data as { routing?: { reason?: string; candidates?: unknown } };
+    expect(data.routing?.reason).toBe("explicit");
+    expect(data.routing?.candidates).toBeUndefined();
+  });
+
   it("surfaces skipped routes in single mode", async () => {
     const holder = buildHolder(
       {

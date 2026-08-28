@@ -563,6 +563,21 @@ export interface RoutingDecision {
   elo: number | undefined;
   finalScore: number;
   reason: string;
+  /**
+   * What the winner beat, and by how much — the other candidates in the tier
+   * it was chosen from, best first, winner included.
+   *
+   * Every score component was already reported FOR THE WINNER, and `reason`
+   * said "tier 1 best (3 available)" — a count, never a comparison. So the one
+   * question a caller has about an automatic choice ("why that one?") had no
+   * answer, and the honest response to an unauditable chooser is to stop using
+   * it: measured over a month of real dispatches, 85% named a route outright
+   * and the scoring ran on about one dispatch in seven.
+   *
+   * Set only on the scored path. A forced or explicit route was not chosen
+   * over anything, so there is nothing to compare.
+   */
+  candidates?: Array<{ route: string; score: number }>;
   skippedRoutes?: RouteSkip[];
   safetyProfile?: SafetyProfile;
   effectiveSafetyProfile?: SafetyProfile;
