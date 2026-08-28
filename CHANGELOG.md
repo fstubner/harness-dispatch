@@ -46,6 +46,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Changed
 
+- Cursor dispatches send the prompt on STDIN too — the route the ceiling
+  actually broke. It is a `cursor-agent.CMD` wrapper, so cmd.exe caps its
+  command line, and a 9,031-character prompt once died with the bare "The
+  command line is too long." that the check exists to replace. A
+  13,554-character prompt now dispatches and answers. Antigravity stays on argv:
+  `agy --print` requires an inline argument and its only stdin path needs a
+  different output parser, so the length machinery still has one route to
+  protect.
 - Claude Code dispatches send the prompt on STDIN instead of in the command
   line. Every command-line defect this project has fixed — replicating
   cross-spawn escaping, the 8,191-character cmd.exe ceiling, the npm-shim

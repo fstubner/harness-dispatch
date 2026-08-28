@@ -222,7 +222,19 @@ clis:
     protocol:
       # -p is Cursor's boolean "print mode" flag; the prompt itself is the
       # trailing positional {{prompt}}.
-      args: ["-p", "--trust", "{{safety}}", "{{working_dir}}", "--output-format", "json", "{{model}}", "{{prompt}}"]
+      # Prompt on STDIN, for the same reason as claude_code_cli above: a
+      # prompt in argv is measured against cmd.exe's 8,191-character ceiling
+      # and escaped to get there, and this route is a `cursor-agent.CMD`
+      # PowerShell wrapper — the one that failed at ~9k characters and drove
+      # two releases of escaping work. generic-cli.ts skips the check
+      # entirely when `stdin: true`.
+      #
+      # Verified live before changing: `cursor-agent -p --trust
+      # --output-format json` with the prompt piped in returns
+      # {"type":"result","subtype":"success","is_error":false,...,"result":"pong"}.
+      # --trust is required or it refuses with a workspace-trust prompt.
+      stdin: true
+      args: ["-p", "--trust", "{{safety}}", "{{working_dir}}", "--output-format", "json", "{{model}}"]
       # Only read_only gets extra flags; the other profiles run print mode as
       # before. --trust is unrelated to capability — it just suppresses the
       # workspace-trust prompt, which would hang a non-interactive run.
