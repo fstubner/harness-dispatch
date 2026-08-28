@@ -15,6 +15,7 @@ import { AUTO_DETECT_COMMANDS, loadConfig, resolveConfigPath } from "./config.js
 import { LeaderboardCache } from "./leaderboard.js";
 import { VERSION } from "./version.js";
 import { commandAvailable } from "./dispatchers/shared/which-available.js";
+import { inspectClientEntries } from "./mcp-clients.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
 import { initObservability } from "./observability/index.js";
@@ -329,6 +330,46 @@ async function cmdDoctor(
       ok: Object.keys(runtime.config.services).length > 0,
       detail: `${Object.keys(runtime.config.services).length} configured route(s)`,
     },
+    // This one DOES fail, unlike the advisory git check below.
+    //
+    // A client entry naming a path that is not there is not a preference or a
+    // missing optional tool — there is no setup in which it is intended. And
+    // it is invisible from the client side: one that cannot spawn its server
+    // simply has no tools, which looks identical to never having installed
+    // anything. On this maintainer's machine that state survived a repo rename
+    // by months, silently, along with a hook pointing at the same dead
+    // directory.
+    //
+    // Not-configured is NOT a failure: a machine with no client entry gets
+    // "not registered with any client", ok. Only a broken one fails.
+    (() => {
+      const entries = inspectClientEntries();
+      const broken = entries.filter((e) => e.missingPaths.length > 0);
+      if (entries.length === 0) {
+        return {
+          name: "mcp-clients",
+          ok: true,
+          detail:
+            "not registered with any MCP client this tool knows how to read " +
+            "(Claude Code, Cursor) — run `configure` for a snippet to paste",
+        };
+      }
+      return {
+        name: "mcp-clients",
+        ok: broken.length === 0,
+        detail:
+          broken.length === 0
+            ? entries.map((e) => `${e.client}: ${e.entry} resolves`).join("; ")
+            : broken
+                .map(
+                  (e) =>
+                    `${e.client} (${e.file}) launches ${e.entry} from a path that does not ` +
+                    `exist: ${e.missingPaths.join(", ")} — that client has been getting NO ` +
+                    `tools from this server, silently. Fix the entry or re-run configure.`,
+                )
+                .join(" | "),
+      };
+    })(),
     // Not required to dispatch — reported, never a hard fail.
     //
     // The `workspace` tool shells out to git for diff/apply, so without it a

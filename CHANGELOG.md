@@ -8,6 +8,23 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- `doctor` fails when an MCP client on this machine is configured to launch
+  this server from a path that does not exist.
+
+  That failure is invisible from both ends: a client which cannot spawn its
+  server simply has no tools, which looks exactly like never having installed
+  one, and the server never runs so it cannot complain. On the maintainer's
+  machine Claude Code spent months launching a `dist/bin.js` under a directory
+  that had been renamed away, alongside a session hook pointing at the same
+  dead path. Neither said anything, and the tool had no way to notice because
+  nothing looked.
+
+  Read-only — it inspects Claude Code's and Cursor's config and never writes to
+  them. Not being registered with any client is fine and reported as such; only
+  a path that is genuinely absent fails. A bare command like `npx` is not
+  checked, because resolving it means replicating PATH and shim lookup, and
+  getting that wrong would report working installs as broken.
+
 - `harness-dispatch dispatch "<prompt>"` — one routed task from the command
   line, with `--service`, `--safety`, `--task-type`, `--no-fallback` and
   `--json`. `route` still works; it is the same command under the name the MCP
