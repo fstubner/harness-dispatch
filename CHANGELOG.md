@@ -6,7 +6,7 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
-## [0.7.9] — 2026-08-27
+## [0.7.9] — 2026-08-28
 
 **Upgrade from 0.7.8.** Fixes found by using the thing: two from the release
 pass 0.7.8 shipped with as open, the rest from reading a month of real
@@ -789,7 +789,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/fstubner/harness-dispatch/compare/v0.7.5...v0.7.6
