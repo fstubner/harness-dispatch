@@ -656,6 +656,15 @@ export class Router {
           ? `tier ${tier} fallback (all tier ${minConfiguredTier} services exhausted)`
           : `tier ${tier} best (${candidates.length} available)`;
 
+      // Capped, because this is for reading. Six candidates would bury the
+      // one comparison that matters — what the winner actually beat — under a
+      // list nobody scans. Rounded for the same reason: the choice turns on
+      // 0.92 vs 0.81, never on the fifteenth decimal place.
+      const compared = candidates.slice(0, 4).map((c) => ({
+        route: c.name,
+        score: Math.round(c.score * 1000) / 1000,
+      }));
+
       const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
       return {
         service: best.name,
@@ -675,6 +684,7 @@ export class Router {
         elo: best.elo ?? undefined,
         finalScore: best.score,
         reason,
+        candidates: compared,
         skippedRoutes: skippedRoutes.slice(),
         safetyProfile: requestedSafetyProfile(svc, requestedSafety),
         effectiveSafetyProfile: effectiveSafety,

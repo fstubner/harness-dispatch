@@ -14,6 +14,12 @@ dispatch logs.
 
 ### Added
 
+- `routing.candidates` — what the picked route beat, and by how much, best
+  first. `reason` counted the alternatives ("tier 1 best (3 available)") and
+  never named them, so the one question anyone has about an automatic choice
+  went unanswered. Measured over a month of real dispatch logs: 85% of live
+  dispatches named a route outright and the scoring ran on about one dispatch
+  in seven. An unauditable chooser does not get used.
 - `--version` / `-v`. It exited 1 with "unknown option", which reads like the
   binary is broken rather than like the flag is missing. Answered before config
   loading, because a version is what you ask for when something is already
