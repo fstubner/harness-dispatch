@@ -141,7 +141,16 @@ function evaluateOperationalRoutePolicy(
   return { blocked: false };
 }
 
-function isLocalRoute(billing: RouteBilling): boolean {
+/**
+ * Exported because `taskType: "local"` needs the SAME answer this file gives
+ * `routePolicy: "local_only"`. It had its own narrower test — a loopback
+ * hostname — so a route declaring provider `local`, surface `local_endpoint`,
+ * auth `local_network` and billing `local_compute` was "local" enough to be
+ * the only thing `local_only` would run, and not local enough for the task
+ * type named after it. One word, two meanings, and the narrow one silently
+ * excluded a real local box on a LAN or tailnet address.
+ */
+export function isLocalRoute(billing: RouteBilling): boolean {
   return (
     billing.kind === "local_compute" ||
     billing.provider === "local" ||

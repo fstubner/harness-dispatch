@@ -34,8 +34,15 @@
  *  - Under prefer_large_context, +0.3 for routes declaring >=2M
  *    max_input_tokens and +0.15 for >=1M — declared context size, not
  *    harness name.
- *  - +0.3 when task_type="local" and the service is an openai_compatible
- *    endpoint on localhost / 127.0.0.1.
+ *
+ * One rule crosses tiers, and only one: task_type="local" picks the
+ * best-scoring LOCAL route wherever it sits, falling back to normal tier order
+ * when none is eligible. Local means what `routePolicy: "local_only"` means —
+ * declared provider/surface/auth/billing — or a loopback URL. This used to be
+ * a +0.3 score bonus, which could not work: a bonus only reorders within a
+ * tier, and local endpoints sit in the cheap tier, so a healthy tier-1 route
+ * won before it was consulted. Tier ranks CAPABILITY, and this task type means
+ * "capability is not what matters here".
  *
  * Tier auto-derivation
  * --------------------
@@ -70,7 +77,7 @@ import { withDispatcherSpan, withRouterSpan } from "./observability/spans.js";
 import { buildRouteBilling } from "./billing.js";
 import { logDispatch } from "./dispatch-log.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
-import { evaluateRoutePolicy, nonLocalIncludedRoutePenalty } from "./route-policy.js";
+import { evaluateRoutePolicy, isLocalRoute, nonLocalIncludedRoutePenalty } from "./route-policy.js";
 import { acquireWorkspaceLock } from "./workspace-lock.js";
 import {
   prepareWorkspace,
@@ -368,6 +375,10 @@ async function* streamWithWorkspacePolicy<T>(
 interface Candidate {
   score: number;
   name: string;
+  /** Kept on the candidate so the local-preference pass can report the tier it came from. */
+  tier: number;
+  /** By the same test `routePolicy: "local_only"` uses — see isLocalRoute. */
+  local: boolean;
   quotaScore: number;
   qualityScore: number;
   elo: number | null;
@@ -614,17 +625,30 @@ export class Router {
         if (maxIn >= 2_000_000) score += 0.3;
         else if (maxIn >= 1_000_000) score += 0.15;
       }
-      // Exact host match, not substring — a remote URL merely CONTAINING
-      // "localhost" is not a local route. Same defect as billing.ts's two
-      // predicates; see hostOf() there.
-      if (taskType === "local" && svc.type === "openai_compatible" && isLoopbackUrl(svc.baseUrl)) {
-        score += 0.3;
-      }
-
+      // No `taskType === "local"` bonus here any more.
+      //
+      // There used to be a +0.3 for a loopback openai_compatible route, meant
+      // to implement the schema's promise that 'local' "prefers free local
+      // endpoints". It could not: a bonus only reorders WITHIN a tier, and
+      // local endpoints sit in the cheap tier, so any healthy tier-1 route won
+      // before the bonus was ever consulted. Measured on a real config, every
+      // taskType including 'local' resolved to the same tier-1 CLI, and the
+      // configured local box had 0 calls in a month.
+      //
+      // Replaced by a cross-tier preference below — one mechanism for one
+      // intent, rather than a bonus that cannot reach the thing it wants.
       const bucket = tierCandidates.get(tier);
       const candidate: Candidate = {
         score,
         name,
+        tier,
+        // Either signal, not one or the other. isLocalRoute reads what the
+        // route DECLARES (provider, surface, auth source, billing kind) and
+        // catches a real box on a LAN or tailnet address; the loopback check
+        // catches one that declares nothing but is plainly on this machine.
+        // Dropping the second in favour of the first regressed exactly that
+        // case — a bare `http://localhost:11434/v1` stopped being local.
+        local: isLocalRoute(buildRouteBilling(svc)) || isLoopbackUrl(svc.baseUrl),
         quotaScore,
         qualityScore,
         elo,
@@ -640,6 +664,64 @@ export class Router {
     let minConfiguredTier = Infinity;
     for (const svc of Object.values(this.config.services)) {
       if (svc.enabled && svc.tier < minConfiguredTier) minConfiguredTier = svc.tier;
+    }
+
+    // `taskType: "local"` crosses tiers. Nothing else does.
+    //
+    // The schema says 'local' is for "trivial/mechanical" work and "prefers
+    // free local endpoints", and the point of sending trivial work to a local
+    // box is that it costs nothing and consumes no subscription. Tier ranks
+    // CAPABILITY, so a local endpoint is correctly ranked below a frontier
+    // CLI — and for a task explicitly marked as not needing that capability,
+    // ranking by it is the wrong question.
+    //
+    // Deliberately the ONLY cross-tier rule. Tier gating is right in general:
+    // it is what stops plan and review work drifting onto a weak route to save
+    // a fraction of a point. This one task type opts out because its whole
+    // meaning is "capability is not what matters here", and there is no way to
+    // honour that from inside a tier.
+    //
+    // Falls through when no local route is eligible, so a machine with none
+    // behaves exactly as before.
+    const localTiers = [...tierCandidates.keys()].sort((a, b) => a - b);
+    if (taskType === "local") {
+      const localCandidates = localTiers
+        .flatMap((t) => tierCandidates.get(t) ?? [])
+        .filter((c) => c.local)
+        .sort((a, b) => b.score - a.score);
+      const best = localCandidates[0];
+      if (best) {
+        const svc = this.config.services[best.name]!;
+        const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
+        return {
+          service: best.name,
+          tier: best.tier,
+          quotaScore: best.quotaScore,
+          qualityScore: best.qualityScore,
+          cliCapability: best.cliCapability,
+          capabilityScore: best.capScore,
+          taskType,
+          model: modelOverride ?? resolveModel(svc, taskType),
+          ...(preferredModel !== undefined
+            ? { modelHintMatched: declaresModel(svc, preferredModel) }
+            : {}),
+          ...(modelIsRouteId && preferredModel !== undefined ? { modelHintDropped: true } : {}),
+          elo: best.elo ?? undefined,
+          finalScore: best.score,
+          reason:
+            `local route preferred for taskType 'local' ` +
+            `(${localCandidates.length} local of ${localTiers.reduce((n, t) => n + (tierCandidates.get(t)?.length ?? 0), 0)} eligible)`,
+          candidates: localCandidates.slice(0, 4).map((c) => ({
+            route: c.name,
+            score: Math.round(c.score * 1000) / 1000,
+          })),
+          skippedRoutes: skippedRoutes.slice(),
+          safetyProfile: requestedSafetyProfile(svc, requestedSafety),
+          effectiveSafetyProfile: effectiveSafety,
+          billing: buildRouteBilling(svc),
+          workspacePolicy: workspacePolicyFor(svc, effectiveSafety, requestedWorkspacePolicy),
+        };
+      }
     }
 
     const sortedTiers = [...tierCandidates.keys()].sort((a, b) => a - b);
