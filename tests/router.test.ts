@@ -127,7 +127,9 @@ vi.mock("../src/leaderboard.js", () => {
 
 // ---- Imports come AFTER vi.mock calls ------------------------------------
 
-import { Router } from "../src/router.js";
+import { Router, SCORING } from "../src/router.js";
+import { nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
+import { buildRouteBilling } from "../src/billing.js";
 import { QuotaCache } from "../src/quota.js";
 import { LeaderboardCache } from "../src/leaderboard.js";
 import { CircuitBreaker } from "../src/circuit-breaker.js";
@@ -740,6 +742,51 @@ describe("Router.pickService", () => {
     expect(withBoost?.service).toBe("antigravity_cli");
     // And the score delta equals 0.3 exactly for the antigravity service.
     expect(withBoost!.finalScore - withoutBoost!.finalScore).toBeCloseTo(0.3, 10);
+  });
+
+  it("pins the scoring constants that src/router.ts's header restates in prose", () => {
+    // Not a test of behaviour — the tests around it cover that. This exists
+    // because the header enumerates these numbers several hundred lines from
+    // where they are used, and one of those restatements went stale: it
+    // described a taskType=local bonus for a release after the bonus was
+    // deleted. check-claims.mjs could not catch it, and cannot catch this
+    // class at all — it verifies that things prose NAMES exist, never that
+    // what prose SAYS is true.
+    //
+    // So: change a number here and this fails, with a message naming the other
+    // half to update. Cheaper and less brittle than parsing the comment, and
+    // it puts the reminder where the change happens.
+    const header = "src/router.ts's header comment lists these — update it too";
+    expect(SCORING.modelMatchBonus, header).toBe(0.5);
+    expect(SCORING.largeContextBonus, header).toBe(0.3);
+    expect(SCORING.mediumContextBonus, header).toBe(0.15);
+    expect(SCORING.largeContextThreshold, header).toBe(2_000_000);
+    expect(SCORING.mediumContextThreshold, header).toBe(1_000_000);
+    expect(SCORING.defaultMaxFallbacks, header).toBe(2);
+    // The penalty lives in route-policy.ts but the header quotes it here, so
+    // it drifts the same way. Built through the real billing path rather than
+    // hand-assembled, so a change to how billing is derived shows up too.
+    const penaltyFor = (over: Partial<ServiceConfig>) =>
+      nonLocalIncludedRoutePenalty(buildRouteBilling(makeService({ name: "p", ...over })));
+    expect(penaltyFor({}), header).toBe(0);
+    expect(
+      penaltyFor({
+        provider: "anthropic",
+        surface: "vendor_cli",
+        authSource: "oauth_session",
+        billingKind: "included_plan_usage",
+      }),
+      header,
+    ).toBe(0.2);
+    expect(
+      penaltyFor({
+        provider: "openai",
+        surface: "openai_api",
+        authSource: "api_key",
+        billingKind: "metered_api",
+      }),
+      header,
+    ).toBe(0.4);
   });
 
   it("prefers a local route for taskType=local over a cloud one in the same tier", async () => {

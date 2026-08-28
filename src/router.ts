@@ -94,6 +94,34 @@ const TASK_TYPES_WITH_CAPABILITY: ReadonlySet<TaskType> = new Set([
   "review",
 ]);
 
+/**
+ * Every scoring adjustment, named and in one place.
+ *
+ * These were inline literals, restated as prose in this file's header several
+ * hundred lines away. One of those restatements went stale — the header still
+ * described a taskType=local bonus for a release after it was deleted — and
+ * nothing could have caught it: check-claims.mjs verifies that things prose
+ * NAMES exist, never that what it SAYS is true.
+ *
+ * Naming them does not by itself keep the header honest. `tests/router.test.ts`
+ * pins these values with a message pointing at the header, so changing one
+ * fails a test that tells you the other half to update. That is the cheap
+ * version of a doc-accuracy check: not parsing prose, just refusing to let the
+ * numbers move quietly.
+ */
+export const SCORING = {
+  /** hints.model names this route or one of its declared models. */
+  modelMatchBonus: 0.5,
+  /** Route declares >= 2M max_input_tokens, under preferLargeContext. */
+  largeContextBonus: 0.3,
+  /** Route declares >= 1M max_input_tokens, under preferLargeContext. */
+  mediumContextBonus: 0.15,
+  largeContextThreshold: 2_000_000,
+  mediumContextThreshold: 1_000_000,
+  /** Extra attempts after the first, when a dispatch fails. */
+  defaultMaxFallbacks: 2,
+} as const;
+
 
 /**
  * `service` is a raw string from the caller — a near-miss ("codex" for
@@ -614,7 +642,7 @@ export class Router {
       }
 
       if (modelMatchesService(name, svc, preferredModel)) {
-        score += 0.5;
+        score += SCORING.modelMatchBonus;
       }
       if (preferLargeContext) {
         // Boost by DECLARED context size (max_input_tokens in the route's
@@ -622,8 +650,8 @@ export class Router {
         // Antigravity's default) gets the full boost, 1M-context routes get
         // half, and any user-added large-context harness benefits equally.
         const maxIn = svc.maxInputTokens ?? 0;
-        if (maxIn >= 2_000_000) score += 0.3;
-        else if (maxIn >= 1_000_000) score += 0.15;
+        if (maxIn >= SCORING.largeContextThreshold) score += SCORING.largeContextBonus;
+        else if (maxIn >= SCORING.mediumContextThreshold) score += SCORING.mediumContextBonus;
       }
       // No `taskType === "local"` bonus here any more.
       //
@@ -803,7 +831,7 @@ export class Router {
     opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number; signal?: AbortSignal },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
-    const maxFallbacks = opts.maxFallbacks ?? 2;
+    const maxFallbacks = opts.maxFallbacks ?? SCORING.defaultMaxFallbacks;
     const tried = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
     // `defaultTimeoutMs` (currently only `job`'s background ceiling) is a
@@ -1093,7 +1121,7 @@ export class Router {
     opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     const hints = opts.hints ?? {};
-    const maxFallbacks = opts.maxFallbacks ?? 2;
+    const maxFallbacks = opts.maxFallbacks ?? SCORING.defaultMaxFallbacks;
     const tried = new Set<string>();
     let lastResult: DispatchResult | null = null;
     let lastDecision: RoutingDecision | null = null;

@@ -1,8 +1,19 @@
 /**
- * Scoring-parity fixtures — table-driven, byte-identical expected scores
- * hand-computed against the Python `router.py` formula.
+ * Scoring regression fixtures — table-driven, byte-identical expected scores.
  *
- * Formula (Python router.py:265-280):
+ * NOT a parity suite any more, whatever its filename says. It was written to
+ * pin this TypeScript port against the Python `router.py` it replaced, and
+ * that file no longer exists in this repo — so "parity" describes a comparison
+ * nobody can perform, and the `router.py:265-280` citations below point into
+ * something unopenable. What the suite actually does now is refuse to let the
+ * scoring formula move without someone saying so, which is worth keeping and
+ * is a different claim.
+ *
+ * Deliberate divergences from the original formula are recorded at the fixture
+ * that carries them, not here, so the explanation sits next to the number it
+ * explains. There is one so far — see the taskType=local fixture.
+ *
+ * Formula (originally Python router.py:265-280, kept for provenance):
  *   effective_quality = quality_score * cli_capability * capability[task_type]
  *   score             = effective_quality * quota_score * weight
  *   + 0.3 bonus if prefer_large_context AND harness is "antigravity"/"antigravity_cli"
@@ -414,7 +425,7 @@ function buildContext(fixture: Fixture): {
   return { router, quota, leaderboard };
 }
 
-describe("Scoring parity with Python router.py:265-280", () => {
+describe("Scoring regression — the formula does not move without someone saying so", () => {
   let warned = false;
   beforeEach(() => {
     warned = false;
