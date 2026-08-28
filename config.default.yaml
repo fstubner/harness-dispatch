@@ -47,7 +47,23 @@ clis:
     # line; {{tokens}} are substituted at dispatch time (see the reference at
     # the bottom of this file).
     protocol:
-      args: ["-p", "{{prompt}}", "--output-format", "json", "{{safety}}", "{{model}}"]
+      # The prompt goes on STDIN, not in argv.
+      #
+      # `claude -p` accepts either; argv was the original choice and it is the
+      # one that carries every command-line defect this project has fixed. On
+      # Windows a .CMD/.bat target is re-spawned through cmd.exe, which caps
+      # the whole command line at 8,191 characters — so a long prompt was
+      # refused before it reached the harness at all, and the machinery
+      # deciding where that boundary sits had to replicate cross-spawn's own
+      # escaping to know. generic-cli.ts skips that check entirely when
+      # `stdin: true` (the guard is `if (!protocol.stdin)`), because a prompt
+      # on stdin has no such limit. codex_cli has always worked this way.
+      #
+      # Verified live: a 21,670-character prompt — 2.7x the ceiling, and
+      # measured at 20,064 characters as argv, which the old form refused
+      # outright — dispatched and answered.
+      stdin: true
+      args: ["-p", "--output-format", "json", "{{safety}}", "{{model}}"]
       model: { flag: "--model" }
       safety:
         read_only: ["--allowedTools", "Read", "--permission-mode", "plan"]

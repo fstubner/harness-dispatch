@@ -44,6 +44,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   `--safety` is refused by name rather than dropped to a default, which would
   hand the delegate more access than was asked for.
 
+### Changed
+
+- Claude Code dispatches send the prompt on STDIN instead of in the command
+  line. Every command-line defect this project has fixed — replicating
+  cross-spawn escaping, the 8,191-character cmd.exe ceiling, the npm-shim
+  double-escape, a refusal band that was too tight and then too loose — applies
+  only to routes that pass the prompt as an argument, and this was one of three
+  that did. Codex has always used stdin. A 21,670-character prompt, 2.7x the
+  ceiling and refused outright by the old form, now dispatches and answers.
+
 ### Fixed
 
 - `taskType: "local"` now actually reaches a local endpoint. It could not: the
