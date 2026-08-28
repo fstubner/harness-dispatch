@@ -6,7 +6,12 @@
  *   effective_quality = quality_score * cli_capability * capability[task_type]
  *   score             = effective_quality * quota_score * weight
  *   + 0.3 bonus if prefer_large_context AND harness is "antigravity"/"antigravity_cli"
- *   + 0.3 bonus if task_type=="local" AND openai_compatible on localhost/127.0.0.1
+ *
+ * One deliberate divergence: Python's `+0.3 if task_type=="local" AND
+ * openai_compatible on localhost` is gone. A bonus only reorders within a
+ * tier, so it could never reach a local endpoint sitting below a healthy
+ * tier-1 route — the preference is a cross-tier selection rule now. See the
+ * fixture's own comment.
  *
  * Each fixture lists the configured services, the mocks (quota/leaderboard),
  * the routing hints, and the expected winning service + final_score.
@@ -325,7 +330,22 @@ const FIXTURES: Fixture[] = [
   //    -> ollama wins
   // ------------------------------------------------------------------------
   {
-    name: "taskType=local boosts localhost openai_compatible",
+    // DELIBERATE DIVERGENCE from the Python formula, recorded rather than
+    // silenced — this suite exists to catch accidental drift, so a reasoned
+    // change has to say so here or it looks like drift forever.
+    //
+    // Python added +0.3 for a localhost openai_compatible route under
+    // taskType=local, making this fixture score 0.9. That bonus could never
+    // do its job: it only reorders WITHIN a tier, and local endpoints sit in
+    // the cheap tier, so any healthy tier-1 route won before the bonus was
+    // consulted. Measured on a real config, every taskType including 'local'
+    // resolved to the same tier-1 CLI and the configured local box had 0 calls
+    // in a month.
+    //
+    // The preference is now a cross-tier selection rule instead, so the bonus
+    // is gone and the score is the plain formula. `ollama` still wins — by the
+    // rule rather than by an inflated number.
+    name: "taskType=local prefers the local route (no score bonus; see comment)",
     services: [
       svc({
         name: "cloud",
@@ -333,6 +353,14 @@ const FIXTURES: Fixture[] = [
         type: "openai_compatible",
         baseUrl: "https://api.cloud.example.com/v1",
         leaderboardModel: "cloud-model",
+        // Spelled out because svc() defaults EVERY fixture to local on all
+        // four declared signals. A route named "cloud" that is local by every
+        // field it declares makes this fixture assert the opposite of its
+        // name — and it did: cloud won the local preference on score.
+        provider: "anthropic",
+        surface: "vendor_cli",
+        authSource: "oauth_session",
+        billingKind: "included_plan_usage",
       }),
       svc({
         name: "ollama",
@@ -347,7 +375,7 @@ const FIXTURES: Fixture[] = [
       { model: "cloud-model", qualityScore: 0.75, elo: 1100 },
       { model: "ollama-model", qualityScore: 0.6, elo: 1000 },
     ],
-    expected: { service: "ollama", finalScore: 0.9, tier: 3 },
+    expected: { service: "ollama", finalScore: 0.6, tier: 3 },
   },
 ];
 

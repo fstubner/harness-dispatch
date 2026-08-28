@@ -92,7 +92,9 @@ export const publicHintsSchema = z
       .describe(
         "Kind of work: 'execute' (write/modify code, run commands), 'plan' " +
           "(architecture/design, no edits), 'review' (critique code, no edits), 'local' " +
-          "(trivial/mechanical — prefers free local endpoints). ALWAYS set this: when " +
+          "(trivial/mechanical — picks a local endpoint wherever it sits, ahead of the " +
+          "usual tier order, and falls back to normal routing when you have none). " +
+          "ALWAYS set this: when " +
           "omitted, per-task capability weighting and model escalation are disabled and " +
           "routing quality degrades.",
       ),

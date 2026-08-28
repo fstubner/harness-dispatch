@@ -6,6 +6,24 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `taskType: "local"` now actually reaches a local endpoint. It could not: the
+  preference was a score bonus, a bonus only reorders routes within a tier, and
+  local endpoints sit in the cheap tier — so any healthy top-tier route won
+  before the bonus was ever consulted. Measured on a real config, every task
+  type including `local` resolved to the same top-tier CLI, and a configured
+  local box had zero calls in a month. It is a cross-tier selection rule now,
+  and the only one: tier gating still stops plan and review work drifting onto
+  a weaker route, because those task types are about capability and this one is
+  explicitly not.
+- "Local" means one thing again. `routePolicy: "local_only"` decided it from
+  what a route declares — provider, surface, auth source, billing kind — while
+  `taskType: "local"` used its own narrower test of a loopback URL. So a real
+  box on a LAN or tailnet address was local enough to be the only thing
+  `local_only` would run, and not local enough for the task type named after
+  it. Both signals count now.
+
 ## [0.7.9] — 2026-08-28
 
 **Upgrade from 0.7.8.** Fixes found by using the thing: two from the release

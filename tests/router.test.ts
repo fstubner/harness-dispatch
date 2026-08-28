@@ -742,12 +742,16 @@ describe("Router.pickService", () => {
     expect(withBoost!.finalScore - withoutBoost!.finalScore).toBeCloseTo(0.3, 10);
   });
 
-  it("applies +0.3 taskType=local boost to localhost openai_compatible services", async () => {
+  it("prefers a local route for taskType=local over a cloud one in the same tier", async () => {
     const cloud = makeService({
       name: "cloud",
       tier: 3,
       type: "openai_compatible",
       baseUrl: "https://api.example.com/v1",
+      provider: "anthropic",
+      surface: "vendor_cli",
+      authSource: "oauth_session",
+      billingKind: "included_plan_usage",
     });
     const local = makeService({
       name: "ollama",
@@ -762,6 +766,87 @@ describe("Router.pickService", () => {
     const router = new Router(makeConfig([cloud, local]), quota, dispatchers, leaderboard);
     const decision = await router.pickService({ hints: { taskType: "local" } });
     expect(decision?.service).toBe("ollama");
+  });
+
+  it("reaches a local route for taskType=local ACROSS tiers, not just within one", async () => {
+    // The schema says 'local' "prefers free local endpoints". It could not:
+    // the preference was a +0.3 score bonus, a bonus only reorders within a
+    // tier, and local endpoints live in the cheap tier — so any healthy tier-1
+    // route won before the bonus was consulted. Measured on a real config,
+    // every taskType including 'local' resolved to the same tier-1 CLI and the
+    // configured local box had 0 calls in a month.
+    const frontier = makeService({
+      name: "frontier",
+      tier: 1,
+      provider: "anthropic",
+      surface: "vendor_cli",
+      authSource: "oauth_session",
+      billingKind: "included_plan_usage",
+    });
+    const localBox = makeService({
+      name: "local_box",
+      tier: 3,
+      type: "openai_compatible",
+      // NOT loopback, deliberately. The old test keyed on a localhost URL,
+      // which is why a real box on a LAN or tailnet address was never local
+      // enough — while routePolicy: 'local_only' considered it local all
+      // along, off the same declared fields.
+      baseUrl: "http://node-a17.tailnet.ts.net:1234/v1",
+      provider: "local",
+      surface: "local_endpoint",
+      authSource: "local_network",
+      billingKind: "local_compute",
+    });
+    const dispatchers: Record<string, Dispatcher> = {
+      frontier: new StubDispatcher("frontier"),
+      local_box: new StubDispatcher("local_box"),
+    };
+    const router = new Router(makeConfig([frontier, localBox]), quota, dispatchers, leaderboard);
+
+    const local = await router.pickService({ hints: { taskType: "local" } });
+    expect(local?.service, "a tier-1 route beat the local box for trivial work").toBe("local_box");
+    expect(local?.reason).toMatch(/local route preferred/);
+
+    // And ONLY this task type crosses tiers. Tier gating is what stops plan
+    // and review drifting onto a weak route to save a fraction of a point.
+    for (const taskType of ["execute", "plan", "review"] as const) {
+      const other = await router.pickService({ hints: { taskType } });
+      expect(other?.service, `taskType ${taskType} escaped its tier`).toBe("frontier");
+    }
+  });
+
+  it("falls back to normal tier order when no local route is eligible", async () => {
+    // A machine with no local endpoint must behave exactly as before.
+    const frontier = makeService({
+      name: "frontier",
+      tier: 1,
+      provider: "anthropic",
+      surface: "vendor_cli",
+      authSource: "oauth_session",
+      billingKind: "included_plan_usage",
+    });
+    const cloud = makeService({
+      name: "cloud",
+      tier: 3,
+      type: "openai_compatible",
+      baseUrl: "https://api.example.com/v1",
+      // Spelled out because makeService defaults EVERY fixture to local on all
+      // four signals — provider, surface, auth source, billing kind. A test
+      // meaning "no local route is eligible" that leaves those at their
+      // defaults is testing the opposite of what it says.
+      provider: "anthropic",
+      surface: "vendor_cli",
+      authSource: "oauth_session",
+      billingKind: "included_plan_usage",
+    });
+    const dispatchers: Record<string, Dispatcher> = {
+      frontier: new StubDispatcher("frontier"),
+      cloud: new StubDispatcher("cloud"),
+    };
+    const router = new Router(makeConfig([frontier, cloud]), quota, dispatchers, leaderboard);
+    const decision = await router.pickService({ hints: { taskType: "local" } });
+    expect(decision?.service).toBe("frontier");
+    expect(decision?.reason).toMatch(/tier 1 best/);
   });
 
   it("resolves the escalation model when task_type is in escalateOn", async () => {
