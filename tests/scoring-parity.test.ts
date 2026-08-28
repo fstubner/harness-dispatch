@@ -335,10 +335,11 @@ const FIXTURES: Fixture[] = [
   },
 
   // ------------------------------------------------------------------------
-  // 5. taskType=local: localhost openai_compatible wins over cloud via +0.3.
-  //    cloud:  0.75 * 1.0 * 1.0 * 1.0 * 1.0       = 0.75
-  //    ollama: 0.6  * 1.0 * 1.0 * 1.0 * 1.0 + 0.3 = 0.9
-  //    -> ollama wins
+  // 5. taskType=local: the local route wins by the cross-tier RULE, not by a
+  //    score bonus. Both scores are the plain formula:
+  //      cloud:  0.75 * 1.0 * 1.0 * 1.0 * 1.0 = 0.75  (declared non-local)
+  //      ollama: 0.6  * 1.0 * 1.0 * 1.0 * 1.0 = 0.6   (local, and so preferred)
+  //    -> ollama wins on 0.6 while cloud sits at 0.75, which is the point.
   // ------------------------------------------------------------------------
   {
     // DELIBERATE DIVERGENCE from the Python formula, recorded rather than
@@ -369,7 +370,7 @@ const FIXTURES: Fixture[] = [
         // field it declares makes this fixture assert the opposite of its
         // name — and it did: cloud won the local preference on score.
         provider: "anthropic",
-        surface: "vendor_cli",
+        surface: "claude_code",
         authSource: "oauth_session",
         billingKind: "included_plan_usage",
       }),

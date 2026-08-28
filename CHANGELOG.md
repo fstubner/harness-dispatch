@@ -17,12 +17,21 @@ pre-1.0, so minor versions can carry behaviour changes.
   and the only one: tier gating still stops plan and review work drifting onto
   a weaker route, because those task types are about capability and this one is
   explicitly not.
-- "Local" means one thing again. `routePolicy: "local_only"` decided it from
-  what a route declares — provider, surface, auth source, billing kind — while
-  `taskType: "local"` used its own narrower test of a loopback URL. So a real
-  box on a LAN or tailnet address was local enough to be the only thing
-  `local_only` would run, and not local enough for the task type named after
-  it. Both signals count now.
+- "Local" means one thing again, and it is what a route DECLARES — provider,
+  surface, auth source, billing kind — exactly as `routePolicy: "local_only"`
+  has always decided it. `taskType: "local"` used its own narrower test of a
+  loopback URL, so a real box on a LAN or tailnet address was local enough to
+  be the only thing `local_only` would run, and not local enough for the task
+  type named after it.
+
+  A URL shape no longer overrides a declaration. Briefly it did both, and that
+  was worse: a metered proxy on 127.0.0.1 — LiteLLM, OpenRouter, anything
+  fronting a paid API — declares itself metered, and the loopback check
+  overruled it, so the one task type meaning "free local endpoint" preferred
+  the PAID route over a free subscription CLI. Nothing was lost by removing it:
+  a local box that declares the fields is already covered, one declaring
+  nothing on a known runtime port is inferred local from the port, and one on
+  any other port never reaches candidacy at all.
 
 ## [0.7.9] — 2026-08-28
 
