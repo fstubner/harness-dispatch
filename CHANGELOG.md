@@ -64,6 +64,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Retrying a job on a DIFFERENT route no longer carries the old route's model,
+  which defeated the one thing retargeting exists for. A model name belongs to
+  the route it was picked for, so reusing it verbatim made the retry fail for
+  the same reason as the original: observed end to end, a Cursor run that died
+  on `Cannot use this model` was retried onto Claude and died on
+  `unrecognized_model`, never reaching the task. That same job now completes.
+
+  Narrow, and reported rather than silent. The model is kept when the retry
+  stays on the original route (a plain "try that again") and when the new route
+  declares it anyway; only a model the destination does not know is left
+  behind, and the response says so as `droppedModel`.
+
 - `taskType: "local"` now actually reaches a local endpoint. It could not: the
   preference was a score bonus, a bonus only reorders routes within a tier, and
   local endpoints sit in the cheap tier — so any healthy top-tier route won
