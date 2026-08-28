@@ -22,7 +22,7 @@ import { QuotaCache } from "./quota.js";
 import { Router } from "./router.js";
 import { buildStatus, buildUsage, renderStatusText, renderUsageText } from "./status.js";
 import { startHttpServer } from "./http/server.js";
-import type { RouterConfig } from "./types.js";
+import type { RouteHints, RouterConfig, SafetyProfile, TaskType } from "./types.js";
 import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
 import { configToYaml, type YamlOpts } from "./configure-yaml.js";
@@ -62,6 +62,7 @@ function printUsage(): void {
       "  harness-dispatch status --watch          Re-render status every --interval ms.",
       "  harness-dispatch usage [--json]          Show per-route call counts, quota, and billing kind.",
       "  harness-dispatch serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
+      '  harness-dispatch dispatch "<prompt>"     Route one task and print the result.',
       "  harness-dispatch auth show               Print the HTTP bearer token.",
       "  harness-dispatch auth rotate             Rotate the HTTP bearer token.",
       "",
@@ -75,6 +76,10 @@ function printUsage(): void {
       "  --yes                 configure: write config.yaml instead of only previewing it.",
       "  --force               configure: overwrite an existing config file.",
       "  --allow-paid          Allow doctor --live to probe paid or unknown-paid routes.",
+      "  --service <id>        dispatch: run exactly this route, no fallback to others.",
+      "  --safety <profile>    dispatch: read_only | workspace_edit | full_auto.",
+      "  --task-type <type>    dispatch: execute | plan | review | local.",
+      "  --no-fallback         dispatch: do not retry on another route if the first fails.",
       "  -h, --help            Show help.",
       "  -v, --version         Print the version and exit.",
       "",
@@ -510,18 +515,65 @@ async function cmdAuth(action: string | undefined): Promise<number> {
   }
 }
 
-async function cmdRouteAlias(prompt: string, configPath: string | undefined): Promise<number> {
+/**
+ * One dispatch from the command line — the CLI half of the `dispatch` MCP
+ * tool, named to match it (`route` stays as an alias).
+ *
+ * It took flags because it had none and that made it unusable for the one job
+ * it is most needed for. An acceptance pass has to exercise the build IN THE
+ * WORKING TREE; the MCP tool runs in whatever server process is already
+ * connected, which is a different artifact from a different moment. So the CLI
+ * is the honest path there — and it hardcoded taskType "execute" with two
+ * fallbacks, meaning a pass asking for one read-only call on one route could
+ * silently get an execute-profile run on up to three. The first acceptance
+ * pass to attempt a live dispatch wrote its own Node script against dist/
+ * rather than use this, which is the tell.
+ */
+async function cmdDispatch(
+  prompt: string,
+  configPath: string | undefined,
+  opts: {
+    service?: string | undefined;
+    safetyProfile?: SafetyProfile | undefined;
+    taskType?: TaskType | undefined;
+    noFallback: boolean;
+    json: boolean;
+  },
+): Promise<number> {
   if (!prompt) {
-    process.stderr.write('route: missing prompt. Usage: route "<prompt>"\n');
+    process.stderr.write(
+      'dispatch: missing prompt. Usage: dispatch [--service <id>] [--safety <profile>]\n' +
+        '          [--task-type <type>] [--no-fallback] [--json] "<prompt>"\n',
+    );
     return 1;
   }
   const runtime = await buildRuntime(configPath);
-  const { result, decision } = await runtime.router.route(prompt, [], process.cwd(), {
-    hints: { taskType: "execute" },
-    maxFallbacks: 2,
-  });
+  const hints: RouteHints = { taskType: opts.taskType ?? "execute" };
+  if (opts.safetyProfile !== undefined) hints.safetyProfile = opts.safetyProfile;
+
+  // A named service goes through routeTo, which is what "run exactly this
+  // route" means — not route() with a hint, which can still fall elsewhere.
+  const { result, decision } = opts.service
+    ? await runtime.router.routeTo(opts.service, prompt, [], process.cwd(), {
+        ...(opts.safetyProfile !== undefined ? { safetyProfile: opts.safetyProfile } : {}),
+        ...(opts.taskType !== undefined ? { taskType: opts.taskType } : {}),
+      })
+    : await runtime.router.route(prompt, [], process.cwd(), {
+        hints,
+        maxFallbacks: opts.noFallback ? 0 : 2,
+      });
+
+  if (opts.json) {
+    process.stdout.write(
+      `${JSON.stringify({ result, routing: decision ?? null }, null, 2)}\n`,
+    );
+    return result.success ? 0 : 1;
+  }
   if (decision) {
-    process.stderr.write(`route: ${decision.service} (${decision.reason})\n`);
+    const beat = decision.candidates?.length
+      ? ` [${decision.candidates.map((c) => `${c.route} ${c.score}`).join(", ")}]`
+      : "";
+    process.stderr.write(`dispatch: ${decision.service} (${decision.reason})${beat}\n`);
   }
   process.stdout.write(result.output);
   if (!result.output.endsWith("\n")) process.stdout.write("\n");
@@ -530,6 +582,31 @@ async function cmdRouteAlias(prompt: string, configPath: string | undefined): Pr
     return 1;
   }
   return 0;
+}
+
+const SAFETY_PROFILES = ["read_only", "workspace_edit", "full_auto"] as const;
+const TASK_TYPES = ["execute", "plan", "review", "local"] as const;
+
+/**
+ * An enum-valued flag: rejected by name when it is not one of the listed
+ * values, never silently dropped to a default.
+ *
+ * `--safety read_onlyy` dropping to workspace_edit would hand a delegate MORE
+ * access than the caller asked for — the same failure the MCP and HTTP
+ * surfaces were both hardened against, and the reason `hints` is strict there.
+ */
+function enumFlag<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  flag: string,
+): T | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new UsageError(
+    `${flag}: invalid value ${JSON.stringify(value)}. Valid: ${allowed.join(", ")}.`,
+  );
 }
 
 function parsePositiveInt(value: unknown, fallback: number): number {
@@ -582,6 +659,10 @@ export async function main(argv: string[]): Promise<number> {
       yes: { type: "boolean" },
       force: { type: "boolean" },
       http: { type: "string" },
+      service: { type: "string" },
+      safety: { type: "string" },
+      "task-type": { type: "string" },
+      "no-fallback": { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -595,6 +676,7 @@ export async function main(argv: string[]): Promise<number> {
   const knownFlags = new Set([
     "help", "version", "config", "json", "live", "allow-paid", "watch", "interval",
     "port", "host", "print", "yes", "force", "http",
+    "service", "safety", "task-type", "no-fallback",
   ]);
   const unknownFlags = Object.keys(values).filter((k) => !knownFlags.has(k));
   if (unknownFlags.length > 0) {
@@ -679,8 +761,21 @@ export async function main(argv: string[]): Promise<number> {
       return cmdServe(configPath, serveOpts(values));
     case "auth":
       return cmdAuth(rest[0]);
-    case "route":
-      return cmdRouteAlias(rest.join(" ").trim(), configPath);
+    // `route` kept as an alias: it was the name for two years of history, and
+    // `dispatch` matches the MCP tool that does the same thing. Same pattern
+    // as status/dashboard/list-services above.
+    case "dispatch":
+    case "route": {
+      const safety = enumFlag(values.safety, SAFETY_PROFILES, "--safety");
+      const taskType = enumFlag(values["task-type"], TASK_TYPES, "--task-type");
+      return cmdDispatch(rest.join(" ").trim(), configPath, {
+        ...(typeof values.service === "string" ? { service: values.service } : {}),
+        ...(safety !== undefined ? { safetyProfile: safety } : {}),
+        ...(taskType !== undefined ? { taskType } : {}),
+        noFallback: Boolean(values["no-fallback"]),
+        json: Boolean(values.json),
+      });
+    }
     case "mcp":
       if (values.http !== undefined) {
         return cmdServe(configPath, serveOpts({ port: values.http, host: values.host }));

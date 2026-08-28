@@ -6,6 +6,22 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- `harness-dispatch dispatch "<prompt>"` — one routed task from the command
+  line, with `--service`, `--safety`, `--task-type`, `--no-fallback` and
+  `--json`. `route` still works; it is the same command under the name the MCP
+  tool already uses.
+
+  It existed as `route` and had no flags, which made it unusable for the job it
+  is most needed for: an acceptance pass has to exercise the build in the
+  working tree, and the MCP tool runs in whatever server process is already
+  connected — a different artifact from a different moment. Meanwhile `route`
+  hardcoded `execute` with two fallbacks, so asking for one read-only call on
+  one route could get an execute-profile run on up to three. A typo'd
+  `--safety` is refused by name rather than dropped to a default, which would
+  hand the delegate more access than was asked for.
+
 ### Fixed
 
 - `taskType: "local"` now actually reaches a local endpoint. It could not: the

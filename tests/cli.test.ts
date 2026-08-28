@@ -173,6 +173,36 @@ describe("CLI parser", () => {
     expect(result.code, "a machine without git is a supported configuration").toBe(0);
   });
 
+  it.each([
+    ["--safety", "read_onlyy", /--safety: invalid value/],
+    ["--task-type", "excute", /--task-type: invalid value/],
+  ])("rejects a typo'd %s rather than dropping to a default", async (flag, value, message) => {
+    // A dropped --safety would hand the delegate MORE access than asked for —
+    // the same failure the MCP and HTTP surfaces were both hardened against,
+    // which is why `hints` is strict on both. A new flag reaching a delegate
+    // gets the same treatment.
+    // main() THROWS UsageError; the entry point above it turns that into one
+    // line and exit 1 (verified against the built binary). Asserting the throw
+    // is asserting the same contract one layer in.
+    const config = await writeConfig();
+    await expect(
+      capture(() => main(["dispatch", flag, value, "--config", config, "hi"])),
+    ).rejects.toThrow(message);
+  });
+
+  it("names dispatch in help, with route still accepted as the older spelling", async () => {
+    // The CLI called this `route` while the MCP tool called it `dispatch`, for
+    // the same operation. `dispatch` is the name now; `route` keeps working
+    // because it is what the last two years of muscle memory types.
+    const help = await capture(() => main(["--help"]));
+    expect(help.stdout).toContain("harness-dispatch dispatch");
+    const config = await writeConfig();
+    const routed = await capture(() => main(["route", "--config", config]));
+    // No prompt: both spellings should reach the same usage error, not an
+    // "unknown command".
+    expect(routed.stderr).toMatch(/missing prompt/);
+  });
+
   it("supports status --json", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();
