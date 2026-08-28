@@ -445,6 +445,50 @@ overrides:
     expect(cfg.services.claude_code_cli!.model).toBe("custom-model-1");
   });
 
+  it("keeps antigravity on argv, because agy cannot take a prompt on stdin", async () => {
+    // The exception, pinned so it reads as a finding rather than an oversight.
+    //
+    // `agy --print` requires an inline argument — piping to it gives "flag
+    // needs an argument: -print". Its only stdin path is
+    // `--input-format stream-json`, which requires `--output-format
+    // stream-json` too, so moving this route means also replacing its output
+    // parser with event rules. That is a real change, not a config value, and
+    // it is not this one.
+    //
+    // So the command-line length machinery still has exactly one route to
+    // protect, and cannot be deleted.
+    const p = await writeTmpYaml(
+      "agy-argv.yaml",
+      "clis:\n  - name: probe\n    harness: antigravity_cli\n",
+    );
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const protocol = cfg.services.probe!.protocol!;
+    expect(protocol.stdin ?? false).toBe(false);
+    expect(JSON.stringify(protocol.args ?? [])).toContain("{{prompt}}");
+  });
+
+  it("reads Cursor's prompt from stdin — it is the route the ceiling actually broke", async () => {
+    // cursor_cli is a `cursor-agent.CMD` PowerShell wrapper, so cross-spawn
+    // re-spawns it through cmd.exe and the 8,191-character cap applies. A
+    // 9,031-character prompt sailed past 0.7.6's check and still died with the
+    // bare "The command line is too long." that the check exists to replace —
+    // which is what drove two releases of escaping work.
+    //
+    // Verified live: `cursor-agent -p --trust --output-format json` accepts a
+    // piped prompt (--trust is required, or it refuses with a workspace-trust
+    // prompt), and a 13,554-character dispatch through this route answered.
+    const p = await writeTmpYaml(
+      "cursor-stdin.yaml",
+      "clis:\n  - name: probe\n    harness: cursor\n",
+    );
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const protocol = cfg.services.probe!.protocol!;
+    expect(protocol.stdin, "the prompt went back into argv").toBe(true);
+    expect(JSON.stringify(protocol.args ?? [])).not.toContain("{{prompt}}");
+    // --trust must survive: without it the CLI refuses before running.
+    expect(JSON.stringify(protocol.args ?? [])).toContain("--trust");
+  });
+
   it("reads Claude's prompt from stdin, so the cmd.exe ceiling cannot apply to it", async () => {
     // Every command-line defect this project has fixed — replicating
     // cross-spawn's escaping, the 8,191-character cmd.exe cap, the npm-shim
