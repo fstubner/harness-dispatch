@@ -31,6 +31,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   Re-running changes nothing. With no terminal and no `--clients`, it reports
   what it would do and writes nothing rather than prompting into the void.
 
+  `connect --dev` registers the checkout you are running instead of the
+  published package, for anyone developing against this repo. Without it that
+  case is not merely unsupported but actively wrong: on a machine with nothing
+  installed globally, the package form resolves through `npx` to whatever is on
+  the registry, so registering it swaps a checkout that is commits ahead for an
+  older release and reports success. Found by running `connect` on the
+  maintainer's machine, where it correctly declined to do exactly that. The
+  trade — an absolute path breaks silently when the directory moves — is why it
+  is opt-in per run, prints the path before writing it, and leans on the
+  `doctor` check that already fails on a client entry naming a path that has
+  gone.
+
 - The dispatch log records `candidates` — what the picked route beat — so the
   question the field was added to answer can be asked of a month of history
   rather than one response. It recorded `reason` ("tier 1 best (3 available)")

@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import yaml from "js-yaml";
@@ -28,6 +29,7 @@ import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
 import { configToYaml, type YamlOpts } from "./configure-yaml.js";
 import {
+  devLaunchCommand,
   planClientWrites,
   removeClientEntry,
   writeClientEntry,
@@ -88,6 +90,7 @@ function printUsage(): void {
       "  --clients <ids>       connect: comma-separated client ids, instead of prompting.",
       "  --no-clients          configure: skip the offer to register with clients.",
       "  --remove              connect: remove the entry rather than write it.",
+      "  --dev                 connect: point clients at THIS checkout's build, not the package.",
       "  --allow-paid          Allow doctor --live to probe paid or unknown-paid routes.",
       "  --service <id>        dispatch: run exactly this route, no fallback to others.",
       "  --safety <profile>    dispatch: read_only | workspace_edit | full_auto.",
@@ -213,6 +216,10 @@ async function cmdConfigure(
       remove: false,
       yes: false,
       force: false,
+      // Setup registers the installed package. A checkout entry is a
+      // deliberate choice made by someone who knows they have a checkout, not
+      // something to infer during first-run setup.
+      dev: false,
     });
   }
 
@@ -250,7 +257,13 @@ async function cmdConfigure(
  */
 async function cmdConnect(
   configPath: string | undefined,
-  opts: { clients?: string | undefined; remove: boolean; yes: boolean; force: boolean },
+  opts: {
+    clients?: string | undefined;
+    remove: boolean;
+    yes: boolean;
+    force: boolean;
+    dev: boolean;
+  },
 ): Promise<number> {
   const target = path.resolve(configPath ?? "config.yaml");
   if (!existsSync(target) && !opts.remove) {
@@ -262,7 +275,21 @@ async function cmdConnect(
     return 1;
   }
 
-  const plans = planClientWrites(target);
+  // `import.meta.url` is this running file — dist/bin.js for an installed or
+  // built copy. "The build you are running now" is the only honest answer to
+  // which checkout --dev means, and it needs no flag value to get wrong.
+  const selfPath = fileURLToPath(import.meta.url);
+  const plans = planClientWrites(
+    target,
+    opts.dev ? { command: devLaunchCommand(selfPath) } : {},
+  );
+  if (opts.dev && !opts.remove) {
+    process.stdout.write(
+      `Development entry: clients will launch ${selfPath} directly.\n` +
+        "That is an absolute path — it stops working, silently, if this directory is\n" +
+        "renamed or deleted. `harness-dispatch doctor` fails when that happens.\n\n",
+    );
+  }
   const known = new Set(plans.map((p) => p.id));
   const requested = opts.clients
     ?.split(",")
@@ -878,6 +905,7 @@ export async function main(argv: string[]): Promise<number> {
       clients: { type: "string" },
       "no-clients": { type: "boolean" },
       remove: { type: "boolean" },
+      dev: { type: "boolean" },
     },
     allowPositionals: true,
     strict: false,
@@ -892,7 +920,7 @@ export async function main(argv: string[]): Promise<number> {
     "help", "version", "config", "json", "live", "allow-paid", "watch", "interval",
     "port", "host", "print", "yes", "force", "http",
     "service", "safety", "task-type", "no-fallback",
-    "clients", "no-clients", "remove",
+    "clients", "no-clients", "remove", "dev",
   ]);
   const unknownFlags = Object.keys(values).filter((k) => !knownFlags.has(k));
   if (unknownFlags.length > 0) {
@@ -965,6 +993,7 @@ export async function main(argv: string[]): Promise<number> {
         remove: Boolean(values.remove),
         yes: Boolean(values.yes),
         force: Boolean(values.force),
+        dev: Boolean(values.dev),
       });
     case "doctor":
       return cmdDoctor(configPath, {

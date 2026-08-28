@@ -98,6 +98,28 @@ export function launchCommand(env: NodeJS.ProcessEnv = process.env): string[] {
     : ["npx", "-y", "harness-dispatch"];
 }
 
+/**
+ * Launch the build you are running RIGHT NOW, by absolute path.
+ *
+ * This is the one form the rest of this module argues against, and it exists
+ * because refusing to write it did not stop anyone needing it. On a
+ * development checkout the installed-package form is actively wrong: with
+ * nothing installed globally, `npx -y harness-dispatch` fetches the published
+ * version, so registering it would silently swap a checkout that is commits
+ * ahead for an older release — a downgrade that looks like a successful setup.
+ * That is exactly what `connect` found on the maintainer's machine, where the
+ * hand-written absolute entry was the correct one.
+ *
+ * The trade is real and unchanged: an absolute path stops working the moment
+ * the directory is renamed or deleted, silently, which is the failure that
+ * started all of this. It is opt-in per run, the path is printed before it is
+ * written, and `doctor` fails on a client entry naming a path that has gone —
+ * so the failure mode this reintroduces is the one thing already checked for.
+ */
+export function devLaunchCommand(entryPath: string): string[] {
+  return ["node", path.resolve(entryPath)];
+}
+
 function resolvesOnPath(cmd: string, env: NodeJS.ProcessEnv): boolean {
   const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
   // On Windows the executable is `harness-dispatch.cmd`/`.exe`, never the bare

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ENTRY_KEY,
   desiredEntry,
+  devLaunchCommand,
   planClientWrites,
   removeClientEntry,
   writeClientEntry,
@@ -92,6 +93,33 @@ describe("planClientWrites", () => {
       mcpServers: { [ENTRY_KEY]: { command: "npx", args: ["-y", "harness-dispatch"] } },
     });
     expect(planFor("cursor").state).toBe("differs");
+  });
+});
+
+describe("devLaunchCommand", () => {
+  it("writes the checkout's build, preserving fields we do not set", async () => {
+    // The case this exists for, from the maintainer's machine: Claude Code was
+    // launching a local checkout that was nine commits ahead of the published
+    // package, with nothing installed globally. Registering the package form
+    // would have swapped a newer server for an older one and called it setup.
+    const entry = path.join("H:", "checkout", "dist", "bin.js");
+    await writeJson(claudeFile(), {
+      mcpServers: {
+        [ENTRY_KEY]: { command: "npx", args: ["-y", "harness-dispatch"], cwd: "H:\\checkout" },
+      },
+    });
+
+    const plan = planClientWrites(CONFIG, { home, command: devLaunchCommand(entry) });
+    const claude = plan.find((p) => p.id === "claude-code")!;
+    expect(claude.state).toBe("differs");
+    await writeClientEntry(claude, { stamp: "s" });
+
+    const written = (await readJson(claudeFile())).mcpServers[ENTRY_KEY];
+    expect(written.command).toBe("node");
+    expect(written.args[0]).toBe(path.resolve(entry));
+    expect(written.args).toContain("--config");
+    // `cwd` is not a field we set, so it survives — same rule that keeps `env`.
+    expect(written.cwd).toBe("H:\\checkout");
   });
 });
 

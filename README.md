@@ -355,6 +355,7 @@ harness-dispatch configure               # detect harnesses and prepare config
 harness-dispatch configure --print       # inspect generated config YAML
 harness-dispatch connect                 # register with the MCP clients you have
 harness-dispatch connect --clients cursor  # no prompt; ids from the listing it prints
+harness-dispatch connect --dev           # point clients at THIS checkout's build
 harness-dispatch connect --remove        # take the entry back out
 harness-dispatch doctor                  # validate install, auth, config, and routes
 harness-dispatch doctor --live           # run one eligible live routed probe
