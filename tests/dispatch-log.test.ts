@@ -51,6 +51,44 @@ describe("dispatch log", () => {
     expect(typeof entry.ts).toBe("string");
   });
 
+  it("records what the picked route beat, so the log can answer whether the router chose well", () => {
+    // `reason` records that a choice happened ("tier 1 best (3 available)")
+    // and never what it was between. A month of real logs could therefore say
+    // the router had been used and not whether it was any good — which is the
+    // exact analysis routing.candidates was added to the response for, and it
+    // could not be run from the log that justified adding it.
+    const decision = {
+      service: "picked",
+      tier: 1,
+      reason: "tier 1 best (3 available)",
+      finalScore: 0.92,
+      candidates: [
+        { route: "picked", score: 0.92 },
+        { route: "runner_up", score: 0.81 },
+      ],
+    } as unknown as RoutingDecision;
+
+    const entry = buildDispatchLogEntry("picked", result(), decision);
+    expect(entry.candidates).toEqual([
+      { route: "picked", score: 0.92 },
+      { route: "runner_up", score: 0.81 },
+    ]);
+  });
+
+  it("omits candidates when nothing was compared", () => {
+    // Forced and explicit dispatches were not chosen over anything. An empty
+    // or one-entry list in the log would imply a comparison that never
+    // happened, and this file is the input to that analysis.
+    const forced = {
+      service: "only",
+      tier: 1,
+      reason: "explicit",
+      finalScore: 1,
+    } as unknown as RoutingDecision;
+    expect(buildDispatchLogEntry("only", result(), forced).candidates).toBeUndefined();
+    expect(buildDispatchLogEntry("only", result()).candidates).toBeUndefined();
+  });
+
   it("records failures with a capped error string and rateLimited flag", () => {
     const entry = buildDispatchLogEntry(
       "sad_route",

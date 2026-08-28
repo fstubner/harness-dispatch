@@ -49,6 +49,17 @@ export interface DispatchLogEntry {
   tier?: number;
   safetyProfile?: string;
   reason?: string;
+  /**
+   * What the picked route beat, when the router chose — absent on the forced
+   * and explicit paths, where nothing was compared.
+   *
+   * `reason` records that a choice happened ("tier 1 best (3 available)") and
+   * never what it was between, so a month of logs could say the router had
+   * been used and not whether it chose well. That is the one question the
+   * field was added to the response to answer, and the analysis it was
+   * justified by could not be run from the log it was justified by.
+   */
+  candidates?: Array<{ route: string; score: number }>;
 }
 
 export function buildDispatchLogEntry(
@@ -74,6 +85,9 @@ export function buildDispatchLogEntry(
       entry.safetyProfile = decision.effectiveSafetyProfile;
     }
     if (decision.reason !== undefined) entry.reason = decision.reason;
+    if (decision.candidates !== undefined && decision.candidates.length > 0) {
+      entry.candidates = decision.candidates;
+    }
   }
   return entry;
 }
