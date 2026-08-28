@@ -66,8 +66,13 @@ harness-dispatch configure --yes
 harness-dispatch doctor --live
 ```
 
-`configure --yes` detects installed harnesses and writes `config.yaml`; without
-`--yes` it previews and writes nothing. `doctor` then checks the whole chain:
+`configure --yes` detects installed harnesses, writes `config.yaml`, and then
+offers to register this server with each MCP client it finds (Claude Code,
+Cursor) — showing you what it would write, and what is already there, before
+changing anything. `--no-clients` skips the offer and prints a snippet to paste
+instead; `harness-dispatch connect` does the same registration later on its own,
+and `connect --remove` undoes it. Without
+`--yes` configure previews and writes nothing. `doctor` then checks the whole chain:
 binary, config load, harness detection, auth and billing classification, route
 readiness. `--live` goes further and routes one tiny real prompt, so you see a
 completion before wiring anything into your agent. The live probe never touches paid or
@@ -348,6 +353,9 @@ set `billing_kind:` / `paid_usage_possible:` explicitly once you know it.
 harness-dispatch                         # stdio MCP
 harness-dispatch configure               # detect harnesses and prepare config
 harness-dispatch configure --print       # inspect generated config YAML
+harness-dispatch connect                 # register with the MCP clients you have
+harness-dispatch connect --clients cursor  # no prompt; ids from the listing it prints
+harness-dispatch connect --remove        # take the entry back out
 harness-dispatch doctor                  # validate install, auth, config, and routes
 harness-dispatch doctor --live           # run one eligible live routed probe
 harness-dispatch doctor --live --allow-paid

@@ -22,9 +22,18 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export interface ClientConfigLocation {
+  /** Stable id for flags and scripts: `--clients claude-code,cursor`. */
+  id: string;
   /** Human name, for the doctor line. */
   client: string;
   file: string;
+  /**
+   * The object servers hang off in THIS client's file. Claude Code and Cursor
+   * both use `mcpServers`; VS Code uses `servers`. Carried per client rather
+   * than assumed, because assuming it is how a writer corrupts a format it
+   * has not seen.
+   */
+  serversKey: string;
 }
 
 export interface ClientEntryReport {
@@ -49,8 +58,18 @@ export interface ClientEntryReport {
  */
 export function clientConfigLocations(home: string = homedir()): ClientConfigLocation[] {
   return [
-    { client: "Claude Code", file: path.join(home, ".claude.json") },
-    { client: "Cursor", file: path.join(home, ".cursor", "mcp.json") },
+    {
+      id: "claude-code",
+      client: "Claude Code",
+      file: path.join(home, ".claude.json"),
+      serversKey: "mcpServers",
+    },
+    {
+      id: "cursor",
+      client: "Cursor",
+      file: path.join(home, ".cursor", "mcp.json"),
+      serversKey: "mcpServers",
+    },
   ];
 }
 
@@ -104,7 +123,7 @@ function isHarnessDispatch(key: string, entry: unknown): boolean {
  */
 export function inspectClientEntries(home?: string): ClientEntryReport[] {
   const out: ClientEntryReport[] = [];
-  for (const { client, file } of clientConfigLocations(home)) {
+  for (const { client, file, serversKey } of clientConfigLocations(home)) {
     if (!existsSync(file)) continue;
     let parsed: unknown;
     try {
@@ -112,7 +131,7 @@ export function inspectClientEntries(home?: string): ClientEntryReport[] {
     } catch {
       continue;
     }
-    const servers = (parsed as { mcpServers?: unknown })?.mcpServers;
+    const servers = (parsed as Record<string, unknown> | null)?.[serversKey];
     if (!servers || typeof servers !== "object") continue;
     for (const [key, entry] of Object.entries(servers as Record<string, unknown>)) {
       if (!isHarnessDispatch(key, entry)) continue;
