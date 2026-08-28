@@ -46,3 +46,34 @@ previous release proves nothing about this one, and the checker rejects it.
 `reviewer` should say whether the pass was independent of the build. A pass run
 by the same context that wrote the code is capped at CONDITIONAL by the
 acceptance skill for good reason, and saying so here keeps that visible.
+
+## Every pass makes ONE live dispatch
+
+Through a real harness. Not a fake upstream, not a stub dispatcher.
+
+Nine consecutive passes verified this product without once exercising the thing
+it exists to do. Each recorded "no live provider calls" under what it did not
+check, which reads like a limitation and was in fact an instruction — the
+prompts said not to spend quota. Meanwhile the installed subscription CLIs work
+fine: a live smoke run in the same period dispatched to Claude Code, Codex and
+Antigravity end to end and all three came back ok.
+
+Economising there was the wrong trade. The routes are flat-rate, so a short
+delegation costs approximately nothing, and the alternative is a verdict about
+a routing tool in which nothing was ever routed.
+
+The shape, kept deliberately small so the cost stays near zero and nobody is
+tempted to skip it:
+
+- ONE dispatch. Not a fanout, not a sweep across routes.
+- A subscription-backed CLI route — flat-rate, so the marginal cost is nil.
+- `hints.safetyProfile: "read_only"` and a short prompt.
+- NEVER a metered route, and never `--allow-paid`. A pass must not be able to
+  spend money.
+- `doctor --live` stays optional; it probes every eligible route and can burn a
+  subscription window, which is the cost this rule is trying not to pay.
+
+Record it under **Verified**, naming the route and what came back. If no
+harness is installed or all of them are rate-limited, say that under what was
+not checked — "unavailable today" is a different and honest claim from "did not
+try".
