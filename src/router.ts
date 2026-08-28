@@ -434,17 +434,11 @@ export interface RouterStreamEvent {
 // Router
 // ---------------------------------------------------------------------------
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
-/** True only when baseUrl's HOST is loopback — see billing.ts hostOf(). */
-function isLoopbackUrl(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false;
-  try {
-    return LOOPBACK_HOSTS.has(new URL(baseUrl).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
-}
+// isLoopbackUrl lived here and had one caller, the taskType=local predicate
+// above, which no longer uses it — "local" is a declared property of a route,
+// not a shape its URL happens to have. billing.ts keeps its own loopback check
+// for structural INFERENCE about routes that declare nothing, which is a
+// different job and the right place for it.
 
 export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
@@ -670,13 +664,30 @@ export class Router {
         score,
         name,
         tier,
-        // Either signal, not one or the other. isLocalRoute reads what the
-        // route DECLARES (provider, surface, auth source, billing kind) and
-        // catches a real box on a LAN or tailnet address; the loopback check
-        // catches one that declares nothing but is plainly on this machine.
-        // Dropping the second in favour of the first regressed exactly that
-        // case — a bare `http://localhost:11434/v1` stopped being local.
-        local: isLocalRoute(buildRouteBilling(svc)) || isLoopbackUrl(svc.baseUrl),
+        // DECLARED signals only — the same test `routePolicy: "local_only"`
+        // uses. Not "or the URL looks like localhost".
+        //
+        // That OR was here for one release and had exactly one observable
+        // effect, which was wrong: a metered proxy on loopback (LiteLLM,
+        // OpenRouter, anything fronting a paid API from 127.0.0.1) declares
+        // provider openai / surface openai_api / billing metered_api, so
+        // isLocalRoute says no — and the OR overrode that to yes. The task
+        // type whose entire meaning is "free local endpoint" then preferred
+        // the PAID route, across tiers, over a free subscription CLI.
+        //
+        // It bought nothing in exchange. A genuine local box declaring the
+        // fields is already covered; one declaring NOTHING on a known runtime
+        // port is inferred local by billing.ts (providerFromService ->
+        // isKnownLocalRuntime, ports 11434/1234); and one on some other port
+        // declaring nothing never reaches candidacy at all — route-policy.ts
+        // skips it as unknown_billing first. So the OR could only ever
+        // contradict an explicit declaration, which is the opposite of what it
+        // was for.
+        //
+        // The commit that added it claimed a test caught its removal. No test
+        // did: deleting it left all 874 green, because the fixtures it relied
+        // on are local by their DEFAULTS, not by their URL.
+        local: isLocalRoute(buildRouteBilling(svc)),
         quotaScore,
         qualityScore,
         elo,

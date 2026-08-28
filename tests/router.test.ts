@@ -177,6 +177,27 @@ async function git(cwd: string, args: string[]): Promise<void> {
 
 // ---- Test helpers --------------------------------------------------------
 
+/**
+ * Billing fields for a route that is NOT local — spread into makeService.
+ *
+ * makeService defaults every fixture to local on all four declared signals
+ * (provider, surface, authSource, billingKind), which is fine for tests that
+ * do not care and a trap for every test that does. It has now silently
+ * inverted four local-routing tests during development: routes named "cloud",
+ * "frontier" and "free_cli" were local by every field they declared, so the
+ * assertions passed for reasons unrelated to what they claimed to check.
+ *
+ * Spelling it out at each site was the first fix and it did not take — the
+ * fifth site got written from memory without it. A name is harder to forget
+ * than four lines, and reads as intent rather than boilerplate.
+ */
+const NON_LOCAL = {
+  provider: "anthropic",
+  surface: "claude_code",
+  authSource: "oauth_session",
+  billingKind: "included_plan_usage",
+} as const satisfies Partial<ServiceConfig>;
+
 function makeService(overrides: Partial<ServiceConfig> & { name: string }): ServiceConfig {
   return {
     enabled: true,
@@ -860,6 +881,47 @@ describe("Router.pickService", () => {
       const other = await router.pickService({ hints: { taskType } });
       expect(other?.service, `taskType ${taskType} escaped its tier`).toBe("frontier");
     }
+  });
+
+  it("does not treat a METERED proxy on loopback as local", async () => {
+    // The hazard that made the loopback half of the predicate worth deleting.
+    // A LiteLLM / OpenRouter-style proxy fronting a paid API from 127.0.0.1
+    // declares provider openai, surface openai_api, billing metered_api —
+    // isLocalRoute correctly says no. An `|| isLoopbackUrl(...)` overrode that,
+    // so taskType 'local', whose entire meaning is "free local endpoint",
+    // became the ONE task type that preferred the PAID route, across tiers,
+    // over a free subscription CLI. A user would see metered spend on exactly
+    // the dispatches they marked trivial.
+    //
+    // NON_LOCAL on the free route is load-bearing: with makeService's defaults
+    // it is local too, both routes qualify, and it wins on score regardless —
+    // so the test passes whether or not the bug is present. Confirmed by
+    // reintroducing the clause against a defaulted fixture: nothing failed.
+    const freeCli = makeService({ name: "free_cli", tier: 1, ...NON_LOCAL });
+    const paidProxy = makeService({
+      name: "paid_proxy",
+      tier: 3,
+      type: "openai_compatible",
+      baseUrl: "http://localhost:8080/v1",
+      provider: "openai",
+      surface: "openai_api",
+      authSource: "api_key",
+      billingKind: "metered_api",
+      paidUsagePossible: true,
+      allowPaidUsage: true,
+    });
+    const dispatchers: Record<string, Dispatcher> = {
+      free_cli: new StubDispatcher("free_cli"),
+      paid_proxy: new StubDispatcher("paid_proxy"),
+    };
+    const router = new Router(makeConfig([freeCli, paidProxy]), quota, dispatchers, leaderboard);
+
+    const decision = await router.pickService({ hints: { taskType: "local" } });
+    expect(decision?.service, "a metered loopback proxy was preferred as 'local'").toBe("free_cli");
+    // And the proxy really was eligible — otherwise this passes because the
+    // route never entered candidacy, which proves nothing about the predicate.
+    const anyTask = await router.pickService({ hints: { taskType: "execute" } });
+    expect(anyTask?.skippedRoutes?.some((s) => s.route === "paid_proxy") ?? false).toBe(false);
   });
 
   it("falls back to normal tier order when no local route is eligible", async () => {
