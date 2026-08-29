@@ -228,22 +228,17 @@ async function cmdConfigure(
       "directory the MCP client launches from — a relative path or none at all silently\n" +
       "falls back to the shipped defaults, ignoring every edit you make to this file):\n",
   );
-  process.stdout.write(
-    JSON.stringify(
-      {
-        mcpServers: {
-          "harness-dispatch": {
-            command: "harness-dispatch",
-            args: ["--config", absoluteTarget],
-          },
-        },
-      },
-      null,
-      2,
-    ) + "\n",
-  );
+  printMcpSnippet({ command: "harness-dispatch", args: ["--config", absoluteTarget] });
   process.stdout.write("Or let `harness-dispatch connect` write it for you.\n");
   return 0;
+}
+
+/** The entry, in the shape a client's config file wants it pasted. */
+function printMcpSnippet(entry: { command: string; args: string[] } | undefined): void {
+  if (entry === undefined) return;
+  process.stdout.write(
+    JSON.stringify({ mcpServers: { "harness-dispatch": entry } }, null, 2) + "\n",
+  );
 }
 
 /**
@@ -308,17 +303,27 @@ async function cmdConnect(
   if (installed.length === 0) {
     process.stdout.write(
       "No MCP clients found on this machine (looked for Claude Code and Cursor).\n" +
-        "Nothing to do — install one, then re-run `harness-dispatch connect`.\n",
+        "Nothing to register. Add this to whichever client you use, then re-run\n" +
+        "`harness-dispatch connect` if you install one of the two above:\n",
     );
+    // Setup has to end with something you can act on. Without this, a machine
+    // with no client detected got a cheerful "nothing to do" and no way to
+    // finish wiring anything up — the snippet was the ONLY output this replaced.
+    printMcpSnippet(plans[0]?.desired);
     return 0;
   }
 
+  if (!opts.remove) {
+    // Stated once, up front, rather than only inside the diff for entries that
+    // happen to differ. What gets written should not be something you can only
+    // learn from a client being in a particular state.
+    process.stdout.write(`Entry to write: ${JSON.stringify(plans[0]!.desired)}\n\n`);
+  }
   process.stdout.write(`${opts.remove ? "Removing from" : "Registering with"} clients:\n`);
   for (const p of installed) {
     process.stdout.write(`  ${p.client.padEnd(12)} ${p.file}  (${describeState(p.state)})\n`);
     if (p.state === "differs") {
       process.stdout.write(`    currently: ${JSON.stringify(summariseEntry(p.current))}\n`);
-      process.stdout.write(`    would be:  ${JSON.stringify(p.desired)}\n`);
     }
   }
 
