@@ -12,6 +12,7 @@ import {
   type BuildMcpOptions,
   type McpHandle,
 } from "../mcp/server.js";
+import { createAnswerStream } from "./answer-stream.js";
 import { buildStatus, buildUsage } from "../status.js";
 import { VERSION } from "../version.js";
 import type { RouteHints, RouteSkip } from "../types.js";
@@ -247,20 +248,36 @@ async function handleChatCompletions(
         }),
       );
     } else {
+      // What reaches `delta.content` must be the ANSWER.
+      //
+      // This forwarded every stdout chunk, so a client concatenating deltas
+      // from a CLI harness received protocol JSONL and internal thread ids —
+      // `{"type":"thread.started",...}` — while the non-streaming call on this
+      // same endpoint returned "pong". Two answers to one question, and the
+      // streaming one was unusable by the clients this envelope exists for.
+      //
+      // An endpoint route streams real assistant text and marks it `text`;
+      // those chunks go out as they arrive, which is what streaming is for. A
+      // CLI harness produces protocol on stdout and its answer only once
+      // parsed, so it is sent at completion. Never both, or the answer would
+      // arrive twice.
+      const answer = createAnswerStream();
       for await (const { event, decision } of state.router.stream(
         parsed.prompt,
         parsed.files,
         parsed.workingDir,
         { hints: parsed.hints, maxFallbacks: 2 },
       )) {
-        if (event.type === "stdout") {
+        const text = answer(event);
+        if (text !== undefined) {
           writeSse(
             res,
-            sseContent(event.chunk, {
+            sseContent(text, {
               harness_dispatch: decision ? { route: decision.service } : undefined,
             }),
           );
-        } else if (event.type === "completion" && !event.result.success) {
+        }
+        if (event.type === "completion" && !event.result.success) {
           writeSse(res, {
             error: {
               message: event.result.error ?? "routing failed",

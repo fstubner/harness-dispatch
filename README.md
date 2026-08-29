@@ -463,6 +463,13 @@ Endpoints:
   answers `{"status","service","version"}` and nothing else: no routes, no
   endpoints, no quota, no config.
 - `POST /mcp` for streamable HTTP MCP
+- `POST /v1/chat/completions` with `stream: true` sends the answer as SSE
+  deltas. An endpoint route streams its text as it arrives; a CLI harness emits
+  protocol on stdout, so its answer is sent once, at completion — the deltas
+  never carry harness protocol either way. **Streaming creates no job record**,
+  so unlike the non-streaming call there is no `jobId` to poll and an
+  interrupted stream cannot be recovered. Use the non-streaming form for work
+  you would mind losing.
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
   `harness-dispatch://status.json`). Authenticated, because that answer is not
   for strangers.

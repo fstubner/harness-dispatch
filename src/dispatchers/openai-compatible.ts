@@ -355,7 +355,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
           const delta = c.delta ?? c.message;
           const content = delta?.content;
           if (typeof content === "string" && content.length > 0) {
-            out.push({ type: "stdout", chunk: content });
+            // text: this IS the answer — an endpoint streams assistant content, not
+            // a protocol, so it can be shown as it arrives.
+            out.push({ type: "stdout", chunk: content, text: true });
           }
         }
       }
@@ -406,7 +408,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         if (typeof v === "number") inputTokens = v;
       } else if (obj.type === "content_block_delta") {
         const text = obj.delta?.type === "text_delta" ? obj.delta.text : undefined;
-        if (typeof text === "string" && text.length > 0) out.push({ type: "stdout", chunk: text });
+        if (typeof text === "string" && text.length > 0) {
+          out.push({ type: "stdout", chunk: text, text: true });
+        }
       } else if (obj.type === "message_delta") {
         const v = obj.usage?.output_tokens;
         if (typeof v === "number") outputTokens = v;

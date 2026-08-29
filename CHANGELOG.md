@@ -179,6 +179,19 @@ pre-1.0, so minor versions can carry behaviour changes.
   marked it orphaned within a second and removed it from the drain queue,
   killing live work with an error stating a cause that was not true.
 
+- Streaming returns the ANSWER, not the harness's protocol. `POST
+  /v1/chat/completions` with `stream: true` forwarded every stdout chunk into
+  `delta.content`, so a client concatenating deltas from a CLI harness received
+  `{"type":"thread.started",...}` and internal thread ids — while the
+  non-streaming call on the same endpoint returned the parsed result. One
+  endpoint, two answers, and the streaming one was unusable by the clients the
+  OpenAI envelope exists for. An endpoint route still streams its text as it
+  arrives; a CLI harness sends its answer once, at completion.
+
+  Streaming still creates no job record, so there is no `jobId` and an
+  interrupted stream cannot be recovered. Now stated in the README and
+  OPERATIONS rather than left to be discovered.
+
 - The HTTP surface refuses a bare `safety` key instead of dropping it. This
   product's own CLI flag is `--safety`, so it is the most plausible slip anyone
   will make — and at seven edits from `safetyProfile` the near-miss rule

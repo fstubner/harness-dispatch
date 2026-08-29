@@ -130,6 +130,14 @@ reported `orphaned` at the next server start — deliberately reported rather
 than resumed, because silently running an abandoned job against your repository
 is not a decision a restart should make.
 
+**A streamed request is interrupted.** `POST /v1/chat/completions` with
+`stream: true` creates no job record, so there is no `jobId` and nothing to
+recover — the run is lost with the connection. Every other dispatch path
+survives a client timeout or a server restart. This is a real gap rather than a
+design choice: streaming is the mode where a long run is most likely to be
+interrupted, and it is the one mode with no record. Prefer the non-streaming
+form for work you would mind losing.
+
 **Quota exhaustion on one route.** Repeated failures trip the breaker and
 routing moves on. Nothing is lost; the dispatch falls back unless
 `--no-fallback` was passed.

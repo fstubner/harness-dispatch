@@ -599,7 +599,19 @@ export interface RouteHints {
 }
 
 export type DispatcherEvent =
-  | { type: "stdout"; chunk: string }
+  /**
+   * `text: true` means the chunk is the ANSWER, safe to show a user as it
+   * arrives. Without it the chunk is raw process output, which for an
+   * event-driven harness is protocol JSONL.
+   *
+   * The distinction exists because the HTTP streaming path forwarded every
+   * stdout chunk into `delta.content`, so an OpenAI-compatible client
+   * concatenating deltas received Codex protocol frames and internal thread
+   * ids instead of the answer — while the non-streaming call on the same
+   * endpoint returned the parsed result. Only the dispatcher knows which of
+   * the two it is producing.
+   */
+  | { type: "stdout"; chunk: string; text?: boolean }
   | { type: "stderr"; chunk: string }
   | { type: "tool_use"; name: string; input: unknown }
   | { type: "thinking"; chunk: string }
