@@ -59,7 +59,7 @@ clis:
       # `stdin: true` (the guard is `if (!protocol.stdin)`), because a prompt
       # on stdin has no such limit. codex_cli has always worked this way.
       #
-      # Verified live: a 21,670-character prompt — 2.7x the ceiling, and
+      # Verified live: a 21,670-character prompt — 2.65x the 8,191-character ceiling, and
       # measured at 20,064 characters as argv, which the old form refused
       # outright — dispatched and answered.
       stdin: true

@@ -30,7 +30,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { clientConfigLocations, type ClientConfigLocation } from "./mcp-clients.js";
@@ -252,7 +252,23 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = `${file}.harness-dispatch-tmp-${process.pid}`;
   const text = `${JSON.stringify(value, null, 2)}\n`;
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(tmp, text, "utf8");
+
+  // Carry the original's permissions onto the replacement.
+  //
+  // `rename` swaps the INODE, so the file that survives has the temp file's
+  // mode — 0644 under a typical umask — not its own. A `~/.claude.json` that
+  // Claude Code created 0600 therefore came back group- and world-readable,
+  // and that file holds live API keys: registering a server would have
+  // silently widened access to somebody's credentials.
+  //
+  // The same module's backup() uses copyFile, which preserves mode, so the two
+  // halves of one write path disagreed about whether the mode mattered. Found
+  // by reading during an acceptance pass; POSIX-only, and unreproducible on
+  // the Windows machine it was found on, which is exactly why it survived.
+  const mode = await stat(file)
+    .then((s) => s.mode & 0o777)
+    .catch(() => undefined);
+  await writeFile(tmp, text, mode === undefined ? "utf8" : { encoding: "utf8", mode });
   try {
     JSON.parse(await readFile(tmp, "utf8"));
   } catch (err) {
