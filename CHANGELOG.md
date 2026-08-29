@@ -124,6 +124,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
 
+- `GET /health` — liveness on the HTTP surface, and the only route served
+  without a token. Every endpoint required the bearer token, so a deploy gate
+  or container probe could not ask whether the process was up without being
+  handed a credential, and a health check that needs a secret is one most
+  orchestrators will not perform. It answers `{"status","service","version"}`
+  and nothing else; `/v1/status` keeps the richer answer behind the token.
+
+- `OPERATIONS.md` — the signals worth watching, what there is to alert on (and
+  honestly, that there is nobody to page for a tool that runs on one laptop),
+  the failure modes that have actually happened here, and how to recover from
+  each.
+
 - Endpoint redaction actually redacts. `redactEndpointHost` replaced the
   hostname by assigning to `url.hostname`, and the WHATWG URL setter silently
   rejects a value containing `<` and `>` — so it returned its input verbatim,

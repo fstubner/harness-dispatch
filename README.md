@@ -458,9 +458,14 @@ Status is exposed as resources:
 
 Endpoints:
 
+- `GET /health` — liveness, and the **only** route served without a token, so a
+  deploy gate or container probe can ask without being handed a credential. It
+  answers `{"status","service","version"}` and nothing else: no routes, no
+  endpoints, no quota, no config.
 - `POST /mcp` for streamable HTTP MCP
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
-  `harness-dispatch://status.json`)
+  `harness-dispatch://status.json`). Authenticated, because that answer is not
+  for strangers.
 - `GET /v1/usage` — per-route call counts, quota, billing kind, and breaker state only
 - `GET /v1/models` — OpenAI-style model list; each entry's `id` is a route id you can
   pass as `model` in `/v1/chat/completions`
