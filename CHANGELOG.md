@@ -99,6 +99,28 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Workspace reclamation no longer deletes directories it did not create. The
+  sweep added earlier in this cycle judged a directory by age alone, so pointed
+  at a shared `HARNESS_DISPATCH_WORKSPACES_DIR` it would recursively delete
+  anything sitting there untouched for a day. That override is not an obscure
+  escape hatch — the README recommends it — and nothing said the directory
+  would become this tool's exclusively. An acceptance pass reproduced the loss
+  against the built artifact: two unrelated directories with real content
+  destroyed by a single dispatch. A directory must now also match the
+  `<name>-<8 hex>` shape this tool generates. Default installs were never
+  affected, since the default base is dedicated.
+
+  The existing test passed only because its fixture happened to be named
+  `gone-project-deadbeef`, which matches that shape by accident. It now has a
+  companion that does not match and must survive.
+
+- `connect` keeps the last three backups of a client config rather than one per
+  run forever. Every write and every removal takes one, and `~/.claude.json`
+  holds live API keys, so the old behaviour accumulated copies of someone's
+  secrets with nothing to prune them. They are bounded rather than deleted by
+  `--remove`: undoing a registration is the worst moment to destroy the record
+  of what it replaced. Backups anyone else made are not touched.
+
 - Retrying a job on a DIFFERENT route no longer carries the old route's model,
   which defeated the one thing retargeting exists for. A model name belongs to
   the route it was picked for, so reusing it verbatim made the retry fail for
