@@ -68,3 +68,48 @@ describe("pruneStaleJobs ownership", () => {
     ).resolves.toBeDefined();
   });
 });
+
+/**
+ * A status write into a job directory that no longer exists must not throw.
+ *
+ * Retention prunes bundles, and users delete them, while a runner is still
+ * alive. A status write is a RECORD of the run, not the run itself — throwing
+ * took the runner down with an unhandled rejection over a file nobody was
+ * going to read, from the 15-second heartbeat, so any long job could hit it.
+ * It broke CI on Windows exactly this way: every test passing, the suite
+ * failing on a rename into a directory the test had already cleaned up.
+ */
+describe("updateStatus against a vanished job directory", () => {
+  it("gives up quietly when the directory is gone", async () => {
+    const { updateStatus } = await import("../src/jobs/store.js");
+    const gone = path.join(root, "job-1700000000009-feedface");
+    await expect(
+      updateStatus(gone, {
+        jobId: "job-1700000000009-feedface",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        jobDir: gone,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still reports a failure when the directory DOES exist", async () => {
+    // The narrowness matters: a full disk or a permission fault means the
+    // record is being lost while somewhere to put it still exists, and that
+    // must not be swallowed. A directory where the status FILE must go is the
+    // closest reproducible stand-in for an unwritable target.
+    const { updateStatus } = await import("../src/jobs/store.js");
+    const jobDir = path.join(root, "job-1700000000010-c0ffee11");
+    await fs.mkdir(path.join(jobDir, "status.json"), { recursive: true });
+    await expect(
+      updateStatus(jobDir, {
+        jobId: "job-1700000000010-c0ffee11",
+        status: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        jobDir,
+      }),
+    ).rejects.toThrow();
+  });
+});
