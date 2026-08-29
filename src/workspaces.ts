@@ -850,24 +850,38 @@ async function prepareGitWorktreeWorkspace(
       // wrote files may still hold work worth recovering, and deleting that
       // to tidy up would be the trade this codebase keeps refusing.
       if (!result.success && changedFiles.length === 0) {
-        await git(["worktree", "remove", "--force", worktreeRoot], gitRoot).catch(
-          () => undefined,
-        );
-        await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
-        return attachWorkspace(result, {
-          policy: "git_worktree",
-          originalWorkingDir,
-          effectiveWorkingDir,
-          baseCommit,
-          isolated: true,
-          securityBoundary: "project_state_and_process_cwd",
-          changedFiles,
-          diffSummary: diffSummary(changedFiles),
-          notes: [
-            "This attempt failed without changing any file, so its git worktree was " +
-              "unregistered and removed rather than left in your repository.",
-          ],
-        });
+        // The directory goes only if GIT let go of it first.
+        //
+        // The first version swallowed the result of `git worktree remove`,
+        // deleted the directory regardless, and reported "unregistered and
+        // removed" either way. When git fails — an index lock, a concurrent
+        // git operation — that strands `.git/worktrees/<name>` inside the
+        // user's repository, which is the exact outcome the comment above
+        // says this refuses to cause, while telling them it did not happen.
+        // An acceptance pass caught it by reading, inside the fix that
+        // introduced it.
+        const unregistered = await git(["worktree", "remove", "--force", worktreeRoot], gitRoot)
+          .then(() => true)
+          .catch(() => false);
+        if (unregistered) {
+          await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+          return attachWorkspace(result, {
+            policy: "git_worktree",
+            originalWorkingDir,
+            effectiveWorkingDir,
+            baseCommit,
+            isolated: true,
+            securityBoundary: "project_state_and_process_cwd",
+            changedFiles,
+            diffSummary: diffSummary(changedFiles),
+            notes: [
+              "This attempt failed without changing any file, so its git worktree was " +
+                "unregistered and removed rather than left in your repository.",
+            ],
+          });
+        }
+        // Fall through: git still owns it, so it is reported like any other
+        // retained worktree, with the hint that names how to remove it.
       }
 
       return attachWorkspace(result, {

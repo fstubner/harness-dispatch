@@ -8,6 +8,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- `GET /health` — liveness on the HTTP surface, and the only route served
+  without a token. Every endpoint required the bearer token, so a deploy gate
+  or container probe could not ask whether the process was up without being
+  handed a credential, and a health check that needs a secret is one most
+  orchestrators will not perform. It answers `{"status","service","version"}`
+  and nothing else; `/v1/status` keeps the richer answer behind the token.
+
+- `OPERATIONS.md` — the signals worth watching, what there is to alert on (and
+  honestly, that there is nobody to page for a tool that runs on one laptop),
+  the failure modes that have actually happened here, and how to recover from
+  each.
+
 - `harness-dispatch connect` registers this server with the MCP clients on your
   machine, and `configure --yes` now offers it as the last step of setup instead
   of printing JSON for you to paste. `connect --remove` takes the entry back out.
@@ -94,8 +106,9 @@ pre-1.0, so minor versions can carry behaviour changes.
   cross-spawn escaping, the 8,191-character cmd.exe ceiling, the npm-shim
   double-escape, a refusal band that was too tight and then too loose — applies
   only to routes that pass the prompt as an argument, and this was one of three
-  that did. Codex has always used stdin. A 21,670-character prompt, 2.7x the
-  ceiling and refused outright by the old form, now dispatches and answers.
+  that did. Codex has always used stdin. A 21,670-character prompt — 2.65x the
+  8,191-character ceiling — refused outright by the old form, now dispatches and
+  answers.
 
 ### Fixed
 
@@ -123,18 +136,6 @@ pre-1.0, so minor versions can carry behaviour changes.
   `gone-project-deadbeef`, matching that shape by accident. It now has two
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
-
-- `GET /health` — liveness on the HTTP surface, and the only route served
-  without a token. Every endpoint required the bearer token, so a deploy gate
-  or container probe could not ask whether the process was up without being
-  handed a credential, and a health check that needs a secret is one most
-  orchestrators will not perform. It answers `{"status","service","version"}`
-  and nothing else; `/v1/status` keeps the richer answer behind the token.
-
-- `OPERATIONS.md` — the signals worth watching, what there is to alert on (and
-  honestly, that there is nobody to page for a tool that runs on one laptop),
-  the failure modes that have actually happened here, and how to recover from
-  each.
 
 - Endpoint redaction actually redacts. `redactEndpointHost` replaced the
   hostname by assigning to `url.hostname`, and the WHATWG URL setter silently
