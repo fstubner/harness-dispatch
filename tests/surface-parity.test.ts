@@ -52,7 +52,18 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await close();
-  await fs.rm(dir, { recursive: true, force: true });
+  // Best effort, and deliberately not fatal.
+  //
+  // One test here asserts that MCP does NOT reject a near-miss key, which can
+  // only be asserted by starting a real background run. It is cancelled and
+  // waited for, but on Windows the runner's handle on the working directory
+  // can outlive its exit, so rmdir hits EBUSY — and a suite where all 943
+  // tests passed then reported failure for a temp directory. The directory is
+  // under the OS temp root, which the OS reclaims; what is under test here is
+  // parity, not cleanup.
+  await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+    () => undefined,
+  );
 });
 
 /**
@@ -403,6 +414,23 @@ describe("near-miss top-level keys: a known, deliberate asymmetry", () => {
     const jobId = (JSON.parse(text) as { jobId?: string }).jobId;
     if (jobId !== undefined) {
       await client.callTool({ name: "cancel_job", arguments: { jobId } });
+      // Cancelling ASKS the runner to stop; it does not wait for it. The
+      // runner heartbeats status.json every 15s and writes a terminal status
+      // as it exits, so returning here let it write into a jobs directory
+      // that teardown had already deleted — vitest reports that as an
+      // unhandled error and the run fails with every test passing. Exactly
+      // the failure this file's header records from a previous review, hit
+      // again by a test written to assert something else.
+      for (let i = 0; i < 100; i += 1) {
+        const s = await client.callTool({ name: "job_status", arguments: { jobId } });
+        const st = ((s as { content?: Array<{ text?: string }> }).content ?? [])
+          .map((c) => c.text ?? "")
+          .join("");
+        if (/"completed"\s*:\s*true|"status"\s*:\s*"(cancelled|failed|completed|orphaned)"/.test(st)) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
     }
-  });
+  }, 30_000);
 });
