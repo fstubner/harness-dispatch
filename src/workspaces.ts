@@ -833,6 +833,43 @@ async function prepareGitWorktreeWorkspace(
     async finish(result) {
       const after = await fingerprintTree(worktreeRoot);
       const changedFiles = diffFingerprints(before, after);
+
+      // A failed attempt that changed nothing leaves nothing to inspect, and
+      // its worktree is a registration inside the USER's repository that
+      // retention will never reclaim — the sweep deliberately refuses to
+      // remove worktrees, because unregistering one needs git and only the
+      // owning repo can do it.
+      //
+      // So they accumulate per attempt, and the ones nobody knows about are
+      // the worst: a fallback arm that fails is not named in the response at
+      // all, so its worktree has no cleanupHint anywhere. An acceptance pass
+      // measured one HTTP request leaving TWO entries in `git worktree list`.
+      // This project has already paid for one unbounded directory leak.
+      //
+      // Only when the attempt both failed AND changed nothing. A failure that
+      // wrote files may still hold work worth recovering, and deleting that
+      // to tidy up would be the trade this codebase keeps refusing.
+      if (!result.success && changedFiles.length === 0) {
+        await git(["worktree", "remove", "--force", worktreeRoot], gitRoot).catch(
+          () => undefined,
+        );
+        await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+        return attachWorkspace(result, {
+          policy: "git_worktree",
+          originalWorkingDir,
+          effectiveWorkingDir,
+          baseCommit,
+          isolated: true,
+          securityBoundary: "project_state_and_process_cwd",
+          changedFiles,
+          diffSummary: diffSummary(changedFiles),
+          notes: [
+            "This attempt failed without changing any file, so its git worktree was " +
+              "unregistered and removed rather than left in your repository.",
+          ],
+        });
+      }
+
       return attachWorkspace(result, {
         policy: "git_worktree",
         originalWorkingDir,

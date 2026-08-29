@@ -332,10 +332,16 @@ async function cmdConnect(
   const chosen = requested
     ? installed.filter((p) => requested.includes(p.id))
     : await chooseInteractively(installed, opts);
-  // Consent to replace a HAND-EDITED entry comes from the interactive prompt,
-  // which shows the difference first, or from --force. Naming a client with
-  // --clients says which client, not "overwrite whatever I put there".
-  const consented = requested === undefined || opts.force;
+  // Consent to replace a HAND-EDITED entry comes from ANSWERING the
+  // interactive prompt, which shows the difference first, or from --force.
+  //
+  // Neither `--clients` nor `--yes` counts. `--clients` says which client, not
+  // "overwrite whatever I put there"; `--yes` skips the question rather than
+  // answering it. The first version of this gate accepted "no client named" as
+  // consent, which let `--yes` through — the same class it was written to
+  // close, one flag over.
+  const prompted = requested === undefined && !opts.yes && process.stdin.isTTY === true;
+  const consented = opts.force || prompted;
   if (chosen === undefined) {
     process.stdout.write("Nothing written.\n");
     return 0;
@@ -417,6 +423,13 @@ async function chooseInteractively(
 ): Promise<ClientPlan[] | undefined> {
   const actionable = plans.filter((p) => p.state !== "matches" && p.state !== "unreadable");
   if (actionable.length === 0) return [];
+  // `--yes` skips the question; it does NOT answer it.
+  //
+  // The consent gate added for `--clients` treated "no client named" as
+  // "consented", and `--yes` takes that path — so an acceptance pass measured
+  // `connect --yes` overwriting a hand-edited entry with no prompt and no
+  // --force, exit 0, while the same flags on `--remove` correctly refused.
+  // "Do not ask me" is not the same answer as "yes, replace what I wrote".
   if (opts.yes) return actionable;
   if (!process.stdin.isTTY) {
     process.stdout.write(

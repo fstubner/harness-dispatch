@@ -311,8 +311,8 @@ export async function writeClientEntry(
       ...base,
       action: "skipped",
       reason:
-        "its entry has been edited by hand — re-run without --clients to see the " +
-        "difference and confirm, or pass --force to overwrite it",
+        "its entry has been edited by hand — re-run interactively (no --clients, " +
+        "no --yes) to see the difference and confirm, or pass --force to overwrite it",
     };
   }
 

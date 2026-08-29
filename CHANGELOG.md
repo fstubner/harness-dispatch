@@ -179,6 +179,29 @@ pre-1.0, so minor versions can carry behaviour changes.
   marked it orphaned within a second and removed it from the drain queue,
   killing live work with an error stating a cause that was not true.
 
+- A streamed request stops rather than falling back once any answer text has
+  been sent. It fell back anyway and then discarded what the fallback produced:
+  an acceptance pass measured an endpoint streaming `he`, `llo `, dying, and the
+  fallback route succeeding with 49 characters the client never saw — produced,
+  charged for, thrown away. A fresh answer cannot be spliced onto a half-sent
+  one without garbling it, so the client now gets a truthful error and no second
+  route is billed. Falling back before anything is sent still happens, which is
+  the case fallback exists for.
+
+- `git_worktree` no longer leaves a worktree registered in your repository when
+  an attempt failed without changing anything. Retention deliberately never
+  removes worktrees — unregistering one needs git, and only the owning repo can
+  do it — so they accumulated per attempt, and a failed FALLBACK arm is not
+  named in the response at all, so its worktree had no cleanup hint anywhere.
+  Measured: one HTTP request leaving two entries in `git worktree list`. A
+  failure that DID change files is still kept, because it may hold work worth
+  recovering.
+
+- `connect --yes` no longer overwrites a hand-edited client entry. The consent
+  gate added for `--clients` treated "no client named" as consent, and `--yes`
+  takes that path — so the flag that skips the question was accepted as an
+  answer to it. Consent is answering the prompt, or `--force`.
+
 - Streaming returns the ANSWER, not the harness's protocol. `POST
   /v1/chat/completions` with `stream: true` forwarded every stdout chunk into
   `delta.content`, so a client concatenating deltas from a CLI harness received
@@ -203,14 +226,6 @@ pre-1.0, so minor versions can carry behaviour changes.
   caller whose filter matched nothing got one dispatch per configured route —
   eight arms where an acceptance pass measured it. Omitting `models` is still
   how you ask for that, and it stays a deliberate keystroke.
-
-- A server start drains jobs left waiting for a concurrency slot. Slot-queued
-  jobs are exempt from orphan detection by design — nothing heartbeats for
-  them — but the only things that drained the queue were a runner exiting and
-  a new dispatch arriving. So a server that died with jobs queued left them
-  reporting `queued` forever, while a job that was *running* is reported
-  orphaned within 90 seconds. Not a new behaviour: a later dispatch already
-  resumed them, and this stops that from depending on unrelated traffic.
 
 - Job retention no longer deletes directories this tool never created. The
   sweep removed every stale directory under the jobs root recursively, with no

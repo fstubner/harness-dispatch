@@ -809,7 +809,7 @@ export async function orphanStrandedSlotQueue(): Promise<number> {
   // A supervisor heartbeat answers the question the comment was guessing at.
   // If any supervisor is alive, the queue is being worked and nothing is
   // stranded — a waiting job is waiting, which is what
-  // `notes/ux-walkthrough.md` promises it stays.
+  // `ux-walkthrough.md` promises it stays.
   if ((await countLiveSupervisors()) > 0) return 0;
   const jobs = await listAsyncJobs().catch(() => []);
   let marked = 0;
