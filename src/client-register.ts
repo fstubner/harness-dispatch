@@ -284,7 +284,7 @@ export interface WriteOutcome {
  */
 export async function writeClientEntry(
   plan: ClientPlan,
-  opts: { stamp: string },
+  opts: { stamp: string; consented?: boolean },
 ): Promise<WriteOutcome> {
   const base = { id: plan.id, client: plan.client, file: plan.file };
   if (plan.state === "absent") {
@@ -294,6 +294,27 @@ export async function writeClientEntry(
     return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
   }
   if (plan.state === "matches") return { ...base, action: "unchanged" };
+  // An entry someone edited by hand is not ours to replace unasked.
+  //
+  // `removeClientEntry` has always refused this and this function did not, so
+  // the protection existed on the half where the cost is lower. An acceptance
+  // pass found OPERATIONS.md promising it for both and measured `connect
+  // --clients claude-code` printing the hand-written entry it was about to
+  // destroy and then destroying it, exit 0.
+  //
+  // `consented` is what the interactive path passes after showing the diff and
+  // getting a yes — that prompt IS the consent, so nothing changes for someone
+  // watching it happen. Naming a client on the command line is not the same
+  // thing: it says which client, not "and overwrite whatever I put there".
+  if (plan.state === "differs" && opts.consented !== true) {
+    return {
+      ...base,
+      action: "skipped",
+      reason:
+        "its entry has been edited by hand — re-run without --clients to see the " +
+        "difference and confirm, or pass --force to overwrite it",
+    };
+  }
 
   const parsed = readJsonFile(plan.file);
   if (!parsed.ok) {

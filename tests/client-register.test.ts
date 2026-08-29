@@ -112,7 +112,9 @@ describe("devLaunchCommand", () => {
     const plan = planClientWrites(CONFIG, { home, command: devLaunchCommand(entry) });
     const claude = plan.find((p) => p.id === "claude-code")!;
     expect(claude.state).toBe("differs");
-    await writeClientEntry(claude, { stamp: "s" });
+    // consented: this test exercises the MERGE, not the consent gate — the
+    // interactive prompt is what supplies consent in real use.
+    await writeClientEntry(claude, { stamp: "s", consented: true });
 
     const written = (await readJson(claudeFile())).mcpServers[ENTRY_KEY];
     expect(written.command).toBe("node");
@@ -136,7 +138,12 @@ describe("writeClientEntry", () => {
       },
     });
 
-    const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+    // consented for the same reason: the subject here is what survives a
+    // write, not whether the write was allowed.
+    const outcome = await writeClientEntry(planFor("claude-code"), {
+      stamp: "s",
+      consented: true,
+    });
     expect(outcome.action).toBe("written");
 
     const after = await readJson(claudeFile());
@@ -258,6 +265,47 @@ describe("removeClientEntry", () => {
     await writeJson(claudeFile(), { mcpServers: { github: { command: "gh-mcp", args: [] } } });
     expect((await removeClientEntry(planFor("claude-code"), { stamp: "s" })).action).toBe(
       "unchanged",
+    );
+  });
+});
+
+describe("writeClientEntry consent", () => {
+  it("refuses to overwrite a hand-edited entry without consent", async () => {
+    // OPERATIONS.md promised this protection for connect AND connect --remove;
+    // only --remove implemented it. An acceptance pass measured `connect
+    // --clients claude-code` printing the hand-written entry it was about to
+    // destroy, and then destroying it, exit 0.
+    await writeJson(claudeFile(), {
+      mcpServers: { [ENTRY_KEY]: { command: "node", args: ["/my/own/build.js"] } },
+    });
+    const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+    expect(outcome.action).toBe("skipped");
+    expect(outcome.reason).toContain("by hand");
+    expect((await readJson(claudeFile())).mcpServers[ENTRY_KEY].args).toEqual([
+      "/my/own/build.js",
+    ]);
+  });
+
+  it("writes it when the caller consented", async () => {
+    // The interactive prompt shows the diff and asks; that IS the consent, so
+    // nothing changes for someone watching it happen.
+    await writeJson(claudeFile(), {
+      mcpServers: { [ENTRY_KEY]: { command: "node", args: ["/my/own/build.js"] } },
+    });
+    const outcome = await writeClientEntry(planFor("claude-code"), {
+      stamp: "s",
+      consented: true,
+    });
+    expect(outcome.action).toBe("written");
+    expect((await readJson(claudeFile())).mcpServers[ENTRY_KEY].command).toBe(
+      "harness-dispatch",
+    );
+  });
+
+  it("still writes a first-time entry without consent, which replaces nothing", async () => {
+    await writeJson(claudeFile(), { mcpServers: {} });
+    expect((await writeClientEntry(planFor("claude-code"), { stamp: "s" })).action).toBe(
+      "written",
     );
   });
 });

@@ -28,14 +28,25 @@ import { JOB_ID_RE } from "../src/jobs/store.js";
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-/** Anything shaped like a job id, valid or not. */
-const JOB_ID_LIKE = /["'`](job-[A-Za-z0-9_-]+)["'`]/g;
+/**
+ * Anything shaped like a job id, valid or not, ANYWHERE inside a string
+ * literal — not only where the id starts right after the quote.
+ *
+ * The first version anchored to the quote, so `"/tmp/jobs/job-stale-0000000-…"`
+ * slipped through, and writing a fixture path with the id embedded is an
+ * entirely ordinary thing to do. An acceptance pass found the hole by trying
+ * it. A guard that only catches the tidy spelling of a mistake is a guard you
+ * have to remember, which is the thing this replaces.
+ */
+// At least two hyphen-separated segments after `job-`, so this matches an
+// ATTEMPT at an id and not the ordinary words `job-runner` or `job-id`.
+const JOB_ID_LIKE = /(job-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)/g;
 
 /**
  * Anything shaped like a workspace run directory: an ISO-ish timestamp start.
- * A real one is `<ISO stamp>-<pid>-<route>-<8 hex>`.
+ * A real one is `<ISO stamp>-<pid>-<route>-<8 hex>`. Also unanchored.
  */
-const RUN_DIR_LIKE = /["'`](\d{4}-\d{2}-\d{2}T[\dZ:.-]+-[A-Za-z0-9_.-]+)["'`]/g;
+const RUN_DIR_LIKE = /(\d{4}-\d{2}-\d{2}T[\dZ:.-]+-[A-Za-z0-9_.-]+)/g;
 const REAL_RUN_DIR = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
 
 async function testSources(): Promise<Array<{ rel: string; text: string }>> {

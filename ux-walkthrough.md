@@ -115,7 +115,8 @@ Every surface has to be right in these, not just the happy one:
 | Empty — no harnesses installed | `doctor` reports zero ready routes and names what it looked for; it does not pretend to be usable |
 | Empty — no jobs yet | `job_status` with no id returns an empty list, not an error |
 | Loading — job running | `partialOutput` streams; status is `running` with a fresh heartbeat |
-| Waiting — at concurrency limit | status reads `queued`; `slotQueued` is a separate boolean on the job record, not the status string. Never reported as orphaned |
+| Waiting — at concurrency limit | status reads `queued`; `slotQueued` is a separate boolean on the job record, not the status string. Never reported as orphaned while any supervisor is alive to run it |
+| Waiting — but nothing is left to run it | a server start with no live supervisor reports it `orphaned`, saying it was never started and naming `retry_job`. It is not resumed: running an abandoned job unattended in its original working directory is not a decision a restart should make |
 | Partial — some routes unusable | Usable routes still route; unusable ones say why on their own line |
 | Error — dispatch failed | Failure recorded with a parsed message, not raw JSONL |
 | Busy — route rate limited | `rate_limited=N`, breaker cools down, `failed` stays 0 |
