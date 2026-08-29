@@ -226,7 +226,7 @@ function modelMatchesService(name: string, svc: ServiceConfig, model: string | u
  * opposite of the truth on the one signal the schema points it at for
  * self-correction.
  */
-function declaresModel(svc: ServiceConfig, model: string | undefined): boolean {
+export function declaresModel(svc: ServiceConfig, model: string | undefined): boolean {
   if (!model) return false;
   return (
     sameModel(svc.model, model) ||

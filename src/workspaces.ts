@@ -185,6 +185,10 @@ function workspaceMaxAgeMs(): number {
  */
 async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: string): Promise<void> {
   const maxAgeMs = workspaceMaxAgeMs();
+  // Before the early return below: a project dispatching for the FIRST time
+  // has no root of its own to sweep, and that is exactly the caller most
+  // likely to be running on a machine full of other projects' leftovers.
+  await pruneAbandonedProjectRoots(workspacesBase(), root);
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -221,8 +225,77 @@ async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: strin
   }
 }
 
+/**
+ * Reclaim the per-project directories of projects that never dispatch again.
+ *
+ * The sweep above only ever looks INSIDE one project's root, and only runs
+ * when a dispatch happens for that same project. So a project dispatched once
+ * and then renamed, deleted, or — most commonly — created as a temp directory
+ * by the test suite keeps its stale runs forever: the code that would reclaim
+ * them is reachable only by the project that no longer exists.
+ *
+ * Measured on the maintainer's machine before this existed: 840 project roots,
+ * 839 of them still holding run directories five days past a 24-hour
+ * retention window. This project has already lost a disk to leaked scratch
+ * directories once — tests/setup-env.ts records 2,605 orphans and 0 bytes free
+ * on a 931 GB volume — which is why an unbounded leak gets fixed rather than
+ * noted.
+ *
+ * Deliberately conservative, because this deletes directories nothing else is
+ * watching:
+ *  - never the caller's own root, which is about to be written into;
+ *  - only when EVERY run inside is past retention, so one live run keeps its
+ *    project root alive;
+ *  - an empty root is removed, since it holds nothing to lose;
+ *  - best effort throughout — a prune failure must never fail a dispatch.
+ *
+ * A git_worktree root is left alone here. Removing one behind git's back
+ * strands `.git/worktrees` metadata, and the sweep above only knows how to
+ * unregister worktrees for the repository the CURRENT dispatch belongs to.
+ */
+async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Promise<void> {
+  const maxAgeMs = workspaceMaxAgeMs();
+  let entries;
+  try {
+    entries = await readdir(base, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(base, entry.name);
+    if (path.resolve(full) === path.resolve(currentRoot)) continue;
+    try {
+      const runs = await readdir(full, { withFileTypes: true });
+      let allStale = true;
+      for (const run of runs) {
+        const runPath = path.join(full, run.name);
+        // A worktree run needs git's own removal; leave the whole project
+        // root to the owning repository rather than stranding metadata.
+        if (existsSync(path.join(runPath, "worktree"))) {
+          allStale = false;
+          break;
+        }
+        const info = await stat(runPath);
+        if (now - info.mtimeMs <= maxAgeMs) {
+          allStale = false;
+          break;
+        }
+      }
+      if (allStale) await rm(full, { recursive: true, force: true });
+    } catch {
+      // best effort — locked, vanished, or permission-denied entries are skipped
+    }
+  }
+}
+
 async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<void> {
   const maxAgeMs = workspaceMaxAgeMs();
+  // Same reclamation the copy path does, for a machine that only ever
+  // dispatches under git_worktree. Abandoned worktree roots are left alone by
+  // that sweep either way — see pruneAbandonedProjectRoots.
+  await pruneAbandonedProjectRoots(workspacesBase(), root);
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
