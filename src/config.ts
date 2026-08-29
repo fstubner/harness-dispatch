@@ -29,6 +29,7 @@ import {
   surfaceFrom, thinkingFrom, wireProtocolFrom, workspacePolicyFrom,
 } from "./config/coercions.js";
 import {
+  warnDuplicateRouteNames,
   warnUnknownRouteKeys,
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
@@ -617,6 +618,7 @@ function addClis(
   warnings: string[],
 ): void {
   const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
+  warnDuplicateRouteNames(clis.map((e) => str(e.name)), "clis", warnings);
   for (const [index, entry] of clis.entries()) {
     const name = str(entry.name);
     const harness = str(entry.harness);
@@ -740,6 +742,7 @@ function addEndpoints(
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
     : [];
+  warnDuplicateRouteNames(endpoints.map((e) => str(e.name)), "endpoints", warnings);
   for (const [index, ep] of endpoints.entries()) {
     const name = str(ep.name);
     warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);
