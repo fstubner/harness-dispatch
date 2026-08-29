@@ -321,7 +321,9 @@ async function cmdConnect(
   }
   process.stdout.write(`${opts.remove ? "Removing from" : "Registering with"} clients:\n`);
   for (const p of installed) {
-    process.stdout.write(`  ${p.client.padEnd(12)} ${p.file}  (${describeState(p.state)})\n`);
+    process.stdout.write(
+      `  ${p.client.padEnd(12)} ${p.file}  (${describeState(p.state, opts.remove)})\n`,
+    );
     if (p.state === "differs") {
       process.stdout.write(`    currently: ${JSON.stringify(summariseEntry(p.current))}\n`);
     }
@@ -366,7 +368,22 @@ async function cmdConnect(
   return failed ? 1 : 0;
 }
 
-function describeState(state: ClientState): string {
+/**
+ * The listing describes state from the point of view of what is about to
+ * happen. Under `--remove`, "already registered correctly" describes the entry
+ * accurately and reads as nonsense under the heading "Removing from clients",
+ * where the same state means "this is the one that will go".
+ */
+function describeState(state: ClientState, removing: boolean): string {
+  if (removing) {
+    return {
+      absent: "not installed",
+      unreadable: "config does not parse — will be left alone",
+      "missing-entry": "no entry of ours to remove",
+      matches: "our entry is here — will be removed",
+      differs: "has an entry we did not write — left alone unless --force",
+    }[state];
+  }
   return {
     absent: "not installed",
     unreadable: "config does not parse — will be left alone",

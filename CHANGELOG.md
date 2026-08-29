@@ -124,6 +124,13 @@ pre-1.0, so minor versions can carry behaviour changes.
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
 
+- `workingDir` must be an absolute path. A relative one was resolved against
+  the SERVER's working directory rather than the caller's — and `../..` exists,
+  so every check passed and a real dispatch ran somewhere neither party chose.
+  The omitted-value warning could not fire either, since the value was not
+  omitted. The caller and the server are different processes with different
+  working directories, so there is no correct relative value to accept.
+
 - The HTTP surface rejects a top-level key that is nearly a hint name, instead
   of accepting and dropping it. The outer body cannot be strict — it carries
   OpenAI's own fields — so `safteyProfile` (a transposition) and hints wrapped

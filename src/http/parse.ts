@@ -18,6 +18,7 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 
 import type { RouteHints, WorkspacePolicy } from "../types.js";
+import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
 
@@ -254,62 +255,6 @@ function enumField<T extends string>(
  * has always resolved it that way. Both surfaces agree on all seven, which is
  * what matters; the exception is pinned by a test so it stays a decision.
  */
-/** The hint names this surface honours at the top level. */
-const TOP_LEVEL_HINT_KEYS = new Set([
-  "safetyProfile",
-  "routePolicy",
-  "taskType",
-  "workspacePolicy",
-  "preferLargeContext",
-  "timeoutMs",
-  "workingDir",
-]);
-
-/**
- * One typo apart: an insertion, deletion, substitution, or a swap of two
- * adjacent characters.
- *
- * The swap is not an extra: `safteyProfile` is the exact spelling an
- * acceptance pass typed, and plain edit distance scores a transposition as
- * TWO substitutions, so a rule without it misses the case it was written for.
- * Still deliberately tight — at a true distance of two, OpenAI's own short
- * field names start matching, and rejecting a legitimate request would be its
- * own defect.
- */
-function withinOneEdit(a: string, b: string): boolean {
-  if (a === b) return false;
-  if (isAdjacentSwap(a, b)) return true;
-  if (Math.abs(a.length - b.length) > 1) return false;
-  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
-  let i = 0;
-  let j = 0;
-  let edits = 0;
-  while (i < short.length && j < long.length) {
-    if (short[i] === long[j]) {
-      i += 1;
-      j += 1;
-      continue;
-    }
-    if (++edits > 1) return false;
-    if (short.length === long.length) i += 1;
-    j += 1;
-  }
-  return edits + (long.length - j) + (short.length - i) <= 1;
-}
-
-/** Two adjacent characters swapped, and otherwise identical. */
-function isAdjacentSwap(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  const diff: number[] = [];
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) diff.push(i);
-    if (diff.length > 2) return false;
-  }
-  if (diff.length !== 2) return false;
-  const [x, y] = diff as [number, number];
-  return y === x + 1 && a[x] === b[y] && a[y] === b[x];
-}
-
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
   // `escalate` is honoured nowhere: escalation is per-route config
@@ -372,15 +317,8 @@ function parseHints(body: ChatRequest): RouteHints {
   // this key ALMOST one of ours? None of OpenAI's field names come near one,
   // and a key that is genuinely unrelated stays legitimate.
   for (const key of Object.keys(body as Record<string, unknown>)) {
-    if (TOP_LEVEL_HINT_KEYS.has(key)) continue;
-    const near = [...TOP_LEVEL_HINT_KEYS].find((known) => withinOneEdit(key, known));
-    if (near !== undefined) {
-      throw new BadRequestError(
-        `${key} is not a field — did you mean ${near}? It would otherwise be ` +
-          `accepted and silently ignored, which for a safety setting means the ` +
-          `dispatch runs with MORE access than you asked for.`,
-      );
-    }
+    const meant = nearMissHintKey(key);
+    if (meant !== undefined) throw new BadRequestError(nearMissMessage(key, meant));
   }
   // MCP parameters this surface does not implement. Both were accepted and
   // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior
