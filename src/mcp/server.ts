@@ -11,6 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
+import { drainSlotQueue } from "../jobs.js";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
@@ -108,10 +109,34 @@ export interface McpHandle {
   close(): Promise<void>;
 }
 
+/**
+ * Give jobs left waiting for a concurrency slot somewhere to go.
+ *
+ * A slot-queued job is deliberately exempt from orphan detection — nothing
+ * heartbeats for it, so the staleness rule would misreport every job that waits
+ * more than 90 seconds. The consequence was that if the server died while jobs
+ * were queued, they reported `queued` forever: the only things that drain the
+ * queue are a runner exiting and a new dispatch arriving, and after a crash
+ * neither happens. A running job is reported orphaned within 90s; a queued one
+ * had no such signal, and an acceptance pass found it by reading the code.
+ *
+ * Server start is the natural drain point, and it does not invent a new
+ * behaviour: a later dispatch already resumes these jobs today. This just stops
+ * that resumption from depending on unrelated traffic arriving.
+ *
+ * Deliberately not awaited, and never fatal — a queue that cannot be drained
+ * must not stop the server from serving, which is the one thing that would make
+ * the situation worse.
+ */
+function resumeSlotQueue(holder: RuntimeHolder): void {
+  void drainSlotQueue(holder.state.config, holder.state.configPath).catch(() => undefined);
+}
+
 export async function startMcpServer(opts: BuildMcpOptions = {}): Promise<McpHandle> {
-  const { server } = await buildMcpServer(opts);
+  const { server, holder } = await buildMcpServer(opts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  resumeSlotQueue(holder);
   return {
     async close() {
       await server.close();

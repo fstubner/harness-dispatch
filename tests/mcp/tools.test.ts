@@ -877,7 +877,12 @@ describe("MCP tools — dispatch", () => {
 
   it("prunes job directories older than the retention window before starting a new one", async () => {
     const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
-    const staleJobDir = path.join(jobsDir, "job-stale-0000000-aaaaaaaa");
+    // A REAL job id shape: job-<epoch ms>-<8 hex>. It was job-stale-...,
+    // which no newJobId would ever produce — so once retention started
+    // checking that a directory is one of ours, this fixture stopped being a
+    // job at all and the test failed. It had been asserting deletion of
+    // something the product does not create.
+    const staleJobDir = path.join(jobsDir, "job-1700000000000-aaaaaaaa");
     mkdirSync(staleJobDir, { recursive: true });
     const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     utimesSync(staleJobDir, staleTime, staleTime);

@@ -303,7 +303,11 @@ async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: strin
  *  - never the caller's own root, which is about to be written into;
  *  - only when EVERY run inside is past retention, so one live run keeps its
  *    project root alive;
- *  - an empty root is removed, since it holds nothing to lose;
+ *  - an empty root is removed only if it carries our marker. Unmarked and
+ *    empty means there is nothing to identify it by, and an unidentified
+ *    directory is somebody else's — measured, because this line previously
+ *    claimed empty roots are removed full stop, which stopped being true when
+ *    ownership moved from a name shape to a marker;
  *  - best effort throughout — a prune failure must never fail a dispatch.
  *
  * A git_worktree root is left alone here. Removing one behind git's back

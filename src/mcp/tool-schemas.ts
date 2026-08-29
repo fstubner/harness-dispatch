@@ -344,13 +344,27 @@ export const dispatchInputShape = {
   ...misplacedTopLevelKeys,
   models: z
     .array(z.string().refine(noNul, NO_NUL_MESSAGE))
+    // An EXPLICIT empty array is a caller mistake, and the most expensive one
+    // this field can carry: it fell through to the same branch as "omitted"
+    // and fanned out to every eligible route — measured at eight arms on one
+    // machine, one per configured route. A caller who wrote `models: []` built
+    // a list and it came out empty; they did not ask for everything. Omitting
+    // the field is how you ask for that, and it stays a deliberate keystroke
+    // rather than the result of a filter matching nothing.
+    .min(
+      1,
+      "models: [] selects no routes. Omit `models` entirely to fan out to every " +
+        "eligible route (expensive — one dispatch per route), or name at least one. " +
+        "An empty list is usually a filter that matched nothing.",
+    )
     .optional()
     .describe(
       "Route ids or model names to fan out to (fanout mode only). This is the ONLY " +
         "field that narrows which routes fanout hits — `hints.model` is ignored " +
         "entirely in fanout mode (not used for selection, not forwarded to any " +
-        "dispatch); it only does anything in single mode. Get valid ids from the " +
-        "`usage` tool.",
+        "dispatch); it only does anything in single mode. An empty array is " +
+        "REFUSED rather than treated as 'all routes' — omit the field for that. " +
+        "Get valid ids from the `usage` tool.",
     ),
   service: z
     .string()
