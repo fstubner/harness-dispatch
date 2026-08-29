@@ -776,8 +776,20 @@ async function prepareCopyWorkspace(
   };
 }
 
+/**
+ * Decline git's OPTIONAL locks.
+ *
+ * git runs background maintenance, which creates and removes
+ * `.git/objects/maintenance.lock` underneath whatever else is reading the
+ * repository. A CI leg failed with `stat '.../maintenance.lock': No such file
+ * or directory` from an ordinary diff — the lock vanished mid-command. We only
+ * ever ask git to read, or to apply a patch we already hold, so declining
+ * optional locks costs nothing and removes a race we do not control.
+ */
+export const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFile("git", args, { cwd, windowsHide: true });
+  const { stdout } = await execFile("git", args, { cwd, windowsHide: true, env: GIT_ENV });
   return String(stdout).trim();
 }
 

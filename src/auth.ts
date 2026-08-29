@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,6 +27,40 @@ export async function readHttpToken(): Promise<string | null> {
     return token || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The token as it is on disk RIGHT NOW, for a running server to consult.
+ *
+ * A server read the token once at startup and held it forever, so `auth
+ * rotate` was a lie in both directions: an acceptance pass measured the old
+ * token still returning 200 after rotation, and the newly issued one being
+ * rejected with 401. Invalidating the old token is the entire reason anyone
+ * rotates a credential, so telling the user it rotated while the leaked value
+ * kept working is the worst possible outcome.
+ *
+ * Synchronous because it is consulted on the authorization path of every
+ * request, which is not async. The file is a few dozen bytes on local disk and
+ * the read is guarded by an mtime check in the caller.
+ */
+export function readHttpTokenSync(): string | null {
+  const fromEnv = process.env[TOKEN_ENV];
+  if (fromEnv) return fromEnv;
+  try {
+    const token = readFileSync(tokenPath(), "utf-8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Modification time of the token file, or 0 when there isn't one. */
+export function httpTokenMtimeMs(): number {
+  try {
+    return statSync(tokenPath()).mtimeMs;
+  } catch {
+    return 0;
   }
 }
 

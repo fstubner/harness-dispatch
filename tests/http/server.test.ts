@@ -523,3 +523,58 @@ describe("HTTP server", () => {
     }
   });
 });
+
+/**
+ * The one unauthenticated route.
+ *
+ * Every other endpoint requires the bearer token, so a deploy gate or a
+ * container probe could not ask whether the process was up without being
+ * handed a credential — and a health check that needs a secret is one most
+ * orchestrators will not perform. `/v1/status` answers a richer question and
+ * stays behind the token precisely because that answer is not for strangers.
+ *
+ * These assertions are as much about what it does NOT say as what it does.
+ */
+describe("GET /health", () => {
+  it("answers without a token", async () => {
+    const s = await startHttpServer({ configPath: await writeConfig("http://127.0.0.1:1/v1"), port: 0, host: "127.0.0.1", token: "secret" });
+    try {
+      const r = await fetch(`http://127.0.0.1:${s.port}/health`);
+      expect(r.status).toBe(200);
+      const body = (await r.json()) as Record<string, unknown>;
+      expect(body.status).toBe("ok");
+      expect(body.service).toBe("harness-dispatch");
+      expect(typeof body.version).toBe("string");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("discloses nothing beyond liveness and version", async () => {
+    // Route ids, endpoint URLs, quota, breaker state and the token itself are
+    // all things `/v1/status` will tell an authenticated caller and this must
+    // not tell anyone. Asserted as an exact key set so a future field has to
+    // be added here deliberately rather than leaking by accident.
+    const s = await startHttpServer({ configPath: await writeConfig("http://127.0.0.1:1/v1"), port: 0, host: "127.0.0.1", token: "secret" });
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${s.port}/health`)).json()) as object;
+      expect(Object.keys(body).sort()).toEqual(["service", "status", "version"]);
+      const text = JSON.stringify(body);
+      expect(text).not.toContain(s.token ?? "\u0000no-token");
+      for (const leak of ["baseUrl", "apiKey", "routes", "quota", "breaker"]) {
+        expect(text).not.toContain(leak);
+      }
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("still requires a token for the detailed status", async () => {
+    const s = await startHttpServer({ configPath: await writeConfig("http://127.0.0.1:1/v1"), port: 0, host: "127.0.0.1", token: "secret" });
+    try {
+      expect((await fetch(`http://127.0.0.1:${s.port}/v1/status`)).status).toBe(401);
+    } finally {
+      await s.close();
+    }
+  });
+});

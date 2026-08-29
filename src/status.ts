@@ -47,9 +47,24 @@ export function redactEndpointHost(baseUrl: string): string {
   try {
     const url = new URL(baseUrl);
     const host = url.hostname.toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return baseUrl;
-    url.hostname = "<endpoint-host>";
-    return url.toString().replace(/\/+$/, "");
+    const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    // Built as a string rather than by assigning to `url.hostname`.
+    //
+    // That assignment was the whole implementation and it did NOTHING: the
+    // WHATWG URL setter silently rejects a value containing `<` and `>`, so
+    // every "redacted" string was the input verbatim. An acceptance pass
+    // measured a failed dispatch reporting
+    // `https://api.secret-internal.example.com/v1?key=SECRETKEY123` into an
+    // error the calling comment describes as safe to paste into a bug report,
+    // and into the dispatch log. A silent no-op setter is exactly the kind of
+    // thing a test would have caught, and there was no test.
+    //
+    // Userinfo, query and fragment are dropped on every path, loopback
+    // included: a key embedded in the URL is a credential wherever the host
+    // points, and the original kept them even when it did replace the host.
+    const port = url.port === "" ? "" : `:${url.port}`;
+    const shown = loopback ? url.hostname : "<endpoint-host>";
+    return `${url.protocol}//${shown}${port}${url.pathname}`.replace(/\/+$/, "");
   } catch {
     return "<endpoint>";
   }

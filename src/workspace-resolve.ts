@@ -25,7 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { eolDigest, EXCLUDED_DIRS } from "./workspaces.js";
+import { eolDigest, EXCLUDED_DIRS, GIT_ENV } from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -39,6 +39,7 @@ async function git(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFile("git", args, {
     cwd,
     windowsHide: true,
+    env: GIT_ENV,
     maxBuffer: MAX_PATCH_BYTES,
   });
   return String(stdout);
@@ -102,6 +103,7 @@ async function gitBoth(args: string[], cwd: string): Promise<string> {
   const { stdout, stderr } = await execFile("git", args, {
     cwd,
     windowsHide: true,
+    env: GIT_ENV,
     maxBuffer: MAX_PATCH_BYTES,
   });
   return `${String(stdout)}\n${String(stderr)}`;

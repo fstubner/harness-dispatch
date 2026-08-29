@@ -124,6 +124,46 @@ pre-1.0, so minor versions can carry behaviour changes.
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
 
+- `GET /health` — liveness on the HTTP surface, and the only route served
+  without a token. Every endpoint required the bearer token, so a deploy gate
+  or container probe could not ask whether the process was up without being
+  handed a credential, and a health check that needs a secret is one most
+  orchestrators will not perform. It answers `{"status","service","version"}`
+  and nothing else; `/v1/status` keeps the richer answer behind the token.
+
+- `OPERATIONS.md` — the signals worth watching, what there is to alert on (and
+  honestly, that there is nobody to page for a tool that runs on one laptop),
+  the failure modes that have actually happened here, and how to recover from
+  each.
+
+- Endpoint redaction actually redacts. `redactEndpointHost` replaced the
+  hostname by assigning to `url.hostname`, and the WHATWG URL setter silently
+  rejects a value containing `<` and `>` — so it returned its input verbatim,
+  every time, while three call sites presented the result as scrubbed (one
+  commented "safe to paste into a bug report"). An acceptance pass measured a
+  failed dispatch reporting `https://api.secret-internal.example.com/v1?key=…`
+  into both the error and the dispatch log. Userinfo, query and fragment are
+  now dropped on every path including loopback, since a key embedded in a URL
+  is a credential wherever the host points. It shipped inert because nothing
+  tested it; it has tests now.
+
+- `auth rotate` invalidates the old token for a running server. The token was
+  read once at startup and held, so rotation was a lie in both directions: the
+  old token kept returning 200 and the newly issued one was refused with 401 —
+  measured. Invalidating the old value is the only reason anyone rotates a
+  credential. The token file is re-read when its mtime moves, so the common
+  path stays a stat.
+
+- A job stranded in the slot queue by a server that exited is reported as
+  orphaned instead of reading `queued` forever. Slot-queued jobs are exempt
+  from orphan detection because nothing heartbeats for them, and the only
+  things that drained the queue were a runner exiting or a new dispatch
+  arriving. Reported, deliberately, rather than resumed: resuming was tried
+  first and an acceptance pass demonstrated the cost — kill a server with a job
+  queued, restart, and it runs to completion in its original working directory
+  at up to `full_auto`, unattended, bounded only by the 7-day retention window.
+  `retry_job` re-runs it as a decision.
+
 - `models: []` is refused instead of fanning out to every route. An explicit
   empty array fell through to the same branch as omitting the field, so a
   caller whose filter matched nothing got one dispatch per configured route —
