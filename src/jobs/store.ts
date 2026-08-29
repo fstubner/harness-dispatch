@@ -222,10 +222,30 @@ export async function readJson<T>(filePath: string): Promise<T> {
 }
 
 export async function updateStatus(jobDir: string, status: JobStatus): Promise<void> {
-  await writeJson(path.join(jobDir, "status.json"), {
-    ...status,
-    updatedAt: timestamp(),
-  });
+  try {
+    await writeJson(path.join(jobDir, "status.json"), {
+      ...status,
+      updatedAt: timestamp(),
+    });
+  } catch (err) {
+    // A job directory that no longer exists is not an error worth throwing.
+    //
+    // Retention can prune a bundle, and a user can delete one, while its
+    // runner is still alive — and a status write is a RECORD of the run, not
+    // the run itself. Throwing here took the runner down with an unhandled
+    // rejection over a file nobody was going to read, and did it from the
+    // heartbeat, so any long job could hit it. It broke CI on one platform
+    // exactly this way: every test passing, the suite failing on a rename
+    // into a directory the test had already cleaned up.
+    //
+    // Narrow on purpose: only a missing directory is swallowed. A full disk,
+    // a permission fault or a corrupt write still surfaces, because those
+    // mean the record is being lost while somewhere to put it still exists.
+    const code =
+      typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+    if (code === "ENOENT" && !existsSync(jobDir)) return;
+    throw err;
+  }
 }
 
 export async function snapshotFiles(jobDir: string, files: string[]): Promise<JobManifest["files"]> {
