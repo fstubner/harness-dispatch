@@ -20,12 +20,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import type { RuntimeHolder } from "./mcp/config-hot-reload.js";
+import { declaresModel } from "./router.js";
 import type {
   DispatchResult,
   DispatcherEvent,
   RouteHints,
   RouterConfig,
   RoutingDecision,
+  ServiceConfig,
   WorkspacePolicy,
 } from "./types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
@@ -1361,13 +1363,19 @@ export async function retryJob(
     );
   }
   const service = opts.service ?? manifest.service;
+  const { hints, droppedModel } = hintsForRetry(
+    manifest.hints,
+    prior.status.route ?? manifest.service,
+    service,
+    deps.holder.state.config.services,
+  );
 
   const { status } = await startAsyncJobTracked(deps, {
     prompt,
     files: manifest.files.map((f) => f.originalPath),
     workingDir: manifest.workingDir,
     retryOf: jobId,
-    ...(manifest.hints !== undefined ? { hints: manifest.hints } : {}),
+    ...(hints !== undefined ? { hints } : {}),
     ...(manifest.workspacePolicy !== undefined
       ? { workspacePolicy: manifest.workspacePolicy }
       : {}),
@@ -1378,6 +1386,7 @@ export async function retryJob(
     jobId: status.jobId,
     retryOf: jobId,
     ...(service !== undefined ? { service } : {}),
+    ...(droppedModel !== undefined ? { droppedModel } : {}),
     reusedFrom: {
       prompt: true,
       files: manifest.files.length,
@@ -1386,6 +1395,46 @@ export async function retryJob(
     message:
       `Started ${status.jobId} from ${jobId}'s prompt, files and working directory` +
       `${opts.service !== undefined ? `, retargeted to ${opts.service}` : ""}. ` +
+      `${
+        droppedModel !== undefined
+          ? `Left behind the original's model "${droppedModel}", which ${service} does ` +
+            `not declare — a model name belongs to the route it was chosen for. Pass ` +
+            `hints.model on a fresh dispatch if you want a specific model here. `
+          : ""
+      }` +
       `Check it with job_status; the original job is untouched.`,
   };
+}
+
+/**
+ * Carry the original's hints into a retry — except a model that belonged to
+ * the route being left behind.
+ *
+ * Retrying somewhere else is the documented reason this tool exists ("the task
+ * was fine and the route was not"), and reusing the model verbatim defeated
+ * exactly that case: model names are route-scoped, so the retry failed for the
+ * same reason as the original. Observed end to end — a Cursor run that died on
+ * `Cannot use this model` was retried onto Claude and died on
+ * `unrecognized_model`, having never reached the task.
+ *
+ * Narrow on purpose. The model is kept when the retry stays on the original's
+ * route (that is a plain "try again"), and when the new route declares it
+ * anyway. Only a model the destination does not know is dropped, and the
+ * caller is told — a silently changed model is the failure this project keeps
+ * finding, so it is reported in the response rather than inferred from a
+ * different result.
+ */
+function hintsForRetry(
+  hints: RouteHints | undefined,
+  priorRoute: string | undefined,
+  service: string | undefined,
+  services: Record<string, ServiceConfig>,
+): { hints: RouteHints | undefined; droppedModel?: string } {
+  if (hints === undefined) return { hints };
+  const model = hints.model;
+  if (model === undefined || service === undefined || service === priorRoute) return { hints };
+  const target = services[service];
+  if (target === undefined || declaresModel(target, model)) return { hints };
+  const { model: _dropped, ...rest } = hints;
+  return { hints: rest, droppedModel: model };
 }

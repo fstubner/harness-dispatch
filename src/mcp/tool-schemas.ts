@@ -473,6 +473,10 @@ export const retryJobInputShape = {
     .describe(
       "Route the retry somewhere else (e.g. the original hit its usage limit). " +
         "Omit to reuse the original route, or to let the router pick again if it " +
-        "had none. Get valid ids from `usage`.",
+        "had none. Get valid ids from `usage`. Retargeting leaves behind the " +
+        "original's model when the new route does not declare it — a model name " +
+        "belongs to the route it was picked for — and reports it as " +
+        "`droppedModel`; pass a fresh `hints.model` on `dispatch` to choose one " +
+        "for this route.",
     ),
 } as const;

@@ -147,6 +147,68 @@ describe("retryJob", () => {
     expect(out.message).toContain("beta");
   });
 
+  /**
+   * A model name belongs to the route it was chosen for. Carrying one across
+   * a retarget defeated the exact case retry exists for — observed end to
+   * end: a Cursor run that died on `Cannot use this model` was retried onto
+   * Claude and died on `unrecognized_model`, never reaching the task.
+   */
+  it("leaves behind a model the retarget route does not declare", async () => {
+    await plantFinished("job-1700000000011-aaaabbbb", {
+      hints: { taskType: "execute", model: "alpha-only-model" },
+    });
+    const out = await retryJob("job-1700000000011-aaaabbbb", await buildDeps(), {
+      service: "beta",
+    });
+    await settle(out.jobId);
+
+    expect(out.droppedModel).toBe("alpha-only-model");
+    // Reported, not silent: a quietly changed model is the failure mode this
+    // project keeps finding.
+    expect(out.message).toContain("alpha-only-model");
+
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(jobsDir, out.jobId, "manifest.json"), "utf8"),
+    ) as { hints?: { model?: string; taskType?: string } };
+    expect(manifest.hints?.model).toBeUndefined();
+    // Only the model goes; the rest of the hints are the caller's intent.
+    expect(manifest.hints?.taskType).toBe("execute");
+  });
+
+  it("keeps a model the retarget route DOES declare", async () => {
+    await plantFinished("job-1700000000012-bbbbcccc", {
+      hints: { taskType: "execute", model: "beta-m" },
+    });
+    const out = await retryJob("job-1700000000012-bbbbcccc", await buildDeps(), {
+      service: "beta",
+    });
+    await settle(out.jobId);
+
+    expect(out.droppedModel).toBeUndefined();
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(jobsDir, out.jobId, "manifest.json"), "utf8"),
+    ) as { hints?: { model?: string } };
+    expect(manifest.hints?.model).toBe("beta-m");
+  });
+
+  it("keeps the model when the retry stays on the original route", async () => {
+    // Not a retarget — this is a plain "try that again", and the model was
+    // the caller's choice for this very route.
+    await plantFinished("job-1700000000013-ccccdddd", {
+      hints: { taskType: "execute", model: "some-alpha-model" },
+    });
+    const out = await retryJob("job-1700000000013-ccccdddd", await buildDeps(), {
+      service: "alpha",
+    });
+    await settle(out.jobId);
+
+    expect(out.droppedModel).toBeUndefined();
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(jobsDir, out.jobId, "manifest.json"), "utf8"),
+    ) as { hints?: { model?: string } };
+    expect(manifest.hints?.model).toBe("some-alpha-model");
+  });
+
   it("reuses the original route when none is given", async () => {
     await plantFinished("job-1700000000003-cccccccc");
     const out = await retryJob("job-1700000000003-cccccccc", await buildDeps());
