@@ -64,6 +64,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Workspaces belonging to projects that never dispatch again are reclaimed.
+  Retention only ever swept inside one project's own directory, and only when
+  that project dispatched again — so a project renamed, deleted, or created as
+  a throwaway temp directory kept its workspaces forever, because the code that
+  would reclaim them was reachable only from a project that no longer existed.
+  Measured on the maintainer's machine: 840 project directories, 839 of them
+  still holding runs five days past a 24-hour window. This project has already
+  lost a disk to leaked scratch directories once.
+
+  Conservative by construction: a project directory is removed only when every
+  run inside it is past retention, never the caller's own, and never one
+  holding a git worktree — those need git's own removal, which only the owning
+  repository can do.
+
 - `taskType: "local"` now actually reaches a local endpoint. It could not: the
   preference was a score bonus, a bonus only reorders routes within a tier, and
   local endpoints sit in the cheap tier — so any healthy top-tier route won

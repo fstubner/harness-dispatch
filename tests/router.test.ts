@@ -1244,6 +1244,11 @@ describe("Router.route", () => {
       // workspaces leak into the patch as deletions, destroying another job's
       // work and offering to delete the user's files.
       await expect(fs.stat(path.join(root, ".harness-dispatch"))).rejects.toThrow();
+
+      // Asserted HERE, not after the block: the finally below removes wsHome
+      // entirely, so a check placed after it passes whether or not anything
+      // was ever pruned.
+      await expect(fs.stat(staleRoot)).rejects.toThrow();
     } finally {
       if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
       else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
@@ -1251,8 +1256,72 @@ describe("Router.route", () => {
       else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
       await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
     }
+  });
 
-    await expect(fs.stat(staleRoot)).rejects.toThrow();
+  it("reclaims the project root of a project that never dispatches again", async () => {
+    // The retention sweep only ever looks INSIDE one project's root, and only
+    // runs when a dispatch happens for that same project. So a project
+    // dispatched once and then renamed, deleted, or created as a throwaway
+    // temp directory keeps its stale runs forever — the code that would
+    // reclaim them is reachable only by a project that no longer exists.
+    //
+    // Measured before this was fixed: 840 project roots on one machine, 839
+    // still holding runs five days past a 24-hour window. tests/setup-env.ts
+    // records what that costs when it is not caught — 2,605 orphaned
+    // directories and 0 bytes free on a 931 GB volume.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hd-proj-"));
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-ws-home-"));
+    const stale = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+    // A project root belonging to some OTHER, now-vanished project.
+    const abandoned = path.join(wsHome, "gone-project-deadbeef");
+    await fs.mkdir(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaa", "workspace"), {
+      recursive: true,
+    });
+    await fs.utimes(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaa"), stale, stale);
+
+    // And one whose run is still inside the window: it must survive, or a
+    // live dispatch elsewhere on the machine loses its workspace.
+    const active = path.join(wsHome, "busy-project-cafebabe");
+    await fs.mkdir(path.join(active, "2026-01-01T00-00-00-000Z-2-alpha-bbbb", "workspace"), {
+      recursive: true,
+    });
+
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const router = new Router(
+      makeConfig([svc]),
+      quota,
+      { alpha: new StubDispatcher("alpha") },
+      leaderboard,
+    );
+    const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const { result } = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+      expect(result.success).toBe(true);
+
+      await expect(
+        fs.stat(abandoned),
+        "an abandoned project root survived — the leak is back",
+      ).rejects.toThrow();
+      await expect(
+        fs.stat(active),
+        "a project root with a run still inside the window was deleted",
+      ).resolves.toBeDefined();
+      // And this dispatch's own root is obviously not self-deleted.
+      await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();
+    } finally {
+      if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 
   it("prunes git worktrees older than the retention window before creating a new one", async () => {
