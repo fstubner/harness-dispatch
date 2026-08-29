@@ -28,7 +28,7 @@ const completion = (output: string, success = true): DispatcherEvent => ({
 /** Everything a client would concatenate into the visible message. */
 function rendered(events: DispatcherEvent[]): string {
   const answer = createAnswerStream();
-  return events.map((e) => answer(e) ?? "").join("");
+  return events.map((e) => answer.next(e) ?? "").join("");
 }
 
 describe("createAnswerStream", () => {
@@ -74,6 +74,28 @@ describe("createAnswerStream", () => {
 
   it("emits nothing rather than an empty delta when there is no output", () => {
     const answer = createAnswerStream();
-    expect(answer(completion(""))).toBeUndefined();
+    expect(answer.next(completion(""))).toBeUndefined();
+  });
+});
+
+describe("committed", () => {
+  it("is false until answer text has actually been sent", () => {
+    const answer = createAnswerStream();
+    expect(answer.committed).toBe(false);
+    // Protocol chunks are not the answer, so they commit nothing — a route
+    // that dies after emitting only protocol can still be fallen back from.
+    answer.next({ type: "stdout", chunk: '{"type":"turn.started"}\n' });
+    expect(answer.committed).toBe(false);
+  });
+
+  it("is true once a delta has gone out, so the caller stops rather than falling back", () => {
+    // An acceptance pass measured the alternative: an endpoint streamed "he",
+    // "llo ", then died; the client got those deltas plus an error frame while
+    // the fallback route succeeded with 49 characters that were never sent.
+    // Produced, charged for, discarded — because a fresh answer cannot be
+    // spliced onto a half-sent one without garbling it.
+    const answer = createAnswerStream();
+    expect(answer.next({ type: "stdout", chunk: "he", text: true })).toBe("he");
+    expect(answer.committed).toBe(true);
   });
 });

@@ -116,7 +116,7 @@ describe("orphanStrandedSlotQueue liveness", () => {
     // starting, so anything queued belongs to a dead session" — and an
     // acceptance pass measured it killing a live server's queued job within
     // a second, then removing it from the drain queue by clearing
-    // slotQueued. `notes/ux-walkthrough.md` promises a waiting job is never
+    // slotQueued. `ux-walkthrough.md` promises a waiting job is never
     // reported as orphaned; this is that promise.
     await plantJob(fixedJobId(21), {
       status: "queued",

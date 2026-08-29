@@ -269,3 +269,52 @@ describe("isolated workspace lifecycle — every policy x location x change kind
     }
   }, 60_000);
 });
+
+describe("git_worktree cleanup on a failed attempt", () => {
+  it("unregisters a worktree when the attempt failed and changed nothing", async () => {
+    // A worktree is a registration inside the USER's repository, and retention
+    // deliberately never removes one (unregistering needs git, and only the
+    // owning repo can do it). So a failed attempt leaves one behind forever —
+    // and a failed FALLBACK arm is not named in the response at all, so its
+    // worktree has no cleanup hint anywhere. An acceptance pass measured one
+    // HTTP request leaving two entries in `git worktree list`.
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-fail-"));
+    await execFile("git", ["init", "-q"], { cwd: repo });
+    await execFile("git", ["config", "user.email", "t@example.com"], { cwd: repo });
+    await execFile("git", ["config", "user.name", "t"], { cwd: repo });
+    await fs.writeFile(path.join(repo, "a.txt"), "one\n", "utf8");
+    await execFile("git", ["add", "-A"], { cwd: repo });
+    await execFile("git", ["commit", "-qm", "initial"], { cwd: repo });
+
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-home-"));
+    const prevDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const prepared = await prepareWorkspace({
+        routeName: "alpha",
+        policy: "git_worktree",
+        workingDir: repo,
+        files: [],
+      });
+
+      const listed = async (): Promise<string> =>
+        (await execFile("git", ["worktree", "list"], { cwd: repo })).stdout;
+      expect(await listed(), "worktree was not registered").toContain("worktree");
+
+      // The attempt fails without touching a file — the fallback-arm case.
+      await prepared.finish({ output: "", service: "alpha", success: false, error: "boom" });
+
+      const after = await listed();
+      expect(
+        after.split("\n").filter((l) => l.trim() !== "").length,
+        `a failed attempt left a worktree registered:\n${after}`,
+      ).toBe(1);
+      expect(existsSync(prepared.workspaceRoot!)).toBe(false);
+    } finally {
+      if (prevDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prevDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+});

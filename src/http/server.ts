@@ -268,7 +268,7 @@ async function handleChatCompletions(
         parsed.workingDir,
         { hints: parsed.hints, maxFallbacks: 2 },
       )) {
-        const text = answer(event);
+        const text = answer.next(event);
         if (text !== undefined) {
           writeSse(
             res,
@@ -284,6 +284,13 @@ async function handleChatCompletions(
               route: event.result.service,
             },
           });
+          // Once any answer text has gone out, this response is committed to
+          // that route: a fallback's answer cannot be spliced onto a half-sent
+          // one without garbling it, and the previous behaviour ran the
+          // fallback anyway and discarded what it produced — billed, and
+          // thrown away. Stop instead. Breaking here ends the router's
+          // iteration, so no further route is attempted.
+          if (answer.committed) break;
         }
       }
     }
