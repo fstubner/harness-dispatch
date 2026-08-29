@@ -128,6 +128,7 @@ vi.mock("../src/leaderboard.js", () => {
 // ---- Imports come AFTER vi.mock calls ------------------------------------
 
 import { Router, SCORING } from "../src/router.js";
+import { aRunDirName } from "./support/fixtures.js";
 import { nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
 import { buildRouteBilling } from "../src/billing.js";
 import { QuotaCache } from "../src/quota.js";
@@ -1241,7 +1242,10 @@ describe("Router.route", () => {
       expect(first.result.success).toBe(true);
       const projectRoot = path.dirname(first.result.workspace!.workspaceRoot!);
 
-      const staleRun = path.join(projectRoot, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb");
+      // Built by the product's own generator, not spelled out: a run
+      // directory with a hand-written suffix is not one reclamation
+      // recognises, and a test using one measures something else.
+      const staleRun = path.join(projectRoot, aRunDirName("alpha"));
       await fs.mkdir(path.join(staleRun, "workspace"), { recursive: true });
       await fs.utimes(staleRun, staleTime, staleTime);
 
@@ -1289,10 +1293,11 @@ describe("Router.route", () => {
 
     // A project root belonging to some OTHER, now-vanished project.
     const abandoned = path.join(wsHome, "gone-project-deadbeef");
-    await fs.mkdir(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb", "workspace"), {
+    const abandonedRun = aRunDirName("alpha");
+    await fs.mkdir(path.join(abandoned, abandonedRun, "workspace"), {
       recursive: true,
     });
-    await fs.utimes(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb"), stale, stale);
+    await fs.utimes(path.join(abandoned, abandonedRun), stale, stale);
 
     // A directory this tool never created, everything in it long past the
     // window. HARNESS_DISPATCH_WORKSPACES_DIR is a setting the README
@@ -1320,7 +1325,7 @@ describe("Router.route", () => {
     // And one whose run is still inside the window: it must survive, or a
     // live dispatch elsewhere on the machine loses its workspace.
     const active = path.join(wsHome, "busy-project-cafebabe");
-    await fs.mkdir(path.join(active, "2026-01-01T00-00-00-000Z-2-alpha-ccccdddd", "workspace"), {
+    await fs.mkdir(path.join(active, aRunDirName("alpha"), "workspace"), {
       recursive: true,
     });
 

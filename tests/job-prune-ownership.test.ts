@@ -57,8 +57,9 @@ describe("pruneStaleJobs ownership", () => {
   it.each([
     ["a dated backup directory", "backup-20260401", "data.bin"],
     ["an ordinary directory", "my-notes", "n.txt"],
-    ["a near-miss name", "job-notanumber-abcdef12", "x.txt"],
-    ["a short suffix", "job-1700000000000-abcd", "x.txt"],
+    // fixture-shapes-ok: these ARE the invalid names under test.
+    ["a near-miss name", "job-notanumber-abcdef12", "x.txt"], // fixture-shapes-ok
+    ["a short suffix", "job-1700000000000-abcd", "x.txt"], // fixture-shapes-ok
   ])("leaves %s alone", async (_label, name, child) => {
     const foreign = await plant(name, child);
     await pruneStaleJobs();

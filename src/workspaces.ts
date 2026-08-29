@@ -89,7 +89,17 @@ function safeName(value: string): string {
   return value.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) || "route";
 }
 
-function workspaceRunId(routeName: string): string {
+/**
+ * Exported for tests, which must build run directories with the SAME function
+ * that makes real ones rather than by hand.
+ *
+ * Three separate tests in this repo used a hand-written name the product
+ * cannot generate — run directories with four-character suffixes where a real
+ * one has eight hex — and each therefore asserted something about an input
+ * that never occurs. Two of them passed while the bug they claimed to cover
+ * was live. A fixture is only evidence if it is the thing.
+ */
+export function workspaceRunId(routeName: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `${stamp}-${process.pid}-${safeName(routeName)}-${randomUUID().slice(0, 8)}`;
 }
@@ -135,7 +145,8 @@ function workspacesBase(): string {
   );
 }
 
-function workspaceRootFor(originalWorkingDir: string): string {
+/** Exported for tests, for the same reason as `workspaceRunId`. */
+export function workspaceRootFor(originalWorkingDir: string): string {
   const base = workspacesBase();
   // The per-project segment applies to the override too. Without it, every
   // project pointed at one HARNESS_DISPATCH_WORKSPACES_DIR shared a flat
