@@ -148,6 +148,14 @@ function workspaceRootFor(originalWorkingDir: string): string {
   return path.join(base, `${safeName(path.basename(originalWorkingDir))}-${pathKey(originalWorkingDir)}`);
 }
 
+/**
+ * The shape `workspaceRootFor` generates: a safe basename, then the 8-hex
+ * digest. Kept next to the function that produces it — the reclamation sweep
+ * uses this to tell a directory we created from one that merely happens to sit
+ * in the same place, so the two must not drift apart.
+ */
+const GENERATED_ROOT_RE = /-[0-9a-f]{8}$/;
+
 /** Short stable digest of a project path, to keep same-named projects apart. */
 function pathKey(dir: string): string {
   return createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 8);
@@ -264,6 +272,16 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // It has to LOOK like something we made. Age alone is not evidence of
+    // ownership, and this sweep deletes recursively: pointed at a shared
+    // directory it would take anything sitting there untouched for a day.
+    // That is not hypothetical — HARNESS_DISPATCH_WORKSPACES_DIR is a setting
+    // the README actively recommends ("on the project's own volume, for
+    // instance"), and nothing told anyone the directory would become ours
+    // exclusively. An acceptance pass reproduced the loss against the built
+    // artifact: two unrelated directories with real content destroyed by one
+    // dispatch.
+    if (!GENERATED_ROOT_RE.test(entry.name)) continue;
     const full = path.join(base, entry.name);
     if (path.resolve(full) === path.resolve(currentRoot)) continue;
     try {

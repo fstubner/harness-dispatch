@@ -20,15 +20,17 @@
  *  - an entry that already exists and differs is REPORTED, never overwritten
  *    without consent — that Cursor entry was good, and a blind writer would
  *    have destroyed a working setup in the name of fixing it;
- *  - removal ships in the same change as writing, so nothing this creates is
- *    left orphaned when someone changes their mind.
+ *  - removal ships in the same change as writing, so the ENTRY is never left
+ *    orphaned when someone changes their mind. Backups are bounded rather than
+ *    removed with it — see pruneOwnBackups for why undoing a registration is
+ *    the worst moment to delete the record of what it replaced.
  *
  * It writes MCP server registration and nothing else — no instructions, no
  * hooks, no behavioural configuration. That is the part that rotted last time.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { clientConfigLocations, type ClientConfigLocation } from "./mcp-clients.js";
@@ -196,7 +198,45 @@ export function planClientWrites(
 async function backup(file: string, stamp: string): Promise<string> {
   const dest = `${file}.harness-dispatch-backup-${stamp}`;
   await copyFile(file, dest);
+  await pruneOwnBackups(file);
   return dest;
+}
+
+/** How many of our own backups of one file to keep. */
+const KEEP_BACKUPS = 3;
+
+/**
+ * Keep the last few backups of a file, not all of them ever taken.
+ *
+ * Every write AND every removal takes one, so a few rounds of connect/--remove
+ * left a pile of copies of `~/.claude.json` — a file this module's own comment
+ * describes as holding live API keys — with nothing to prune them, no flag to
+ * decline them, and no command to list them. An acceptance pass found one
+ * already sitting on the maintainer's machine, and the module header's claim
+ * that "nothing this creates is left orphaned" was true of the entry and false
+ * of these.
+ *
+ * Bounded rather than removed entirely, and NOT cleared by `--remove`: the
+ * moment someone undoes a registration is the worst possible moment to destroy
+ * the copy of what it looked like before. Only files matching the name this
+ * function itself writes are touched, so a backup anyone else made is not ours
+ * to delete.
+ */
+async function pruneOwnBackups(file: string): Promise<void> {
+  const dir = path.dirname(file);
+  const prefix = `${path.basename(file)}.harness-dispatch-backup-`;
+  try {
+    const mine = (await readdir(dir))
+      .filter((name) => name.startsWith(prefix))
+      // The stamp is an ISO timestamp with `:` and `.` replaced, so it sorts
+      // lexicographically in chronological order.
+      .sort();
+    for (const name of mine.slice(0, Math.max(0, mine.length - KEEP_BACKUPS))) {
+      await rm(path.join(dir, name), { force: true });
+    }
+  } catch {
+    // Best effort: failing to tidy up must never fail the registration itself.
+  }
 }
 
 /**

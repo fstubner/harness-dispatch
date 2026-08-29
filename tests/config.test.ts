@@ -118,6 +118,40 @@ endpoints:
     expect(warningText).toContain("endpoints:");
   });
 
+  it("warns when services: is written as a list, which silently renames routes to indices", async () => {
+    // `typeof [] === "object"`, so a list reaches the map parser and
+    // Object.entries turns it into routes called "0" and "1" with each item's
+    // name: ignored. Nothing looked wrong — doctor reported two routes and
+    // status listed them — until `--service metered_openai` answered "Unknown
+    // service". The mistake is natural: the sibling keys clis: and endpoints:
+    // ARE lists whose items carry name:.
+    const yamlText = `
+services:
+  - name: my_route
+    enabled: true
+    type: cli
+    command: some-bin
+    tier: 1
+  - name: other_route
+    enabled: true
+    type: cli
+    command: other-bin
+    tier: 2
+`;
+    const p = await writeTmpYaml("services-as-list.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    // The behaviour itself is unchanged — this makes it visible, not silent.
+    expect(Object.keys(cfg.services)).toEqual(["0", "1"]);
+
+    const warningText = cfg.configWarnings!.join("\n");
+    expect(warningText).toContain("services:");
+    // Names both what it became and what was ignored, so the reader can act.
+    expect(warningText).toContain("0, 1");
+    expect(warningText).toContain("my_route");
+    expect(warningText).toContain("other_route");
+  });
+
   it("does NOT warn about clis:/endpoints: when services: is used alone", async () => {
     const yamlText = `
 services:

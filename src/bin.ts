@@ -337,23 +337,31 @@ async function cmdConnect(
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   let failed = false;
+  let wrote = false;
   for (const plan of chosen) {
     const outcome = opts.remove
       ? await removeClientEntry(plan, { stamp, force: opts.force })
       : await writeClientEntry(plan, { stamp });
     if (outcome.action === "written") {
+      wrote = true;
       process.stdout.write(
         `${opts.remove ? "Removed from" : "Wrote"} ${outcome.client} (backup: ${outcome.backupPath})\n`,
       );
     } else if (outcome.action === "unchanged") {
-      process.stdout.write(`${outcome.client}: already correct, nothing changed.\n`);
+      process.stdout.write(
+        `${outcome.client}: ${opts.remove ? "no entry of ours to remove" : "already correct"}, nothing changed.\n`,
+      );
     } else {
       failed = true;
       process.stderr.write(`Skipped ${outcome.client}: ${outcome.reason}\n`);
     }
   }
-  if (!opts.remove && !failed) {
-    process.stdout.write("\nRestart the client(s) so they pick up the new server.\n");
+  // Only when something actually changed. Telling someone to restart an
+  // application after a run that wrote nothing is advice with no cause.
+  if (wrote && !failed) {
+    process.stdout.write(
+      `\nRestart the client(s) so they pick up the ${opts.remove ? "removal" : "new server"}.\n`,
+    );
   }
   return failed ? 1 : 0;
 }
@@ -554,7 +562,7 @@ async function cmdDoctor(
           ok: true,
           detail:
             "not registered with any MCP client this tool knows how to read " +
-            "(Claude Code, Cursor) — run `configure` for a snippet to paste",
+            "(Claude Code, Cursor) — run `harness-dispatch connect` to register it",
         };
       }
       return {
@@ -568,7 +576,7 @@ async function cmdDoctor(
                   (e) =>
                     `${e.client} (${e.file}) launches ${e.entry} from a path that does not ` +
                     `exist: ${e.missingPaths.join(", ")} — that client has been getting NO ` +
-                    `tools from this server, silently. Fix the entry or re-run configure.`,
+                    "tools from this server, silently. `harness-dispatch connect` rewrites the entry.",
                 )
                 .join(" | "),
       };

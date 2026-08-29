@@ -1216,10 +1216,7 @@ describe("Router.route", () => {
     // than reaching into os.tmpdir(), so the test cannot delete a real
     // workspace belonging to something else on this machine.
     const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-ws-home-"));
-    const staleRoot = path.join(wsHome, "stale-run");
-    await fs.mkdir(staleRoot, { recursive: true });
     const staleTime = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    await fs.utimes(staleRoot, staleTime, staleTime);
 
     const svc = makeService({ name: "alpha", tier: 1 });
     const dispatcher = new StubDispatcher("alpha");
@@ -1230,6 +1227,24 @@ describe("Router.route", () => {
     process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
     try {
+      // Two dispatches, because the stale run has to go where the product
+      // actually puts one: INSIDE this project's own root, whose name is a
+      // digest of the project path. The old fixture was an empty directory
+      // sitting in the base — the right shape back when the base and the
+      // prune root were the same thing, and since per-project roots arrived,
+      // a directory at a level nothing generates. It passed for the wrong
+      // reason and stopped the moment reclamation began checking that a
+      // directory looks like one of ours.
+      const first = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+      expect(first.result.success).toBe(true);
+      const projectRoot = path.dirname(first.result.workspace!.workspaceRoot!);
+
+      const staleRun = path.join(projectRoot, "2026-01-01T00-00-00-000Z-1-alpha-aaaa");
+      await fs.mkdir(path.join(staleRun, "workspace"), { recursive: true });
+      await fs.utimes(staleRun, staleTime, staleTime);
+
       const { result } = await router.route("noop", [], root, {
         hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
       });
@@ -1238,17 +1253,16 @@ describe("Router.route", () => {
       // only the pre-existing stale one should be gone.
       expect(result.workspace?.workspaceRoot).toBeDefined();
       await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();
+      await expect(
+        fs.stat(staleRun),
+        "a run past the retention window survived inside its own project root",
+      ).rejects.toThrow();
 
       // The guarantee the move exists for: a copy dispatch leaves NOTHING in
       // the user's project. Nesting the workspace here is what let sibling
       // workspaces leak into the patch as deletions, destroying another job's
       // work and offering to delete the user's files.
       await expect(fs.stat(path.join(root, ".harness-dispatch"))).rejects.toThrow();
-
-      // Asserted HERE, not after the block: the finally below removes wsHome
-      // entirely, so a check placed after it passes whether or not anything
-      // was ever pruned.
-      await expect(fs.stat(staleRoot)).rejects.toThrow();
     } finally {
       if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
       else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
@@ -1279,6 +1293,18 @@ describe("Router.route", () => {
       recursive: true,
     });
     await fs.utimes(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaa"), stale, stale);
+
+    // A directory this tool never created, everything in it long past the
+    // window. HARNESS_DISPATCH_WORKSPACES_DIR is a setting the README
+    // recommends pointing at a directory of your choosing, so the base is not
+    // necessarily ours alone — and this sweep deletes recursively. An
+    // acceptance pass reproduced exactly this against the built artifact:
+    // unrelated directories with real content destroyed by one dispatch.
+    // Age is not evidence of ownership.
+    const notOurs = path.join(wsHome, "my-important-notes");
+    await fs.mkdir(path.join(notOurs, "subdir"), { recursive: true });
+    await fs.writeFile(path.join(notOurs, "subdir", "notes.txt"), "irreplaceable", "utf8");
+    await fs.utimes(path.join(notOurs, "subdir"), stale, stale);
 
     // And one whose run is still inside the window: it must survive, or a
     // live dispatch elsewhere on the machine loses its workspace.
@@ -1311,6 +1337,10 @@ describe("Router.route", () => {
       await expect(
         fs.stat(active),
         "a project root with a run still inside the window was deleted",
+      ).resolves.toBeDefined();
+      await expect(
+        fs.stat(path.join(notOurs, "subdir", "notes.txt")),
+        "a directory harness-dispatch never created was deleted",
       ).resolves.toBeDefined();
       // And this dispatch's own root is obviously not self-deleted.
       await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();

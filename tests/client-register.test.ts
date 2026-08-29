@@ -178,6 +178,36 @@ describe("writeClientEntry", () => {
     expect(left).toEqual([]);
   });
 
+  it("keeps the last few backups rather than one per run, forever", async () => {
+    // Every write AND every removal takes a backup, and ~/.claude.json holds
+    // live API keys — so unbounded accumulation is a growing pile of copies of
+    // someone's secrets. An acceptance pass found one already on the
+    // maintainer's machine with nothing that would ever remove it.
+    await writeJson(claudeFile(), { mcpServers: {} });
+    for (const stamp of ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05"]) {
+      // Alternate write/remove so each round genuinely changes state and takes
+      // a backup, rather than short-circuiting on "already correct".
+      await writeClientEntry(planFor("claude-code"), { stamp });
+      await removeClientEntry(planFor("claude-code"), { stamp: `${stamp}-r` });
+    }
+
+    const backups = (await fs.readdir(home)).filter((f) => f.includes("harness-dispatch-backup"));
+    expect(backups.length).toBeLessThanOrEqual(3);
+    // The ones kept are the most recent, not an arbitrary three.
+    expect(backups.sort().at(-1)).toContain("2026-01-05");
+  });
+
+  it("does not delete a backup somebody else made", async () => {
+    await writeJson(claudeFile(), { mcpServers: {} });
+    const foreign = `${claudeFile()}.my-own-backup`;
+    await fs.writeFile(foreign, "mine", "utf8");
+    for (const stamp of ["2026-02-01", "2026-02-02", "2026-02-03", "2026-02-04"]) {
+      await writeClientEntry(planFor("claude-code"), { stamp });
+      await removeClientEntry(planFor("claude-code"), { stamp: `${stamp}-r` });
+    }
+    await expect(fs.readFile(foreign, "utf8")).resolves.toBe("mine");
+  });
+
   it("is idempotent: the second run reports unchanged and rewrites nothing", async () => {
     await writeJson(claudeFile(), { mcpServers: {} });
     await writeClientEntry(planFor("claude-code"), { stamp: "s1" });

@@ -340,6 +340,34 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   const rawServices = (raw.services ?? {}) as Record<string, Record<string, unknown>>;
   const warnings: string[] = [];
 
+  // `services:` must be a MAP of route id -> settings, but `typeof [] ===
+  // "object"`, so a list slips through and Object.entries turns it into routes
+  // called "0", "1", … with each item's `name:` silently ignored. Everything
+  // then looks healthy — doctor reports the routes, status lists them — right
+  // up until `--service my_route` answers "Unknown service".
+  //
+  // The mistake is a natural one rather than carelessness: the sibling
+  // top-level keys `clis:` and `endpoints:` ARE lists, and their items DO
+  // carry `name:`. Found by an acceptance pass; it predates the work that pass
+  // was reviewing.
+  if (Array.isArray(raw.services)) {
+    const intended = (raw.services as unknown[])
+      .map((e) => (e !== null && typeof e === "object" ? (e as Record<string, unknown>).name : undefined))
+      .filter((n): n is string => typeof n === "string" && n !== "");
+    const got = Object.keys(rawServices);
+    warnings.push(
+      `services: is a LIST, but it must be a map of route id to settings. Its ` +
+        `${got.length} entr${got.length === 1 ? "y" : "ies"} became route id${got.length === 1 ? "" : "s"} ` +
+        `${got.join(", ")}` +
+        (intended.length > 0
+          ? `, and each item's name: (${intended.join(", ")}) was ignored — so anything ` +
+            `referring to a route by name will not find it`
+          : "") +
+        `. Write it as \`services:\` then \`  <id>:\` per route (unlike clis: and ` +
+        `endpoints:, which ARE lists).`,
+    );
+  }
+
   // A top-level `services:` key selects the legacy parser entirely — it
   // never looks at clis:/endpoints:/overrides:, so any of those sitting
   // alongside it are silently dropped unless we say so here. The likely
