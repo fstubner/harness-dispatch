@@ -18,6 +18,7 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 
 import type { RouteHints, WorkspacePolicy } from "../types.js";
+import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
 
@@ -290,6 +291,13 @@ function parseHints(body: ChatRequest): RouteHints {
     ["timeout_ms", "this API spells it timeoutMs"],
     ["working_dir", "this API spells it workingDir"],
     ["context_jobs", "contextJobs is an MCP tool parameter and is not supported here"],
+    // The key this endpoint uses in its OWN responses (http/server.ts), so
+    // wrapping a request's hints in it is the natural wrong guess — an
+    // acceptance pass reached for it first. Wrapped that way every hint
+    // vanished on a 200, and the dispatch ran at the default workspace_edit:
+    // more access than the caller asked for, with no signal.
+    ["harness_dispatch", "put hints at the top level or inside `hints`"],
+    ["harnessDispatch", "put hints at the top level or inside `hints`"],
   ] as const) {
     if ((body as Record<string, unknown>)[wrong] !== undefined) {
       throw new BadRequestError(
@@ -298,6 +306,19 @@ function parseHints(body: ChatRequest): RouteHints {
           `with MORE access than you asked for.`,
       );
     }
+  }
+  // A near-miss of a hint name, at the top level.
+  //
+  // The named list above catches the snake_case spellings, which are the
+  // predictable slip. A plain typo is not predictable and had the same
+  // consequence: `safteyProfile` was accepted and dropped, so the dispatch ran
+  // at the looser default and answered 200. The outer object cannot be strict
+  // — it carries OpenAI's own fields — so this asks a narrower question: is
+  // this key ALMOST one of ours? None of OpenAI's field names come near one,
+  // and a key that is genuinely unrelated stays legitimate.
+  for (const key of Object.keys(body as Record<string, unknown>)) {
+    const meant = nearMissHintKey(key);
+    if (meant !== undefined) throw new BadRequestError(nearMissMessage(key, meant));
   }
   // MCP parameters this surface does not implement. Both were accepted and
   // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior

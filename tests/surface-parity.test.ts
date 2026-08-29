@@ -210,6 +210,12 @@ describe("both surfaces answer the same input the same way", () => {
     ["a top-level working_dir", { prompt: "hi", working_dir: "/tmp" }],
     ["a null timeoutMs", { prompt: "hi", hints: { timeoutMs: null } }],
     ["a null preferLargeContext", { prompt: "hi", hints: { preferLargeContext: null } }],
+    // A relative workingDir resolves against the SERVER's cwd, not the
+    // caller's. `../..` exists, so every check passed and a real dispatch ran
+    // somewhere neither party chose — and `defaulted` stays false, so not even
+    // the omitted-value warning fires.
+    ["a relative workingDir", { prompt: "hi", workingDir: ".." }],
+    ["a bare relative workingDir", { prompt: "hi", workingDir: "some/sub" }],
   ];
 
   it.each(REJECTED)("both reject %s", async (_label, body) => {
@@ -343,5 +349,39 @@ describe("both surfaces answer the same input the same way", () => {
       const parsed = parseChatRequest({ prompt: "hi", workingDir: dir, model: value });
       expect(parsed.hints.model, `top-level model ${JSON.stringify(value)} survived`).toBeUndefined();
     }
+  });
+});
+
+/**
+ * One place the surfaces deliberately DIFFER, written down so it stays a
+ * decision rather than a drift.
+ *
+ * A top-level key one typo from a hint name (`safteyProfile`) is refused on
+ * HTTP and silently dropped on MCP. Not an oversight: the MCP SDK validates
+ * against `z.object(dispatchInputShape)` before any of our code runs, and zod
+ * strips unknown keys — so nothing in the registered-tool path can see what the
+ * caller actually sent. Closing it means intercepting CallTool below the SDK's
+ * routing.
+ *
+ * The consequence is identical on both sides — the hint is dropped and the
+ * dispatch runs at the looser default — so this test asserts the asymmetry
+ * rather than approving of it. If MCP ever starts rejecting these, this test
+ * fails and the row moves up into REJECTED where it belongs.
+ */
+describe("near-miss top-level keys: a known, deliberate asymmetry", () => {
+  it.each([
+    ["safteyProfile", { prompt: "hi", safteyProfile: "read_only" }],
+    ["taskTyp", { prompt: "hi", taskTyp: "review" }],
+  ])("HTTP rejects %s; MCP strips it before we can", async (key, body) => {
+    expect(
+      () => parseChatRequest({ workingDir: dir, ...body }),
+      "HTTP stopped rejecting a near-miss key",
+    ).toThrow(new RegExp(key));
+
+    const mcpError = await dispatchError({ workingDir: dir, ...body });
+    expect(
+      mcpError,
+      "MCP now rejects it — good; move this row into REJECTED and delete this test",
+    ).toBeUndefined();
   });
 });

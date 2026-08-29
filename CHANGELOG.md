@@ -106,13 +106,40 @@ pre-1.0, so minor versions can carry behaviour changes.
   escape hatch — the README recommends it — and nothing said the directory
   would become this tool's exclusively. An acceptance pass reproduced the loss
   against the built artifact: two unrelated directories with real content
-  destroyed by a single dispatch. A directory must now also match the
-  `<name>-<8 hex>` shape this tool generates. Default installs were never
-  affected, since the default base is dedicated.
+  destroyed by a single dispatch. Default installs were never affected, since
+  the default base is dedicated.
 
-  The existing test passed only because its fixture happened to be named
-  `gone-project-deadbeef`, which matches that shape by accident. It now has a
-  companion that does not match and must survive.
+  A directory is now reclaimed only if it carries a marker file this tool
+  writes into every root it creates. The first attempt matched the generated
+  NAME shape instead, `-[0-9a-f]{8}$` — and eight decimal digits are valid hex,
+  so every `<name>-<YYYYMMDD>` still matched: a second acceptance pass planted
+  `backup-20260401` beside the directories that now survived and watched one
+  dispatch delete it recursively. A heuristic cannot answer "did I create
+  this". Roots made before the marker existed are still reclaimed, but only
+  when every child is a generated run directory and there is at least one, so
+  the earlier disk leak does not return through the back door.
+
+  The original test passed only because its fixture happened to be named
+  `gone-project-deadbeef`, matching that shape by accident. It now has two
+  companions that must survive: an ordinary directory, and one named to
+  collide with the shape check that failed.
+
+- `workingDir` must be an absolute path. A relative one was resolved against
+  the SERVER's working directory rather than the caller's — and `../..` exists,
+  so every check passed and a real dispatch ran somewhere neither party chose.
+  The omitted-value warning could not fire either, since the value was not
+  omitted. The caller and the server are different processes with different
+  working directories, so there is no correct relative value to accept.
+
+- The HTTP surface rejects a top-level key that is nearly a hint name, instead
+  of accepting and dropping it. The outer body cannot be strict — it carries
+  OpenAI's own fields — so `safteyProfile` (a transposition) and hints wrapped
+  in `harness_dispatch` (the key this endpoint uses in its own *responses*, so
+  the natural wrong guess) both returned HTTP 200 and dispatched at the default
+  `workspace_edit`: more access than the caller asked for, with no signal,
+  while the correct spelling produced `read_only`. Now refused by name with the
+  intended spelling. One typo apart, transpositions included; unrelated keys
+  and every OpenAI field stay legitimate.
 
 - `services:` written as a YAML list no longer fails silently. It must be a map
   of route id to settings, but `typeof [] === "object"`, so a list slipped

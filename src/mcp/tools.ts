@@ -28,6 +28,7 @@ import type {
 } from "../types.js";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
@@ -880,6 +881,23 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
 }
 
 export type InvokeResult = { kind: "json"; data: unknown };
+
+/**
+ * A near-miss top-level key (`safteyProfile`) is caught on the HTTP surface
+ * and NOT here, which is a real asymmetry rather than an oversight.
+ *
+ * The MCP SDK validates against `z.object(dispatchInputShape)` before any code
+ * in this file runs, and zod strips unknown keys — so by the time a handler
+ * sees the arguments, the misspelled key is already gone. There is nowhere in
+ * the registered-tool path to inspect what the caller actually sent. Closing it
+ * means intercepting the CallTool request below the SDK's own routing, which is
+ * a larger change than the defect warrants today.
+ *
+ * The consequence is the same on both surfaces — the hint is dropped and the
+ * dispatch runs at the looser default — so this is worth revisiting. Written
+ * down here because an undocumented difference between the surfaces is exactly
+ * what the parity suite exists to prevent.
+ */
 
 export async function invokeTool(
   name: string,

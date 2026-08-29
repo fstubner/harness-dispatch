@@ -8,6 +8,7 @@
  */
 
 import { statSync } from "node:fs";
+import path from "node:path";
 
 export interface ResolvedWorkingDir {
   workingDir: string;
@@ -28,6 +29,23 @@ export interface ResolvedWorkingDir {
  */
 export function validateWorkingDir(input: string | undefined): string | undefined {
   if (input === undefined || input === "") return undefined;
+  // A relative path is resolved against THIS process's cwd — the server's, not
+  // the caller's — which is the silent wrong-directory execution described
+  // above, only harder to spot: `../..` exists, so every check passed and the
+  // dispatch ran somewhere nobody chose. `defaulted` stays false in that case,
+  // so even the warning for an omitted value does not fire. An acceptance pass
+  // ran a real dispatch this way.
+  //
+  // The caller and the server are different processes with different working
+  // directories — a caller cannot know what a relative path will mean here, so
+  // there is no correct relative value to accept.
+  if (!path.isAbsolute(input)) {
+    return (
+      `workingDir must be an absolute path, got ${input} — a relative path resolves ` +
+      `against the server's own directory, not yours, so it would run somewhere ` +
+      `neither of us chose.`
+    );
+  }
   let stats: import("node:fs").Stats;
   try {
     stats = statSync(input);
