@@ -53,7 +53,7 @@ describe("jobId validation", () => {
     ["windows absolute", "C:\\Windows"],
     ["empty", ""],
     ["wrong shape", "not-a-job-id"],
-    ["right prefix, wrong suffix", "job-123-ZZZZZZZZ"],
+    ["right prefix, wrong suffix", "job-123-ZZZZZZZZ"], // fixture-shapes-ok
   ])("rejects %s", async (_label, jobId) => {
     await expect(getAsyncJob(jobId)).rejects.toThrow(/Invalid jobId/);
   });

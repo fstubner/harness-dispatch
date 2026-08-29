@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { fixedJobId } from "../support/fixtures.js";
 import { z } from "zod";
 import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
@@ -916,7 +917,7 @@ describe("MCP tools — dispatch", () => {
     // out from under their runners (a job dir's mtime only moves on a 15s
     // heartbeat, so at age 0 every beat gap was fatal).
     const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
-    const oldJobDir = path.join(jobsDir, "job-old-0000000-bbbbbbbb");
+    const oldJobDir = path.join(jobsDir, fixedJobId(11));
     mkdirSync(oldJobDir, { recursive: true });
     const staleTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     utimesSync(oldJobDir, staleTime, staleTime);
@@ -939,12 +940,12 @@ describe("MCP tools — dispatch", () => {
 
   it("never prunes a running job with a fresh heartbeat, whatever retention says", async () => {
     const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
-    const runningJobDir = path.join(jobsDir, "job-live-0000000-cccccccc");
+    const runningJobDir = path.join(jobsDir, fixedJobId(12));
     mkdirSync(runningJobDir, { recursive: true });
     writeFileSync(
       path.join(runningJobDir, "status.json"),
       JSON.stringify({
-        jobId: "job-live-0000000-cccccccc",
+        jobId: fixedJobId(12),
         status: "running",
         updatedAt: new Date().toISOString(),
       }),
@@ -1082,7 +1083,8 @@ describe("MCP tools — job_status", () => {
 
   it("errors on an unknown jobId rather than returning a blank status", async () => {
     const holder = buildHolder({ a: makeService("a") }, { a: new FakeDispatcher("a") });
-    await expect(invokeTool("job_status", { jobId: "job-does-not-exist" }, { holder })).rejects.toThrow();
+    // fixture-shapes-ok: a malformed id is the input under test here.
+    await expect(invokeTool("job_status", { jobId: "job-does-not-exist" }, { holder })).rejects.toThrow(); // fixture-shapes-ok
   });
 });
 
