@@ -501,6 +501,17 @@ export function parseChatRequest(raw: unknown): {
   // never got. MCP rejects both arrays by name.
   const files = stringArray(body.files, "files");
   const models = stringArray(body.models, "models");
+  // An explicit `models: []` is refused here exactly as MCP refuses it: it
+  // fell through to the same branch as "omitted" and fanned out to every
+  // eligible route. A caller who sent an empty array built a list that came
+  // out empty; omitting the field is how you ask for everything.
+  if (Array.isArray(body.models) && models.length === 0) {
+    throw new BadRequestError(
+      "models: [] selects no routes. Omit `models` entirely to fan out to every " +
+        "eligible route (expensive — one dispatch per route), or name at least one. " +
+        "An empty list is usually a filter that matched nothing.",
+    );
+  }
   const resolvedWorkingDir = resolveWorkingDir(
     typeof body.workingDir === "string" ? body.workingDir : undefined,
   );

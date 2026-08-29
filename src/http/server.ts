@@ -19,7 +19,7 @@ import type { Router } from "../router.js";
 import { explicitOptsFromHints } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { workingDirWarning } from "../working-dir.js";
-import { getAsyncJob, startAsyncJobTracked } from "../jobs.js";
+import { drainSlotQueue, getAsyncJob, startAsyncJobTracked } from "../jobs.js";
 import {
   BadRequestError,
   completionEnvelope,
@@ -594,6 +594,13 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   });
   const addr = http.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : port;
+
+  // Same reason as the stdio entry point: jobs left waiting for a concurrency
+  // slot when a server died are drained by nothing until a new dispatch
+  // happens to arrive, and unlike a running job they are exempt from orphan
+  // detection, so they simply read `queued` forever. Not awaited and never
+  // fatal — the server must still serve.
+  void drainSlotQueue(holder.state.config, holder.state.configPath).catch(() => undefined);
 
   if (!isLoopbackHost(host)) {
     process.stderr.write(

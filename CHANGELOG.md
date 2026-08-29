@@ -124,6 +124,20 @@ pre-1.0, so minor versions can carry behaviour changes.
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
 
+- `models: []` is refused instead of fanning out to every route. An explicit
+  empty array fell through to the same branch as omitting the field, so a
+  caller whose filter matched nothing got one dispatch per configured route —
+  eight arms where an acceptance pass measured it. Omitting `models` is still
+  how you ask for that, and it stays a deliberate keystroke.
+
+- A server start drains jobs left waiting for a concurrency slot. Slot-queued
+  jobs are exempt from orphan detection by design — nothing heartbeats for
+  them — but the only things that drained the queue were a runner exiting and
+  a new dispatch arriving. So a server that died with jobs queued left them
+  reporting `queued` forever, while a job that was *running* is reported
+  orphaned within 90 seconds. Not a new behaviour: a later dispatch already
+  resumed them, and this stops that from depending on unrelated traffic.
+
 - Job retention no longer deletes directories this tool never created. The
   sweep removed every stale directory under the jobs root recursively, with no
   check of any kind — the same defect workspace reclamation shipped twice in

@@ -216,6 +216,11 @@ describe("both surfaces answer the same input the same way", () => {
     // the omitted-value warning fires.
     ["a relative workingDir", { prompt: "hi", workingDir: ".." }],
     ["a bare relative workingDir", { prompt: "hi", workingDir: "some/sub" }],
+    // An explicit empty `models` fell through to the same branch as omitting
+    // it and fanned out to EVERY eligible route — eight arms on the machine
+    // where an acceptance pass measured it. A caller who sent `[]` built a
+    // list that came out empty; they did not ask for everything.
+    ["an empty models array", { prompt: "hi", mode: "fanout", models: [] }],
   ];
 
   it.each(REJECTED)("both reject %s", async (_label, body) => {
@@ -378,10 +383,26 @@ describe("near-miss top-level keys: a known, deliberate asymmetry", () => {
       "HTTP stopped rejecting a near-miss key",
     ).toThrow(new RegExp(key));
 
-    const mcpError = await dispatchError({ workingDir: dir, ...body });
+    // MCP does NOT reject these, so this call starts a REAL background run.
+    // `graceSeconds: 0` returns the jobId immediately and the job is cancelled
+    // below — without that, the run outlives the test and holds the temp
+    // working directory open, and teardown fails with EBUSY. Starting work a
+    // test does not stop is what this file already fixed once.
+    const r = await client.callTool({
+      name: "dispatch",
+      arguments: { workingDir: dir, graceSeconds: 0, ...body },
+    });
     expect(
-      mcpError,
+      (r as { isError?: boolean }).isError,
       "MCP now rejects it — good; move this row into REJECTED and delete this test",
-    ).toBeUndefined();
+    ).toBeFalsy();
+
+    const text = ((r as { content?: Array<{ text?: string }> }).content ?? [])
+      .map((c) => c.text ?? "")
+      .join("");
+    const jobId = (JSON.parse(text) as { jobId?: string }).jobId;
+    if (jobId !== undefined) {
+      await client.callTool({ name: "cancel_job", arguments: { jobId } });
+    }
   });
 });
