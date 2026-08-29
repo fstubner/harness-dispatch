@@ -154,6 +154,13 @@ pre-1.0, so minor versions can carry behaviour changes.
   credential. The token file is re-read when its mtime moves, so the common
   path stays a stat.
 
+- `connect` will not replace a client entry you edited by hand without your
+  say-so. `connect --remove` always refused this; `connect` did not, so the
+  protection existed on the half where the cost is lower — and `OPERATIONS.md`
+  promised it for both. Running `connect` with no `--clients` shows the
+  difference and asks; `--force` overrides. Naming a client is not consent to
+  overwrite what is there.
+
 - A job stranded in the slot queue by a server that exited is reported as
   orphaned instead of reading `queued` forever. Slot-queued jobs are exempt
   from orphan detection because nothing heartbeats for them, and the only
@@ -163,6 +170,20 @@ pre-1.0, so minor versions can carry behaviour changes.
   queued, restart, and it runs to completion in its original working directory
   at up to `full_auto`, unattended, bounded only by the 7-day retention window.
   `retry_job` re-runs it as a decision.
+
+  Only when no supervisor is alive to run it. The first version of this reasoned
+  that a starting server means any queued job belongs to a dead session — false
+  in the configuration this ships by default, where `connect` registers Claude
+  Code and Cursor and `serve` is a third, all sharing one jobs root. Measured:
+  with one server live and holding a legitimately queued job, starting a second
+  marked it orphaned within a second and removed it from the drain queue,
+  killing live work with an error stating a cause that was not true.
+
+- The HTTP surface refuses a bare `safety` key instead of dropping it. This
+  product's own CLI flag is `--safety`, so it is the most plausible slip anyone
+  will make — and at seven edits from `safetyProfile` the near-miss rule
+  correctly declines to guess, which left it accepted and silently ignored while
+  the dispatch ran at the default profile.
 
 - `models: []` is refused instead of fanning out to every route. An explicit
   empty array fell through to the same branch as omitting the field, so a

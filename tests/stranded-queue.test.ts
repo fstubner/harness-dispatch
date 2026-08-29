@@ -22,6 +22,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAsyncJob, orphanStrandedSlotQueue } from "../src/jobs.js";
+import { fixedJobId } from "./support/fixtures.js";
 
 let jobsDir: string;
 
@@ -60,7 +61,7 @@ afterEach(async () => {
 
 describe("orphanStrandedSlotQueue", () => {
   it("reports a stranded queued job instead of leaving it queued forever", async () => {
-    await plantJob("job-1700000000000-aaaaaaaa", {
+    await plantJob(fixedJobId(1), {
       status: "queued",
       updatedAt: new Date().toISOString(),
       slotQueued: true,
@@ -68,7 +69,7 @@ describe("orphanStrandedSlotQueue", () => {
 
     expect(await orphanStrandedSlotQueue()).toBe(1);
 
-    const job = await getAsyncJob("job-1700000000000-aaaaaaaa");
+    const job = await getAsyncJob(fixedJobId(1));
     expect(job.status.status).toBe("orphaned");
     expect(job.status.success).toBe(false);
     // The message has to say it will NOT be resumed, and what to do instead —
@@ -81,28 +82,75 @@ describe("orphanStrandedSlotQueue", () => {
     // Only the slot-queue flag means "stranded". A running job has its own
     // orphan rule, computed on read and never written back, because its owner
     // might still be alive.
-    await plantJob("job-1700000000001-bbbbbbbb", {
+    await plantJob(fixedJobId(2), {
       status: "running",
       updatedAt: new Date().toISOString(),
     });
-    await plantJob("job-1700000000002-cccccccc", {
+    await plantJob(fixedJobId(3), {
       status: "completed",
       updatedAt: new Date().toISOString(),
       success: true,
     });
 
     expect(await orphanStrandedSlotQueue()).toBe(0);
-    expect((await getAsyncJob("job-1700000000001-bbbbbbbb")).status.status).toBe("running");
-    expect((await getAsyncJob("job-1700000000002-cccccccc")).status.status).toBe("completed");
+    expect((await getAsyncJob(fixedJobId(2))).status.status).toBe("running");
+    expect((await getAsyncJob(fixedJobId(3))).status.status).toBe("completed");
   });
 
   it("is idempotent — a second server start finds nothing left to report", async () => {
-    await plantJob("job-1700000000003-dddddddd", {
+    await plantJob(fixedJobId(4), {
       status: "queued",
       updatedAt: new Date().toISOString(),
       slotQueued: true,
     });
     expect(await orphanStrandedSlotQueue()).toBe(1);
     expect(await orphanStrandedSlotQueue()).toBe(0);
+  });
+});
+
+describe("orphanStrandedSlotQueue liveness", () => {
+  it("leaves a queued job alone while a supervisor is alive", async () => {
+    // The configuration this product ships by default has SEVERAL servers on
+    // one jobs root: `connect` registers with Claude Code and Cursor, and
+    // `serve` is a third. The first version of this reasoned "a server is
+    // starting, so anything queued belongs to a dead session" — and an
+    // acceptance pass measured it killing a live server's queued job within
+    // a second, then removing it from the drain queue by clearing
+    // slotQueued. `notes/ux-walkthrough.md` promises a waiting job is never
+    // reported as orphaned; this is that promise.
+    await plantJob(fixedJobId(21), {
+      status: "queued",
+      updatedAt: new Date().toISOString(),
+      slotQueued: true,
+    });
+
+    const beats = path.join(jobsDir, ".supervisors");
+    await fs.mkdir(beats, { recursive: true });
+    await fs.writeFile(path.join(beats, "live.txt"), new Date().toISOString(), "utf8");
+
+    expect(await orphanStrandedSlotQueue()).toBe(0);
+    const job = await getAsyncJob(fixedJobId(21));
+    expect(job.status.status).toBe("queued");
+    expect(job.status.slotQueued).toBe(true);
+  });
+
+  it("reports it once every supervisor heartbeat has gone stale", async () => {
+    await plantJob(fixedJobId(22), {
+      status: "queued",
+      updatedAt: new Date().toISOString(),
+      slotQueued: true,
+    });
+
+    const beats = path.join(jobsDir, ".supervisors");
+    await fs.mkdir(beats, { recursive: true });
+    // Older than the orphan threshold: nothing is working the queue.
+    await fs.writeFile(
+      path.join(beats, "dead.txt"),
+      new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      "utf8",
+    );
+
+    expect(await orphanStrandedSlotQueue()).toBe(1);
+    expect((await getAsyncJob(fixedJobId(22))).status.status).toBe("orphaned");
   });
 });

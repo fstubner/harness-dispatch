@@ -332,6 +332,10 @@ async function cmdConnect(
   const chosen = requested
     ? installed.filter((p) => requested.includes(p.id))
     : await chooseInteractively(installed, opts);
+  // Consent to replace a HAND-EDITED entry comes from the interactive prompt,
+  // which shows the difference first, or from --force. Naming a client with
+  // --clients says which client, not "overwrite whatever I put there".
+  const consented = requested === undefined || opts.force;
   if (chosen === undefined) {
     process.stdout.write("Nothing written.\n");
     return 0;
@@ -343,7 +347,7 @@ async function cmdConnect(
   for (const plan of chosen) {
     const outcome = opts.remove
       ? await removeClientEntry(plan, { stamp, force: opts.force })
-      : await writeClientEntry(plan, { stamp });
+      : await writeClientEntry(plan, { stamp, consented });
     if (outcome.action === "written") {
       wrote = true;
       process.stdout.write(

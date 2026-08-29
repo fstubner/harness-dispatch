@@ -54,7 +54,19 @@ rewrites `status.json` every 15 seconds; that heartbeat is what distinguishes a
 live run from an abandoned one.
 
 **Tracing.** OpenTelemetry spans are emitted when `telemetry.enabled` is set in
-config. Off by default. Prompt content is not included in spans.
+config. Off by default.
+
+Two known defects here, both found by an acceptance pass and neither yet fixed,
+so do not rely on this signal:
+
+- **Spans are never flushed.** `shutdownObservability()` is exported and called
+  from nowhere, so a CLI dispatch exports nothing. Measured: 0 bytes to a local
+  collector from a real run.
+- **The exported resource attributes would carry the prompt.** OpenTelemetry's
+  default process detector includes `process.command_args`, and for
+  `harness-dispatch dispatch "<prompt>"` the prompt *is* an argv element. This
+  is currently masked by the missing flush; fixing the flush alone would ship
+  the leak.
 
 ## Alerts
 
@@ -159,8 +171,15 @@ up the new value, and the old one stops working immediately.
 
 **A client entry pointing at a path that no longer exists.**
 `harness-dispatch connect` rewrites it; `connect --remove` takes it out. Both
-back the file up next to itself first, merge rather than replace, and refuse to
-overwrite an entry you edited by hand without `--force`.
+back the file up next to itself first and merge rather than replace.
+
+Neither replaces an entry you edited by hand without your say-so: run `connect`
+with no `--clients` and it shows you the difference and asks, and `--force`
+overrides. Naming a client with `--clients` is not treated as consent for that
+— it says which client, not "overwrite whatever I put there". (An acceptance
+pass found this sentence promising a guard that only `--remove` implemented,
+while `connect` printed the hand-written entry it was about to destroy and then
+destroyed it. Both now behave as described.)
 
 **Reclaiming disk now.** Delete `~/.harness-dispatch/jobs/` and the workspaces
 base (`%TEMP%/harness-dispatch/workspaces` unless overridden). Nothing there is

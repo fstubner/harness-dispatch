@@ -794,6 +794,23 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
  * still be alive; here the owner is definitionally gone.
  */
 export async function orphanStrandedSlotQueue(): Promise<number> {
+  // Only when nothing is left to work the queue.
+  //
+  // The first version of this reasoned "a server is starting, so anything
+  // already slot-queued belongs to a session that is gone". That is false in
+  // the configuration this product ships by default: `connect` registers with
+  // Claude Code AND Cursor, and `serve` is a third — several servers routinely
+  // share one jobs root. An acceptance pass measured the consequence: with
+  // server A alive and holding a legitimately queued job, starting server B
+  // marked that job orphaned within about a second, and because orphaning
+  // clears `slotQueued` the drainer then skipped it forever. Live work,
+  // killed, with an error stating a cause that was not true.
+  //
+  // A supervisor heartbeat answers the question the comment was guessing at.
+  // If any supervisor is alive, the queue is being worked and nothing is
+  // stranded — a waiting job is waiting, which is what
+  // `notes/ux-walkthrough.md` promises it stays.
+  if ((await countLiveSupervisors()) > 0) return 0;
   const jobs = await listAsyncJobs().catch(() => []);
   let marked = 0;
   for (const status of jobs) {

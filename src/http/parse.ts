@@ -298,6 +298,13 @@ function parseHints(body: ChatRequest): RouteHints {
     // more access than the caller asked for, with no signal.
     ["harness_dispatch", "put hints at the top level or inside `hints`"],
     ["harnessDispatch", "put hints at the top level or inside `hints`"],
+    // This product's OWN CLI flag is `--safety`, which makes the bare name the
+    // most plausible slip anyone will make here — and it is seven edits from
+    // `safetyProfile`, so the near-miss rule correctly declines to guess. It
+    // was accepted and dropped, and the dispatch ran at the default profile:
+    // the "more access than you asked for" class this whole mechanism exists
+    // for, reachable by typing the name the CLI taught you.
+    ["safety", "this API spells it safetyProfile"],
   ] as const) {
     if ((body as Record<string, unknown>)[wrong] !== undefined) {
       throw new BadRequestError(
