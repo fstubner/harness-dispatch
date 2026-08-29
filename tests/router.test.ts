@@ -1241,7 +1241,7 @@ describe("Router.route", () => {
       expect(first.result.success).toBe(true);
       const projectRoot = path.dirname(first.result.workspace!.workspaceRoot!);
 
-      const staleRun = path.join(projectRoot, "2026-01-01T00-00-00-000Z-1-alpha-aaaa");
+      const staleRun = path.join(projectRoot, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb");
       await fs.mkdir(path.join(staleRun, "workspace"), { recursive: true });
       await fs.utimes(staleRun, staleTime, staleTime);
 
@@ -1289,10 +1289,10 @@ describe("Router.route", () => {
 
     // A project root belonging to some OTHER, now-vanished project.
     const abandoned = path.join(wsHome, "gone-project-deadbeef");
-    await fs.mkdir(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaa", "workspace"), {
+    await fs.mkdir(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb", "workspace"), {
       recursive: true,
     });
-    await fs.utimes(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaa"), stale, stale);
+    await fs.utimes(path.join(abandoned, "2026-01-01T00-00-00-000Z-1-alpha-aaaabbbb"), stale, stale);
 
     // A directory this tool never created, everything in it long past the
     // window. HARNESS_DISPATCH_WORKSPACES_DIR is a setting the README
@@ -1306,10 +1306,21 @@ describe("Router.route", () => {
     await fs.writeFile(path.join(notOurs, "subdir", "notes.txt"), "irreplaceable", "utf8");
     await fs.utimes(path.join(notOurs, "subdir"), stale, stale);
 
+    // A foreign directory whose NAME collides with the shape this used to
+    // check. The first guard was `-[0-9a-f]{8}$`, and eight decimal digits are
+    // valid hex, so every `<name>-<YYYYMMDD>` matched: a second acceptance pass
+    // planted exactly this beside the directory above and watched one dispatch
+    // delete it recursively while the other survived. Ownership is now a marker
+    // this tool writes, not a name that looks about right.
+    const datedBackup = path.join(wsHome, "backup-20260401");
+    await fs.mkdir(datedBackup, { recursive: true });
+    await fs.writeFile(path.join(datedBackup, "data.bin"), "precious", "utf8");
+    await fs.utimes(path.join(datedBackup, "data.bin"), stale, stale);
+
     // And one whose run is still inside the window: it must survive, or a
     // live dispatch elsewhere on the machine loses its workspace.
     const active = path.join(wsHome, "busy-project-cafebabe");
-    await fs.mkdir(path.join(active, "2026-01-01T00-00-00-000Z-2-alpha-bbbb", "workspace"), {
+    await fs.mkdir(path.join(active, "2026-01-01T00-00-00-000Z-2-alpha-ccccdddd", "workspace"), {
       recursive: true,
     });
 
@@ -1341,6 +1352,10 @@ describe("Router.route", () => {
       await expect(
         fs.stat(path.join(notOurs, "subdir", "notes.txt")),
         "a directory harness-dispatch never created was deleted",
+      ).resolves.toBeDefined();
+      await expect(
+        fs.stat(path.join(datedBackup, "data.bin")),
+        "a foreign directory was deleted because its NAME looked like ours",
       ).resolves.toBeDefined();
       // And this dispatch's own root is obviously not self-deleted.
       await expect(fs.stat(result.workspace!.workspaceRoot!)).resolves.toBeDefined();

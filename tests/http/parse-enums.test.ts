@@ -98,3 +98,50 @@ describe("HTTP hint values are rejected, not dropped", () => {
     },
   );
 });
+
+/**
+ * The same failure one level up: a top-level KEY that is nearly a hint name.
+ *
+ * The outer object cannot be strict — it carries OpenAI's own fields — so an
+ * unknown top-level key was accepted and dropped. An acceptance pass found two
+ * shapes of that: hints wrapped in `harness_dispatch` (the key this endpoint
+ * uses in its own RESPONSES, so the natural wrong guess) and a plain
+ * transposition, `safteyProfile`. Both returned HTTP 200 and dispatched at the
+ * default `workspace_edit` — more access than the caller asked for, with no
+ * signal — while the correct spelling produced `read_only`.
+ */
+describe("HTTP near-miss top-level keys are rejected, not dropped", () => {
+  it.each([
+    ["harness_dispatch", { harness_dispatch: { hints: { safetyProfile: "read_only" } } }],
+    ["harnessDispatch", { harnessDispatch: { hints: { safetyProfile: "read_only" } } }],
+    ["safteyProfile", { safteyProfile: "read_only" }],
+    ["safetyProfil", { safetyProfil: "read_only" }],
+    ["taskTyp", { taskTyp: "review" }],
+    ["workingDr", { workingDr: "/tmp" }],
+  ])("rejects %s rather than silently ignoring it", (key, body) => {
+    expect(() => parseChatRequest({ ...base, ...body })).toThrow(new RegExp(key));
+  });
+
+  it("does not reject OpenAI's own fields, or anything unrelated", () => {
+    // The cost of getting this wrong is refusing a legitimate request, so the
+    // rule has to stay narrow enough to leave the protocol's own body alone.
+    expect(() =>
+      parseChatRequest({
+        ...base,
+        model: "gpt-4",
+        stream: false,
+        temperature: 0.7,
+        top_p: 1,
+        n: 1,
+        stop: null,
+        user: "someone",
+        max_tokens: 100,
+        presence_penalty: 0,
+        frequency_penalty: 0,
+        seed: 7,
+        response_format: { type: "text" },
+        metadata: { anything: true },
+      }),
+    ).not.toThrow();
+  });
+});

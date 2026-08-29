@@ -10,6 +10,7 @@ import {
   rm,
   stat,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -149,12 +150,60 @@ function workspaceRootFor(originalWorkingDir: string): string {
 }
 
 /**
- * The shape `workspaceRootFor` generates: a safe basename, then the 8-hex
- * digest. Kept next to the function that produces it — the reclamation sweep
- * uses this to tell a directory we created from one that merely happens to sit
- * in the same place, so the two must not drift apart.
+ * Written into every project root this tool creates, so reclamation can delete
+ * a directory because it KNOWS it made it rather than because the name looks
+ * about right.
+ *
+ * The previous attempt matched the generated name shape, `-[0-9a-f]{8}$`. Eight
+ * decimal digits are valid hex, so any `<name>-<YYYYMMDD>` collided: a second
+ * acceptance pass planted `backup-20260401/data.bin` beside directories that
+ * survived and watched one dispatch delete it recursively. A heuristic cannot
+ * answer "did I create this" — only a mark can.
  */
-const GENERATED_ROOT_RE = /-[0-9a-f]{8}$/;
+const ROOT_MARKER = ".harness-dispatch-root";
+
+/**
+ * The shape `workspaceRunId` generates: an ISO stamp, pid, route, 8 hex.
+ * Used ONLY to recognise roots created before the marker existed, so those are
+ * still reclaimed instead of leaking forever.
+ */
+const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
+
+/** Record that this root is ours. Best effort: never fail a dispatch over it. */
+async function markProjectRoot(root: string): Promise<void> {
+  try {
+    await mkdir(root, { recursive: true });
+    const marker = path.join(root, ROOT_MARKER);
+    if (!existsSync(marker)) {
+      await writeFile(
+        marker,
+        "Created by harness-dispatch. This directory and its dated run\n" +
+          "subdirectories are managed — and eventually deleted — by it.\n",
+        "utf8",
+      );
+    }
+  } catch {
+    // A root without its marker is merely not reclaimed automatically, which
+    // is the safe direction to fail in.
+  }
+}
+
+/**
+ * Is this directory one we created, and therefore ours to delete?
+ *
+ * The marker settles it. The fallback covers roots created before the marker
+ * existed: every child must be a generated run directory, and there must be at
+ * least one — an empty unmarked directory is somebody else's empty directory,
+ * not ours. A foreign directory passes only if everything inside it happens to
+ * be named like a timestamped run, which is not a thing that happens by
+ * accident. This deletes recursively and has now been wrong twice, so it takes
+ * positive evidence rather than the absence of a reason to stop.
+ */
+function isOurProjectRoot(full: string, children: string[]): boolean {
+  if (existsSync(path.join(full, ROOT_MARKER))) return true;
+  const runs = children.filter((name) => name !== ROOT_MARKER);
+  return runs.length > 0 && runs.every((name) => RUN_DIR_RE.test(name));
+}
 
 /** Short stable digest of a project path, to keep same-named projects apart. */
 function pathKey(dir: string): string {
@@ -272,22 +321,19 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    // It has to LOOK like something we made. Age alone is not evidence of
-    // ownership, and this sweep deletes recursively: pointed at a shared
-    // directory it would take anything sitting there untouched for a day.
-    // That is not hypothetical — HARNESS_DISPATCH_WORKSPACES_DIR is a setting
-    // the README actively recommends ("on the project's own volume, for
-    // instance"), and nothing told anyone the directory would become ours
-    // exclusively. An acceptance pass reproduced the loss against the built
-    // artifact: two unrelated directories with real content destroyed by one
-    // dispatch.
-    if (!GENERATED_ROOT_RE.test(entry.name)) continue;
     const full = path.join(base, entry.name);
     if (path.resolve(full) === path.resolve(currentRoot)) continue;
     try {
       const runs = await readdir(full, { withFileTypes: true });
+      // Age is not evidence of ownership, and this deletes recursively.
+      // HARNESS_DISPATCH_WORKSPACES_DIR is a setting the README actively
+      // recommends ("on the project's own volume, for instance"), so the base
+      // is not necessarily ours alone and anything else living there is
+      // somebody's data.
+      if (!isOurProjectRoot(full, runs.map((r) => r.name))) continue;
       let allStale = true;
       for (const run of runs) {
+        if (run.name === ROOT_MARKER) continue;
         const runPath = path.join(full, run.name);
         // A worktree run needs git's own removal; leave the whole project
         // root to the owning repository rather than stranding metadata.
@@ -669,6 +715,7 @@ async function prepareCopyWorkspace(
     .then((out) => out || undefined)
     .catch(() => undefined);
   await pruneStaleCopyWorkspaces(root, projectGitRoot);
+  await markProjectRoot(root);
   const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
@@ -740,6 +787,7 @@ async function prepareGitWorktreeWorkspace(
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
   const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
   await pruneStaleGitWorktrees(gitRoot, gitWorkspaceRoot);
+  await markProjectRoot(gitWorkspaceRoot);
   const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   await mkdir(workspaceRoot, { recursive: true });
