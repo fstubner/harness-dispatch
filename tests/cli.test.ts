@@ -361,13 +361,31 @@ describe("CLI parser", () => {
     // it and passed only because the overwrite guard was skipped whenever
     // --config was supplied. That was the bug; a genuinely fresh path is what
     // the comment always claimed to be testing.
+    //
+    // `--no-clients` pins the paste path deliberately. Without it this
+    // assertion passed or failed on whether the MACHINE running the suite
+    // happens to have Claude Code or Cursor installed: with one, the absolute
+    // path appears in `connect`'s plan output and the test passes for a reason
+    // it does not state; with none — every CI runner — it appeared nowhere and
+    // the test failed. Machine-dependent tests are worse than absent ones.
     const freshTarget = path.join(dir, "fresh-config.yaml");
     const writeResult = await capture(() =>
-      main(["configure", "--yes", "--config", freshTarget]),
+      main(["configure", "--yes", "--no-clients", "--config", freshTarget]),
     );
     expect(writeResult.code).toBe(0);
     expect(writeResult.stdout).toContain(`Wrote ${freshTarget}`);
     expect(writeResult.stdout).toContain(JSON.stringify(path.resolve(freshTarget)));
+
+    // And whatever this machine has, setup ends with something actionable:
+    // either a registration plan, or the snippet to paste. Neither branch may
+    // leave the user with a written config and no way to connect it.
+    const handoffTarget = path.join(dir, "handoff-config.yaml");
+    const handoff = await capture(() =>
+      main(["configure", "--yes", "--config", handoffTarget]),
+    );
+    expect(handoff.code).toBe(0);
+    expect(handoff.stdout).toMatch(/Registering with clients:|No MCP clients found/);
+    expect(handoff.stdout).toContain(JSON.stringify(path.resolve(handoffTarget)));
 
     // And an existing file is now refused rather than destroyed.
     const clobber = await capture(() => main(["configure", "--yes", "--config", target]));

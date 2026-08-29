@@ -8,6 +8,41 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- `harness-dispatch connect` registers this server with the MCP clients on your
+  machine, and `configure --yes` now offers it as the last step of setup instead
+  of printing JSON for you to paste. `connect --remove` takes the entry back out.
+
+  Setting this up was a copy-paste job that nobody owned, and the paths in it
+  later moved. On the maintainer's machine that produced, simultaneously: a
+  Claude Code entry launching a directory renamed away months earlier, a session
+  hook pointing at the same dead path, and a working Cursor entry with no
+  `--config` — so the two clients disagreed about which routes existed while
+  both appeared to work.
+
+  Careful with other applications' files, because this project has already got
+  this wrong once (v0.1.0's setup wrote instructions and a hook; v0.2.0 removed
+  the command and left both behind for seven minor versions). Only the two
+  config shapes actually opened on a real machine are written. Every write is
+  backed up next to the file, merged rather than replaced — other servers and
+  our own entry's `env`, which holds live API keys, are preserved — and swapped
+  in atomically after being parsed back, so a half-written `~/.claude.json` is
+  not a possible outcome. An entry that already exists and differs is shown and
+  left alone unless you say otherwise; that Cursor entry was the working one.
+  Re-running changes nothing. With no terminal and no `--clients`, it reports
+  what it would do and writes nothing rather than prompting into the void.
+
+  `connect --dev` registers the checkout you are running instead of the
+  published package, for anyone developing against this repo. Without it that
+  case is not merely unsupported but actively wrong: on a machine with nothing
+  installed globally, the package form resolves through `npx` to whatever is on
+  the registry, so registering it swaps a checkout that is commits ahead for an
+  older release and reports success. Found by running `connect` on the
+  maintainer's machine, where it correctly declined to do exactly that. The
+  trade — an absolute path breaks silently when the directory moves — is why it
+  is opt-in per run, prints the path before writing it, and leans on the
+  `doctor` check that already fails on a client entry naming a path that has
+  gone.
+
 - The dispatch log records `candidates` — what the picked route beat — so the
   question the field was added to answer can be asked of a month of history
   rather than one response. It recorded `reason` ("tier 1 best (3 available)")
