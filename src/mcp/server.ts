@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
-import { drainSlotQueue } from "../jobs.js";
+import { orphanStrandedSlotQueue } from "../jobs.js";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
@@ -110,33 +110,40 @@ export interface McpHandle {
 }
 
 /**
- * Give jobs left waiting for a concurrency slot somewhere to go.
+ * Report jobs stranded in the slot queue by a server that exited, rather than
+ * silently running them.
  *
- * A slot-queued job is deliberately exempt from orphan detection — nothing
- * heartbeats for it, so the staleness rule would misreport every job that waits
- * more than 90 seconds. The consequence was that if the server died while jobs
- * were queued, they reported `queued` forever: the only things that drain the
- * queue are a runner exiting and a new dispatch arriving, and after a crash
- * neither happens. A running job is reported orphaned within 90s; a queued one
- * had no such signal, and an acceptance pass found it by reading the code.
+ * A slot-queued job is exempt from orphan detection — nothing heartbeats for
+ * it, so the staleness rule would misreport every job that waits more than 90
+ * seconds. But the only things that drained the queue were a runner exiting
+ * and a new dispatch arriving, so a server that died with jobs queued left
+ * them reading `queued` forever, where a RUNNING job in the same situation is
+ * reported orphaned within 90s.
  *
- * Server start is the natural drain point, and it does not invent a new
- * behaviour: a later dispatch already resumes these jobs today. This just stops
- * that resumption from depending on unrelated traffic arriving.
+ * The first attempt at this drained the queue here instead, which was worse
+ * than the gap it closed. An acceptance pass demonstrated the consequence:
+ * kill a server with a job queued, restart it, and that job runs to
+ * completion — in its original workingDir, at whatever safety profile the
+ * manifest recorded, up to `workspace_edit` or `full_auto`, with nobody
+ * watching and no confirmation. Bounded only by the 7-day retention window.
+ * Starting an editor is not an action anyone associates with "run yesterday's
+ * abandoned agent job against my repository".
  *
- * Deliberately not awaited, and never fatal — a queue that cannot be drained
- * must not stop the server from serving, which is the one thing that would make
- * the situation worse.
+ * So: any job still slot-queued when a server starts belongs to a session that
+ * is gone — this process has not queued anything yet — and it is marked
+ * orphaned. That answers the question the caller was actually asking ("is this
+ * ever going to run?") without executing anything on their behalf. The job
+ * keeps its id and artifacts, and `retry_job` re-runs it deliberately.
  */
-function resumeSlotQueue(holder: RuntimeHolder): void {
-  void drainSlotQueue(holder.state.config, holder.state.configPath).catch(() => undefined);
+function reportStrandedQueue(): void {
+  void orphanStrandedSlotQueue().catch(() => undefined);
 }
 
 export async function startMcpServer(opts: BuildMcpOptions = {}): Promise<McpHandle> {
-  const { server, holder } = await buildMcpServer(opts);
+  const { server } = await buildMcpServer(opts);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  resumeSlotQueue(holder);
+  reportStrandedQueue();
   return {
     async close() {
       await server.close();

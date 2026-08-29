@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server as NodeHttpServer, type
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
-import { ensureHttpToken, isAuthorized } from "../auth.js";
+import { ensureHttpToken, httpTokenMtimeMs, isAuthorized, readHttpTokenSync } from "../auth.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   buildMcpServer,
@@ -19,7 +19,7 @@ import type { Router } from "../router.js";
 import { explicitOptsFromHints } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { workingDirWarning } from "../working-dir.js";
-import { drainSlotQueue, getAsyncJob, startAsyncJobTracked } from "../jobs.js";
+import { getAsyncJob, orphanStrandedSlotQueue, startAsyncJobTracked } from "../jobs.js";
 import {
   BadRequestError,
   completionEnvelope,
@@ -390,13 +390,31 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 0;
   const mcpRoute = opts.mcpRoute ?? "/mcp";
-  const token = opts.token === undefined ? await ensureHttpToken() : opts.token;
+  // An explicitly supplied token is fixed for the life of the server (tests
+  // pass one, and a caller who hands us a value did not ask us to go looking
+  // for another). Otherwise the token is whatever is on disk NOW: it was read
+  // once at startup and held forever, which made `auth rotate` a lie in both
+  // directions — the old token kept working and the new one was refused.
+  // Re-read only when the file's mtime moves, so the common path is a stat.
+  const fixedToken = opts.token;
+  let diskToken = fixedToken === undefined ? await ensureHttpToken() : fixedToken;
+  let seenMtimeMs = fixedToken === undefined ? httpTokenMtimeMs() : 0;
+  const activeToken = (): string | null => {
+    if (fixedToken !== undefined) return fixedToken;
+    const mtime = httpTokenMtimeMs();
+    if (mtime !== seenMtimeMs) {
+      seenMtimeMs = mtime;
+      diskToken = readHttpTokenSync() ?? diskToken;
+    }
+    return diskToken;
+  };
+  const token = diskToken;
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const sessionServers = new Set<McpServer>();
 
   const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
-    if (isAuthorized(req.headers.authorization, token)) return true;
+    if (isAuthorized(req.headers.authorization, activeToken())) return true;
     sendJson(res, 401, { error: "unauthorized" });
     return false;
   };
@@ -600,7 +618,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   // happens to arrive, and unlike a running job they are exempt from orphan
   // detection, so they simply read `queued` forever. Not awaited and never
   // fatal — the server must still serve.
-  void drainSlotQueue(holder.state.config, holder.state.configPath).catch(() => undefined);
+  void orphanStrandedSlotQueue().catch(() => undefined);
 
   if (!isLoopbackHost(host)) {
     process.stderr.write(

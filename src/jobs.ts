@@ -769,7 +769,52 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
  * are queued, the queue resumes on the next dispatch rather than immediately.
  * Bounded waiting was the explicit alternative and was not chosen — a queued
  * job keeps its jobId and its artifacts either way, so nothing is lost.
+ *
+ * NOT called at server start, which was tried and reverted: it silently ran
+ * jobs abandoned by a dead session. `orphanStrandedSlotQueue` runs there
+ * instead and reports them. See its comment for why reporting beats resuming.
  */
+/**
+ * Mark jobs stranded in the slot queue by a server that is gone.
+ *
+ * Called once at server start, where the reasoning holds unconditionally: this
+ * process has not queued anything yet, so anything still slot-queued was
+ * queued by a session that no longer exists and nothing will ever drain it —
+ * a new dispatch would, but the caller is asking about THIS job, and until
+ * they happen to send unrelated work it reads `queued` forever.
+ *
+ * Deliberately reports rather than runs. Resuming was tried and is worse: a
+ * job queued days ago would execute at the next server start, in its original
+ * workingDir, at up to `full_auto`, with nobody watching. The job keeps its id
+ * and artifacts, so `retry_job` re-runs it as a decision rather than a side
+ * effect of opening an editor.
+ *
+ * The one status this writes back. Orphan detection elsewhere is
+ * compute-on-read and never persists its verdict, because the owner might
+ * still be alive; here the owner is definitionally gone.
+ */
+export async function orphanStrandedSlotQueue(): Promise<number> {
+  const jobs = await listAsyncJobs().catch(() => []);
+  let marked = 0;
+  for (const status of jobs) {
+    if (status.slotQueued !== true) continue;
+    const { slotQueued: _cleared, ...rest } = status;
+    await updateStatus(status.jobDir, {
+      ...rest,
+      status: "orphaned",
+      updatedAt: timestamp(),
+      success: false,
+      error:
+        "This job was still waiting for a concurrency slot when the dispatch server " +
+        "exited, so it never started. It is NOT resumed automatically — re-running " +
+        "an abandoned job unattended, in its original working directory, is not " +
+        "something a server restart should decide. Use retry_job to run it.",
+    }).catch(() => undefined);
+    marked += 1;
+  }
+  return marked;
+}
+
 export async function drainSlotQueue(
   config: RouterConfig | undefined,
   configPath: string | undefined,

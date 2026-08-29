@@ -140,8 +140,16 @@ describe("buildUsage", () => {
       [],
     );
     const usage = buildUsage(status);
+    // The host is redacted, and this assertion used to say it was not.
+    //
+    // `redactEndpointHost` replaced the hostname by assigning to
+    // `url.hostname`; the WHATWG setter silently rejects a value containing
+    // `<` and `>`, so the function returned its input verbatim and this test
+    // pinned that no-op as the expected output. Status and usage are described
+    // as safe to paste into a bug report, and a private endpoint's hostname is
+    // the one part of a base URL that identifies infrastructure.
     expect(usage.routes[0]!.modelHint).toBe(
-      "Standard OpenAI-compatible catalog: GET https://api.groq.com/openai/v1/models",
+      "Standard OpenAI-compatible catalog: GET https://<endpoint-host>/openai/v1/models",
     );
   });
 });
