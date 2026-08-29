@@ -114,6 +114,15 @@ pre-1.0, so minor versions can carry behaviour changes.
   `gone-project-deadbeef`, which matches that shape by accident. It now has a
   companion that does not match and must survive.
 
+- `services:` written as a YAML list no longer fails silently. It must be a map
+  of route id to settings, but `typeof [] === "object"`, so a list slipped
+  through and became routes called `0`, `1`, … with each item's `name:`
+  ignored. Nothing looked wrong — `doctor` reported the routes and `status`
+  listed them — until `--service my_route` answered "Unknown service". The
+  mistake is a natural one: the sibling keys `clis:` and `endpoints:` ARE lists
+  whose items carry `name:`. The behaviour is unchanged; it now says what
+  happened, what the ids became, which names were dropped, and how to write it.
+
 - `connect` keeps the last three backups of a client config rather than one per
   run forever. Every write and every removal takes one, and `~/.claude.json`
   holds live API keys, so the old behaviour accumulated copies of someone's
