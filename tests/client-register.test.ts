@@ -309,3 +309,30 @@ describe("writeClientEntry consent", () => {
     );
   });
 });
+
+describe("writeJsonAtomic permissions", () => {
+  it("does not widen the mode of the file it replaces", async () => {
+    // `rename` swaps the INODE, so the surviving file takes the TEMP file's
+    // mode — 0644 under a typical umask — not its own. A ~/.claude.json that
+    // Claude Code created 0600 came back group- and world-readable, and that
+    // file holds live API keys. The same module's backup() uses copyFile,
+    // which preserves mode, so the two halves of one write path disagreed.
+    //
+    // Skipped on Windows, where POSIX modes do not apply — which is exactly
+    // why this survived: it was found by reading on a Windows machine and only
+    // provable on POSIX.
+    if (process.platform === "win32") return;
+
+    await writeJson(claudeFile(), { mcpServers: {} });
+    await fs.chmod(claudeFile(), 0o600);
+
+    const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+    expect(outcome.action).toBe("written");
+
+    const mode = (await fs.stat(claudeFile())).mode & 0o777;
+    expect(
+      mode & 0o077,
+      `mode widened to ${mode.toString(8)} — group/other can now read stored credentials`,
+    ).toBe(0);
+  });
+});

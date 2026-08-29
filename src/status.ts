@@ -207,13 +207,26 @@ export async function buildStatus(
       skippedRoutes.push(policy.skipped);
     }
     if (svc.command !== undefined) route.command = svc.command;
-    if (svc.baseUrl !== undefined) route.baseUrl = svc.baseUrl;
+    // Redacted HERE too, not only in the text rendering and the error paths.
+    //
+    // `redactEndpointHost` lives in this file and was wired into the usage
+    // hint and the failure messages, and never into the structured payload —
+    // so `status --json` and the `harness-dispatch://status.json` resource
+    // emitted `base_url` verbatim, twice. An acceptance pass measured a key in
+    // the URL (`?key=SUPERSECRET123`, which is Google AI Studio's own shape)
+    // reaching both, and that resource is one this server's own instructions
+    // tell agents to read — so the credential lands in an agent's context.
+    //
+    // An earlier pass recorded "endpoint redaction — verified"; it had checked
+    // the text surface only, which is how a fix to one rendering of a value
+    // leaves the other rendering untouched.
+    if (svc.baseUrl !== undefined) route.baseUrl = redactEndpointHost(svc.baseUrl);
     if (svc.endpointMode !== undefined) {
       route.endpoint = {
         mode: svc.endpointMode,
       };
       if (svc.endpointProvider !== undefined) route.endpoint.provider = svc.endpointProvider;
-      if (svc.baseUrl !== undefined) route.endpoint.baseUrl = svc.baseUrl;
+      if (svc.baseUrl !== undefined) route.endpoint.baseUrl = redactEndpointHost(svc.baseUrl);
       if (svc.wireProtocol !== undefined) route.endpoint.wireProtocol = svc.wireProtocol;
     }
     if (svc.model !== undefined) route.model = svc.model;

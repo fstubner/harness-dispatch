@@ -38,7 +38,11 @@
  * One rule crosses tiers, and only one: task_type="local" picks the
  * best-scoring LOCAL route wherever it sits, falling back to normal tier order
  * when none is eligible. Local means what `routePolicy: "local_only"` means —
- * declared provider/surface/auth/billing — or a loopback URL. This used to be
+ * declared provider/surface/auth/billing, and NOT a loopback URL. The "or a
+ * loopback URL" half was deleted deliberately: a metered proxy on 127.0.0.1
+ * declares itself metered, and the URL check overruled that, so the one task
+ * type meaning "free local endpoint" preferred the PAID route. This line kept
+ * the deleted half for a while after the code lost it. This used to be
  * a +0.3 score bonus, which could not work: a bonus only reorders within a
  * tier, and local endpoints sit in the cheap tier, so a healthy tier-1 route
  * won before it was consulted. Tier ranks CAPABILITY, and this task type means
