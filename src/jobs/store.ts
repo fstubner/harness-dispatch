@@ -139,6 +139,25 @@ export async function pruneStaleJobs(): Promise<void> {
   const now = Date.now();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Only directories we named. This sweep deletes recursively, and the jobs
+    // root is relocatable — HARNESS_DISPATCH_JOBS_DIR, and
+    // HARNESS_DISPATCH_STATE_DIR which moves it too — so it is not guaranteed
+    // to be ours alone. Without this it removed anything stale sitting there:
+    // an acceptance pass pointed the root at a directory holding
+    // `backup-20260401/data.bin` and `my-notes/n.txt` and lost both.
+    //
+    // The identical defect was found twice in workspace reclamation in this
+    // same release, which is why it gets fixed here rather than argued about:
+    // the reachable path is narrower (neither variable is documented in the
+    // README, unlike the workspaces one) but the code shape is the same, and
+    // "narrower" is not a property anyone can rely on.
+    //
+    // A name check suffices here where it did not there. `job-<digits>-<8
+    // hex>` is what newJobId generates and is specific enough that a foreign
+    // directory would have to be named deliberately to collide; the workspace
+    // guard failed because its shape was merely `-<8 hex>` at the END of any
+    // name, which every `<name>-<YYYYMMDD>` satisfies.
+    if (!JOB_ID_RE.test(entry.name)) continue;
     const jobDir = path.join(root, entry.name);
     try {
       const info = await stat(jobDir);

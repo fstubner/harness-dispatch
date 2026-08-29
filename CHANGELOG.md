@@ -124,6 +124,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   companions that must survive: an ordinary directory, and one named to
   collide with the shape check that failed.
 
+- Job retention no longer deletes directories this tool never created. The
+  sweep removed every stale directory under the jobs root recursively, with no
+  check of any kind — the same defect workspace reclamation shipped twice in
+  this release, found by an acceptance pass in the one place nobody had looked.
+  Pointed at a directory holding `backup-20260401` and `my-notes`, it destroyed
+  both. Only `job-<timestamp>-<8 hex>` directories are eligible now. Narrower
+  in practice than the workspace case — neither `HARNESS_DISPATCH_JOBS_DIR` nor
+  `HARNESS_DISPATCH_STATE_DIR` is documented in the README, unlike the
+  workspaces override — but "narrower" is not a property anyone can rely on.
+
 - `workingDir` must be an absolute path. A relative one was resolved against
   the SERVER's working directory rather than the caller's — and `../..` exists,
   so every check passed and a real dispatch ran somewhere neither party chose.
