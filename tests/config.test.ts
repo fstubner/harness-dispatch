@@ -1237,3 +1237,25 @@ clis:
     expect((cfg.configWarnings ?? []).join("\n")).not.toContain("more than once");
   });
 });
+
+describe("legacy services: shape gets the same value checks", () => {
+  it("warns about a mistyped value there too", async () => {
+    // Both validators were wired into the clis:/endpoints: loops and not this
+    // one, so a legacy config — still supported, still what an older
+    // `configure` wrote — reported one warning where the modern shape reports
+    // four. Found by a delegate audit during an acceptance pass.
+    const yamlText = `
+services:
+  legacy_route:
+    enabled: true
+    type: cli
+    command: some-bin
+    tier: metered
+`;
+    const p = await writeTmpYaml("legacy-mistyped.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).toContain("tier");
+    expect(warningText).toContain("metered");
+  });
+});

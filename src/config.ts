@@ -30,6 +30,7 @@ import {
 } from "./config/coercions.js";
 import {
   warnDuplicateRouteNames,
+  warnMistypedRouteValues,
   warnUnknownRouteKeys,
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
@@ -388,6 +389,18 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   }
 
   for (const [name, svc] of Object.entries(rawServices)) {
+    // The legacy shape gets the same value checks as `clis:` and `endpoints:`.
+    //
+    // It got neither: both validators were wired into the two modern loops and
+    // not this one, so a `services:` config — still supported, still what an
+    // older `configure` wrote — reported one warning where the modern shape
+    // reports four. A delegate audit found the asymmetry.
+    //
+    // Deliberately only the VALUE checks. The unknown-KEY warner is not called
+    // here because the legacy shape accepts a wider set of keys than
+    // KNOWN_ROUTE_KEYS lists, and reporting those as typos would be worse than
+    // the silence it replaces.
+    warnMistypedRouteValues(svc, `services."${name}"`, warnings);
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
     // Computed once and reused below for both max-tokens fallback and the
     // billing/safety/model-hint inheritance IIFE — legacy-format entries
