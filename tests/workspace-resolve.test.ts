@@ -204,6 +204,78 @@ describe("git_worktree workspaces", () => {
     );
   });
 
+  it("a SECOND apply says already applied, and does not call your own apply a conflict", async () => {
+    // The "already applied" answer used to live only on the empty-patch path,
+    // which git_worktree can never reach: its patch is `git diff <baseCommit>`
+    // inside the worktree, so it does not change when the project changes and
+    // is never empty. A `copy` patch is rebuilt against the project and does
+    // empty out — which is why this was invisible there and live here.
+    //
+    // So a second apply fell through to the conflict check, which saw the file
+    // differ from its recorded base — the difference the FIRST apply had just
+    // made — and told the user their own successful apply was someone else's
+    // newer work, pointing them at force: true. `ux-walkthrough.md` Flow 6
+    // step 6 says both policies answer "already applied"; only one did.
+    const run = await worktreeRun();
+    const withChanges: WorkspaceRun = {
+      ...run,
+      changedFiles: [
+        { path: "app.js", kind: "modified", baseHash: eolDigest(Buffer.from("const a = 1;\n")) },
+        { path: "new.js", kind: "added" },
+      ],
+    };
+
+    const first = await applyWorkspace("job-1700000000071-eeeeeeee", jobDir, withChanges);
+    expect(first.applied, first.message).toBe(true);
+
+    const second = await applyWorkspace("job-1700000000071-eeeeeeee", jobDir, withChanges);
+    expect(second.applied).toBe(false);
+    expect(second.message).toContain("Already applied");
+    expect(second.message).not.toMatch(/changed since dispatch/);
+    // And the file is still the agent's version, not reverted or duplicated.
+    expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe("const a = 99;\n");
+  });
+
+  it("a REAL collision under git_worktree is still refused", async () => {
+    // The already-applied check must not swallow a genuine conflict. It fires
+    // only when the project matches THIS job's workspace for every recorded
+    // change; a file someone else changed does not match, so it still refuses.
+    const run = await worktreeRun();
+    const withChanges: WorkspaceRun = {
+      ...run,
+      changedFiles: [
+        { path: "app.js", kind: "modified", baseHash: eolDigest(Buffer.from("const a = 1;\n")) },
+      ],
+    };
+    await fs.writeFile(path.join(run.originalWorkingDir, "app.js"), "SOMEONE ELSE\n", "utf8");
+    await git(["add", "-A"], run.originalWorkingDir);
+    await git(["commit", "-qm", "theirs"], run.originalWorkingDir);
+
+    const out = await applyWorkspace("job-1700000000072-eeeeeeee", jobDir, withChanges);
+    expect(out.applied).toBe(false);
+    expect(out.message).toMatch(/changed since dispatch/);
+    expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe("SOMEONE ELSE\n");
+  });
+
+  it("the refusal does not claim a worktree patch has no common commit", async () => {
+    // That clause was emitted on EVERY refusal, including while handling a
+    // worktree patch — which does have a common commit. It describes the copy
+    // policy, and now only appears there.
+    const run = await worktreeRun();
+    const withChanges: WorkspaceRun = {
+      ...run,
+      changedFiles: [
+        { path: "app.js", kind: "modified", baseHash: eolDigest(Buffer.from("const a = 1;\n")) },
+      ],
+    };
+    await fs.writeFile(path.join(run.originalWorkingDir, "app.js"), "SOMEONE ELSE\n", "utf8");
+    await git(["add", "-A"], run.originalWorkingDir);
+    await git(["commit", "-qm", "theirs"], run.originalWorkingDir);
+
+    const out = await applyWorkspace("job-1700000000073-eeeeeeee", jobDir, withChanges);
+    expect(out.message).not.toContain("no common commit");
+  });
+
   it("never reports a failed apply while leaving the project rewritten", async () => {
     // --3way is NOT atomic: on conflict it writes `<<<<<<< ours` markers INTO
     // the target and then exits non-zero. It used to be tried FIRST, and the
@@ -712,6 +784,56 @@ describe("a copy workspace that lives INSIDE the project", () => {
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR = inProjectBase;
     try {
       const res = await applyWorkspace("job-1700000000063-aabbccdd", jobDir, run);
+      expect(res.applied, res.message).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prev;
+    }
+  });
+
+  it("an in-project workspaces root is excluded for a SUBDIRECTORY dispatch too", async () => {
+    // `git status --porcelain` prints paths relative to the REPOSITORY ROOT,
+    // not to the directory git ran in. Resolving them against the dispatch
+    // directory was right only at the repo root: from a subdirectory,
+    // `<repo>/.ws` resolved as `<repo>/pkg/.ws`, matched nothing, and the
+    // workspaces directory read as the user's uncommitted work again —
+    // refusing every apply on a pristine tree. The exact defect the filter was
+    // added for, surviving one level over, and only the literal-name check on
+    // `.harness-dispatch` masked it at the default name.
+    //
+    // The previous test dispatches from the repo root, so it passed either
+    // way; a sabotage run showed the filter could be reverted with nothing
+    // failing.
+    const repo = await makeRepo("subdir-ws");
+    await fs.mkdir(path.join(repo, "pkg"), { recursive: true });
+    await fs.writeFile(path.join(repo, "pkg", "keep.txt"), "x\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const inProjectBase = path.join(repo, ".ws");
+    await fs.mkdir(path.join(inProjectBase, "leftover"), { recursive: true });
+    await fs.writeFile(path.join(inProjectBase, "leftover", "junk.txt"), "junk\n", "utf8");
+
+    const wsRoot = path.join(dir, "subdir-run");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "keep.txt"), "edited\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      // The dispatch ran in the SUBDIRECTORY, which is what makes the paths
+      // disagree.
+      originalWorkingDir: path.join(repo, "pkg"),
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "keep.txt", kind: "modified", baseHash: eolDigest(Buffer.from("x\n")) }],
+    };
+
+    const prev = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = inProjectBase;
+    try {
+      const res = await applyWorkspace("job-1700000000065-aabbccdd", jobDir, run);
       expect(res.applied, res.message).toBe(true);
     } finally {
       if (prev === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;

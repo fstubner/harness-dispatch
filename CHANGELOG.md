@@ -112,6 +112,47 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- An endpoint credential embedded in `base_url` no longer reaches the terminal
+  or `logs/dispatches.jsonl` through an error message. The redaction only ever
+  cleaned URLs this code assembles; Node embeds the URL it was handed inside
+  its OWN exception text, which was then passed through verbatim with a
+  redacted URL appended beside it — the two forms side by side, under a comment
+  promising the result was safe to paste into a bug report. Userinfo, query
+  values and the host are now removed from wrapped messages too.
+
+- Applying the same `git_worktree` job twice now says "already applied"
+  instead of accusing you of a conflict with your own apply. That answer lived
+  only on the empty-patch path, which a worktree patch never reaches — it is
+  `git diff <baseCommit>` inside the worktree, so it does not empty out the way
+  a rebuilt `copy` patch does. The second apply fell through to the conflict
+  check, which saw the file differ from its recorded base (the difference the
+  first apply had just made) and pointed the user at `force: true`. The
+  walkthrough says both policies answer "already applied"; only one did.
+
+  The refusal message also claimed "unlike a worktree patch there is no common
+  commit for git to merge against" — while refusing a worktree patch, which
+  has one. That clause now appears only for `copy`, which it describes.
+
+- `workspace apply` no longer refuses on a clean tree when the dispatch ran in
+  a SUBDIRECTORY and `HARNESS_DISPATCH_WORKSPACES_DIR` points inside the
+  project. `git status` prints repository-root-relative paths; they were being
+  resolved against the dispatch directory, so the workspaces folder failed to
+  match and read as your uncommitted work. The same defect fixed at the repo
+  root a day earlier, surviving one level down.
+
+- A `git_worktree` dispatch now explains the three ordinary ways it cannot
+  start — no git on PATH, not a git repository, no commits yet — instead of
+  handing back raw git internals with no route taken. A freshly initialised
+  project is a normal state, not an error.
+
+- The streaming HTTP surface no longer emits an SSE `error` frame for a route
+  failure that a fallback then recovers. The frame was written the moment a
+  route failed, before the next route had been tried, so a request that
+  SUCCEEDED still carried an error ahead of its own answer. The OpenAI
+  streaming contract has no non-fatal error frame, so a client treating one as
+  terminal reported a failure for a request that worked. The frame is now held
+  and sent only if nothing succeeds.
+
 - A route reporting only `remaining` in its rate-limit headers no longer wipes
   the limit already known for it. Both fields were assigned under a guard that
   only asks whether EITHER arrived, so a partial update nulled the limit — and

@@ -83,6 +83,53 @@ export function redactEndpointHost(baseUrl: string): string {
   }
 }
 
+/**
+ * Strip an endpoint's credential-bearing parts out of TEXT WE DID NOT WRITE.
+ *
+ * `redactEndpointHost` only cleans a URL a caller hands it. An exception
+ * message is a different problem: undici embeds the URL it was given, so
+ * wrapping such a message and appending a redacted URL beside it produced
+ *
+ *   Request cannot be constructed from a URL that includes credentials:
+ *   https://user:pw@host:8443/v1?key=SECRET/v1/chat/completions
+ *   (https://<endpoint-host>:8443/v1)
+ *
+ * — the redacted form sitting next to the raw one, in the terminal AND in
+ * `logs/dispatches.jsonl`, under a doc comment promising it was safe to paste
+ * into a bug report. Reproduced by an acceptance pass.
+ *
+ * Each credential-bearing piece is removed by value, so it does not matter how
+ * the message happened to assemble them: the whole base URL, then origin,
+ * hostname, userinfo, and every query value on their own.
+ */
+export function scrubEndpointSecrets(text: string, baseUrl: string): string {
+  let out = text;
+  const replaceAll = (needle: string, with_: string): void => {
+    if (needle.length === 0) return;
+    out = out.split(needle).join(with_);
+  };
+  replaceAll(baseUrl, redactEndpointHost(baseUrl));
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+    if (url.password) replaceAll(url.password, "<redacted>");
+    if (url.username) replaceAll(url.username, "<redacted>");
+    for (const value of url.searchParams.values()) replaceAll(value, "<redacted>");
+    // A loopback host is not itself a secret and its name is diagnostic, so it
+    // stays — the same call redactEndpointHost makes. Everything above is
+    // removed on every path, loopback included.
+    if (!loopback) {
+      replaceAll(url.origin, REDACTED_HOST);
+      replaceAll(url.hostname, REDACTED_HOST);
+    }
+  } catch {
+    // Not a parseable URL, so there is nothing further to take out of it than
+    // the literal string already replaced above.
+  }
+  return out;
+}
+
 function modelDiscoveryHint(route: {
   type: ServiceConfig["type"];
   modelHint?: string;

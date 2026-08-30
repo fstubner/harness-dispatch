@@ -28,7 +28,7 @@
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { parseRetryAfter } from "./shared/rate-limit-headers.js";
-import { redactEndpointHost } from "../status.js";
+import { redactEndpointHost, scrubEndpointSecrets } from "../status.js";
 
 const CHAT_PATH = "/chat/completions";
 const MESSAGES_PATH = "/messages";
@@ -156,7 +156,14 @@ function describeFetchFailure(err: unknown, baseUrl: string): string {
             ? "TLS certificate rejected"
             : (cause?.message ?? undefined);
   const where = redactEndpointHost(baseUrl);
-  return hint ? `${message} (${where}: ${hint})` : `${message} (${where})`;
+  // The wrapped message is scrubbed too, not just the URL appended after it.
+  // undici embeds the URL it was handed, so a base_url carrying userinfo or a
+  // key in the query put the raw credential straight into this string — and
+  // this string reaches the terminal and `logs/dispatches.jsonl`. The hint is
+  // scrubbed on the same grounds: it can be `cause.message`, which is equally
+  // not ours.
+  const safe = (text: string): string => scrubEndpointSecrets(text, baseUrl);
+  return hint ? `${safe(message)} (${where}: ${safe(hint)})` : `${safe(message)} (${where})`;
 }
 
 /**

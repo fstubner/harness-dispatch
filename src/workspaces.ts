@@ -856,7 +856,31 @@ async function prepareGitWorktreeWorkspace(
   files: string[],
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
-  const gitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir);
+  // Preconditions answered as themselves, not as whatever git printed.
+  //
+  // The resolve path (`workspace diff`/`apply`) explains a missing git and a
+  // long path; the DISPATCH path had none of it, so the three ordinary ways
+  // this cannot start reached the caller as raw git internals with no route
+  // taken and no mention of the alternative — an acceptance pass measured
+  // `spawn git ENOENT`, `fatal: not a git repository`, and
+  // `fatal: ambiguous argument 'HEAD'` on a freshly-initialised project, which
+  // is an ordinary state rather than an error.
+  const gitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir).catch(
+    (err: unknown) => {
+      if ((err as { code?: unknown } | null)?.code === "ENOENT") {
+        throw new Error(
+          "workspace_policy: git_worktree needs git on PATH, and it was not found. Install " +
+            "git, or use workspace_policy: copy, which needs no git. `doctor` reports whether " +
+            "it found one.",
+        );
+      }
+      throw new Error(
+        `workspace_policy: git_worktree needs ${originalWorkingDir} to be inside a git ` +
+          `repository, and it is not. Use workspace_policy: copy for a directory that is not ` +
+          `version-controlled.`,
+      );
+    },
+  );
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
   const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
   await pruneStaleGitWorktrees(gitRoot, gitWorkspaceRoot);
@@ -864,7 +888,14 @@ async function prepareGitWorktreeWorkspace(
   const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   await mkdir(workspaceRoot, { recursive: true });
-  const baseCommit = await git(["rev-parse", "HEAD"], gitRoot);
+  // A repository with no commits yet is an ordinary state, not a fault, and
+  // `git worktree add` has nothing to branch from in it.
+  const baseCommit = await git(["rev-parse", "HEAD"], gitRoot).catch(() => {
+    throw new Error(
+      `workspace_policy: git_worktree needs at least one commit to branch a worktree from, ` +
+        `and ${gitRoot} has none yet. Make an initial commit, or use workspace_policy: copy.`,
+    );
+  });
   await git(["worktree", "add", "--detach", worktreeRoot, baseCommit], gitRoot);
   const effectiveWorkingDir = prefix ? path.join(worktreeRoot, prefix) : worktreeRoot;
   await stat(effectiveWorkingDir);

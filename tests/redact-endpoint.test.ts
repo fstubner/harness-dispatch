@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { redactEndpointHost } from "../src/status.js";
+import { redactEndpointHost, scrubEndpointSecrets } from "../src/status.js";
 
 describe("redactEndpointHost", () => {
   it("actually removes the hostname", () => {
@@ -130,5 +130,46 @@ describe("idempotence", () => {
     const once = redactEndpointHost("https://api.example.com:8443/v1");
     expect(redactEndpointHost(once)).toBe(once);
     expect(once).toBe("https://<endpoint-host>:8443/v1");
+  });
+});
+
+describe("scrubEndpointSecrets", () => {
+  const BASE = "https://user:pw@api.secret-internal.example.com:8443/v1?key=SECRETKEY123";
+
+  it("removes a credential that arrived inside text this code did not write", () => {
+    // redactEndpointHost only cleans a URL a caller hands it. undici embeds
+    // the URL it was given in its own message, so wrapping that message and
+    // appending a redacted URL beside it put the raw credential and the
+    // redacted form side by side — in the terminal AND in dispatches.jsonl,
+    // under a doc comment promising it was safe to paste into a bug report.
+    const message =
+      "Request cannot be constructed from a URL that includes credentials: " +
+      `${BASE}/v1/chat/completions`;
+    const out = scrubEndpointSecrets(message, BASE);
+    expect(out).not.toContain("SECRETKEY123");
+    expect(out).not.toContain("pw@");
+    expect(out).not.toContain("api.secret-internal.example.com");
+  });
+
+  it("removes each credential-bearing part on its own, however the text assembled them", () => {
+    const message = "host api.secret-internal.example.com rejected key SECRETKEY123 for user";
+    const out = scrubEndpointSecrets(message, BASE);
+    expect(out).not.toContain("SECRETKEY123");
+    expect(out).not.toContain("api.secret-internal.example.com");
+  });
+
+  it("keeps a loopback host, which is diagnostic and not a secret", () => {
+    // Same call redactEndpointHost makes. A key in the URL is still removed.
+    const local = "http://127.0.0.1:11434/v1?key=LOCALSECRET";
+    const out = scrubEndpointSecrets("connect ECONNREFUSED 127.0.0.1:11434 LOCALSECRET", local);
+    expect(out).toContain("127.0.0.1");
+    expect(out).not.toContain("LOCALSECRET");
+  });
+
+  it("leaves text that carries no part of the endpoint alone", () => {
+    // The scrub must not fire on unrelated words — an over-eager replace would
+    // corrupt the diagnosis it exists to preserve.
+    const out = scrubEndpointSecrets("connection timed out after 120000ms", BASE);
+    expect(out).toBe("connection timed out after 120000ms");
   });
 });

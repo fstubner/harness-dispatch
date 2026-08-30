@@ -262,6 +262,8 @@ async function handleChatCompletions(
       // parsed, so it is sent at completion. Never both, or the answer would
       // arrive twice.
       const answer = createAnswerStream();
+      let succeeded = false;
+      let pendingFailure: { error: { message: string; route: string } } | undefined;
       for await (const { event, decision } of state.router.stream(
         parsed.prompt,
         parsed.files,
@@ -277,22 +279,37 @@ async function handleChatCompletions(
             }),
           );
         }
+        if (event.type === "completion" && event.result.success) succeeded = true;
         if (event.type === "completion" && !event.result.success) {
-          writeSse(res, {
+          const frame = {
             error: {
               message: event.result.error ?? "routing failed",
               route: event.result.service,
             },
-          });
+          };
           // Once any answer text has gone out, this response is committed to
           // that route: a fallback's answer cannot be spliced onto a half-sent
           // one without garbling it, and the previous behaviour ran the
           // fallback anyway and discarded what it produced — billed, and
           // thrown away. Stop instead. Breaking here ends the router's
           // iteration, so no further route is attempted.
-          if (answer.committed) break;
+          if (answer.committed) {
+            writeSse(res, frame);
+            break;
+          }
+          // Not committed, so the router is about to try another route. The
+          // frame was written HERE, before that happened — so a request that
+          // then succeeded on the fallback still carried an `error` frame,
+          // ahead of the answer. The OpenAI streaming contract has no
+          // non-fatal error frame, so a client that treats one as terminal
+          // reported a failure for a request that worked. Reproduced by an
+          // acceptance pass. Held until the end, and sent only if nothing
+          // ever succeeded.
+          pendingFailure = frame;
         }
       }
+      // Nothing recovered it, so the failure was the outcome after all.
+      if (!succeeded && pendingFailure !== undefined) writeSse(res, pendingFailure);
     }
     writeSse(res, sseStop());
     res.write("data: [DONE]\n\n");

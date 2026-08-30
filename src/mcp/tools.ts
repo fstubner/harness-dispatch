@@ -912,10 +912,24 @@ export type InvokeResult = { kind: "json"; data: unknown };
  * means intercepting the CallTool request below the SDK's own routing, which is
  * a larger change than the defect warrants today.
  *
- * The consequence is the same on both surfaces — the hint is dropped and the
- * dispatch runs at the looser default — so this is worth revisiting. Written
- * down here because an undocumented difference between the surfaces is exactly
- * what the parity suite exists to prevent.
+ * Scope, corrected after an acceptance pass measured it: only the TOP-LEVEL
+ * key is affected. `hints: { safteyProfile: ... }` IS rejected here, because
+ * `hints` is `.strict()` — an earlier version of this comment said "the
+ * consequence is the same on both surfaces", which is true of the top-level
+ * key and false of the nested one.
+ *
+ * The consequence for the top-level key is not merely a dropped hint. The pass
+ * sent `safteyProfile: "read_only"`, watched it accepted in silence, and
+ * watched the dispatch run at the `workspace_edit` default and WRITE a file:
+ * asking for read-only by way of a typo gets you write access. That is a
+ * safety consequence rather than an ergonomic one, and it is the reason this
+ * is recorded as open with a measured effect rather than as a nicety.
+ *
+ * Closing it means taking over `CallToolRequestSchema` below the SDK's own
+ * routing — every tool's dispatch path — which is not a change to make in the
+ * same breath as a one-line fix. Written down here because an undocumented
+ * difference between the surfaces is exactly what the parity suite exists to
+ * prevent.
  */
 
 export async function invokeTool(
