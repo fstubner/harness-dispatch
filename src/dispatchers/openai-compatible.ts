@@ -752,13 +752,23 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     }
 
     const output = chunks.join("");
+    // A 200 that streams no answer at all is not a successful empty answer.
+    //
+    // The buffered path has always refused this — #extractContent returning
+    // null is reported as `Unexpected response shape`. The streaming path did
+    // not, and jobs.ts only ever streams, so the MCP surface (the primary one,
+    // and the one an orchestrating agent branches on) reported `success: true`
+    // with an empty output while the CLI reported a failure for the same
+    // response. The breaker heals on a success, so a route serving nothing but
+    // empty 200s was recorded as healthy forever and never tripped.
+    const emptyAnswer = streamError === undefined && output.length === 0;
     const result: DispatchResult =
-      streamError !== undefined
+      streamError !== undefined || emptyAnswer
         ? {
             output,
             service: this.id,
             success: false,
-            error: streamError,
+            error: streamError ?? "Empty response: the endpoint returned 200 with no content",
             durationMs: Date.now() - start,
             rateLimitHeaders: responseHeaders,
           }

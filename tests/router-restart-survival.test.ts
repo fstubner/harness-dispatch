@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +18,7 @@ import { Router } from "../src/router.js";
 import { QuotaCache } from "../src/quota.js";
 import { LeaderboardCache } from "../src/leaderboard.js";
 import { BreakerStore } from "../src/breaker-store.js";
+import { buildStatus, renderStatusText } from "../src/status.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 import type {
   DispatcherEvent,
@@ -228,5 +229,55 @@ describe("Router restart survival — breaker state persists across process boun
 
     const routerB = buildRouter(services, dispatchers);
     expect(routerB.getBreaker("recovering")!.status()).toEqual({ tripped: false, failures: 0 });
+  });
+
+  it("a corrupt record is reported as unknown state, not as a healthy route", async () => {
+    // Losing the record un-trips the route — nothing can recover the count.
+    // What is NOT acceptable is doing that silently: `breaker=closed
+    // failures=0` is an assertion about the route, and after a corrupt read
+    // the process has no basis for it.
+    const stateDir = path.join(dir, "breaker_state");
+    const services = { flaky: makeService("flaky") };
+    const dispatchers = {
+      flaky: new FakeDispatcher("flaky", {
+        output: "",
+        service: "flaky",
+        success: false,
+        rateLimited: true,
+        retryAfter: 300,
+      }),
+    };
+    const build = (): Router =>
+      new Router(
+        { services },
+        new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+        dispatchers,
+        new LeaderboardCache(),
+        new BreakerStore(stateDir),
+      );
+
+    const routerA = build();
+    await routerA.routeTo("flaky", "go", [], "/tmp");
+    expect(routerA.getBreaker("flaky")!.isTripped).toBe(true);
+
+    // Truncated mid-write, the realistic corruption for an atomic-rename store
+    // whose rename was interrupted.
+    const record = readdirSync(stateDir).find((f) => f.endsWith(".json"))!;
+    writeFileSync(path.join(stateDir, record), '{"failures": 5, "blockedUn');
+
+    const routerB = build();
+    expect(routerB.getBreaker("flaky")!.isTripped).toBe(false);
+    routerB.circuitBreakerStatus();
+    expect(routerB.breakerStateUnreadable()).toEqual(["flaky"]);
+
+    const status = await buildStatus(
+      { services },
+      dispatchers,
+      new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+      routerB,
+      new LeaderboardCache(),
+    );
+    expect(status.routes[0]!.breaker.stateUnreadable).toBe(true);
+    expect(renderStatusText(status)).toContain("saved breaker state unreadable");
   });
 });

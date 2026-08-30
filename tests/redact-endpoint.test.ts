@@ -100,7 +100,12 @@ describe("status payload redaction", () => {
     };
 
     const quota = { fullStatus: async () => ({}), getQuotaScore: async () => 1 };
-    const router = { circuitBreakerStatus: () => ({}), pickService: () => undefined, getBreaker: () => undefined };
+    const router = {
+      circuitBreakerStatus: () => ({}),
+      breakerStateUnreadable: () => [],
+      pickService: () => undefined,
+      getBreaker: () => undefined,
+    };
     const leaderboard = { getQualityScore: async () => ({ qualityScore: 0.85 }) };
     const status = await buildStatus(
       config as never,
