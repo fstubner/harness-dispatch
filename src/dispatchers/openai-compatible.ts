@@ -36,6 +36,12 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** SSE frames are separated by a blank line — spec-legal as \n\n or \r\n\r\n. */
 const SSE_FRAME_BOUNDARY = /\r?\n\r?\n/;
+/**
+ * How much of an unusable response body to quote back. Enough to recognise an
+ * HTML error page or a JSON error envelope; short enough that a multi-megabyte
+ * body does not become the error message.
+ */
+const RAW_HEAD_CHARS = 300;
 
 /**
  * Append `path` onto `baseUrl`, inserting `/v1` unless it's already there.
@@ -537,7 +543,15 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         output: "",
         service: this.id,
         success: false,
-        error: `Unexpected response shape: ${rawBody.slice(0, 300)}`,
+        // Same one question the streaming path asks, and the same two answers.
+        // This path used to emit a dangling "Unexpected response shape: " with
+        // nothing after the colon for an empty body — technically true and
+        // useless, and the worse half of an agreement the streaming comment
+        // claimed the two paths already had.
+        error:
+          rawBody.length === 0
+            ? "Empty response: the endpoint returned 200 with no body"
+            : `Unexpected response shape: ${rawBody.slice(0, RAW_HEAD_CHARS)}`,
         durationMs,
         rateLimitHeaders: responseHeaders,
       };
@@ -666,11 +680,13 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     let buffer = "";
     // The head of the body exactly as it arrived, kept because `buffer` is
     // consumed frame by frame and is empty by the time a failure is reported.
-    // Without it the failure message could only say what was NOT found, and it
-    // said "returned 200 with no content" for an HTML error page, for plain
-    // prose, and for a gateway that ignored `stream: true` and sent a normal
-    // JSON completion — all of which returned content. Bounded to the same 300
-    // characters the buffered path slices.
+    // Without it the failure message could only say what was NOT found.
+    //
+    // Truncated to RAW_HEAD_CHARS, not "stopped once past it": the previous
+    // version appended whole chunks while under the limit, so one chunk could
+    // carry it to any length. That was invisible until it mattered — the same
+    // 2 KB body classified two different ways depending on how the network
+    // split it, decided by bytes the message never showed.
     let rawSeen = "";
     // Merged across frames, not overwritten — Anthropic's input/output
     // token counts arrive on two DIFFERENT frames (see #parseSseFrame).
@@ -708,7 +724,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         buffer += text;
-        if (rawSeen.length < 300) rawSeen += text;
+        if (rawSeen.length < RAW_HEAD_CHARS) rawSeen = (rawSeen + text).slice(0, RAW_HEAD_CHARS);
 
         let boundary = SSE_FRAME_BOUNDARY.exec(buffer);
         while (boundary !== null) {
@@ -775,24 +791,33 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     // output. The breaker heals on a success, so a route serving nothing but
     // empty 200s was recorded as healthy forever and never tripped.
     //
-    // The message distinguishes the two ways to get here, because they need
-    // different things done about them: nothing arrived (the endpoint is
-    // answering but producing nothing) versus something arrived that this
-    // parser could not turn into an answer (wrong shape, wrong content-type,
-    // a proxy in the way). Reporting the second as "no content" was a claim
-    // the code had not checked, and the body is what a person debugging a
-    // gateway actually needs. Same wording as the buffered path for the same
-    // condition, which is what makes the two surfaces agree.
+    // The message asks one question — did ANYTHING come back? — and does not
+    // try to work out why what came back was unusable.
+    //
+    // Two previous versions did try, and both were wrong in ways nobody
+    // noticed until an acceptance pass went looking. The first reported "no
+    // content" for anything that yielded no text, so an HTML error page, plain
+    // prose and a gateway that ignored `stream: true` were all described as
+    // empty. The second tested whether the body looked like SSE, and got three
+    // more cases backwards: a stream in a dialect this parser does not read
+    // (Anthropic's, on a route configured as OpenAI's) has its real answer
+    // discarded and called empty; SSE comment keepalives — `: OPENROUTER
+    // PROCESSING`, sent by a real provider — are well-formed SSE carrying
+    // nothing and were called an unexpected shape; and an HTML page containing
+    // any `data:` line was called empty.
+    //
+    // Each fix was right about the case in front of it and wrong one case
+    // over, which is the signal that the classification itself does not belong
+    // here. This dispatcher knows one thing for certain: whether bytes
+    // arrived. Everything else is the reader's to judge, and showing them the
+    // body is what lets them. A well-formed empty stream now reports its own
+    // `data: [DONE]` rather than a friendlier sentence about it — less
+    // polished, and it cannot be wrong.
     const emptyAnswer = streamError === undefined && output.length === 0;
-    // Raw bytes are not the test — `data: [DONE]` alone is a perfectly
-    // well-formed SSE stream that carried no answer, and calling that an
-    // unexpected shape would be as wrong as the message it replaces. What
-    // separates the two cases is whether the body is SSE at all.
-    const looksLikeSse = /^(data|event):/m.test(rawSeen);
     const emptyAnswerError =
-      rawSeen.trim().length === 0 || looksLikeSse
-        ? "Empty response: the endpoint returned 200 with no content"
-        : `Unexpected response shape: ${rawSeen.slice(0, 300)}`;
+      rawSeen.length === 0
+        ? "Empty response: the endpoint returned 200 with no body"
+        : `Unexpected response shape: ${rawSeen}`;
     const result: DispatchResult =
       streamError !== undefined || emptyAnswer
         ? {

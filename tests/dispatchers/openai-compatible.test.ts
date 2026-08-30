@@ -272,11 +272,21 @@ function anthropicSvc(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
 }
 
 /** A streaming Response whose body yields the given raw SSE text in one chunk. */
-function sseResponse(rawText: string, init: { status?: number; headers?: Record<string, string> } = {}): Response {
+function sseResponse(
+  rawText: string,
+  // chunkBytes splits the body across several stream reads. Default is one
+  // chunk, which is what every test wanted until one needed to prove that the
+  // split does not change the result.
+  init: { status?: number; headers?: Record<string, string>; chunkBytes?: number } = {},
+): Response {
   const encoder = new TextEncoder();
+  const encoded = encoder.encode(rawText);
+  const size = init.chunkBytes ?? Math.max(encoded.length, 1);
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(rawText));
+      for (let i = 0; i < encoded.length; i += size) {
+        controller.enqueue(encoded.slice(i, i + size));
+      }
       controller.close();
     },
   });
@@ -549,11 +559,17 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
   });
 
   it("treats a 200 that streams no content as a failure, matching the buffered path", async () => {
-    // The two paths disagreed on the same response. Buffered refused it
-    // ("Unexpected response shape"); streaming called it a successful empty
-    // answer — and jobs.ts only ever streams, so the MCP surface was the one
-    // that got it wrong. Worse, a success HEALS the breaker, so a route
-    // serving nothing but empty 200s never tripped.
+    // The two paths disagreed on the same response. Buffered refused it;
+    // streaming called it a successful empty answer — and jobs.ts only ever
+    // streams, so the MCP surface was the one that got it wrong. Worse, a
+    // success HEALS the breaker, so a route serving nothing but empty 200s
+    // never tripped.
+    //
+    // The message quotes the terminator rather than saying "no content" in
+    // nicer words. Two earlier versions tried to tell "empty stream" apart
+    // from "unusable body" and each got a different set of real responses
+    // backwards, so the dispatcher no longer guesses: bytes arrived, here
+    // they are.
     fetchMock.mockResolvedValue(sseResponse("data: [DONE]\n\n"));
 
     const d = new OpenAICompatibleDispatcher(baseSvc());
@@ -564,11 +580,11 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
       | { result: { success: boolean; output: string; error?: string } }
       | undefined;
     expect(completion?.result.success).toBe(false);
-    expect(completion?.result.error).toContain("200 with no content");
+    expect(completion?.result.error).toContain("data: [DONE]");
     expect(completion?.result.output).toBe("");
   });
 
-  it("a totally empty 200 body streams as a failure too", async () => {
+  it("a totally empty 200 body streams as a failure, and is the ONLY 'no body' case", async () => {
     fetchMock.mockResolvedValue(sseResponse(""));
 
     const d = new OpenAICompatibleDispatcher(baseSvc());
@@ -576,9 +592,73 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     for await (const evt of d.stream("go", [], "")) events.push(evt);
 
     const completion = events.find((e) => e.type === "completion") as
-      | { result: { success: boolean } }
+      | { result: { success: boolean; error?: string } }
       | undefined;
     expect(completion?.result.success).toBe(false);
+    expect(completion?.result.error).toBe("Empty response: the endpoint returned 200 with no body");
+  });
+
+  // Each of these is a real response an acceptance pass got the old
+  // classifier to describe backwards. They are one test per body because the
+  // point is that no body shape is special — the rule is "bytes arrived, show
+  // them", and a table makes a future special case fail loudly.
+  for (const [label, body, expected] of [
+    [
+      "an SSE stream in a dialect this route does not parse (Anthropic on an OpenAI route)",
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"the real answer"}}\n\n',
+      "the real answer",
+    ],
+    [
+      "SSE comment keepalives carrying nothing (OpenRouter sends these verbatim)",
+      ": OPENROUTER PROCESSING\n\n: OPENROUTER PROCESSING\n\ndata: [DONE]\n\n",
+      "OPENROUTER PROCESSING",
+    ],
+    [
+      "an HTML error page that happens to contain a data: line",
+      '<html><body>Gateway parked<img src="data:image/png;base64,AAAA"></body></html>',
+      "Gateway parked",
+    ],
+  ] as const) {
+    it(`quotes the body for ${label}`, async () => {
+      fetchMock.mockResolvedValue(sseResponse(body));
+
+      const d = new OpenAICompatibleDispatcher(baseSvc());
+      const events: Array<{ type: string }> = [];
+      for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+      const completion = events.find((e) => e.type === "completion") as
+        | { result: { success: boolean; error?: string } }
+        | undefined;
+      expect(completion?.result.success).toBe(false);
+      expect(completion?.result.error).toContain("Unexpected response shape");
+      expect(completion?.result.error).toContain(expected);
+    });
+  }
+
+  it("the quoted body does not vary with how the network split it", async () => {
+    // rawSeen used to grow by whole chunks while under the limit, so one
+    // chunk could carry it to any length — and the classifier ran over all of
+    // it while the message showed only the first 300 characters. The same 2 KB
+    // body was described two different ways depending on chunk size.
+    // No `data:` line anywhere — the first version of this body ended with one,
+    // so the stream PARSED it, succeeded, and produced no error to compare.
+    // Three identical empty strings made the assertion pass while the bug was
+    // live, which a sabotage run caught.
+    const body = `<html>${"x".repeat(2000)}</html>`;
+    const errors: string[] = [];
+    for (const chunkBytes of [body.length, 100, 7]) {
+      fetchMock.mockResolvedValue(sseResponse(body, { chunkBytes }));
+      const d = new OpenAICompatibleDispatcher(baseSvc());
+      const events: Array<{ type: string }> = [];
+      for await (const evt of d.stream("go", [], "")) events.push(evt);
+      const completion = events.find((e) => e.type === "completion") as
+        | { result: { success: boolean; error?: string } }
+        | undefined;
+      expect(completion?.result.success).toBe(false);
+      errors.push(completion?.result.error ?? "");
+    }
+    expect(new Set(errors).size).toBe(1);
+    expect(errors[0]!.length).toBe("Unexpected response shape: ".length + 300);
   });
 
   it("still reports success for a stream that carries real content", async () => {

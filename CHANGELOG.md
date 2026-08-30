@@ -126,13 +126,23 @@ pre-1.0, so minor versions can carry behaviour changes.
   entry here claimed the buffered path already refused empty answers, and that
   was wrong.
 
-  The streaming failure also names the body it could not use, as the buffered
-  path always has. It previously said "returned 200 with no content" for an
-  HTML error page, for plain prose, and for a gateway that ignored
-  `stream: true` and sent an ordinary JSON completion — all of which returned
-  content, and the body is the thing someone debugging a proxy needs. A
-  well-formed SSE stream that genuinely carried nothing still reports no
-  content, because that is a different problem with a different fix.
+  Both failures now quote the body when one arrived, and say "no body" only
+  when nothing did. That is the whole rule: this dispatcher does not try to
+  work out WHY a response was unusable.
+
+  Two earlier versions did try, and each was wrong in ways only an acceptance
+  pass found. The first called anything that produced no text "no content", so
+  an HTML error page, plain prose and a gateway that ignored `stream: true`
+  were all described as empty. The second tested whether the body looked like
+  SSE, and got three more cases backwards: a stream in a dialect the route was
+  not configured for had its real answer thrown away and called empty; SSE
+  comment keepalives — which a real provider sends while thinking — were
+  called an unexpected shape; and an HTML page containing any `data:` line was
+  called empty. Worse, the same body was described two different ways
+  depending on how the network happened to split it.
+
+  A well-formed but empty stream now quotes its own terminator instead of
+  being described in nicer words. Less polished, and it cannot be wrong.
 
   Reproduced by acceptance passes.
 
@@ -142,11 +152,24 @@ pre-1.0, so minor versions can carry behaviour changes.
   un-tripped a live cooldown in silence, which is the exact failure this
   persistence layer was added to prevent.
 
-  Corrupt covers two shapes. A file that does not parse at all, and a file that
-  parses but carries a field of the wrong type: `{"failures":"5",
-  "blockedUntilMs":"2099-01-01"}` encodes an active cooldown, and every field
-  read coerced it to the healthy default. A field that is simply ABSENT is
-  still tolerated, because older builds wrote fewer of them.
+  Rather than enumerate the ways a record can be corrupt — a list acceptance
+  passes kept finding entries missing from — this checks the invariant the
+  module already holds: a healthy route has NO file, because a healthy save
+  deletes one. So a file that reads back fully healthy is a contradiction, and
+  that catches every unrecognised shape at once, including the `[]`, `{}` and
+  foreign-schema records that a list of type checks had missed. Type checks
+  remain for the case the invariant cannot see: a wrong-typed field on a
+  record that is otherwise not-healthy. A field that is simply ABSENT is still
+  tolerated, because older builds wrote fewer of them.
+
+  The same validation now runs on the pre-split `breaker_state.json` read once
+  during an upgrade, which had none of it: a bad entry there was coerced to
+  healthy, skipped as nothing-to-migrate, and the file deleted — so upgrading,
+  the moment a live cooldown is most likely to be sitting on disk, destroyed
+  it silently. A blob with an unreadable entry, or one that will not parse at
+  all, is now reported and KEPT. An unreadable record whose name is not a
+  configured route (every corrupt blob, since it has no route name) is
+  reported among the config warnings, where a per-route line cannot carry it.
 
   The lost count cannot be recovered and this does not guess at it — failing
   closed would strand a route until someone deleted a file by hand. `status`

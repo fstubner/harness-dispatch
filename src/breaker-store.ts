@@ -116,6 +116,47 @@ function serviceFromFileName(entry: string): string | undefined {
   }
 }
 
+/**
+ * Stand-in "route name" for a legacy blob that would not parse at all — there
+ * are no route names to report in that case, and reporting nothing is what the
+ * old behaviour did.
+ */
+const LEGACY_BLOB_ROUTE = "(legacy breaker_state.json)";
+
+/**
+ * One persisted record -> a snapshot, or undefined if the record is corrupt.
+ *
+ * Shared by the per-route files and the legacy blob's entries, because they
+ * are the same data written twice and were being validated to two different
+ * standards: the per-route reader gained type checks that the migration path
+ * never got, so an upgrade — the one moment a live cooldown is most likely to
+ * be sitting on disk — still coerced a bad record to healthy, skipped it as
+ * "nothing to migrate", and deleted the blob. Reproduced by an acceptance
+ * pass.
+ *
+ * A PRESENT field of the wrong type is corruption; an ABSENT one is an older
+ * build that wrote fewer fields, and stays tolerated.
+ */
+function snapshotFromRecord(v: unknown): CircuitBreakerSnapshot | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const r = v as { failures?: unknown; blockedUntilMs?: unknown; lastFailureAtMs?: unknown };
+  if (r.failures !== undefined && typeof r.failures !== "number") return undefined;
+  if (r.blockedUntilMs !== undefined && r.blockedUntilMs !== null && typeof r.blockedUntilMs !== "number") {
+    return undefined;
+  }
+  if (r.lastFailureAtMs !== undefined && r.lastFailureAtMs !== null && typeof r.lastFailureAtMs !== "number") {
+    return undefined;
+  }
+  return {
+    failures: typeof r.failures === "number" ? r.failures : 0,
+    blockedUntilMs: typeof r.blockedUntilMs === "number" ? r.blockedUntilMs : null,
+    // Round-tripped so FAILURE_DECAY_SEC works across processes; omitted (not
+    // nulled) when absent, so files written by older builds read back exactly
+    // as they were written.
+    ...(typeof r.lastFailureAtMs === "number" ? { lastFailureAtMs: r.lastFailureAtMs } : {}),
+  };
+}
+
 export class BreakerStore {
   private readonly stateDir: string;
   private persistCounter = 0;
@@ -253,46 +294,32 @@ export class BreakerStore {
 
   private readOne(file: string): CircuitBreakerSnapshot | undefined {
     try {
-      const v = JSON.parse(readFileSync(file, "utf-8")) as {
-        failures?: number;
-        blockedUntilMs?: number | null;
-        lastFailureAtMs?: number | null;
-      } | null;
-      if (!v || typeof v !== "object") return undefined;
-      // A PRESENT field of the wrong type is corruption, not an old build.
+      const snapshot = snapshotFromRecord(JSON.parse(readFileSync(file, "utf-8")));
+      if (snapshot === undefined) return undefined;
+      // A record that reads back FULLY HEALTHY is a contradiction, because
+      // save() deletes such a record rather than writing one — see its
+      // "healthy install keeps an empty directory" contract. So the file
+      // existing at all means something wrote a shape this does not
+      // understand, and the healthy reading is an artifact of the coercions in
+      // snapshotFromRecord rather than anything the file said.
       //
-      // These coercions were unconditional, so `{"failures":"5",
-      // "blockedUntilMs":"2099-01-01"}` — a record encoding an active cooldown
-      // — read back as `failures: 0, blockedUntilMs: null` and the route came
-      // up healthy with nothing said. That is the same silent un-trip as an
-      // unparseable file, and an acceptance pass found it still live after
-      // that one was fixed: only `JSON.parse` throwing reached the report.
+      // This is the general form of that function's type guards, and it lives
+      // HERE rather than in it because the invariant is the per-route file's,
+      // not the record shape's: the legacy blob legitimately contained healthy
+      // entries, so applying this there would report every one of them as
+      // corrupt.
       //
-      // Absent stays tolerated (older builds wrote fewer fields); wrong type
-      // does not, and falls through to the caller's unreadable handling.
-      if (v.failures !== undefined && typeof v.failures !== "number") return undefined;
-      if (
-        v.blockedUntilMs !== undefined &&
-        v.blockedUntilMs !== null &&
-        typeof v.blockedUntilMs !== "number"
-      ) {
-        return undefined;
-      }
-      if (
-        v.lastFailureAtMs !== undefined &&
-        v.lastFailureAtMs !== null &&
-        typeof v.lastFailureAtMs !== "number"
-      ) {
-        return undefined;
-      }
-      return {
-        failures: typeof v.failures === "number" ? v.failures : 0,
-        blockedUntilMs: typeof v.blockedUntilMs === "number" ? v.blockedUntilMs : null,
-        // Round-tripped so FAILURE_DECAY_SEC works across processes; omitted
-        // (not nulled) when absent, so files written by older builds read
-        // back exactly as they were written.
-        ...(typeof v.lastFailureAtMs === "number" ? { lastFailureAtMs: v.lastFailureAtMs } : {}),
-      };
+      // It is the general form because the type guards were the wrong tool on
+      // their own — they enumerate the ways a record can be broken, and an
+      // acceptance pass kept finding entries missing from the list: `[]`, `{}`
+      // and a foreign nested schema all read back healthy in silence and
+      // un-tripped a live cooldown. Checking the module's own invariant needs
+      // no such list. The type guards still earn their place for the case this
+      // cannot see: a wrong-typed field on a record that is otherwise
+      // not-healthy, which reads back as a real cooldown at the wrong numbers
+      // rather than as healthy.
+      if (snapshot.failures === 0 && snapshot.blockedUntilMs === null) return undefined;
+      return snapshot;
     } catch {
       return undefined;
     }
@@ -318,16 +345,20 @@ export class BreakerStore {
     // above it claimed to prevent.
     let persistedAll = true;
     try {
-      const data = JSON.parse(readFileSync(legacy, "utf-8")) as Record<
-        string,
-        { failures?: number; blockedUntilMs?: number | null } | null
-      >;
+      const data = JSON.parse(readFileSync(legacy, "utf-8")) as Record<string, unknown>;
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("not a map");
       for (const [service, v] of Object.entries(data)) {
-        if (!v || typeof v !== "object") continue;
-        const snapshot: CircuitBreakerSnapshot = {
-          failures: typeof v.failures === "number" ? v.failures : 0,
-          blockedUntilMs: typeof v.blockedUntilMs === "number" ? v.blockedUntilMs : null,
-        };
+        const snapshot = snapshotFromRecord(v);
+        if (snapshot === undefined) {
+          // Same reporting the per-route files get. This used to `continue`
+          // past a bad entry, and the blob was deleted at the end regardless —
+          // so a cooldown written in a shape this could not read was destroyed
+          // by the upgrade, silently, which is the failure the migration
+          // exists to prevent. Keeping the blob leaves the evidence in place.
+          this.unreadable.push(service);
+          persistedAll = false;
+          continue;
+        }
         out[service] = snapshot;
         const file = path.join(this.stateDir, fileNameFor(service));
         // Per-route files win on conflict: they are newer by construction.
@@ -341,8 +372,14 @@ export class BreakerStore {
         }
       }
     } catch {
-      // Corrupt legacy blob — nothing to migrate, and nothing lost by
-      // deleting it below.
+      // A blob that will not parse at all. The old comment here said "nothing
+      // lost by deleting it below", which was an assumption about a file whose
+      // contents could not be read — it may well have held every live cooldown
+      // on the machine. Keep it and say so; a leftover blob costs one failed
+      // parse per read, and deleting the only copy costs the thing this module
+      // exists to protect.
+      this.unreadable.push(LEGACY_BLOB_ROUTE);
+      persistedAll = false;
     }
     if (!persistedAll) return; // Keep the blob; the migration re-runs next read.
     try {
