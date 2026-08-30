@@ -286,15 +286,25 @@ export async function buildStatus(
     .filter((route) => route.enabled && route.available && !route.breaker.tripped && !route.skipped)
     .map((route) => route.id);
   const decision = await router.pickService();
+  // An unreadable record whose name is not a configured route has nowhere to
+  // be shown — the per-route line it would appear on does not exist. That is
+  // every corrupt legacy blob (which has no route name at all) and any record
+  // left behind by a route since renamed or removed. Reporting them here keeps
+  // the fix from being silent in exactly the cases it was added for.
+  const orphanedUnreadable = [...breakerUnreadable].filter((name) => config.services[name] === undefined);
+  const warnings = [
+    ...(config.configWarnings ?? []),
+    ...orphanedUnreadable.map(
+      (name) => `saved breaker state for ${name} is unreadable — a cooldown it held may have been lost`,
+    ),
+  ];
   const status: HarnessDispatchStatus = {
     name: "harness-dispatch",
     generatedAt: new Date().toISOString(),
     routes,
     ready,
     skippedRoutes,
-    ...(config.configWarnings && config.configWarnings.length > 0
-      ? { configWarnings: [...config.configWarnings] }
-      : {}),
+    ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   if (decision) {
     status.next = {

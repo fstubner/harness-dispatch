@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -279,5 +279,31 @@ describe("Router restart survival — breaker state persists across process boun
     );
     expect(status.routes[0]!.breaker.stateUnreadable).toBe(true);
     expect(renderStatusText(status)).toContain("saved breaker state unreadable");
+  });
+
+  it("an unreadable record with no matching route is still reported, not dropped", () => {
+    // The per-route line is where this normally shows, and a corrupt LEGACY
+    // blob has no route name at all — so the report had nowhere to go in
+    // exactly the case it was added for. Same for a record left behind by a
+    // route since renamed.
+    const stateDir = path.join(dir, "breaker_state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(dir, "breaker_state.json"), "{ truncated mid-writ");
+    writeFileSync(path.join(stateDir, "route_since_renamed.json"), "{ also bad");
+
+    const services = { flaky: makeService("flaky") };
+    const dispatchers = { flaky: new FakeDispatcher("flaky", { output: "ok", service: "flaky", success: true }) };
+    const router = new Router(
+      { services },
+      new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+      dispatchers,
+      new LeaderboardCache(),
+      new BreakerStore(stateDir),
+    );
+    router.circuitBreakerStatus();
+    expect(router.breakerStateUnreadable().sort()).toEqual([
+      "(legacy breaker_state.json)",
+      "route_since_renamed",
+    ]);
   });
 });
