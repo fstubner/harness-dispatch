@@ -112,6 +112,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- A mistyped safety setting no longer gets you MORE access than you asked for.
+  `safteyProfile: "read_only"` at the top level of an MCP call was accepted in
+  silence and the dispatch then ran at the `workspace_edit` default — an
+  acceptance pass measured it writing a file into the project. The HTTP surface
+  had refused the same input all along, so one input got two opposite answers.
+
+  It could not be fixed in the schema: the MCP SDK validates arguments before
+  any handler runs and discards unknown keys, so nothing downstream could see
+  what was sent. `hints` is strict, which is why the nested form was always
+  caught; the outer object cannot be, because MCP carries its own `_meta`
+  there. The fix wraps the SDK's tool-call handler and inspects the raw
+  arguments before delegating, leaving routing, validation and progress
+  reporting untouched. Both surfaces now run one shared check, and the parity
+  suite asserts it on both rather than recording the difference as deliberate.
+
 - An endpoint credential embedded in `base_url` no longer reaches the terminal
   or `logs/dispatches.jsonl` through an error message. The redaction only ever
   cleaned URLs this code assembles; Node embeds the URL it was handed inside

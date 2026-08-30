@@ -194,6 +194,10 @@ describe("both surfaces answer the same input the same way", () => {
     ["a typo'd hints.taskType", { prompt: "hi", hints: { taskType: "excute" } }],
     ["a typo'd hints.routePolicy", { prompt: "hi", hints: { routePolicy: "bloked" } }],
     ["a typo'd hints.workspacePolicy", { prompt: "hi", hints: { workspacePolicy: "copyy" } }],
+    // Moved here from a "deliberate asymmetry" block on 2026-08-31, which is
+    // what that block's own comment asked for once MCP started rejecting them.
+    ["a near-miss top-level safetyProfile", { prompt: "hi", safteyProfile: "read_only" }],
+    ["a near-miss top-level taskType", { prompt: "hi", taskTyp: "review" }],
     ["a typo'd mode", { prompt: "hi", mode: "fanou" }],
     ["a non-string files entry", { prompt: "hi", files: [1] }],
     ["a non-string models entry", { prompt: "hi", models: [1] }],
@@ -369,68 +373,17 @@ describe("both surfaces answer the same input the same way", () => {
 });
 
 /**
- * One place the surfaces deliberately DIFFER, written down so it stays a
- * decision rather than a drift.
+ * The asymmetry that used to live here is GONE, and this note is the record.
  *
- * A top-level key one typo from a hint name (`safteyProfile`) is refused on
- * HTTP and silently dropped on MCP. Not an oversight: the MCP SDK validates
- * against `z.object(dispatchInputShape)` before any of our code runs, and zod
- * strips unknown keys — so nothing in the registered-tool path can see what the
- * caller actually sent. Closing it means intercepting CallTool below the SDK's
- * routing.
+ * A top-level key one typo from a hint name (`safteyProfile`) was refused on
+ * HTTP and silently dropped on MCP — the SDK validates against
+ * `z.object(dispatchInputShape)` before our code runs and zod strips unknown
+ * keys, so nothing in the registered-tool path could see what was sent. An
+ * acceptance pass measured the consequence: asking for read-only by way of a
+ * typo ran the dispatch at the `workspace_edit` default and wrote a file.
  *
- * The consequence is identical on both sides — the hint is dropped and the
- * dispatch runs at the looser default — so this test asserts the asymmetry
- * rather than approving of it. If MCP ever starts rejecting these, this test
- * fails and the row moves up into REJECTED where it belongs.
+ * `mcp/near-miss-guard.ts` now wraps the CallTool handler the SDK installs and
+ * inspects the raw arguments, so both surfaces refuse it. The two rows are in
+ * REJECTED above, which is exactly where the deleted test asked for them to be
+ * moved.
  */
-describe("near-miss top-level keys: a known, deliberate asymmetry", () => {
-  it.each([
-    ["safteyProfile", { prompt: "hi", safteyProfile: "read_only" }],
-    ["taskTyp", { prompt: "hi", taskTyp: "review" }],
-  ])("HTTP rejects %s; MCP strips it before we can", async (key, body) => {
-    expect(
-      () => parseChatRequest({ workingDir: dir, ...body }),
-      "HTTP stopped rejecting a near-miss key",
-    ).toThrow(new RegExp(key));
-
-    // MCP does NOT reject these, so this call starts a REAL background run.
-    // `graceSeconds: 0` returns the jobId immediately and the job is cancelled
-    // below — without that, the run outlives the test and holds the temp
-    // working directory open, and teardown fails with EBUSY. Starting work a
-    // test does not stop is what this file already fixed once.
-    const r = await client.callTool({
-      name: "dispatch",
-      arguments: { workingDir: dir, graceSeconds: 0, ...body },
-    });
-    expect(
-      (r as { isError?: boolean }).isError,
-      "MCP now rejects it — good; move this row into REJECTED and delete this test",
-    ).toBeFalsy();
-
-    const text = ((r as { content?: Array<{ text?: string }> }).content ?? [])
-      .map((c) => c.text ?? "")
-      .join("");
-    const jobId = (JSON.parse(text) as { jobId?: string }).jobId;
-    if (jobId !== undefined) {
-      await client.callTool({ name: "cancel_job", arguments: { jobId } });
-      // Cancelling ASKS the runner to stop; it does not wait for it. The
-      // runner heartbeats status.json every 15s and writes a terminal status
-      // as it exits, so returning here let it write into a jobs directory
-      // that teardown had already deleted — vitest reports that as an
-      // unhandled error and the run fails with every test passing. Exactly
-      // the failure this file's header records from a previous review, hit
-      // again by a test written to assert something else.
-      for (let i = 0; i < 100; i += 1) {
-        const s = await client.callTool({ name: "job_status", arguments: { jobId } });
-        const st = ((s as { content?: Array<{ text?: string }> }).content ?? [])
-          .map((c) => c.text ?? "")
-          .join("");
-        if (/"completed"\s*:\s*true|"status"\s*:\s*"(cancelled|failed|completed|orphaned)"/.test(st)) {
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-  }, 30_000);
-});
