@@ -105,6 +105,53 @@ async function writeConfig(baseUrl: string, opts: { includePaidRoute?: boolean }
   return file;
 }
 
+/** A 200 that carries nothing usable, so the route fails and the router falls on. */
+async function startUnusableOpenAi(): Promise<{ port: number; close(): Promise<void> }> {
+  const server: Server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "x", object: "chat.completion", choices: [] }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  return { port, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+/** Two endpoint routes, the first preferred, so a failure falls to the second. */
+async function writeTwoRouteConfig(primary: string, secondary: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-http2-"));
+  const file = path.join(dir, "config.yaml");
+  const route = (name: string, baseUrl: string, tier: number): string[] => [
+    `  ${name}:`,
+    "    enabled: true",
+    "    type: openai_compatible",
+    `    base_url: ${baseUrl}`,
+    "    model: local-test",
+    "    provider: local",
+    "    surface: local_endpoint",
+    "    auth_source: local_network",
+    "    billing_kind: local_compute",
+    "    paid_usage_possible: false",
+    "    billing_confidence: documented",
+    "    endpoint_mode: direct_openai_compatible",
+    "    endpoint_provider: custom",
+    "    wire_protocol: openai_chat_completions",
+    `    tier: ${tier}`,
+    "    weight: 1",
+    "    cli_capability: 1",
+    "    capabilities:",
+    "      execute: 1",
+    "      plan: 1",
+    "      review: 1",
+    "",
+  ];
+  await fs.writeFile(
+    file,
+    ["services:", ...route("ep_primary", primary, 1), ...route("ep_secondary", secondary, 2)].join(String.fromCharCode(10)),
+    "utf-8",
+  );
+  return file;
+}
+
 describe("HTTP server", () => {
   const handles: HttpServerHandle[] = [];
   const fakes: Array<{ close(): Promise<void> }> = [];
@@ -400,6 +447,65 @@ describe("HTTP server", () => {
     const text = await res.text();
     expect(text).toContain("hello");
     expect(text).toContain("[DONE]");
+  });
+
+  it("does NOT emit an SSE error frame when a fallback then succeeds", async () => {
+    // The frame was written the moment a route failed — before the router had
+    // tried the next one. So a request that succeeded on the fallback still
+    // carried an `error` frame, ahead of its own answer. The OpenAI streaming
+    // contract has no non-fatal error frame, so a client treating one as
+    // terminal reported a failure for a request that worked. Reproduced by an
+    // acceptance pass against the real server.
+    const bad = await startUnusableOpenAi();
+    const good = await startFakeOpenAi();
+    fakes.push(bad, good);
+    const config = await writeTwoRouteConfig(
+      `http://127.0.0.1:${bad.port}/v1`,
+      `http://127.0.0.1:${good.port}/v1`,
+    );
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local-test",
+        stream: true,
+        messages: [{ role: "user", content: "say hello" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text, "the fallback answer never arrived").toContain("hello");
+    expect(text).toContain("[DONE]");
+    expect(text, "a successful request carried an error frame").not.toContain('"error"');
+  });
+
+  it("DOES emit an error frame when every route fails", async () => {
+    // The frame is deferred, not deleted. Losing it would trade a false
+    // failure for a silent one, which is the worse direction.
+    const bad1 = await startUnusableOpenAi();
+    const bad2 = await startUnusableOpenAi();
+    fakes.push(bad1, bad2);
+    const config = await writeTwoRouteConfig(
+      `http://127.0.0.1:${bad1.port}/v1`,
+      `http://127.0.0.1:${bad2.port}/v1`,
+    );
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local-test",
+        stream: true,
+        messages: [{ role: "user", content: "say hello" }],
+      }),
+    });
+    const text = await res.text();
+    expect(text, "every route failed and nothing said so").toContain('"error"');
   });
 
   it("rejects explicit write-capable fanout until workspace isolation is available", async () => {

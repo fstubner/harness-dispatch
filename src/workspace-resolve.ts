@@ -689,6 +689,16 @@ export async function workspaceDiff(
 async function dirtyPaths(dir: string): Promise<string[] | undefined> {
   try {
     const out = await git(["status", "--porcelain"], dir);
+    // Porcelain paths are relative to the REPOSITORY ROOT, not to the
+    // directory git ran in. Resolving them against `dir` was right only when
+    // the dispatch happened at the repo root: from a subdirectory,
+    // `<repo>/ws` resolved as `<repo>/pkg/ws`, matched nothing, and the
+    // workspaces directory read as the user's uncommitted work again —
+    // refusing every apply on a pristine tree, which is the exact defect the
+    // filter below was added to fix, surviving one level over. Only the
+    // literal-name check masked it at the default name. An acceptance pass
+    // reproduced it from a subdirectory.
+    const root = (await repoRoot(dir)) ?? dir;
     return out
       .split("\n")
       .map((l) => l.trim())
@@ -704,7 +714,7 @@ async function dirtyPaths(dir: string): Promise<string[] | undefined> {
         // README recommends for reflinks — left its own directory showing as
         // an untracked change and made this refusal fire on every apply, on a
         // pristine tree. An acceptance pass reproduced it end to end.
-        return !isUnderOrEqual(path.resolve(dir, raw), workspacesBase());
+        return !isUnderOrEqual(path.resolve(root, raw), workspacesBase());
       });
   } catch {
     return undefined;
@@ -803,6 +813,38 @@ export async function applyWorkspace(
 
   const target = run.originalWorkingDir;
 
+  // Already applied — asked here, not only on the empty-patch path above.
+  //
+  // That branch is unreachable for `git_worktree`: its patch is
+  // `git diff <baseCommit>` inside the worktree, which does not change when
+  // the project changes, so it is never empty. A `copy` patch is rebuilt
+  // against the project and does empty out, which is why the bug was invisible
+  // there. So a second apply of the same worktree job fell through to the
+  // conflict check, which saw the file differ from its recorded base — the
+  // difference the FIRST apply had just made — and told the user their own
+  // successful apply was someone else's newer work, pointing them at
+  // `force: true`. Reproduced by an acceptance pass; `ux-walkthrough.md` Flow 6
+  // step 6 says both policies answer "already applied", and only one did.
+  //
+  // Safe against a real collision: this fires only when the project matches
+  // the WORKSPACE for every recorded change, i.e. this job's work is already
+  // the current state. Two jobs touching one file still differ from each
+  // other's workspace, so they fall through to the conflict check as before.
+  if (run.changedFiles !== undefined && run.changedFiles.length > 0) {
+    const notLanded = await changesNotInProject(run, run.changedFiles);
+    if (notLanded.length === 0) {
+      return {
+        jobId,
+        applied: false,
+        patchPath: diff.patchPath,
+        message:
+          `Already applied: the project already matches the workspace for all ` +
+          `${run.changedFiles.length} changed file(s), so there is nothing left to apply. ` +
+          `Use action: "discard" to clean up the workspace.`,
+      };
+    }
+  }
+
   // Has the project moved under this patch? Checked BEFORE the dirty check,
   // because it catches the case the dirty check cannot: a change that has been
   // COMMITTED since the dispatch started leaves `git status` clean, and
@@ -820,10 +862,18 @@ export async function applyWorkspace(
         message:
           `Refused: ${moved.length} file(s) this patch touches have changed in ${target} since ` +
           `the dispatch started (${moved.join(", ")}). The agent worked from the older version, ` +
-          `so applying would overwrite that newer work rather than merge with it — and unlike a ` +
-          `worktree patch there is no common commit for git to merge against. Review the patch ` +
-          `at ${diff.patchPath}, re-run the task against the current tree with retry_job, or ` +
-          `re-run with force: true to overwrite.`,
+          `so applying would overwrite that newer work rather than merge with it. ` +
+          // Said only where it is true. This clause read "unlike a worktree
+          // patch there is no common commit for git to merge against" on every
+          // refusal — including the ones handling a worktree patch, which does
+          // have one. An acceptance pass caught it describing the opposite of
+          // the policy it was refusing.
+          (run.policy === "copy"
+            ? `A copy patch has no common commit for git to merge against, so there is no ` +
+              `three-way merge to fall back on. `
+            : "") +
+          `Review the patch at ${diff.patchPath}, re-run the task against the current tree ` +
+          `with retry_job, or re-run with force: true to overwrite.`,
       };
     }
   }
