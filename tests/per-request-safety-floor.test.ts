@@ -145,3 +145,77 @@ describe("the shipped cursor route", () => {
     expect(svc.protocol?.safety?.read_only).toEqual(["--mode", "plan"]);
   });
 });
+
+describe("a CLI route with no flags for the requested profile", () => {
+  const base = {
+    name: "byo",
+    enabled: true,
+    type: "cli" as const,
+    harness: "generic",
+    command: "my-cli",
+    tier: 1,
+    weight: 1,
+    cliCapability: 1,
+    capabilities: { execute: 1, plan: 1, review: 1 },
+    escalateOn: [],
+    leaderboardModel: "",
+    maxOutputTokens: 100,
+    maxInputTokens: 100,
+    provider: "custom" as const,
+    surface: "custom" as const,
+    authSource: "unknown" as const,
+    billingKind: "unknown" as const,
+    paidUsagePossible: true,
+    billingConfidence: "unknown" as const,
+  };
+
+  it("reports full_auto, so a stricter request refuses the route", () => {
+    // `{{safety}}` expands to the protocol's args for the requested profile,
+    // and to [] when the profile is missing — so a route defining only
+    // workspace_edit and full_auto, asked for read_only, launched the harness
+    // with NO safety arguments at all. This function used to echo the request
+    // back, so nothing skipped the route and the dispatch log recorded
+    // `safetyProfile: read_only` for a run that carried no restriction. An
+    // acceptance pass measured the child's argv: just the prompt.
+    const svc = {
+      ...base,
+      protocol: {
+        args: ["{{safety}}", "{{prompt}}"],
+        safety: {
+          workspace_edit: ["--write"],
+          full_auto: ["--yolo"],
+        },
+      },
+    } as never;
+
+    expect(effectiveSafetyProfile(svc, "read_only")).toBe("full_auto");
+    expect(
+      safetyProfileCompatible(svc, "read_only"),
+      "a route that cannot prove it constrains anything must not serve read_only",
+    ).toBe(false);
+    // The profiles it DOES define still work.
+    expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("workspace_edit");
+    expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(true);
+  });
+
+  it("leaves a route that declares no safety flags at all alone", () => {
+    // No `protocol.safety` means safety is not expressed through flags —
+    // that is the shipped `harness: generic` shape, and inventing a refusal
+    // for it would break every route that constrains itself another way.
+    const svc = { ...base, protocol: { args: ["{{prompt}}"] } } as never;
+    expect(effectiveSafetyProfile(svc, "read_only")).toBe("read_only");
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+  });
+
+  it("honours an explicit effective_safety pin over the flag check", () => {
+    // Declaring the floor is how a route says "I am read-only by
+    // construction" without needing a flag to prove it.
+    const svc = {
+      ...base,
+      effectiveSafety: "read_only",
+      protocol: { args: ["{{safety}}"], safety: { full_auto: ["--yolo"] } },
+    } as never;
+    expect(effectiveSafetyProfile(svc, "read_only")).toBe("read_only");
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+  });
+});

@@ -1259,3 +1259,42 @@ services:
     expect(warningText).toContain("metered");
   });
 });
+
+describe("overrides: gets the same checks as the route blocks", () => {
+  it("warns about mistyped values and unknown keys there too", async () => {
+    // The block most likely to carry the fields the check exists for:
+    // config.default.yaml presents overrides: as the way to "tweak
+    // auto-detected service defaults without writing a full config", naming
+    // tier and weight. An acceptance pass measured zero warnings for a block
+    // where none of it applied.
+    const yamlText = `
+overrides:
+  claude_code_cli:
+    tier: metered
+    weight: very-high
+    workspace_polcy: copy
+`;
+    const p = await writeTmpYaml("overrides-mistyped.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).toContain("tier");
+    expect(warningText).toContain("metered");
+    expect(warningText).toContain("weight");
+    // And the misspelled key, which was equally silent.
+    expect(warningText).toContain("workspace_polcy");
+  });
+
+  it("stays quiet for a well-formed override", async () => {
+    const yamlText = `
+overrides:
+  claude_code_cli:
+    tier: 2
+    weight: 1.5
+`;
+    const p = await writeTmpYaml("overrides-clean.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).not.toContain("tier");
+    expect(warningText).not.toContain("weight");
+  });
+});

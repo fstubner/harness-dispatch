@@ -43,7 +43,20 @@ import { workspacePolicyFor } from "./workspaces.js";
  * Loopback is left intact: "localhost" tells the reader something useful and
  * discloses nothing.
  */
+/** The placeholder this function substitutes, and recognises on the way back in. */
+const REDACTED_HOST = "<endpoint-host>";
+
 export function redactEndpointHost(baseUrl: string): string {
+  // Idempotent: an already-redacted string comes back unchanged.
+  //
+  // Without this, redacting twice was actively worse than redacting once —
+  // `https://<endpoint-host>/v1` is not a parseable URL, so the second call
+  // fell to the catch and returned the bare `<endpoint>` placeholder, throwing
+  // away the scheme, port and path the comment below calls the diagnostic
+  // value. An acceptance pass found that as a regression in `usage`'s model
+  // hint. The alternative — asking every caller to know whether redaction has
+  // already happened — is how the leak this function exists for got in.
+  if (baseUrl.includes(REDACTED_HOST)) return baseUrl;
   try {
     const url = new URL(baseUrl);
     const host = url.hostname.toLowerCase();
@@ -63,7 +76,7 @@ export function redactEndpointHost(baseUrl: string): string {
     // included: a key embedded in the URL is a credential wherever the host
     // points, and the original kept them even when it did replace the host.
     const port = url.port === "" ? "" : `:${url.port}`;
-    const shown = loopback ? url.hostname : "<endpoint-host>";
+    const shown = loopback ? url.hostname : REDACTED_HOST;
     return `${url.protocol}//${shown}${port}${url.pathname}`.replace(/\/+$/, "");
   } catch {
     return "<endpoint>";
@@ -77,6 +90,10 @@ function modelDiscoveryHint(route: {
 }): string | undefined {
   if (route.modelHint) return route.modelHint;
   if (route.type === "openai_compatible" && route.baseUrl) {
+    // Still redacted here even though buildStatus already did it: this
+    // function also runs on route objects a caller assembled itself, and the
+    // cost of forgetting is a credential. `redactEndpointHost` is idempotent,
+    // so applying it twice is a no-op rather than a degradation.
     return `Standard OpenAI-compatible catalog: GET ${redactEndpointHost(route.baseUrl)}/models`;
   }
   return undefined;

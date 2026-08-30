@@ -115,3 +115,15 @@ describe("status payload redaction", () => {
     expect(serialised).toContain("<endpoint-host>");
   });
 });
+
+describe("idempotence", () => {
+  it("returns an already-redacted string unchanged", () => {
+    // Redacting twice used to be WORSE than redacting once: the placeholder
+    // is not a parseable URL, so the second call fell to the catch and
+    // returned the bare `<endpoint>`, discarding the scheme, port and path.
+    // An acceptance pass found that as a regression in usage's model hint.
+    const once = redactEndpointHost("https://api.example.com:8443/v1");
+    expect(redactEndpointHost(once)).toBe(once);
+    expect(once).toBe("https://<endpoint-host>:8443/v1");
+  });
+});
