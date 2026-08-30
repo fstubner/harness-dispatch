@@ -119,6 +119,11 @@ function serviceFromFileName(entry: string): string | undefined {
 export class BreakerStore {
   private readonly stateDir: string;
   private persistCounter = 0;
+  /**
+   * Routes whose record exists but could not be parsed, as of the last
+   * loadAll(). See loadAll() for why this is tracked rather than shrugged off.
+   */
+  private unreadable: string[] = [];
 
   /**
    * @param stateDir directory holding one JSON file per route. Older builds
@@ -129,8 +134,26 @@ export class BreakerStore {
     this.stateDir = stateDir ?? defaultStateDir();
   }
 
+  /**
+   * Every route's persisted snapshot. Routes with no file are healthy by
+   * construction — save() deletes a fully-healthy record rather than writing
+   * a no-op one.
+   *
+   * A file that EXISTS but does not parse is a different thing, and used to
+   * be indistinguishable from that absence: readOne() returned undefined for
+   * both, so a truncated or half-written record rendered as `breaker=closed
+   * failures=0`, route Ready, with nothing said by `status` or `doctor`. One
+   * corrupt file silently un-tripped a route mid-cooldown — the exact failure
+   * this whole module was added to prevent, arrived at from the other side.
+   *
+   * The lost state cannot be recovered, so this does not try to guess at it
+   * (failing closed would strand a route until someone deleted a file by
+   * hand). It records the route name instead, so the surfaces a person reads
+   * can say the state is unknown rather than assert that it is fine.
+   */
   loadAll(): Record<string, CircuitBreakerSnapshot> {
     const out: Record<string, CircuitBreakerSnapshot> = {};
+    this.unreadable = [];
     this.absorbLegacyBlob(out);
     if (!existsSync(this.stateDir)) return out;
     let entries: string[];
@@ -143,10 +166,22 @@ export class BreakerStore {
       if (!entry.endsWith(".json")) continue;
       const service = serviceFromFileName(entry);
       if (service === undefined) continue;
-      const snapshot = this.readOne(path.join(this.stateDir, entry));
-      if (snapshot) out[service] = snapshot;
+      const file = path.join(this.stateDir, entry);
+      const snapshot = this.readOne(file);
+      if (snapshot) {
+        out[service] = snapshot;
+        continue;
+      }
+      // readdir listed it a moment ago; still being there means the read
+      // failed on the contents, not on a file that vanished under us.
+      if (existsSync(file)) this.unreadable.push(service);
     }
     return out;
+  }
+
+  /** Routes whose record was present but unparseable at the last loadAll(). */
+  unreadableRoutes(): string[] {
+    return this.unreadable.slice();
   }
 
   /**

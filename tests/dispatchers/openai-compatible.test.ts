@@ -534,6 +534,58 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     expect(completion?.result.error).toContain("server had an error");
   });
 
+  it("treats a 200 that streams no content as a failure, matching the buffered path", async () => {
+    // The two paths disagreed on the same response. Buffered refused it
+    // ("Unexpected response shape"); streaming called it a successful empty
+    // answer — and jobs.ts only ever streams, so the MCP surface was the one
+    // that got it wrong. Worse, a success HEALS the breaker, so a route
+    // serving nothing but empty 200s never tripped.
+    fetchMock.mockResolvedValue(sseResponse("data: [DONE]\n\n"));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events: Array<{ type: string }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+    const completion = events.find((e) => e.type === "completion") as
+      | { result: { success: boolean; output: string; error?: string } }
+      | undefined;
+    expect(completion?.result.success).toBe(false);
+    expect(completion?.result.error).toContain("200 with no content");
+    expect(completion?.result.output).toBe("");
+  });
+
+  it("a totally empty 200 body streams as a failure too", async () => {
+    fetchMock.mockResolvedValue(sseResponse(""));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events: Array<{ type: string }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+    const completion = events.find((e) => e.type === "completion") as
+      | { result: { success: boolean } }
+      | undefined;
+    expect(completion?.result.success).toBe(false);
+  });
+
+  it("still reports success for a stream that carries real content", async () => {
+    // The guard above must not fire on the normal path — an empty-output
+    // check that also failed real answers would be a much worse bug than the
+    // one it replaces.
+    fetchMock.mockResolvedValue(
+      sseResponse('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n'),
+    );
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events: Array<{ type: string }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+    const completion = events.find((e) => e.type === "completion") as
+      | { result: { success: boolean; output: string } }
+      | undefined;
+    expect(completion?.result.success).toBe(true);
+    expect(completion?.result.output).toBe("hello");
+  });
+
   it("includes stream_options.include_usage in streaming requests so servers return token usage", async () => {
     fetchMock.mockResolvedValue(sseResponse('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'));
 

@@ -90,6 +90,36 @@ describe("BreakerStore", () => {
     });
   });
 
+  it("loadAll() REPORTS an unreadable record instead of letting it read as healthy", () => {
+    // Skipping it (the test above) is right — the state is gone and guessing
+    // at it would be worse. Staying silent about it is not: a skipped record
+    // is indistinguishable from a route that was never tripped, so a corrupt
+    // file un-trips a live cooldown and every surface says `failures=0`.
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "codex_cli.json"), "{ not valid json");
+    writeFileSync(path.join(stateDir, "nulled.json"), "null");
+    writeFileSync(
+      path.join(stateDir, "cursor_cli.json"),
+      JSON.stringify({ failures: 3, blockedUntilMs: 1_900_000_000_000 }),
+    );
+
+    const store = new BreakerStore(stateDir);
+    store.loadAll();
+    expect(store.unreadableRoutes().sort()).toEqual(["codex_cli", "nulled"]);
+  });
+
+  it("unreadableRoutes() clears once the bad record is replaced", () => {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "codex_cli.json"), "{ not valid json");
+    const store = new BreakerStore(stateDir);
+    store.loadAll();
+    expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
+
+    store.save("codex_cli", { failures: 2, blockedUntilMs: 1_900_000_000_000 });
+    store.loadAll();
+    expect(store.unreadableRoutes()).toEqual([]);
+  });
+
   it("migrates state written by the pre-split single-blob format, then removes it", () => {
     // Without this an upgrade silently drops every live cooldown — the exact
     // failure persistence exists to prevent, reintroduced by the fix for it.

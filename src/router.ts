@@ -1441,6 +1441,16 @@ export class Router {
   }
 
   /**
+   * Routes whose persisted breaker record could not be read, as of the last
+   * store refresh. Reported rather than swallowed: an unreadable record is
+   * indistinguishable from a healthy one in the in-memory breaker, so without
+   * this the only honest answer available ("unknown") could not be given.
+   */
+  breakerStateUnreadable(): string[] {
+    return this.breakerStore.unreadableRoutes();
+  }
+
+  /**
    * Adopt any breaker state written by another process.
    *
    * Only ever restores — a persisted snapshot already encodes the cooldown as

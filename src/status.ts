@@ -137,6 +137,13 @@ export interface RouteStatus {
     tripped: boolean;
     failures: number;
     cooldownRemainingSec?: number;
+    /**
+     * The persisted record exists but could not be parsed, so `tripped` and
+     * `failures` below are this process's defaults rather than the route's
+     * real state. Set only when that is the case, so its absence keeps
+     * meaning what it always meant.
+     */
+    stateUnreadable?: true;
   };
   quality?: {
     score: number;
@@ -183,6 +190,8 @@ export async function buildStatus(
 ): Promise<HarnessDispatchStatus> {
   const quotaStatus = await quota.fullStatus();
   const breakers = router.circuitBreakerStatus();
+  // Read after circuitBreakerStatus(), which is what refreshes the store.
+  const breakerUnreadable = new Set(router.breakerStateUnreadable());
   const routes: RouteStatus[] = [];
   const skippedRoutes: RouteSkip[] = [];
 
@@ -213,7 +222,10 @@ export async function buildStatus(
       quota: {
         score: Math.round(quotaScore * 1000) / 1000,
       },
-      breaker: breakers[id] ?? { tripped: false, failures: 0 },
+      breaker: {
+        ...(breakers[id] ?? { tripped: false, failures: 0 }),
+        ...(breakerUnreadable.has(id) ? { stateUnreadable: true as const } : {}),
+      },
     };
     const policy = evaluateRoutePolicy(id, svc, {
       ...(dispatcher !== undefined ? { dispatcher } : {}),
@@ -432,7 +444,10 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     lines.push(
       `  quota=${Math.round(route.quota.score * 100)}% breaker=${
         route.breaker.tripped ? "open" : "closed"
-      } failures=${route.breaker.failures}`,
+      } failures=${route.breaker.failures}` +
+        // Appended rather than replacing `closed`, so the reader sees both
+        // what this process is acting on and that it is not to be trusted.
+        (route.breaker.stateUnreadable ? " (saved breaker state unreadable — may be stale)" : ""),
     );
     lines.push(
       `  calls=${route.quota.localCallCount ?? 0} success=${
