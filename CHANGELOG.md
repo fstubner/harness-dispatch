@@ -255,6 +255,31 @@ pre-1.0, so minor versions can carry behaviour changes.
   intended spelling. One typo apart, transpositions included; unrelated keys
   and every OpenAI field stay legitimate.
 
+- A CLI route asked for a safety profile its protocol has no flags for is now
+  refused instead of run unconstrained. `{{safety}}` expands to the protocol's
+  arguments for the requested profile and to nothing when the profile is
+  missing, so a user-added route defining `workspace_edit` and `full_auto` but
+  not `read_only` launched the harness with NO safety arguments — and every
+  surface said `read_only`, including the dispatch log. An acceptance pass
+  measured the child's argv: just the prompt. A route that cannot show it
+  constrains anything is now treated as constraining nothing, which makes the
+  existing compatibility check refuse it. The shipped harnesses are unaffected;
+  they define all three profiles or pin the gaps with `effective_safety`.
+
+- `status --json` and the `harness-dispatch://status.json` MCP resource no
+  longer emit a route's `base_url` verbatim. Credentials embedded in the URL —
+  `?key=…`, which is Google AI Studio's own shape — reached both, and that
+  resource is one this server's instructions tell agents to read, so the
+  credential landed in an agent's context. The text rendering was always
+  redacted, which is how it hid. `redactEndpointHost` is also idempotent now:
+  applying it twice used to be worse than once, degrading the model-discovery
+  hint to a bare placeholder.
+
+- `overrides:` gets the same value and unknown-key checks as the route blocks.
+  It was left out when they were added, and it is the block most likely to carry
+  the fields they exist for — the shipped config presents `overrides:` as the
+  way to adjust `tier` and `weight` without writing a full config.
+
 - A recognised config key carrying the wrong TYPE of value now says so instead
   of silently taking the default. The unknown-key warning covered a misspelled
   key; it never covered a correctly-spelled one whose value cannot be read,

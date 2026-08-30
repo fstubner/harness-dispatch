@@ -970,12 +970,26 @@ export async function loadConfig(
       );
     }
   }
-  for (const name of Object.keys(overrides)) {
+  for (const [name, entry] of Object.entries(overrides)) {
     if (!knownAutoDetectNames.has(name)) {
       warnings.push(
         `overrides.${name}: doesn't match any auto-detected route (expected one of: ` +
           `${[...knownAutoDetectNames].join(", ")}) — ignored, none of these settings were applied.`,
       );
+      continue;
+    }
+    // `overrides:` gets the same value checks as the three route shapes.
+    //
+    // It was left out when they were added, and it is the block most likely to
+    // carry exactly the fields the check exists for: config.default.yaml
+    // presents `overrides:` as the way to "tweak auto-detected service defaults
+    // without writing a full config", naming tier and weight. An acceptance
+    // pass measured `overrides: { claude_code_cli: { tier: metered, weight:
+    // very-high, enabled: yes-please } }` producing ZERO warnings while none of
+    // it applied. The enum walk already reached here; only the numeric,
+    // boolean and unknown-key checks stopped at the block boundary.
+    if (entry !== null && typeof entry === "object") {
+      warnUnknownRouteKeys(entry, `overrides.${name}`, warnings);
     }
   }
 

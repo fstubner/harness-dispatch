@@ -311,18 +311,22 @@ describe("writeClientEntry consent", () => {
 });
 
 describe("writeJsonAtomic permissions", () => {
-  it("does not widen the mode of the file it replaces", async () => {
+  // it.skipIf, not an early return: an early return REPORTS A PASS for work it
+  // did not do. An acceptance pass removed the fix and watched this file report
+  // 19 passed / 0 skipped on Windows — a green row for an assertion that never
+  // ran, on the only machine the maintainer builds on. The commit that added it
+  // claimed it was "skipped on Windows"; it was not.
+  it.skipIf(process.platform === "win32")("does not widen the mode of the file it replaces", async () => {
     // `rename` swaps the INODE, so the surviving file takes the TEMP file's
     // mode — 0644 under a typical umask — not its own. A ~/.claude.json that
     // Claude Code created 0600 came back group- and world-readable, and that
     // file holds live API keys. The same module's backup() uses copyFile,
     // which preserves mode, so the two halves of one write path disagreed.
     //
-    // Skipped on Windows, where POSIX modes do not apply — which is exactly
-    // why this survived: it was found by reading on a Windows machine and only
-    // provable on POSIX.
-    if (process.platform === "win32") return;
-
+    // Genuinely skipped on Windows, where POSIX modes do not apply — which is
+    // exactly why the bug survived: found by reading on a Windows machine and
+    // only provable on POSIX. CI's matrix runs ubuntu and macos, so the
+    // assertion does execute somewhere.
     await writeJson(claudeFile(), { mcpServers: {} });
     await fs.chmod(claudeFile(), 0o600);
 
