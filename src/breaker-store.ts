@@ -259,6 +259,32 @@ export class BreakerStore {
         lastFailureAtMs?: number | null;
       } | null;
       if (!v || typeof v !== "object") return undefined;
+      // A PRESENT field of the wrong type is corruption, not an old build.
+      //
+      // These coercions were unconditional, so `{"failures":"5",
+      // "blockedUntilMs":"2099-01-01"}` — a record encoding an active cooldown
+      // — read back as `failures: 0, blockedUntilMs: null` and the route came
+      // up healthy with nothing said. That is the same silent un-trip as an
+      // unparseable file, and an acceptance pass found it still live after
+      // that one was fixed: only `JSON.parse` throwing reached the report.
+      //
+      // Absent stays tolerated (older builds wrote fewer fields); wrong type
+      // does not, and falls through to the caller's unreadable handling.
+      if (v.failures !== undefined && typeof v.failures !== "number") return undefined;
+      if (
+        v.blockedUntilMs !== undefined &&
+        v.blockedUntilMs !== null &&
+        typeof v.blockedUntilMs !== "number"
+      ) {
+        return undefined;
+      }
+      if (
+        v.lastFailureAtMs !== undefined &&
+        v.lastFailureAtMs !== null &&
+        typeof v.lastFailureAtMs !== "number"
+      ) {
+        return undefined;
+      }
       return {
         failures: typeof v.failures === "number" ? v.failures : 0,
         blockedUntilMs: typeof v.blockedUntilMs === "number" ? v.blockedUntilMs : null,

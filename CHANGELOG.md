@@ -112,25 +112,46 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
-- An endpoint that answers HTTP 200 with no content is now a failure on the MCP
-  surface too, not a successful empty answer. The two request paths disagreed
-  about the same response: the buffered one (what the CLI uses) refused it as an
-  unexpected response shape, while the streaming one — the only path `dispatch`
-  and `job_status` ever take — reported `success: true` with an empty output.
-  So the surface an orchestrating agent branches on was the one that got it
-  wrong. Worse, a success heals the circuit breaker, so a route serving nothing
-  but empty 200s was recorded as healthy indefinitely and never tripped.
-  Reproduced by an acceptance pass.
+- An endpoint that answers HTTP 200 without an answer is now a failure on both
+  request paths, not a successful empty answer. A success heals the circuit
+  breaker, so a route serving nothing but empty 200s was recorded as healthy
+  indefinitely and never tripped.
 
-- A circuit-breaker record that exists but cannot be parsed is now reported as
-  unknown state instead of rendering as a healthy route. `status` said
-  `breaker=closed failures=0` — an assertion the process had no basis for after
-  a failed read — and a single truncated file therefore un-tripped a live
-  cooldown in silence, which is the exact failure this persistence layer was
-  added to prevent. The lost count cannot be recovered and this does not guess
-  at it (failing closed would strand a route until someone deleted a file by
-  hand); `status` now says the saved state was unreadable and may be stale, in
-  the text output and as `breaker.stateUnreadable` in the JSON.
+  The streaming path — the only one `dispatch` and `job_status` ever take, so
+  the surface an orchestrating agent branches on — reported `success: true`
+  with an empty output for a body carrying no content at all. The buffered path
+  (what the CLI uses) refused that one, but accepted a well-formed response
+  whose `content` was the empty string, returning success with nothing in it.
+  Both now refuse both, which is what makes the two surfaces agree; an earlier
+  entry here claimed the buffered path already refused empty answers, and that
+  was wrong.
+
+  The streaming failure also names the body it could not use, as the buffered
+  path always has. It previously said "returned 200 with no content" for an
+  HTML error page, for plain prose, and for a gateway that ignored
+  `stream: true` and sent an ordinary JSON completion — all of which returned
+  content, and the body is the thing someone debugging a proxy needs. A
+  well-formed SSE stream that genuinely carried nothing still reports no
+  content, because that is a different problem with a different fix.
+
+  Reproduced by acceptance passes.
+
+- A corrupt circuit-breaker record is now reported as unknown state instead of
+  rendering as a healthy route. `status` said `breaker=closed failures=0` — an
+  assertion the process had no basis for — and a single bad file therefore
+  un-tripped a live cooldown in silence, which is the exact failure this
+  persistence layer was added to prevent.
+
+  Corrupt covers two shapes. A file that does not parse at all, and a file that
+  parses but carries a field of the wrong type: `{"failures":"5",
+  "blockedUntilMs":"2099-01-01"}` encodes an active cooldown, and every field
+  read coerced it to the healthy default. A field that is simply ABSENT is
+  still tolerated, because older builds wrote fewer of them.
+
+  The lost count cannot be recovered and this does not guess at it — failing
+  closed would strand a route until someone deleted a file by hand. `status`
+  says the saved state was unreadable and may be stale, in the text output and
+  as `breaker.stateUnreadable` in the JSON. `doctor` does not report it.
 
 - Workspace reclamation no longer deletes directories it did not create. The
   sweep added earlier in this cycle judged a directory by age alone, so pointed

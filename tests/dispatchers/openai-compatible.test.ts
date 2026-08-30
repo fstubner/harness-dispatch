@@ -534,6 +534,20 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     expect(completion?.result.error).toContain("server had an error");
   });
 
+  it("BUFFERED: a well-formed 200 carrying content:'' is a failure, not an empty success", async () => {
+    // This is the guard the streaming fix's own comment claimed already
+    // existed here. It did not: #extractContent returned any string, so `""`
+    // came back as `success: true` with no output — silent empty success on
+    // the CLI path, and a success heals the breaker. An acceptance pass
+    // measured `dispatch` printing nothing and exiting 0 against it.
+    fetchMock.mockResolvedValue(mockJsonResponse(chatCompletion("")));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const result = await d.dispatch("go", [], "");
+    expect(result.success).toBe(false);
+    expect(result.output).toBe("");
+  });
+
   it("treats a 200 that streams no content as a failure, matching the buffered path", async () => {
     // The two paths disagreed on the same response. Buffered refused it
     // ("Unexpected response shape"); streaming called it a successful empty
@@ -584,6 +598,41 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
       | undefined;
     expect(completion?.result.success).toBe(true);
     expect(completion?.result.output).toBe("hello");
+  });
+
+  it("names the actual body when a 200 carried content this parser could not use", async () => {
+    // "returned 200 with no content" was a claim the code never checked — it
+    // fired on anything that yielded zero text chunks. An HTML error page from
+    // a proxy IS content, and naming it is the whole value of the message.
+    fetchMock.mockResolvedValue(sseResponse("<html><body>Gateway parked</body></html>"));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events: Array<{ type: string }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+    const completion = events.find((e) => e.type === "completion") as
+      | { result: { success: boolean; error?: string } }
+      | undefined;
+    expect(completion?.result.success).toBe(false);
+    expect(completion?.result.error).toContain("Unexpected response shape");
+    expect(completion?.result.error).toContain("Gateway parked");
+  });
+
+  it("a gateway that ignored stream:true is reported with its body, not as empty", async () => {
+    // A real-world shape: a shim answers a streaming request with an ordinary
+    // buffered completion. It is still a failure on this path, but the reader
+    // needs to see that a whole answer came back in the wrong envelope.
+    fetchMock.mockResolvedValue(sseResponse(JSON.stringify(chatCompletion("real answer here"))));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events: Array<{ type: string }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+
+    const completion = events.find((e) => e.type === "completion") as
+      | { result: { success: boolean; error?: string } }
+      | undefined;
+    expect(completion?.result.success).toBe(false);
+    expect(completion?.result.error).toContain("real answer here");
   });
 
   it("includes stream_options.include_usage in streaming requests so servers return token usage", async () => {

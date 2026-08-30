@@ -108,6 +108,39 @@ describe("BreakerStore", () => {
     expect(store.unreadableRoutes().sort()).toEqual(["codex_cli", "nulled"]);
   });
 
+  // Only JSON.parse throwing used to reach the report; the field reads coerced
+  // anything else to the healthy default, so a record encoding an ACTIVE
+  // cooldown came back as `failures: 0, blockedUntilMs: null` with nothing
+  // said — the same silent un-trip, one shape over.
+  //
+  // ONE wrong field per case, deliberately. The first version of this test set
+  // two at once and passed with the `failures` guard deleted: the other guard
+  // was carrying it, and the test could not have told anyone.
+  for (const [label, record] of [
+    ["failures", { failures: "5", blockedUntilMs: 1_900_000_000_000 }],
+    ["blockedUntilMs", { failures: 5, blockedUntilMs: "2099-01-01" }],
+    ["lastFailureAtMs", { failures: 5, blockedUntilMs: null, lastFailureAtMs: "yesterday" }],
+  ] as const) {
+    it(`a record whose ${label} PARSES but is the wrong type is unreadable, not healthy`, () => {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(path.join(stateDir, "codex_cli.json"), JSON.stringify(record));
+      const store = new BreakerStore(stateDir);
+      expect(store.loadAll()).toEqual({});
+      expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
+    });
+  }
+
+  it("a record omitting fields an older build never wrote still reads fine", () => {
+    // The guard above must not turn "written by v0.6" into "corrupt" — absent
+    // is tolerated, wrong type is not, and conflating them would strand every
+    // record from an older install.
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "codex_cli.json"), JSON.stringify({ failures: 4 }));
+    const store = new BreakerStore(stateDir);
+    expect(store.loadAll()).toEqual({ codex_cli: { failures: 4, blockedUntilMs: null } });
+    expect(store.unreadableRoutes()).toEqual([]);
+  });
+
   it("unreadableRoutes() clears once the bad record is replaced", () => {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(path.join(stateDir, "codex_cli.json"), "{ not valid json");
