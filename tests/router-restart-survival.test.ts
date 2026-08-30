@@ -306,4 +306,40 @@ describe("Router restart survival — breaker state persists across process boun
       "route_since_renamed",
     ]);
   });
+
+  it("state warnings are reported apart from config warnings, under their own heading", async () => {
+    // configWarnings says "these change behaviour" and means config entries
+    // that were ignored. A lost cooldown is neither — nothing was
+    // misconfigured and nothing was ignored — and `doctor` plus the CLI's
+    // "ignored config entries" list both read configWarnings directly, so
+    // filing it there would have reached them mislabelled.
+    const stateDir = path.join(dir, "breaker_state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, "route_since_renamed.json"), "{ bad");
+
+    const services = { flaky: makeService("flaky") };
+    const dispatchers = { flaky: new FakeDispatcher("flaky", { output: "ok", service: "flaky", success: true }) };
+    const router = new Router(
+      { services },
+      new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+      dispatchers,
+      new LeaderboardCache(),
+      new BreakerStore(stateDir),
+    );
+    const status = await buildStatus(
+      { services },
+      dispatchers,
+      new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+      router,
+      new LeaderboardCache(),
+    );
+
+    expect(status.stateWarnings).toEqual([
+      "saved breaker state for route_since_renamed is unreadable — a cooldown it held may have been lost",
+    ]);
+    expect(status.configWarnings).toBeUndefined();
+    const text = renderStatusText(status);
+    expect(text).toContain("Saved state (1) — could not be read:");
+    expect(text).not.toContain("Config warnings");
+  });
 });

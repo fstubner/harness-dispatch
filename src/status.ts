@@ -172,6 +172,13 @@ export interface HarnessDispatchStatus {
    * is the surface people actually run.
    */
   configWarnings?: readonly string[];
+  /**
+   * Saved state that could not be read, for records naming no configured
+   * route — a corrupt legacy blob has no route name at all, and a per-route
+   * line cannot carry one. Kept apart from `configWarnings` because nothing
+   * here was misconfigured or ignored.
+   */
+  stateWarnings?: readonly string[];
   next?: {
     route: string;
     tier: number;
@@ -291,20 +298,30 @@ export async function buildStatus(
   // every corrupt legacy blob (which has no route name at all) and any record
   // left behind by a route since renamed or removed. Reporting them here keeps
   // the fix from being silent in exactly the cases it was added for.
-  const orphanedUnreadable = [...breakerUnreadable].filter((name) => config.services[name] === undefined);
-  const warnings = [
-    ...(config.configWarnings ?? []),
-    ...orphanedUnreadable.map(
-      (name) => `saved breaker state for ${name} is unreadable — a cooldown it held may have been lost`,
-    ),
-  ];
+  //
+  // Reported separately from configWarnings, which says "these change
+  // behaviour" and means config entries that were ignored. A lost cooldown is
+  // neither: nothing was misconfigured and nothing was ignored. Filing it
+  // there put a true sentence under a false heading, and `doctor` and the
+  // CLI's "ignored config entries" list both read configWarnings directly, so
+  // it would have reached them mislabelled.
+  //
+  // `Object.hasOwn`, not `=== undefined`: a record named `constructor` or
+  // `toString` would otherwise find a match on Object.prototype and suppress
+  // its own warning.
+  const stateWarnings = [...breakerUnreadable]
+    .filter((name) => !Object.hasOwn(config.services, name))
+    .map((name) => `saved breaker state for ${name} is unreadable — a cooldown it held may have been lost`);
   const status: HarnessDispatchStatus = {
     name: "harness-dispatch",
     generatedAt: new Date().toISOString(),
     routes,
     ready,
     skippedRoutes,
-    ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
+    ...(config.configWarnings && config.configWarnings.length > 0
+      ? { configWarnings: [...config.configWarnings] }
+      : {}),
+    ...(stateWarnings.length > 0 ? { stateWarnings } : {}),
   };
   if (decision) {
     status.next = {
@@ -491,6 +508,11 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
       `Config warnings (${status.configWarnings.length}) — these change behaviour:`,
     );
     for (const w of status.configWarnings) lines.push(`  ! ${w}`);
+    lines.push("");
+  }
+  if (status.stateWarnings && status.stateWarnings.length > 0) {
+    lines.push(`Saved state (${status.stateWarnings.length}) — could not be read:`);
+    for (const w of status.stateWarnings) lines.push(`  ! ${w}`);
     lines.push("");
   }
   lines.push(`Ready to route: ${status.ready.length ? status.ready.join(", ") : "none"}`);
