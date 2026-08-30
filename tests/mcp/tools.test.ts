@@ -595,6 +595,48 @@ describe("MCP tools — dispatch", () => {
     ).rejects.toThrow(/workspacePolicy=copy or workspacePolicy=git_worktree/);
   });
 
+  it("errors when NO fanout route can run, instead of completed:true over zero arms", async () => {
+    // The same principle as the refusal above, on the case it had not been
+    // applied to. `completed` is `every()` over the results array, so an
+    // all-blocked fanout answered `{ completed: true, results: [] }` —
+    // vacuously true, with the reasons tucked into `skippedRoutes`, on the
+    // field the tool description tells agents to branch on.
+    //
+    // An unknown route NAME already threw, so the same user mistake produced
+    // two opposite shapes depending on whether the route they named happened
+    // to exist and be disabled.
+    const holder = buildHolder(
+      { off: { ...makeService("off"), enabled: false } },
+      { off: new FakeDispatcher("off", { output: "", service: "off", success: true }) },
+    );
+
+    await expect(
+      invokeTool(
+        "dispatch",
+        { mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
+        { holder },
+      ),
+    ).rejects.toThrow(/No fanout route can run/);
+  });
+
+  it("names WHY each route was unavailable in that error", async () => {
+    // A refusal that does not say what to change is only half the fix — the
+    // skippedRoutes detail was the one useful thing the vacuous response
+    // carried, and it must survive the switch to throwing.
+    const holder = buildHolder(
+      { off: { ...makeService("off"), enabled: false } },
+      { off: new FakeDispatcher("off", { output: "", service: "off", success: true }) },
+    );
+
+    await expect(
+      invokeTool(
+        "dispatch",
+        { mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
+        { holder },
+      ),
+    ).rejects.toThrow(/off: /);
+  });
+
   it("allows explicit write-capable fanout with copy-isolated workspaces", async () => {
     const workingDir = mkdtempSync(path.join(tmpdir(), "harness-dispatch-fanout-copy-"));
     const holder = buildHolder(

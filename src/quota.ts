@@ -285,8 +285,16 @@ export class QuotaCache {
       const remaining = parseRemaining(result.rateLimitHeaders);
       const limit = parseLimit(result.rateLimitHeaders);
       if (remaining !== null || limit !== null) {
-        state.remaining = remaining;
-        state.limit = limit;
+        // Each field is assigned only when it ARRIVED. Both were assigned
+        // unconditionally under a guard that only asks whether EITHER did, so a
+        // response carrying `remaining` and no `limit` — which providers send —
+        // nulled the limit this cache already knew. With no limit there is no
+        // ratio, so the score went back to a full 1.0: measured at
+        // `remaining: 2` scoring the same as an untouched route, and the router
+        // then preferred it. Right about "some header arrived", wrong one case
+        // over. Headers are a partial update, not a replacement.
+        if (remaining !== null) state.remaining = remaining;
+        if (limit !== null) state.limit = limit;
         state.source = "headers";
         state.updatedAtSec = monotonicSec();
       }
@@ -543,7 +551,21 @@ export class QuotaCache {
     }
   }
 
-  /** Current on-disk state, or {} if unreadable. */
+  /**
+   * Current on-disk state, or {} if unreadable.
+   *
+   * `{}` used to mean two different things — "no file yet" and "a file I could
+   * not read" — and the caller applies its delta to whatever this returns and
+   * writes the result back. So one unparseable read did not merely stop
+   * counting: it REPLACED every route's history with a single route at 1.
+   * Measured — two routes with 5 and 3 calls became one route with 1, and
+   * `usage` then reported that as fact, on the surface this project's own
+   * instructions tell an orchestrator to consult before delegating.
+   *
+   * The file is moved aside rather than overwritten. Counters are
+   * informational, so this does not try to recover them; it just declines to
+   * be the thing that destroys them, and leaves the evidence next to the file.
+   */
   private readStateFile(): Record<string, Record<string, unknown>> {
     try {
       if (!existsSync(this.stateFile)) return {};
@@ -551,9 +573,26 @@ export class QuotaCache {
         string,
         Record<string, unknown>
       > | null;
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      this.quarantineUnreadableState();
       return {};
+    } catch {
+      this.quarantineUnreadableState();
+      return {};
+    }
+  }
+
+  /**
+   * Move an unreadable state file aside so the write that follows cannot
+   * destroy it. Best-effort in every direction: this runs on the counter path,
+   * which must never fail a dispatch, and a failed rename simply leaves the
+   * previous behaviour.
+   */
+  private quarantineUnreadableState(): void {
+    try {
+      renameSync(this.stateFile, `${this.stateFile}.corrupt`);
+    } catch {
+      // Nothing to do — the caller returns {} either way.
     }
   }
 }
