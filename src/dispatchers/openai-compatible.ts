@@ -259,7 +259,14 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const msg = first.message;
     if (!msg || typeof msg !== "object") return null;
     const content = (msg as { content?: unknown }).content;
-    return typeof content === "string" ? content : null;
+    // An empty string is not an answer. The anthropic_messages branch above has
+    // always said so (`text.length > 0 ? text : null`); this one returned any
+    // string, so a well-formed 200 carrying `content: ""` was a SUCCESS with no
+    // output — the same silent-empty-success this dispatcher was just fixed for
+    // on the streaming side, still live here. An acceptance pass caught the
+    // fix's own claim ("the streaming path now refuses this the same way the
+    // buffered path does") asserting a guard that did not exist.
+    return typeof content === "string" && content.length > 0 ? content : null;
   }
 
   #extractUsage(body: ParsedResponse): { input: number; output: number } | undefined {
@@ -657,6 +664,14 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     // the trailing flush as one "frame" — use a regex boundary instead.
     const chunks: string[] = [];
     let buffer = "";
+    // The head of the body exactly as it arrived, kept because `buffer` is
+    // consumed frame by frame and is empty by the time a failure is reported.
+    // Without it the failure message could only say what was NOT found, and it
+    // said "returned 200 with no content" for an HTML error page, for plain
+    // prose, and for a gateway that ignored `stream: true` and sent a normal
+    // JSON completion — all of which returned content. Bounded to the same 300
+    // characters the buffered path slices.
+    let rawSeen = "";
     // Merged across frames, not overwritten — Anthropic's input/output
     // token counts arrive on two DIFFERENT frames (see #parseSseFrame).
     let inputTokens: number | undefined;
@@ -691,7 +706,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       outer: while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
+        buffer += text;
+        if (rawSeen.length < 300) rawSeen += text;
 
         let boundary = SSE_FRAME_BOUNDARY.exec(buffer);
         while (boundary !== null) {
@@ -752,23 +769,37 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     }
 
     const output = chunks.join("");
-    // A 200 that streams no answer at all is not a successful empty answer.
-    //
-    // The buffered path has always refused this — #extractContent returning
-    // null is reported as `Unexpected response shape`. The streaming path did
-    // not, and jobs.ts only ever streams, so the MCP surface (the primary one,
-    // and the one an orchestrating agent branches on) reported `success: true`
-    // with an empty output while the CLI reported a failure for the same
-    // response. The breaker heals on a success, so a route serving nothing but
+    // A 200 that yields no answer is not a successful empty answer. jobs.ts
+    // only ever streams, so the MCP surface (the primary one, and the one an
+    // orchestrating agent branches on) reported `success: true` with an empty
+    // output. The breaker heals on a success, so a route serving nothing but
     // empty 200s was recorded as healthy forever and never tripped.
+    //
+    // The message distinguishes the two ways to get here, because they need
+    // different things done about them: nothing arrived (the endpoint is
+    // answering but producing nothing) versus something arrived that this
+    // parser could not turn into an answer (wrong shape, wrong content-type,
+    // a proxy in the way). Reporting the second as "no content" was a claim
+    // the code had not checked, and the body is what a person debugging a
+    // gateway actually needs. Same wording as the buffered path for the same
+    // condition, which is what makes the two surfaces agree.
     const emptyAnswer = streamError === undefined && output.length === 0;
+    // Raw bytes are not the test — `data: [DONE]` alone is a perfectly
+    // well-formed SSE stream that carried no answer, and calling that an
+    // unexpected shape would be as wrong as the message it replaces. What
+    // separates the two cases is whether the body is SSE at all.
+    const looksLikeSse = /^(data|event):/m.test(rawSeen);
+    const emptyAnswerError =
+      rawSeen.trim().length === 0 || looksLikeSse
+        ? "Empty response: the endpoint returned 200 with no content"
+        : `Unexpected response shape: ${rawSeen.slice(0, 300)}`;
     const result: DispatchResult =
       streamError !== undefined || emptyAnswer
         ? {
             output,
             service: this.id,
             success: false,
-            error: streamError ?? "Empty response: the endpoint returned 200 with no content",
+            error: streamError ?? emptyAnswerError,
             durationMs: Date.now() - start,
             rateLimitHeaders: responseHeaders,
           }
