@@ -134,6 +134,108 @@ export function warnUnknownRouteKeys(
         `safety or workspace setting, it is NOT in effect; check the spelling.`,
     );
   }
+  warnMistypedRouteValues(entry, label, warnings);
+}
+
+/** Recognised keys whose value must be a number, and what they mean if lost. */
+const NUMERIC_ROUTE_KEYS = new Set([
+  "tier",
+  "weight",
+  "cli_capability",
+  "max_output_tokens",
+  "max_input_tokens",
+  "timeout_ms",
+]);
+
+/** Recognised keys whose value must be a boolean. */
+const BOOLEAN_ROUTE_KEYS = new Set([
+  "enabled",
+  "paid_usage_possible",
+  "allow_paid_usage",
+  "stdin",
+]);
+
+/** Is this a value `num()` would accept — a number, or a numeric string? */
+function readsAsNumber(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v);
+  return typeof v === "string" && v !== "" && !Number.isNaN(Number(v));
+}
+
+/**
+ * A RECOGNISED key carrying the wrong TYPE of value.
+ *
+ * The unknown-key warner above covers a misspelled key. It does not cover a
+ * correctly-spelled one whose value cannot be read: the coercions in
+ * coercions.ts drop on mismatch and the caller supplies a default, silently.
+ * That file's own header names this gap and points at the unknown-key warning
+ * as the mitigation — which does not cover it, because the key is not unknown.
+ *
+ * Found live on the maintainer's machine by an acceptance pass: four routes
+ * carrying `tier: metered`, which is not a number, silently running at the
+ * default tier 3. Nothing had ever said so. `weight: very-high` becomes 1.0 the
+ * same way, and both feed routing decisions.
+ *
+ * Reports rather than rejects, like every other warning here: the config still
+ * loads, and `doctor` exits non-zero so the signal is not merely decorative.
+ */
+export function warnMistypedRouteValues(
+  entry: Record<string, unknown>,
+  label: string,
+  warnings: string[],
+): void {
+  for (const [key, value] of Object.entries(entry)) {
+    if (value === null || value === undefined) continue;
+    if (NUMERIC_ROUTE_KEYS.has(key) && !readsAsNumber(value)) {
+      warnings.push(
+        `${label}: ${key} is ${JSON.stringify(value)}, which is not a number — ` +
+          `IGNORED, and the built-in default applies instead. Routing reads this ` +
+          `field, so the route is not behaving the way this line says it does.`,
+      );
+    }
+    if (BOOLEAN_ROUTE_KEYS.has(key) && typeof value !== "boolean") {
+      // A quoted "true"/"false" is accepted by bool() and is not a mistake
+      // worth reporting; anything else selects the default silently.
+      if (value === "true" || value === "false") continue;
+      warnings.push(
+        `${label}: ${key} is ${JSON.stringify(value)}, which is not true or false — ` +
+          `IGNORED, and the built-in default applies instead.`,
+      );
+    }
+  }
+}
+
+/**
+ * Two route entries sharing one name.
+ *
+ * The later entry wins outright, so everything the earlier one declared is
+ * gone. An acceptance pass measured the consequence: a first entry setting
+ * `safety_profile: read_only` and `workspace_policy: copy` was replaced by a
+ * second with neither, and the surviving route ran `workspace_edit` /
+ * `shared_locked` — silently LESS restrictive than what was written, with no
+ * warning on any surface.
+ */
+export function warnDuplicateRouteNames(
+  names: Array<string | undefined>,
+  block: string,
+  warnings: string[],
+): void {
+  const seen = new Set<string>();
+  const reported = new Set<string>();
+  for (const name of names) {
+    if (name === undefined || name === "") continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      continue;
+    }
+    if (reported.has(name)) continue;
+    reported.add(name);
+    warnings.push(
+      `${block}: "${name}" is declared more than once — only the LAST entry ` +
+        `survives, and every field the earlier one set is discarded, including ` +
+        `safety_profile and workspace_policy. If the earlier entry restricted ` +
+        `this route, that restriction is NOT in effect.`,
+    );
+  }
 }
 
 /**

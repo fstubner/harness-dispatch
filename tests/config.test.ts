@@ -1151,3 +1151,111 @@ describe("watchConfig", () => {
     expect(calls).toBe(callsAfterStop);
   });
 });
+
+describe("wrong-typed values on recognised keys", () => {
+  it("warns when a numeric field is not a number, instead of silently defaulting", async () => {
+    // The unknown-key warner covers a MISSPELLED key. It never covered a
+    // correctly-spelled one whose value cannot be read: the coercions drop on
+    // mismatch and the caller supplies a default, silently. An acceptance pass
+    // found four routes on the maintainer's own machine carrying
+    // `tier: metered` — not a number — silently running at the default tier 3,
+    // with nothing having ever said so.
+    const yamlText = `
+clis:
+  - name: mistyped
+    harness: codex
+    command: codex
+    tier: metered
+    weight: very-high
+`;
+    const p = await writeTmpYaml("mistyped-values.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).toContain("tier");
+    expect(warningText).toContain("metered");
+    expect(warningText).toContain("weight");
+    // The behaviour is unchanged — the default still applies — so the warning
+    // is the only thing standing between the user and a silent surprise.
+    expect(cfg.services.mistyped?.tier).toBe(1);
+  });
+
+  it("accepts a numeric string, which is a normal way to write YAML", async () => {
+    const yamlText = `
+clis:
+  - name: quoted
+    harness: codex
+    command: codex
+    tier: "2"
+`;
+    const p = await writeTmpYaml("quoted-number.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect((cfg.configWarnings ?? []).join("\n")).not.toContain("tier");
+    expect(cfg.services.quoted?.tier).toBe(2);
+  });
+});
+
+describe("duplicate route names", () => {
+  it("warns that the earlier entry's restrictions are discarded", async () => {
+    // Measured by an acceptance pass: a first entry setting
+    // safety_profile: read_only and workspace_policy: copy was replaced
+    // wholesale by a second with neither, and the surviving route ran
+    // workspace_edit / shared_locked — silently LESS restrictive than what was
+    // written, with no warning on any surface.
+    const yamlText = `
+clis:
+  - name: twice
+    harness: codex
+    command: codex
+    safety_profile: read_only
+    workspace_policy: copy
+  - name: twice
+    harness: codex
+    command: codex
+`;
+    const p = await writeTmpYaml("duplicate-name.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).toContain("twice");
+    expect(warningText).toContain("more than once");
+    expect(warningText).toMatch(/safety_profile/);
+  });
+
+  it("does not warn when every route name is distinct", async () => {
+    const yamlText = `
+clis:
+  - name: one
+    harness: codex
+    command: codex
+  - name: two
+    harness: claude_code
+    command: claude
+`;
+    const p = await writeTmpYaml("distinct-names.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect((cfg.configWarnings ?? []).join("\n")).not.toContain("more than once");
+  });
+});
+
+describe("legacy services: shape gets the same value checks", () => {
+  it("warns about a mistyped value there too", async () => {
+    // Both validators were wired into the clis:/endpoints: loops and not this
+    // one, so a legacy config — still supported, still what an older
+    // `configure` wrote — reported one warning where the modern shape reports
+    // four. Found by a delegate audit during an acceptance pass.
+    const yamlText = `
+services:
+  legacy_route:
+    enabled: true
+    type: cli
+    command: some-bin
+    tier: metered
+`;
+    const p = await writeTmpYaml("legacy-mistyped.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const warningText = (cfg.configWarnings ?? []).join("\n");
+    expect(warningText).toContain("tier");
+    expect(warningText).toContain("metered");
+  });
+});

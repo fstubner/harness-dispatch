@@ -55,3 +55,63 @@ describe("redactEndpointHost", () => {
     expect(redactEndpointHost("not a url at all")).toBe("<endpoint>");
   });
 });
+
+/**
+ * The STRUCTURED payload must be redacted too, not just the text rendering.
+ *
+ * `redactEndpointHost` lives in status.ts and was wired into the usage hint and
+ * the error paths, and never into `buildStatus`'s output — so `status --json`
+ * and the `harness-dispatch://status.json` MCP resource emitted `base_url`
+ * verbatim, twice per route. An acceptance pass measured a key embedded in the
+ * URL reaching both. That resource is one this server's own instructions tell
+ * agents to read, so the credential lands in an agent's context.
+ *
+ * An earlier pass recorded "endpoint redaction — verified" having checked only
+ * the text surface. One value, two renderings, one of them fixed.
+ */
+describe("status payload redaction", () => {
+  it("redacts base_url everywhere it appears in the JSON", async () => {
+    const { buildStatus } = await import("../src/status.js");
+    const secret = "SUPERSECRET123";
+    const config = {
+      services: {
+        leaky: {
+          name: "leaky",
+          enabled: true,
+          type: "openai_compatible" as const,
+          baseUrl: `https://api.internal.example.com/v1?key=${secret}`,
+          endpointMode: "direct_openai_compatible",
+          model: "m",
+          tier: 3,
+          weight: 1,
+          cliCapability: 1,
+          capabilities: { execute: 1, plan: 1, review: 1 },
+          escalateOn: [],
+          maxOutputTokens: 100,
+          maxInputTokens: 100,
+          provider: "local" as const,
+          surface: "local_endpoint" as const,
+          authSource: "local_network" as const,
+          billingKind: "local_compute" as const,
+          paidUsagePossible: false,
+          billingConfidence: "documented" as const,
+        },
+      },
+    };
+
+    const quota = { fullStatus: async () => ({}), getQuotaScore: async () => 1 };
+    const router = { circuitBreakerStatus: () => ({}), pickService: () => undefined, getBreaker: () => undefined };
+    const leaderboard = { getQualityScore: async () => ({ qualityScore: 0.85 }) };
+    const status = await buildStatus(
+      config as never,
+      {} as never,
+      quota as never,
+      router as never,
+      leaderboard as never,
+    );
+    const serialised = JSON.stringify(status);
+    expect(serialised, "the credential survived into the status payload").not.toContain(secret);
+    expect(serialised, "the endpoint host survived").not.toContain("api.internal.example.com");
+    expect(serialised).toContain("<endpoint-host>");
+  });
+});

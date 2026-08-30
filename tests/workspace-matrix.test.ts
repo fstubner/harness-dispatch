@@ -318,3 +318,59 @@ describe("git_worktree cleanup on a failed attempt", () => {
     }
   }, 60_000);
 });
+
+describe("git_worktree cleanup when git refuses", () => {
+  it("keeps the directory and does not claim it was unregistered", async () => {
+    // The first version swallowed a failed `git worktree remove`, deleted the
+    // directory anyway, and reported "unregistered and removed" either way —
+    // stranding .git/worktrees/<name> inside the user's repository, the exact
+    // outcome the surrounding code says it refuses to cause, while telling
+    // them it did not happen. An acceptance pass forced the failure with
+    // `git worktree lock`, which makes a single --force insufficient.
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-lock-"));
+    await execFile("git", ["init", "-q"], { cwd: repo });
+    await execFile("git", ["config", "user.email", "t@example.com"], { cwd: repo });
+    await execFile("git", ["config", "user.name", "t"], { cwd: repo });
+    await fs.writeFile(path.join(repo, "a.txt"), "one\n", "utf8");
+    await execFile("git", ["add", "-A"], { cwd: repo });
+    await execFile("git", ["commit", "-qm", "initial"], { cwd: repo });
+
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-lockhome-"));
+    const prevDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const prepared = await prepareWorkspace({
+        routeName: "alpha",
+        policy: "git_worktree",
+        workingDir: repo,
+        files: [],
+      });
+      const worktreeRoot = path.join(prepared.workspaceRoot!, "worktree");
+      await execFile("git", ["worktree", "lock", worktreeRoot], { cwd: repo });
+
+      const finished = await prepared.finish({
+        output: "",
+        service: "alpha",
+        success: false,
+        error: "boom",
+      });
+
+      // Kept, because git still owns it.
+      expect(existsSync(prepared.workspaceRoot!), "directory deleted while git still owned it").toBe(
+        true,
+      );
+      const notes = JSON.stringify(finished.workspace?.notes ?? []);
+      expect(notes, "claimed removal that did not happen").not.toContain("unregistered and removed");
+      expect(finished.workspace?.workspaceRoot, "no path to clean up by hand").toBeDefined();
+
+      await execFile("git", ["worktree", "unlock", worktreeRoot], { cwd: repo }).catch(
+        () => undefined,
+      );
+    } finally {
+      if (prevDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prevDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+});

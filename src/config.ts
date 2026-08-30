@@ -29,6 +29,8 @@ import {
   surfaceFrom, thinkingFrom, wireProtocolFrom, workspacePolicyFrom,
 } from "./config/coercions.js";
 import {
+  warnDuplicateRouteNames,
+  warnMistypedRouteValues,
   warnUnknownRouteKeys,
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
@@ -387,6 +389,18 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   }
 
   for (const [name, svc] of Object.entries(rawServices)) {
+    // The legacy shape gets the same value checks as `clis:` and `endpoints:`.
+    //
+    // It got neither: both validators were wired into the two modern loops and
+    // not this one, so a `services:` config — still supported, still what an
+    // older `configure` wrote — reported one warning where the modern shape
+    // reports four. A delegate audit found the asymmetry.
+    //
+    // Deliberately only the VALUE checks. The unknown-KEY warner is not called
+    // here because the legacy shape accepts a wider set of keys than
+    // KNOWN_ROUTE_KEYS lists, and reporting those as typos would be worse than
+    // the silence it replaces.
+    warnMistypedRouteValues(svc, `services."${name}"`, warnings);
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
     // Computed once and reused below for both max-tokens fallback and the
     // billing/safety/model-hint inheritance IIFE — legacy-format entries
@@ -617,6 +631,7 @@ function addClis(
   warnings: string[],
 ): void {
   const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
+  warnDuplicateRouteNames(clis.map((e) => str(e.name)), "clis", warnings);
   for (const [index, entry] of clis.entries()) {
     const name = str(entry.name);
     const harness = str(entry.harness);
@@ -740,6 +755,7 @@ function addEndpoints(
   const endpoints = Array.isArray(raw.endpoints)
     ? (raw.endpoints as Record<string, unknown>[])
     : [];
+  warnDuplicateRouteNames(endpoints.map((e) => str(e.name)), "endpoints", warnings);
   for (const [index, ep] of endpoints.entries()) {
     const name = str(ep.name);
     warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);

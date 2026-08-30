@@ -255,6 +255,21 @@ pre-1.0, so minor versions can carry behaviour changes.
   intended spelling. One typo apart, transpositions included; unrelated keys
   and every OpenAI field stay legitimate.
 
+- A recognised config key carrying the wrong TYPE of value now says so instead
+  of silently taking the default. The unknown-key warning covered a misspelled
+  key; it never covered a correctly-spelled one whose value cannot be read,
+  because the key is not unknown — `coercions.ts` drops on mismatch and the
+  caller supplies a default. Found live on the maintainer's own machine by an
+  acceptance pass: four routes carrying `tier: metered`, which is not a number,
+  silently running at the default tier 3, with nothing ever having said so.
+  `weight: very-high` becomes 1.0 the same way, and both feed routing.
+
+- A route name declared twice now warns that everything the earlier entry set is
+  discarded. Measured: a first entry setting `safety_profile: read_only` and
+  `workspace_policy: copy`, replaced wholesale by a second with neither, left
+  the surviving route running `workspace_edit` / `shared_locked` — silently
+  LESS restrictive than what was written, with no warning on any surface.
+
 - `services:` written as a YAML list no longer fails silently. It must be a map
   of route id to settings, but `typeof [] === "object"`, so a list slipped
   through and became routes called `0`, `1`, … with each item's `name:`
