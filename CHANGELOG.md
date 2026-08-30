@@ -112,6 +112,54 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- `workspace apply` no longer overwrites a file you wrote and committed
+  yourself, when the agent CREATED a file at the same path. The conflict check
+  compares each touched file against how it looked when the dispatch started;
+  an added file has no such record, because it did not exist — and every change
+  without one was skipped, so the protection was simply absent for the change
+  kind that creates new files. Its ABSENCE is the base: if the path is there
+  now, the project gained it. This is verbatim the failure the check was added
+  for, live for one of the three change kinds, and committing your work is what
+  the dirty-tree refusal tells you to do. `force: true` still overrides.
+
+- A route can no longer claim a safety profile it has no flags for by pinning
+  `effective_safety`. The pin returned before the flag check ever ran, so a
+  route declaring `effective_safety: read_only` while defining flags for only
+  `workspace_edit` launched its harness with no safety argument at all, reported
+  `read_only` everywhere including the audit log, and wrote a file into the
+  project under a read-only dispatch. The flag check now runs first — nothing
+  declared can conjure a flag that does not exist. A pin is still honoured for a
+  route that is not flag-controlled at all, which is the case it exists for. The
+  shipped harnesses are unaffected. Found by an acceptance pass, which also
+  found the test pinning the old behaviour describing a fixture it did not have.
+
+- A `copy` workspace now SAYS which directories it left out. `bin`, `dist`,
+  `build`, `target`, `obj` and `.venv` are excluded by name as build output —
+  and are real source directories in some projects. The omission was invisible
+  on every surface: the agent reasoned from an incomplete tree, and a change to
+  an excluded file could not appear in the patch or the changed-file count.
+
+- `workspace apply` no longer refuses on a clean tree when
+  `HARNESS_DISPATCH_WORKSPACES_DIR` points inside the project — the
+  configuration README recommends, for reflinks. Only the legacy hard-coded
+  `.harness-dispatch` name was filtered from the dirty check, so the configured
+  workspaces root read as your uncommitted work and blocked every apply.
+
+- A failed config hot-reload now reaches `status`, under a `State problems`
+  heading, instead of only stderr — which no MCP client and no HTTP caller ever
+  sees. The comment at that code described the bug as "nothing on stderr and
+  nothing in status" while closing only the first half. Breaker warnings moved
+  to the same heading: they were filed under config warnings, which says "these
+  change behaviour" and means ignored config entries.
+
+- `workspace` operations with `git` missing from PATH now say that, instead of
+  `spawn git ENOENT`.
+
+- `safeEqual` in the HTTP auth path did its length-mismatch comparison against
+  the caller-supplied buffer, so the work scaled with a length an attacker
+  chose while the comment claimed the opposite. Not reproduced as an
+  exploitable signal, and the result was always correct.
+
 - An endpoint that answers HTTP 200 without an answer is now a failure on both
   request paths, not a successful empty answer. A success heals the circuit
   breaker, so a route serving nothing but empty 200s was recorded as healthy

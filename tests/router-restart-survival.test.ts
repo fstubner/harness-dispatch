@@ -339,7 +339,7 @@ describe("Router restart survival — breaker state persists across process boun
     ]);
     expect(status.configWarnings).toBeUndefined();
     const text = renderStatusText(status);
-    expect(text).toContain("Saved state (1) — could not be read:");
+    expect(text).toContain("State problems (1) — not what they look like:");
     expect(text).not.toContain("Config warnings");
   });
 });

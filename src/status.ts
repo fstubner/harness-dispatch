@@ -309,9 +309,17 @@ export async function buildStatus(
   // `Object.hasOwn`, not `=== undefined`: a record named `constructor` or
   // `toString` would otherwise find a match on Object.prototype and suppress
   // its own warning.
-  const stateWarnings = [...breakerUnreadable]
-    .filter((name) => !Object.hasOwn(config.services, name))
-    .map((name) => `saved breaker state for ${name} is unreadable — a cooldown it held may have been lost`);
+  const stateWarnings = [
+    ...(config.reloadError !== undefined
+      ? [
+          `config reload FAILED — the file on disk is NOT the config in effect; still routing ` +
+            `on the previously loaded one (${config.reloadError})`,
+        ]
+      : []),
+    ...[...breakerUnreadable]
+      .filter((name) => !Object.hasOwn(config.services, name))
+      .map((name) => `saved breaker state for ${name} is unreadable — a cooldown it held may have been lost`),
+  ];
   const status: HarnessDispatchStatus = {
     name: "harness-dispatch",
     generatedAt: new Date().toISOString(),
@@ -511,7 +519,7 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     lines.push("");
   }
   if (status.stateWarnings && status.stateWarnings.length > 0) {
-    lines.push(`Saved state (${status.stateWarnings.length}) — could not be read:`);
+    lines.push(`State problems (${status.stateWarnings.length}) — not what they look like:`);
     for (const w of status.stateWarnings) lines.push(`  ! ${w}`);
     lines.push("");
   }

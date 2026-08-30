@@ -600,6 +600,166 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(forced.applied, forced.message).toBe(true);
   });
 
+  it("refuses when the project CREATED the same file since the dispatch, even via a commit", async () => {
+    // The check above was off for one of the three change kinds. An ADDED file
+    // has no baseHash — it did not exist when the dispatch started — and the
+    // loop skipped every change without one, so the whole protection was
+    // absent exactly where the agent creates a new file. The user writes and
+    // COMMITS their own version of that path, apply overwrites it, and reports
+    // applied: true. Verbatim the failure the test above exists for.
+    //
+    // The absence IS the base: if the path exists now, the project gained it.
+    const repo = await makeRepo("added-collision");
+    await fs.writeFile(path.join(repo, "keep.txt"), "x\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const wsRoot = path.join(dir, "added-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "keep.txt"), "x\n", "utf8");
+    await fs.writeFile(path.join(copy, "report.md"), "from-agent\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "report.md", kind: "added" }],
+    };
+
+    // The user writes their OWN report.md and commits it, so the tree is clean
+    // and the dirty refusal cannot help — committing is what it tells you to do.
+    await fs.writeFile(path.join(repo, "report.md"), "MY OWN IMPORTANT WORK\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "my work"], repo);
+
+    const res = await applyWorkspace("job-1700000000061-aabbccdd", jobDir, run);
+    expect(res.applied, "apply overwrote the user's committed file").toBe(false);
+    expect(res.message).toContain("report.md");
+    expect(await readNorm(path.join(repo, "report.md"))).toContain("MY OWN IMPORTANT WORK");
+
+    const forced = await applyWorkspace("job-1700000000061-aabbccdd", jobDir, run, { force: true });
+    expect(forced.applied, forced.message).toBe(true);
+    expect(await readNorm(path.join(repo, "report.md"))).toContain("from-agent");
+  });
+
+  it("an added file that the project does NOT have still applies", async () => {
+    // The guard above must not fire on the ordinary case, which is the whole
+    // point of an added file: nothing is there, so nothing can be overwritten.
+    const repo = await makeRepo("added-clean");
+    await fs.writeFile(path.join(repo, "keep.txt"), "x\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const wsRoot = path.join(dir, "added-clean-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "keep.txt"), "x\n", "utf8");
+    await fs.writeFile(path.join(copy, "new.md"), "brand new\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "new.md", kind: "added" }],
+    };
+
+    const res = await applyWorkspace("job-1700000000062-aabbccdd", jobDir, run);
+    expect(res.applied, res.message).toBe(true);
+    expect(await readNorm(path.join(repo, "new.md"))).toContain("brand new");
+
+    // And re-applying is "already applied", not a conflict with itself — the
+    // file now exists in the project with exactly the workspace's content.
+    const again = await applyWorkspace("job-1700000000062-aabbccdd", jobDir, run);
+    expect(again.message).not.toMatch(/created since dispatch/);
+  });
+
+  it("an in-project workspaces root does not count as the project being dirty", async () => {
+    // HARNESS_DISPATCH_WORKSPACES_DIR pointed inside the project is what
+    // README recommends, to keep the copy on one volume so reflinks work. The
+    // dirty check filtered only the legacy hard-coded `.harness-dispatch`
+    // name, so the configured root showed as an untracked change and apply
+    // refused on an otherwise pristine tree — every time, for the documented
+    // configuration. The feature blocked by its own leftovers.
+    const repo = await makeRepo("inproject-ws");
+    await fs.writeFile(path.join(repo, "keep.txt"), "x\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const inProjectBase = path.join(repo, ".ws");
+    await fs.mkdir(path.join(inProjectBase, "leftover"), { recursive: true });
+    await fs.writeFile(path.join(inProjectBase, "leftover", "junk.txt"), "junk\n", "utf8");
+
+    const wsRoot = path.join(dir, "inproject-run");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "keep.txt"), "edited\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "keep.txt", kind: "modified", baseHash: eolDigest(Buffer.from("x\n")) }],
+    };
+
+    const prev = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = inProjectBase;
+    try {
+      const res = await applyWorkspace("job-1700000000063-aabbccdd", jobDir, run);
+      expect(res.applied, res.message).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prev;
+    }
+  });
+
+  it("real uncommitted work still refuses, with the workspaces root configured in-project", async () => {
+    // The filter must exempt only the workspaces root. Widening it into
+    // "ignore untracked files" would disable the protection this check exists
+    // for, and would look identical in the test above.
+    const repo = await makeRepo("inproject-dirty");
+    await fs.writeFile(path.join(repo, "keep.txt"), "x\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "base"], repo);
+
+    const inProjectBase = path.join(repo, ".ws");
+    await fs.mkdir(inProjectBase, { recursive: true });
+    await fs.writeFile(path.join(inProjectBase, "marker.txt"), "ws\n", "utf8");
+    // The user's own uncommitted work, outside the workspaces root.
+    await fs.writeFile(path.join(repo, "mine.txt"), "my work\n", "utf8");
+
+    const wsRoot = path.join(dir, "inproject-dirty-run");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "keep.txt"), "edited\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "keep.txt", kind: "modified", baseHash: eolDigest(Buffer.from("x\n")) }],
+    };
+
+    const prev = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = inProjectBase;
+    try {
+      const res = await applyWorkspace("job-1700000000064-aabbccdd", jobDir, run);
+      expect(res.applied).toBe(false);
+      expect(res.message).toMatch(/uncommitted change/);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prev;
+    }
+  });
+
   it("does not refuse when the project has only had line endings rewritten", async () => {
     // The false-positive this check could produce. A checkout whose eol
     // settings rewrote a file on the way in has not diverged in any sense the

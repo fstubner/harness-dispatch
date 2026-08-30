@@ -106,6 +106,44 @@ the preamble as unavailable, not silently omitted.
 4. **Expected:** a route that was rate-limited before the restart is still in
    cooldown afterwards; breaker state persists.
 
+### Flow 6 — Keeping isolated work (agent)
+
+The second half of an isolated dispatch, and the only destructive operation in
+the product. It had no flow here until 2026-08-30, and three separate defects
+that destroy or hide a user's work lived in it — a walkthrough-driven pass
+would have exercised none of them.
+
+1. Dispatch with `workspace_policy: copy` (or `git_worktree`) into a git repo.
+   - **Expected:** the project is untouched while the job runs.
+2. Read the run's `notes`.
+   - **Expected:** they name anything the workspace does NOT contain —
+     directories excluded by name (`bin`, `dist`, `build`, `target`, `obj`,
+     `.venv`), dropped out-of-tree symlinks, files that vanished mid-copy. The
+     agent worked from that tree, so an omission changes what its answer means.
+3. `workspace(jobId, "diff")`.
+   - **Expected:** a patch of exactly what the agent changed, project-relative.
+4. `workspace(jobId, "apply")`.
+   - **Expected:** what `diff` showed is what lands, and nothing else.
+5. Now the destructive cases. Between the dispatch and the apply, change a file
+   the patch touches, **commit it**, and apply.
+   - **Expected:** refused, naming the file. Committing is what the dirty-tree
+     refusal tells you to do, so it cannot be the only guard.
+   - This must hold for a file the agent **created** as well as one it
+     modified. An added file has no recorded base, and skipping it left the
+     whole protection off for exactly the change kind that creates new files.
+6. Apply twice.
+   - **Expected:** "already applied", not a second write and not a conflict
+     with itself.
+7. `workspace(jobId, "discard")` on work that was never applied.
+   - **Expected:** refused unless forced; the only copy is in the workspace.
+8. Repeat with `HARNESS_DISPATCH_WORKSPACES_DIR` pointed inside the project,
+   which README recommends for reflinks.
+   - **Expected:** everything above behaves identically. The workspaces
+     directory is this tool's own scratch space and must not read as the user's
+     uncommitted work.
+9. Take `git` off PATH and try `diff`.
+   - **Expected:** a message naming git as the requirement, not a raw errno.
+
 ## States
 
 Every surface has to be right in these, not just the happy one:
@@ -137,7 +175,8 @@ Every surface has to be right in these, not just the happy one:
 | 500 entries in `files` | Rejected at the boundary (cap 64) on BOTH the MCP and HTTP surfaces. HTTP accepted unbounded lists until 2026-08-19 |
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |
-| `safety_profile: read_onlyy` | Ignored **and warned**, never silently downgraded to a looser default |
+| `safety_profile: read_onlyy` | Ignored **and warned** on both surfaces, never silently downgraded to a looser default |
+| `safteyProfile` (letters transposed) | Rejected with the near-miss message on HTTP; accepted SILENTLY on MCP, which then runs at the default `workspace_edit` — i.e. more access than was asked for. `tools.ts` documents the asymmetry; the row above generalised past it until 2026-08-30 |
 | `${VAR}` in `config.yaml` | Survives `configure` as a reference; never rewritten to the literal secret. The reference is RELOCATED into the route's own `api_key:` — the top-level `api_keys:` block itself is not re-emitted. Functionally lossless (the key resolves identically on reload), but the block does not survive verbatim, and this row claimed it did until 2026-08-19 |
 | Two dispatches, same `workingDir`, `shared_locked` | Serialized across processes, not just within one |
 

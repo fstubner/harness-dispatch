@@ -156,6 +156,12 @@ export class ConfigHotReloader {
         // re-checks on a timer and a broken file would otherwise print on
         // every poll until it was fixed.
         const message = err instanceof Error ? err.message : String(err);
+        // Also onto the config that is still in effect, so `status` can say the
+        // file on disk is not the one being routed on. stderr is invisible to
+        // every MCP client and every HTTP caller — which is most of the ways
+        // this server is used, and the comment above claimed status coverage
+        // this code did not have.
+        (this.holder.state.config as { reloadError?: string }).reloadError = message;
         if (message !== this.lastReloadError) {
           this.lastReloadError = message;
           process.stderr.write(
@@ -166,6 +172,10 @@ export class ConfigHotReloader {
         return false;
       }
       this.lastReloadError = undefined;
+      // The freshly loaded config carries no error, but clear it off the old
+      // one too — a caller holding the previous object must not keep reporting
+      // a failure that has since been fixed.
+      delete (this.holder.state.config as { reloadError?: string }).reloadError;
 
       // Preserve circuit-breaker state for services that still exist.
       const oldRouter = this.holder.state.router;

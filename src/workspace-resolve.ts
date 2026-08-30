@@ -25,7 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { eolDigest, EXCLUDED_DIRS, GIT_ENV } from "./workspaces.js";
+import { eolDigest, EXCLUDED_DIRS, GIT_ENV, isUnderOrEqual, workspacesBase } from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -35,14 +35,37 @@ export const MAX_PATCH_BYTES = 2 * 1024 * 1024;
 /** How much of a patch is returned inline before it is truncated for display. */
 export const MAX_PATCH_CHARS = 60_000;
 
+/**
+ * ENOENT from spawning git means git is not on PATH, and saying so is the
+ * whole remedy. It surfaced as raw errno text — `spawn git ENOENT` — from
+ * `workspace diff`, `workspace apply` and a `git_worktree` dispatch, in a
+ * module that elsewhere goes to some trouble to explain a long-path failure.
+ */
+function describeGitSpawnFailure(err: unknown): Error | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code !== "ENOENT") return undefined;
+  return new Error(
+    "git is required for isolated workspaces but was not found on PATH. Install git, or " +
+      "use workspace_policy: shared / shared_locked, which need no git. `doctor` reports " +
+      "whether git was found.",
+  );
+}
+
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFile("git", args, {
-    cwd,
-    windowsHide: true,
-    env: GIT_ENV,
-    maxBuffer: MAX_PATCH_BYTES,
-  });
-  return String(stdout);
+  try {
+    const { stdout } = await execFile("git", args, {
+      cwd,
+      windowsHide: true,
+      env: GIT_ENV,
+      maxBuffer: MAX_PATCH_BYTES,
+    });
+    return String(stdout);
+  } catch (err) {
+    // Rethrown unchanged when it is anything else — gitDiff below reads `code`
+    // and `stderr` off the original to tell "differences found" from a real
+    // failure, and would lose both.
+    throw describeGitSpawnFailure(err) ?? err;
+  }
 }
 
 /**
@@ -388,10 +411,31 @@ async function projectMovedSince(
   changed: ReadonlyArray<{ path: string; kind: string; baseHash?: string }>,
 ): Promise<string[]> {
   const base = await projectBaseFor(run);
+  const workspace = isolatedRoot(run);
   const moved: string[] = [];
   for (const change of changed) {
-    if (change.baseHash === undefined) continue; // added: no base to compare
     const inProject = path.join(base, change.path);
+    if (change.baseHash === undefined) {
+      // An ADDED file has no baseHash because it did not exist when the
+      // dispatch started — and that ABSENCE is its base. Skipping it here
+      // meant the whole check was off for exactly the changes that create new
+      // files: the user writes and COMMITS their own version of a path the
+      // agent also created, and apply overwrites it reporting `applied: true`.
+      // Verbatim the failure this function's own comment says it fixed, live
+      // for one of the three change kinds. Reproduced by an acceptance pass.
+      //
+      // Matching content is not a conflict — it is a re-apply, and the empty
+      // patch path below cannot catch every one of those.
+      if (change.kind !== "added") continue;
+      const [inProj, inWs] = await Promise.all([
+        readFile(inProject).catch(() => null),
+        readFile(path.join(workspace, change.path)).catch(() => null),
+      ]);
+      if (inProj === null) continue; // Still absent: the base holds.
+      if (inWs !== null && normaliseEol(inProj) === normaliseEol(inWs)) continue;
+      moved.push(`${change.path} (created since dispatch)`);
+      continue;
+    }
     const current = await readFile(inProject).catch(() => null);
     if (current === null) {
       // Gone from the project. For a deletion that is the outcome we wanted;
@@ -651,8 +695,16 @@ async function dirtyPaths(dir: string): Promise<string[] | undefined> {
       .filter(Boolean)
       .filter((line) => {
         // Porcelain lines are "XY path"; the path may be quoted.
-        const p = line.slice(2).trim().replace(/^"|"$/g, "").replace(/\\/g, "/");
-        return !p.split("/").includes(".harness-dispatch");
+        const raw = line.slice(2).trim().replace(/^"|"$/g, "");
+        const p = raw.replace(/\\/g, "/");
+        if (p.split("/").includes(".harness-dispatch")) return false;
+        // The CONFIGURED workspaces root, not just the legacy hard-coded name.
+        // Only the fixed name was filtered, so the documented override —
+        // HARNESS_DISPATCH_WORKSPACES_DIR pointed inside the project, which
+        // README recommends for reflinks — left its own directory showing as
+        // an untracked change and made this refusal fire on every apply, on a
+        // pristine tree. An acceptance pass reproduced it end to end.
+        return !isUnderOrEqual(path.resolve(dir, raw), workspacesBase());
       });
   } catch {
     return undefined;

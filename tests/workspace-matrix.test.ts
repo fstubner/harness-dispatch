@@ -373,4 +373,57 @@ describe("git_worktree cleanup when git refuses", () => {
       await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
     }
   }, 60_000);
+
+  it("a copy workspace SAYS which directories it left out", async () => {
+    // EXCLUDED_DIRS drops bin, dist, build, target, obj and .venv, and said
+    // nothing about it. Those are build output in most projects and real
+    // SOURCE in some — an acceptance pass watched a delegate "edit" a
+    // committed bin/tool.sh that was never in its workspace, then saw the run
+    // report one changed file, the patch hold one file, and apply land one
+    // file, with no surface mentioning the omission. The agent also reasons
+    // from a tree it was never told was incomplete.
+    const repo = await makeRepo();
+    await fs.mkdir(path.join(repo, "bin"), { recursive: true });
+    await fs.writeFile(path.join(repo, "bin", "tool.sh"), "#!/bin/sh\necho hi\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "add bin"], repo);
+
+    const prepared = await prepareWorkspace({
+      routeName: "excl",
+      policy: "copy",
+      workingDir: repo,
+      files: [],
+    });
+    try {
+      expect(existsSync(path.join(prepared.effectiveWorkingDir, "bin", "tool.sh"))).toBe(false);
+      const finished = await prepared.finish(ok());
+      const notes = JSON.stringify(finished.workspace?.notes ?? []);
+      expect(notes, "the omission was silent").toContain("bin");
+      expect(notes).toContain("NOT copied into the workspace");
+    } finally {
+      await fs.rm(prepared.workspaceRoot!, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+
+  it("says nothing about exclusions when there were none", async () => {
+    // The note must not appear on an ordinary project with no excluded
+    // directories present — a warning on every run is a warning nobody reads,
+    // and `.git` is excluded on every single copy.
+    const repo = await makeRepo();
+    const prepared = await prepareWorkspace({
+      routeName: "excl-none",
+      policy: "copy",
+      workingDir: repo,
+      files: [],
+    });
+    try {
+      const finished = await prepared.finish(ok());
+      const notes = JSON.stringify(finished.workspace?.notes ?? []);
+      expect(notes).not.toContain("NOT copied into the workspace");
+    } finally {
+      await fs.rm(prepared.workspaceRoot!, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
 });

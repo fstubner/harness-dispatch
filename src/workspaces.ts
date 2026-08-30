@@ -137,8 +137,17 @@ function resolveDir(workingDir: string): string {
  * HARNESS_DISPATCH_WORKSPACES_DIR overrides it for anyone who wants the
  * workspaces on the project's volume.
  */
-/** The directory all per-project workspace roots hang off. */
-function workspacesBase(): string {
+/**
+ * The directory all per-project workspace roots hang off.
+ *
+ * Exported because the apply-time dirty check has to know it too: with the
+ * override pointed inside the project — which README recommends, to keep the
+ * copy on one volume for reflinks — the workspaces directory is itself an
+ * untracked change, so `apply` refused on an otherwise pristine tree, every
+ * time. The same "feature blocked by its own leftovers" the recursion guard
+ * above was written for, one step further along.
+ */
+export function workspacesBase(): string {
   return (
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
     path.join(os.tmpdir(), "harness-dispatch", "workspaces")
@@ -434,7 +443,7 @@ function shouldExclude(relPath: string, direntName: string): boolean {
  * was spelled, and it covers the whole workspaces root rather than this run's
  * directory alone — a sibling run's workspace is no more copyable than our own.
  */
-function isUnderOrEqual(candidate: string, root: string): boolean {
+export function isUnderOrEqual(candidate: string, root: string): boolean {
   const c = path.resolve(candidate);
   const r = path.resolve(root);
   if (c === r) return true;
@@ -497,6 +506,17 @@ async function copyTree(
   skipped: string[] = [],
   vanished: string[] = [],
   excludeRoots: string[] = [],
+  /**
+   * EXCLUDED_DIRS entries that actually existed and were left out. Collected
+   * because the omission was invisible: `bin`, `dist`, `build`, `target`,
+   * `obj` and `.venv` are all on that list and all plausible SOURCE
+   * directories, and an acceptance pass watched a delegate "edit" a committed
+   * `bin/tool.sh` that was never in its workspace — the run then reported one
+   * changed file, the patch held one file, and apply landed one file, with
+   * nothing anywhere saying the rest of the tree had been withheld. The agent
+   * also reasons from an incomplete tree, which is the worse half.
+   */
+  excludedDirs: string[] = [],
 ): Promise<void> {
   const sourceDir = rel ? path.join(sourceRoot, rel) : sourceRoot;
   const destDir = rel ? path.join(destRoot, rel) : destRoot;
@@ -506,10 +526,19 @@ async function copyTree(
     const childRel = rel ? path.join(rel, entry.name) : entry.name;
     try {
       if (entry.isDirectory()) {
-        if (shouldExclude(childRel, entry.name)) continue;
+        if (shouldExclude(childRel, entry.name)) {
+          // Only the name-list exclusions are reported. The workspaces-root
+          // ones below are this tool's own scratch space and mean nothing to
+          // the user; `.git` is excluded on every branch and would be noise on
+          // every single run.
+          if (EXCLUDED_DIRS.has(entry.name) && entry.name !== ".git") {
+            excludedDirs.push(childRel.split(path.sep).join("/"));
+          }
+          continue;
+        }
         const childAbs = path.join(sourceDir, entry.name);
         if (excludeRoots.some((root) => isUnderOrEqual(childAbs, root))) continue;
-        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished, excludeRoots);
+        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished, excludeRoots, excludedDirs);
         continue;
       }
       if (entry.isFile()) {
@@ -735,13 +764,20 @@ async function prepareCopyWorkspace(
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
   const vanishedFiles: string[] = [];
+  const excludedDirs: string[] = [];
   // The whole workspaces BASE, not this run's directory and not even this
   // project's root under it. A sibling run's workspace is no more copyable
   // than our own, and another project's is no more copyable than a sibling's —
   // all of them sit inside the source tree whenever the override points there.
-  await copyTree(originalWorkingDir, effectiveWorkingDir, "", skippedLinks, vanishedFiles, [
-    workspacesBase(),
-  ]);
+  await copyTree(
+    originalWorkingDir,
+    effectiveWorkingDir,
+    "",
+    skippedLinks,
+    vanishedFiles,
+    [workspacesBase()],
+    excludedDirs,
+  );
   const before = await fingerprintTree(effectiveWorkingDir);
   return {
     policy: "copy",
@@ -772,6 +808,16 @@ async function prepareCopyWorkspace(
                   `copied and are absent from it: ${vanishedFiles.slice(0, 5).join(", ")}` +
                   `${vanishedFiles.length > 5 ? ", …" : ""}. The copy is a snapshot of a ` +
                   `directory that was being written to.`,
+              ]
+            : []),
+          ...(excludedDirs.length > 0
+            ? [
+                `${excludedDirs.length} director(ies) were NOT copied into the workspace and were ` +
+                  `invisible to the agent: ${excludedDirs.slice(0, 8).join(", ")}` +
+                  `${excludedDirs.length > 8 ? ", …" : ""}. These names are excluded as build ` +
+                  `output or dependencies, but some of them (bin, dist, build, target, obj) are ` +
+                  `real source directories in some projects — if the task needed one, the agent ` +
+                  `worked from an incomplete tree and no change to it can appear in the patch.`,
               ]
             : []),
           ...(skippedLinks.length > 0

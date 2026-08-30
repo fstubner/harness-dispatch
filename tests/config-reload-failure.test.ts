@@ -74,6 +74,31 @@ describe("a failed config reload is reported, not swallowed", () => {
     ).toMatch(/config reload FAILED/i);
   }, 30_000);
 
+  it("reaches STATUS, not just stderr, and clears once the file is fixed", async () => {
+    // stderr is invisible to every MCP client and every HTTP caller, which is
+    // most of how this server is used — so the operator had no way to learn
+    // that the file on disk was not the config in effect. The comment at the
+    // throw site described the bug as "nothing on stderr and nothing in
+    // status" while closing only the first half.
+    const state = await bootstrapRuntime({ configPath });
+    const holder = new RuntimeHolder(state);
+    const reloader = new ConfigHotReloader(holder, configPath);
+    expect(holder.state.config.reloadError).toBeUndefined();
+
+    await rewriteConfig("clis:\n  - name: probe\n   bad indentation: [oops\n");
+    expect(await reloader.maybeReload()).toBe(false);
+    expect(
+      holder.state.config.reloadError,
+      "status had no way to know the running config was stale",
+    ).toBeDefined();
+
+    // And it must not stick around once the file is valid again — a warning
+    // that outlives its cause is the same class of lie in the other direction.
+    await rewriteConfig(GOOD);
+    expect(await reloader.maybeReload()).toBe(true);
+    expect(holder.state.config.reloadError).toBeUndefined();
+  }, 30_000);
+
   it("does not repeat the same warning on every poll", async () => {
     // The reloader re-checks on a timer, so an unfixed file would otherwise
     // print on every pass until someone noticed — which is its own way of

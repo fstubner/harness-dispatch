@@ -525,6 +525,16 @@ export interface RouterConfig {
    * unnoticed forever.
    */
   configWarnings?: readonly string[];
+  /**
+   * Set when a hot reload FAILED and this config is the previously loaded one
+   * still in effect — so the file on disk is not the file being routed on.
+   *
+   * Carried here because it has to reach `status`. The failure was reported on
+   * stderr only, which no MCP client and no HTTP caller ever sees, and the
+   * comment at the throw site described the bug as "nothing on stderr and
+   * nothing in status" while closing only the first half.
+   */
+  reloadError?: string;
 }
 
 export interface RoutingDecision {
