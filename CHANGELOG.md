@@ -112,6 +112,35 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- A route reporting only `remaining` in its rate-limit headers no longer wipes
+  the limit already known for it. Both fields were assigned under a guard that
+  only asks whether EITHER arrived, so a partial update nulled the limit — and
+  with no limit there is no ratio, so the quota score went back to a full
+  1.0. A route with two requests left scored the same as an untouched one, and
+  the router preferred it. Headers are a partial update, not a replacement.
+
+- An unreadable `quota_state.json` is now moved aside rather than replaced.
+  "No file yet" and "a file I could not read" both produced an empty map, and
+  the caller applies its delta to that and writes the result back — so a single
+  bad read did not merely stop counting, it REPLACED every route's history.
+  Measured: two routes at 5 and 3 calls became one route at 1, with `usage`
+  reporting that as fact. Counters are informational, so this does not try to
+  recover them; it declines to be the thing that destroys them.
+
+- A fanout where NO route can run now errors instead of answering
+  `completed: true` with an empty results array. `completed` is `every()` over
+  the arms, so zero arms was vacuously true, on the field the tool description
+  tells agents to branch on. An unknown route NAME already errored, so the same
+  mistake produced two opposite shapes depending on whether the route named
+  happened to exist and be disabled. The error names each route and why.
+
+- `connect` no longer rewrites a client config whose JSON root is not an
+  object. "Does it parse" and "is it the shape I am about to merge into" are
+  different questions and only the first was asked, so an array-rooted file
+  came back as `{"0":…,"1":…,"mcpServers":{…}}` with success reported. A backup
+  made it recoverable, but this writes another application's config, which is
+  the highest-consequence thing here.
+
 - `workspace apply` no longer overwrites a file you wrote and committed
   yourself, when the agent CREATED a file at the same path. The conflict check
   compares each touched file against how it looked when the dispatch started;

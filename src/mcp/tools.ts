@@ -532,6 +532,25 @@ async function startFanout(
     candidates.push(routeName);
   }
 
+  // Nothing can run. Same rule as the two refusals above — a refusal must not
+  // be success-shaped — and this was the one case still taking the vacuous
+  // path: `completed` is `every()` over an empty array, so an all-blocked
+  // fanout answered `{ completed: true, results: [] }` with the reasons tucked
+  // into `skippedRoutes`, on the field the tool description tells agents to
+  // branch on.
+  //
+  // The unmatched-name guard above throws for a name matching NO route, so the
+  // same user mistake produced two opposite shapes depending on whether the
+  // route they named happens to exist and be disabled. Both are "you asked for
+  // routes and none of them can run".
+  if (candidates.length === 0) {
+    const why = skippedRoutes.map((s) => `${s.route}: ${s.message}`).join("; ");
+    throw new Error(
+      `No fanout route can run this request${why ? ` — ${why}` : ""}. ` +
+        `Check \`usage\` for route readiness, or adjust models/safetyProfile/routePolicy.`,
+    );
+  }
+
   const prompt = input.prompt;
   const files = input.files ?? [];
   const live = { value: true };

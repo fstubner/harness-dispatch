@@ -75,6 +75,34 @@ describe("planClientWrites", () => {
     expect(await fs.readFile(claudeFile(), "utf8")).toBe(before);
   });
 
+  it("does not touch a config that parses but is not an object", async () => {
+    // "Does it parse" and "is it the shape I am about to merge into" are
+    // different questions, and only the first was asked. An array parses, then
+    // gets spread into an object: an array-rooted file came back as
+    // `{"0":…,"1":…,"mcpServers":{…}}` and connect reported success. A backup
+    // made it recoverable, but this module edits ANOTHER application's config,
+    // which is the highest-consequence thing here.
+    for (const body of ['["some","array","the user had"]', '"a string"', "42"]) {
+      await fs.writeFile(claudeFile(), body, "utf8");
+      const before = await fs.readFile(claudeFile(), "utf8");
+      const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+      expect(outcome.action, `${body} was rewritten`).toBe("skipped");
+      expect(await fs.readFile(claudeFile(), "utf8")).toBe(before);
+    }
+  });
+
+  it("an EMPTY or absent config is still mergeable — that is the first run", async () => {
+    // The guard must refuse only shapes it cannot merge into. `null` and a
+    // missing file are the ordinary first-install case, and refusing those
+    // would break the command's main purpose.
+    await fs.writeFile(claudeFile(), "null", "utf8");
+    expect((await writeClientEntry(planFor("claude-code"), { stamp: "s" })).action).toBe("written");
+    const after = JSON.parse(await fs.readFile(claudeFile(), "utf8")) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    expect(after.mcpServers?.[ENTRY_KEY]).toBeDefined();
+  });
+
   it("recognises an entry that already matches, so re-running changes nothing", async () => {
     await writeJson(claudeFile(), {
       mcpServers: { [ENTRY_KEY]: desiredEntry(CONFIG, COMMAND) },

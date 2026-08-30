@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -137,6 +137,57 @@ describe("QuotaCache.recordResult", () => {
     });
   });
 
+  it("a remaining-only response does not erase the limit it already knew", async () => {
+    // The guard asks whether EITHER header arrived, then assigned BOTH. So a
+    // response carrying `remaining` and no `limit` — which providers send —
+    // nulled the known limit, and with no limit there is no ratio, so the
+    // score went back to a full 1.0. An acceptance pass measured a route with
+    // TWO requests left scoring the same as an untouched one, which is the
+    // direction that makes the router prefer it.
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
+
+    cache.recordResult("svc", {
+      output: "",
+      service: "svc",
+      success: true,
+      rateLimitHeaders: { "x-ratelimit-remaining": "50", "x-ratelimit-limit": "100" },
+    });
+    cache.recordResult("svc", {
+      output: "",
+      service: "svc",
+      success: true,
+      rateLimitHeaders: { "x-ratelimit-remaining": "2" },
+    });
+
+    const status = await cache.fullStatus();
+    expect(status["svc"]!.remaining).toBe(2);
+    expect(status["svc"]!.limit, "the known limit was erased by a partial update").toBe(100);
+    expect(status["svc"]!.score).toBeCloseTo(0.02, 8);
+  });
+
+  it("a limit-only response does not erase the remaining it already knew", async () => {
+    // The mirror case, so the fix is not "special-case the one field an
+    // acceptance pass happened to probe".
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
+
+    cache.recordResult("svc", {
+      output: "",
+      service: "svc",
+      success: true,
+      rateLimitHeaders: { "x-ratelimit-remaining": "50", "x-ratelimit-limit": "100" },
+    });
+    cache.recordResult("svc", {
+      output: "",
+      service: "svc",
+      success: true,
+      rateLimitHeaders: { "x-ratelimit-limit": "200" },
+    });
+
+    const status = await cache.fullStatus();
+    expect(status["svc"]!.remaining).toBe(50);
+    expect(status["svc"]!.limit).toBe(200);
+  });
+
   it("does nothing when there are no headers and not rate-limited", () => {
     const cache = new QuotaCache(
       { svc: makeDispatcher("svc") },
@@ -266,6 +317,59 @@ describe("QuotaCache local call counts", () => {
     );
     const status = await cache.fullStatus();
     expect(status["svc"]!.localCallCount).toBe(7);
+  });
+
+  it("a malformed state file is moved aside, not overwritten with one route's counts", async () => {
+    // `{}` meant two different things — "no file yet" and "a file I could not
+    // read" — and the caller applies its delta to whatever the read returns
+    // and writes the result back. So one unparseable read did not merely stop
+    // counting: it REPLACED every route's history. An acceptance pass measured
+    // two routes at 5 and 3 calls becoming one route at 1, with `usage` then
+    // reporting that as fact.
+    const file = tmpFile();
+    writeFileSync(file, JSON.stringify({ a: { local_calls: 5 }, b: { local_calls: 3 } }), "utf-8");
+    writeFileSync(file, "{ truncated mid-writ", "utf-8");
+
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    cache.saveLocalCountsSync();
+
+    expect(
+      readFileSync(`${file}.corrupt`, "utf-8"),
+      "the unreadable file was destroyed rather than kept",
+    ).toContain("truncated");
+    // Counters are informational, so the fresh file starting over is fine —
+    // what is not fine is being the thing that deleted the old one.
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as Record<string, { local_calls?: number }>;
+    expect(parsed["a"]?.local_calls).toBe(1);
+  });
+
+  it("an ARRAY state file is treated the same way, not spread into", async () => {
+    // It parses, so a "does it parse" check passes it straight through.
+    const file = tmpFile();
+    writeFileSync(file, JSON.stringify(["not", "a", "map"]), "utf-8");
+
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    cache.saveLocalCountsSync();
+
+    expect(readFileSync(`${file}.corrupt`, "utf-8")).toContain("not");
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    expect(Array.isArray(parsed)).toBe(false);
+  });
+
+  it("a state file that is merely ABSENT is not quarantined", async () => {
+    // The guard must fire only on a file that exists and cannot be read. A
+    // first run has no file at all, and inventing a `.corrupt` for it would be
+    // a false alarm on every fresh install.
+    const file = tmpFile();
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    cache.saveLocalCountsSync();
+
+    expect(existsSync(`${file}.corrupt`)).toBe(false);
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as Record<string, { local_calls?: number }>;
+    expect(parsed["a"]?.local_calls).toBe(1);
   });
 
   it("tolerates a malformed state file", async () => {

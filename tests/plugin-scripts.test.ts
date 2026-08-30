@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,9 @@ describe("install-codex.mjs — --config handling", () => {
 });
 
 describe("launch-mcp.mjs — an explicit config that is missing must be reported", () => {
-  it("passes HARNESS_DISPATCH_CONFIG through so the server can reject it by name", async () => {
+  it.skipIf(!existsSync(path.join(repoRoot, "dist", "bin.js")))(
+    "passes HARNESS_DISPATCH_CONFIG through so the server can reject it by name",
+    async () => {
     // The launcher used to gate this on existsSync and fall through to
     // auto-detection when it failed, which is the same silent-default failure
     // the CLI treats as a hard error. It now hands the path over and lets
@@ -129,9 +131,12 @@ describe("launch-mcp.mjs — an explicit config that is missing must be reported
     //
     // Driven end-to-end: the launcher spawns the real server, which must exit
     // non-zero naming the path.
+    // `it.skipIf`, not an early return. An early return REPORTS A PASS for
+    // work that never happened — a green row on an unbuilt checkout, which is
+    // exactly the rule stated in tests/client-register.test.ts and applied
+    // everywhere else in this suite. `npm test` builds first, so this is only
+    // reachable when running vitest directly against a clean tree.
     const launcher = path.join(repoRoot, "plugin", "scripts", "launch-mcp.mjs");
-    const distBin = path.join(repoRoot, "dist", "bin.js");
-    if (!(await fs.stat(distBin).catch(() => null))) return; // unbuilt checkout
     const missing = path.join(dir, "typo.yaml");
 
     let out = "";
@@ -149,8 +154,10 @@ describe("launch-mcp.mjs — an explicit config that is missing must be reported
       out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     }
 
-    expect(status).not.toBe(0);
-    expect(out).toMatch(/config file not found/i);
-    expect(out).toContain("typo.yaml");
-  }, 40_000);
+      expect(status).not.toBe(0);
+      expect(out).toMatch(/config file not found/i);
+      expect(out).toContain("typo.yaml");
+    },
+    40_000,
+  );
 });

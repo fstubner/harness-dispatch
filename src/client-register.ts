@@ -205,6 +205,29 @@ async function backup(file: string, stamp: string): Promise<string> {
 /** How many of our own backups of one file to keep. */
 const KEEP_BACKUPS = 3;
 
+const NOT_AN_OBJECT =
+  "its config file is not a JSON object, so there is nothing to merge our entry into";
+
+/**
+ * The parsed file as something safe to spread into, or undefined if it is not.
+ *
+ * "Does it parse" and "is it the shape I am about to merge into" are different
+ * questions, and only the first was being asked. An ARRAY parses fine and then
+ * gets spread into an object: an array-rooted file came back as
+ * `{"0":…,"1":…,"mcpServers":{…}}` and `connect` reported success. A backup is
+ * always taken so it was recoverable — but this module edits OTHER
+ * applications' config files, which is the highest-consequence thing this
+ * product does, and it must not rewrite a shape it does not understand.
+ *
+ * `null`/absent stays mergeable: that is an empty file, which is the ordinary
+ * first-run case.
+ */
+function mergeableRoot(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || value === undefined) return {};
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
 /**
  * Keep the last few backups of a file, not all of them ever taken.
  *
@@ -336,7 +359,8 @@ export async function writeClientEntry(
   if (!parsed.ok) {
     return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
   }
-  const root = (parsed.value ?? {}) as Record<string, unknown>;
+  const root = mergeableRoot(parsed.value);
+  if (root === undefined) return { ...base, action: "skipped", reason: NOT_AN_OBJECT };
   const servers = { ...((root[plan.serversKey] as Record<string, unknown> | undefined) ?? {}) };
   const existing = (servers[ENTRY_KEY] as Record<string, unknown> | undefined) ?? {};
   servers[ENTRY_KEY] = { ...existing, ...plan.desired };
@@ -379,7 +403,14 @@ export async function removeClientEntry(
   if (!parsed.ok) {
     return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
   }
-  const root = (parsed.value ?? {}) as Record<string, unknown>;
+  const root = mergeableRoot(parsed.value);
+  // Removal was already safe without this: our entry cannot be present in a
+  // file this shape, so the `ENTRY_KEY in servers` check below returns
+  // "unchanged" before anything is written. Kept anyway so both writers ask
+  // the same question of the same file, rather than one of them being correct
+  // by accident of a later check. A test for it was written and then deleted —
+  // it passed with the guard removed, so it was evidence of nothing.
+  if (root === undefined) return { ...base, action: "unchanged" };
   const servers = { ...((root[plan.serversKey] as Record<string, unknown> | undefined) ?? {}) };
   if (!(ENTRY_KEY in servers)) return { ...base, action: "unchanged" };
   delete servers[ENTRY_KEY];
