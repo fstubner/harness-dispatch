@@ -544,6 +544,39 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     expect(completion?.result.error).toContain("server had an error");
   });
 
+  it("BUFFERED: a body that could not be READ is not reported as no body", async () => {
+    // "The endpoint returned 200 with no body" is a claim about what the
+    // server sent, and a failed read is not evidence of it. An acceptance pass
+    // measured a real socket sending 200 plus 42 bytes and then resetting: the
+    // buffered path asserted the endpoint had sent nothing, while the
+    // streaming path reported "terminated" and kept the partial output — so
+    // the two paths disagreed while a comment claimed they agreed.
+    const res = new Response("", { status: 200, headers: { "content-type": "application/json" } });
+    Object.defineProperty(res, "text", {
+      value: () => Promise.reject(new Error("terminated")),
+    });
+    fetchMock.mockResolvedValue(res);
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const result = await d.dispatch("go", [], "");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("could not be read");
+    expect(result.error).toContain("terminated");
+    expect(result.error).not.toContain("no body");
+  });
+
+  it("BUFFERED: an actually empty body still reports no body", async () => {
+    // The guard above must not swallow the case it was carved out of.
+    fetchMock.mockResolvedValue(
+      new Response("", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const result = await d.dispatch("go", [], "");
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Empty response: the endpoint returned 200 with no body");
+  });
+
   it("BUFFERED: a well-formed 200 carrying content:'' is a failure, not an empty success", async () => {
     // This is the guard the streaming fix's own comment claimed already
     // existed here. It did not: #extractContent returned any string, so `""`
@@ -630,7 +663,7 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
         | { result: { success: boolean; error?: string } }
         | undefined;
       expect(completion?.result.success).toBe(false);
-      expect(completion?.result.error).toContain("Unexpected response shape");
+      expect(completion?.result.error).toContain("No answer in response body");
       expect(completion?.result.error).toContain(expected);
     });
   }
@@ -658,7 +691,7 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
       errors.push(completion?.result.error ?? "");
     }
     expect(new Set(errors).size).toBe(1);
-    expect(errors[0]!.length).toBe("Unexpected response shape: ".length + 300);
+    expect(errors[0]!.length).toBe("No answer in response body: ".length + 300);
   });
 
   it("still reports success for a stream that carries real content", async () => {
@@ -694,7 +727,7 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
       | { result: { success: boolean; error?: string } }
       | undefined;
     expect(completion?.result.success).toBe(false);
-    expect(completion?.result.error).toContain("Unexpected response shape");
+    expect(completion?.result.error).toContain("No answer in response body");
     expect(completion?.result.error).toContain("Gateway parked");
   });
 

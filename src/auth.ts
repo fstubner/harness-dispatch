@@ -83,20 +83,38 @@ export async function rotateHttpToken(): Promise<string> {
 /**
  * Constant-time string compare. `value === expected` short-circuits on the
  * first mismatching byte — a textbook timing side channel for guessing a
- * bearer token one byte at a time. When lengths differ we still run
- * timingSafeEqual (against a same-length dummy) rather than returning early,
- * so a length mismatch alone doesn't leak timing info either.
+ * bearer token one byte at a time.
+ *
+ * On a length mismatch it still does comparison work rather than returning
+ * early. That work is now sized by `expected`, not by `value`: the previous
+ * version compared the caller-supplied buffer against ITSELF, so its cost
+ * scaled with the length an attacker chose, and the comment claiming "a length
+ * mismatch alone doesn't leak timing info either" asserted a property the code
+ * did not have. The remaining signal is the same for every wrong length, which
+ * is what that sentence was meant to say.
  */
 function safeEqual(value: string, expected: string): boolean {
   const valueBuf = Buffer.from(value, "utf8");
   const expectedBuf = Buffer.from(expected, "utf8");
   if (valueBuf.length !== expectedBuf.length) {
-    timingSafeEqual(valueBuf, valueBuf);
+    timingSafeEqual(expectedBuf, expectedBuf);
     return false;
   }
   return timingSafeEqual(valueBuf, expectedBuf);
 }
 
+/**
+ * Whether a request carries the expected bearer token.
+ *
+ * A `token` of null means NO AUTH IS CONFIGURED, and every request is
+ * authorized — this function fails open, deliberately, and a caller that
+ * cannot guarantee a token must not rely on it to deny anything. The HTTP
+ * server can: it calls `ensureHttpToken()` at startup and falls back to the
+ * token it read from disk on refresh, so null never reaches here from there.
+ *
+ * Spelled out because the fail-open branch is one line and reads like a
+ * guard clause rather than the policy decision it is.
+ */
 export function isAuthorized(
   authorizationHeader: string | string[] | undefined,
   token: string | null,

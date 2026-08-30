@@ -126,9 +126,13 @@ pre-1.0, so minor versions can carry behaviour changes.
   entry here claimed the buffered path already refused empty answers, and that
   was wrong.
 
-  Both failures now quote the body when one arrived, and say "no body" only
-  when nothing did. That is the whole rule: this dispatcher does not try to
-  work out WHY a response was unusable.
+  Both paths now answer the same two questions in the same order, in one
+  shared function so that the agreement is enforced rather than asserted: was
+  the body readable, and did any bytes arrive? A read that FAILED is reported
+  as a failed read — saying "no body" there would be a claim about what the
+  server sent, and a reset connection is not evidence of it. Otherwise the
+  body is quoted if one arrived, and reported as absent if not. The dispatcher
+  does not try to work out WHY a response was unusable.
 
   Two earlier versions did try, and each was wrong in ways only an acceptance
   pass found. The first called anything that produced no text "no content", so
@@ -142,7 +146,10 @@ pre-1.0, so minor versions can carry behaviour changes.
   depending on how the network happened to split it.
 
   A well-formed but empty stream now quotes its own terminator instead of
-  being described in nicer words. Less polished, and it cannot be wrong.
+  being described in nicer words. The message says only that no answer came
+  out of the body and shows what did arrive; it does not call the shape
+  unexpected, because a stream that carried nothing had exactly the expected
+  shape.
 
   Reproduced by acceptance passes.
 
@@ -162,14 +169,29 @@ pre-1.0, so minor versions can carry behaviour changes.
   record that is otherwise not-healthy. A field that is simply ABSENT is still
   tolerated, because older builds wrote fewer of them.
 
-  The same validation now runs on the pre-split `breaker_state.json` read once
-  during an upgrade, which had none of it: a bad entry there was coerced to
-  healthy, skipped as nothing-to-migrate, and the file deleted — so upgrading,
-  the moment a live cooldown is most likely to be sitting on disk, destroyed
-  it silently. A blob with an unreadable entry, or one that will not parse at
-  all, is now reported and KEPT. An unreadable record whose name is not a
-  configured route (every corrupt blob, since it has no route name) is
-  reported among the config warnings, where a per-route line cannot carry it.
+  The same validation runs on the pre-split `breaker_state.json` read during
+  an upgrade, which had none of it: a bad entry there was coerced to healthy,
+  skipped as nothing-to-migrate, and the file deleted — so upgrading, the
+  moment a live cooldown is most likely to be sitting on disk, destroyed it
+  silently. The per-route "healthy is a contradiction" rule cannot apply
+  there, because the old format wrote healthy entries legitimately, so the
+  shared validator gained a floor instead: a record naming none of the fields
+  it understands is not one it understands. Without that floor, `{}` and a
+  foreign schema — including the snake_case shape of the Python implementation
+  this was ported from — still passed and were still destroyed.
+
+  A blob is now rewritten with only the entries this could not consume, so
+  each entry is read exactly once and the file disappears on a clean upgrade.
+  Keeping the WHOLE blob whenever one entry was bad meant the good entries
+  were replayed on every read, forever — recreating a per-route record after
+  the route had recovered and its record was deleted, leaving it one failure
+  from tripping and unable to heal.
+
+  An unreadable record whose name is not a configured route (every corrupt
+  blob, since it has no route name) is reported under its own `status`
+  heading, separate from config warnings — nothing here was misconfigured or
+  ignored, and `doctor` and the CLI's "ignored config entries" list both read
+  the config warnings directly.
 
   The lost count cannot be recovered and this does not guess at it — failing
   closed would strand a route until someone deleted a file by hand. `status`

@@ -221,6 +221,29 @@ describe("BreakerStore", () => {
     expect(readdirSync(dir)).toContain("breaker_state.json");
   });
 
+  // The legacy path deliberately does NOT apply the healthy-is-a-contradiction
+  // rule, because the old format wrote healthy entries legitimately. That left
+  // it with no floor at all: a record naming none of the known fields coerced
+  // to healthy, counted as migrated, and the blob was deleted. Two of the three
+  // shapes the per-route reader catches were still being swallowed here.
+  for (const [label, entry] of [
+    ["an empty object", {}],
+    ["a foreign nested schema", { state: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }],
+    [
+      "the snake_case shape of the Python implementation this was ported from",
+      { consecutive_failures: 5, blocked_until: "2099-01-01T00:00:00Z" },
+    ],
+  ] as const) {
+    it(`a legacy entry that is ${label} is reported, and the blob survives`, () => {
+      const legacy = path.join(dir, "breaker_state.json");
+      writeFileSync(legacy, JSON.stringify({ codex_cli: entry }));
+      const store = new BreakerStore(stateDir);
+      expect(store.loadAll()).toEqual({});
+      expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
+      expect(readdirSync(dir)).toContain("breaker_state.json");
+    });
+  }
+
   it("a legacy blob that will not parse at all is reported, not deleted", () => {
     // The old comment here said "nothing lost by deleting it" — an assumption
     // about a file whose contents could not be read. It may have held every
@@ -231,6 +254,37 @@ describe("BreakerStore", () => {
     expect(store.loadAll()).toEqual({});
     expect(store.unreadableRoutes()).toEqual(["(legacy breaker_state.json)"]);
     expect(readdirSync(dir)).toContain("breaker_state.json");
+  });
+
+  it("a kept blob does not resurrect a route that has since recovered", () => {
+    // Keeping the whole blob because ONE entry was bad meant the good ones
+    // were re-read on every loadAll() — forever. So after a route recovered
+    // and save() deleted its per-route file, the next read recreated it from
+    // the stale blob. An acceptance pass measured a recovered route reading
+    // failures=4 again, one failure from tripping and unable to heal, with
+    // nothing on any surface naming the blob.
+    const legacy = path.join(dir, "breaker_state.json");
+    writeFileSync(
+      legacy,
+      JSON.stringify({
+        codex_cli: { failures: 4, blockedUntilMs: null },
+        broken: "not a record",
+      }),
+    );
+
+    const store = new BreakerStore(stateDir);
+    expect(store.loadAll().codex_cli).toEqual({ failures: 4, blockedUntilMs: null });
+    // The bad entry is held back as evidence; the good one has been consumed.
+    expect(store.unreadableRoutes()).toEqual(["broken"]);
+    expect(readdirSync(dir)).toContain("breaker_state.json");
+
+    // The route recovers: save() removes its per-route record.
+    store.save("codex_cli", { failures: 0, blockedUntilMs: null });
+
+    const after = new BreakerStore(stateDir);
+    expect(after.loadAll().codex_cli).toBeUndefined();
+    expect(after.unreadableRoutes()).toEqual(["broken"]);
+    expect(readdirSync(stateDir)).not.toContain("codex_cli.json");
   });
 
   it("a legacy blob of entirely HEALTHY entries still migrates and is removed", () => {

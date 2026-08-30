@@ -159,6 +159,34 @@ function describeFetchFailure(err: unknown, baseUrl: string): string {
   return hint ? `${message} (${where}: ${hint})` : `${message} (${where})`;
 }
 
+/**
+ * Why a 200 produced no answer — asked identically by both request paths, so
+ * that "the two surfaces agree" is something the code enforces rather than
+ * something a comment claims.
+ *
+ * It answers what was observed and nothing else. Earlier versions tried to
+ * work out WHY a body was unusable, and each was wrong in ways only an
+ * acceptance pass found: one called an HTML error page "no content", the next
+ * discarded a real answer arriving in another SSE dialect, called a provider's
+ * keepalives an unexpected shape, and classified the same bytes differently
+ * depending on how the network split them.
+ */
+function describeUnusableBody(raw: string, readError?: string): string {
+  if (readError !== undefined) {
+    // "No body" would be a claim about what the endpoint sent, and a failed
+    // read is not evidence of that — the bytes below may be a partial answer.
+    return raw.length === 0
+      ? `Response body could not be read: ${readError}`
+      : `Response body could not be read: ${readError} (partial body: ${raw.slice(0, RAW_HEAD_CHARS)})`;
+  }
+  return raw.length === 0
+    ? "Empty response: the endpoint returned 200 with no body"
+    : // Deliberately not a claim about the SHAPE being wrong — a well-formed
+      // stream that carried nothing lands here too. It says what it knows:
+      // nothing usable came out of this, and here is what arrived.
+      `No answer in response body: ${raw.slice(0, RAW_HEAD_CHARS)}`;
+}
+
 export class OpenAICompatibleDispatcher extends BaseDispatcher {
   readonly id: string;
   private readonly baseUrl: string;
@@ -503,10 +531,17 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const durationMs = Date.now() - start;
 
     let rawBody = "";
+    // Distinguished from an empty body, because they are different events with
+    // different fixes and this path used to state the wrong one as fact: a
+    // server that sent 200 plus a partial body and then reset the connection
+    // was reported as "the endpoint returned 200 with no body". The streaming
+    // path said "terminated" and kept the partial output for the same socket,
+    // so the two paths did not agree — while a comment claimed they did.
+    let bodyReadError: string | undefined;
     try {
       rawBody = await res.text();
-    } catch {
-      // Body read failed — treat as empty.
+    } catch (err) {
+      bodyReadError = err instanceof Error ? err.message : String(err);
     }
     const parsedBody = this.#parseBody(rawBody);
 
@@ -543,15 +578,10 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         output: "",
         service: this.id,
         success: false,
-        // Same one question the streaming path asks, and the same two answers.
-        // This path used to emit a dangling "Unexpected response shape: " with
-        // nothing after the colon for an empty body — technically true and
-        // useless, and the worse half of an agreement the streaming comment
-        // claimed the two paths already had.
-        error:
-          rawBody.length === 0
-            ? "Empty response: the endpoint returned 200 with no body"
-            : `Unexpected response shape: ${rawBody.slice(0, RAW_HEAD_CHARS)}`,
+        // Same questions the streaming path asks, in the same order. This path
+        // used to emit a dangling "Unexpected response shape: " with nothing
+        // after the colon for an empty body — technically true and useless.
+        error: describeUnusableBody(rawBody, bodyReadError),
         durationMs,
         rateLimitHeaders: responseHeaders,
       };
@@ -814,17 +844,13 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     // `data: [DONE]` rather than a friendlier sentence about it — less
     // polished, and it cannot be wrong.
     const emptyAnswer = streamError === undefined && output.length === 0;
-    const emptyAnswerError =
-      rawSeen.length === 0
-        ? "Empty response: the endpoint returned 200 with no body"
-        : `Unexpected response shape: ${rawSeen}`;
     const result: DispatchResult =
       streamError !== undefined || emptyAnswer
         ? {
             output,
             service: this.id,
             success: false,
-            error: streamError ?? emptyAnswerError,
+            error: streamError ?? describeUnusableBody(rawSeen),
             durationMs: Date.now() - start,
             rateLimitHeaders: responseHeaders,
           }

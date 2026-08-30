@@ -140,6 +140,22 @@ const LEGACY_BLOB_ROUTE = "(legacy breaker_state.json)";
 function snapshotFromRecord(v: unknown): CircuitBreakerSnapshot | undefined {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const r = v as { failures?: unknown; blockedUntilMs?: unknown; lastFailureAtMs?: unknown };
+  // A record naming NONE of the fields this understands is not a record this
+  // understands, and must not be read as a healthy route.
+  //
+  // Tolerating absent fields (for older builds that wrote fewer) had no floor,
+  // so `{}` and a foreign schema passed every guard and coerced to healthy.
+  // The per-route reader caught that via its healthy-is-a-contradiction rule,
+  // but the legacy blob has no such rule — healthy entries were legitimate
+  // there — so on the upgrade path both shapes were swallowed and the file
+  // deleted. This module's own header records that it was ported from a
+  // Python implementation keyed `consecutive_failures` / `blocked_until`,
+  // which is exactly that foreign shape, so it is a real one and not a
+  // hypothetical. Reproduced by an acceptance pass.
+  //
+  // Every snapshot this module has ever written carries both fields, so the
+  // floor costs nothing an older build would trip over.
+  if (r.failures === undefined && r.blockedUntilMs === undefined) return undefined;
   if (r.failures !== undefined && typeof r.failures !== "number") return undefined;
   if (r.blockedUntilMs !== undefined && r.blockedUntilMs !== null && typeof r.blockedUntilMs !== "number") {
     return undefined;
@@ -343,7 +359,20 @@ export class BreakerStore {
     // the first process to call loadAll() after an upgrade (even a plain
     // `status`) consumed every live cooldown: the exact failure the comment
     // above it claimed to prevent.
-    let persistedAll = true;
+    // Entries this run could not consume. Everything else is migrated and
+    // dropped, so the blob shrinks to nothing on a clean upgrade and each
+    // entry is read exactly once.
+    //
+    // The previous version kept the WHOLE blob whenever any entry was bad, and
+    // it is re-read on every loadAll(). Good entries were therefore re-injected
+    // forever — including after the route recovered and save() deleted its
+    // per-route file, which this then recreated from the stale blob. An
+    // acceptance pass measured a recovered route reading `failures=4` again
+    // after its record was deleted: one more failure from tripping, unable to
+    // heal, with nothing on any surface naming the blob. Keeping evidence of
+    // what could not be read must not mean replaying what could.
+    const residual: Record<string, unknown> = {};
+    let readable = true;
     try {
       const data = JSON.parse(readFileSync(legacy, "utf-8")) as Record<string, unknown>;
       if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("not a map");
@@ -354,9 +383,9 @@ export class BreakerStore {
           // past a bad entry, and the blob was deleted at the end regardless —
           // so a cooldown written in a shape this could not read was destroyed
           // by the upgrade, silently, which is the failure the migration
-          // exists to prevent. Keeping the blob leaves the evidence in place.
+          // exists to prevent. Held back as evidence instead.
           this.unreadable.push(service);
-          persistedAll = false;
+          residual[service] = v;
           continue;
         }
         out[service] = snapshot;
@@ -368,7 +397,8 @@ export class BreakerStore {
         try {
           this.writeAtomicSync(file, JSON.stringify(snapshot, null, 2));
         } catch {
-          persistedAll = false;
+          // Not durable yet — hold it back so the migration retries next read.
+          residual[service] = v;
         }
       }
     } catch {
@@ -377,15 +407,25 @@ export class BreakerStore {
       // contents could not be read — it may well have held every live cooldown
       // on the machine. Keep it and say so; a leftover blob costs one failed
       // parse per read, and deleting the only copy costs the thing this module
-      // exists to protect.
+      // exists to protect. Nothing was parsed, so there is nothing to rewrite.
       this.unreadable.push(LEGACY_BLOB_ROUTE);
-      persistedAll = false;
+      readable = false;
     }
-    if (!persistedAll) return; // Keep the blob; the migration re-runs next read.
+    if (!readable) return;
+    if (Object.keys(residual).length === 0) {
+      try {
+        rmSync(legacy, { force: true });
+      } catch {
+        // Left behind; it is re-read and re-deleted next time.
+      }
+      return;
+    }
     try {
-      rmSync(legacy, { force: true });
+      this.writeAtomicSync(legacy, JSON.stringify(residual, null, 2));
     } catch {
-      // Left behind; it is re-read and re-deleted next time.
+      // Could not shrink it. The whole blob stays, which re-runs the whole
+      // migration next read — wasteful but not lossy, and the alternative is
+      // dropping records that are still only in this file.
     }
   }
 
