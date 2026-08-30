@@ -5,6 +5,18 @@ import path from "node:path";
 
 import { BreakerStore } from "../src/breaker-store.js";
 
+/**
+ * A deadline the product could actually have written.
+ *
+ * These fixtures used 1_900_000_000_000 — the year 2030 — as a "far future"
+ * sentinel. snapshot() emits `Date.now() + remaining` with remaining capped at
+ * MAX_COOLDOWN_SEC, so that value is one the product can never produce, and a
+ * validator that rejects impossible deadlines correctly rejected every one of
+ * these records. Same rule as workspaceRunId elsewhere in this suite: a
+ * fixture is only evidence if it is the thing.
+ */
+const SOON = Date.now() + 60 * 60 * 1000;
+
 describe("BreakerStore", () => {
   let dir: string;
   let stateDir: string;
@@ -24,32 +36,32 @@ describe("BreakerStore", () => {
 
   it("save() then loadAll() round-trips a tripped snapshot", () => {
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     expect(store.loadAll()).toEqual({
-      codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+      codex_cli: { failures: 5, blockedUntilMs: SOON },
     });
   });
 
   it("save() with a fully-healthy snapshot removes the record instead of writing a no-op", () => {
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     store.save("codex_cli", { failures: 0, blockedUntilMs: null });
     expect(store.loadAll()).toEqual({});
   });
 
   it("tracks multiple services independently", () => {
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     store.save("claude_code_cli", { failures: 2, blockedUntilMs: null });
     expect(store.loadAll()).toEqual({
-      codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+      codex_cli: { failures: 5, blockedUntilMs: SOON },
       claude_code_cli: { failures: 2, blockedUntilMs: null },
     });
   });
 
   it("a later save() for one service doesn't clobber another service's entry", () => {
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     store.save("claude_code_cli", { failures: 1, blockedUntilMs: null });
     store.save("codex_cli", { failures: 0, blockedUntilMs: null });
     expect(store.loadAll()).toEqual({
@@ -63,7 +75,7 @@ describe("BreakerStore", () => {
     // 800 writes under four concurrent processes; separate files make that
     // impossible by construction rather than by locking.
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     store.save("claude_code_cli", { failures: 3, blockedUntilMs: null });
     const files = readdirSync(stateDir).filter((f) => f.endsWith(".json")).sort();
     expect(files).toEqual(["claude_code_cli.json", "codex_cli.json"]);
@@ -71,22 +83,22 @@ describe("BreakerStore", () => {
 
   it("keeps a route name with path separators inside the state directory", () => {
     const store = new BreakerStore(stateDir);
-    store.save("../../escape", { failures: 1, blockedUntilMs: 1_900_000_000_000 });
+    store.save("../../escape", { failures: 1, blockedUntilMs: SOON });
     // Nothing written above the state dir, and the name still round-trips.
     expect(readdirSync(dir).sort()).toEqual(["breaker_state"]);
     expect(store.loadAll()["../../escape"]).toEqual({
       failures: 1,
-      blockedUntilMs: 1_900_000_000_000,
+      blockedUntilMs: SOON,
     });
   });
 
   it("loadAll() skips an unreadable record but keeps the well-formed ones", () => {
     mkdirSync(stateDir, { recursive: true });
-    writeFileSync(path.join(stateDir, "codex_cli.json"), JSON.stringify({ failures: 3, blockedUntilMs: 1_900_000_000_000 }));
+    writeFileSync(path.join(stateDir, "codex_cli.json"), JSON.stringify({ failures: 3, blockedUntilMs: SOON }));
     writeFileSync(path.join(stateDir, "garbage.json"), "{ not valid json");
     writeFileSync(path.join(stateDir, "nulled.json"), "null");
     expect(new BreakerStore(stateDir).loadAll()).toEqual({
-      codex_cli: { failures: 3, blockedUntilMs: 1_900_000_000_000 },
+      codex_cli: { failures: 3, blockedUntilMs: SOON },
     });
   });
 
@@ -100,7 +112,7 @@ describe("BreakerStore", () => {
     writeFileSync(path.join(stateDir, "nulled.json"), "null");
     writeFileSync(
       path.join(stateDir, "cursor_cli.json"),
-      JSON.stringify({ failures: 3, blockedUntilMs: 1_900_000_000_000 }),
+      JSON.stringify({ failures: 3, blockedUntilMs: SOON }),
     );
 
     const store = new BreakerStore(stateDir);
@@ -117,7 +129,7 @@ describe("BreakerStore", () => {
   // two at once and passed with the `failures` guard deleted: the other guard
   // was carrying it, and the test could not have told anyone.
   for (const [label, record] of [
-    ["failures", { failures: "5", blockedUntilMs: 1_900_000_000_000 }],
+    ["failures", { failures: "5", blockedUntilMs: SOON }],
     ["blockedUntilMs", { failures: 5, blockedUntilMs: "2099-01-01" }],
     ["lastFailureAtMs", { failures: 5, blockedUntilMs: null, lastFailureAtMs: "yesterday" }],
   ] as const) {
@@ -134,7 +146,10 @@ describe("BreakerStore", () => {
   // pass kept finding shapes missing from that list. These all read back as a
   // perfectly healthy route — which save() would never have written, because
   // it deletes a healthy record instead. The file existing at all is the
-  // contradiction, and it catches every shape without naming any of them.
+  // contradiction, and it catches these without naming any of them. It does
+  // not catch everything — a record carrying a DEADLINE is not fully healthy,
+  // so the invariant never looks at it; see the impossible-deadline test below
+  // for the part it cannot reach.
   for (const [label, body] of [
     ["an empty object", "{}"],
     ["a foreign nested schema", '{"state":{"failures":5,"blockedUntilMs":1900000000000}}'],
@@ -148,6 +163,44 @@ describe("BreakerStore", () => {
       expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
     });
   }
+
+  it("a deadline this module could never have written is unreadable", () => {
+    // snapshot() emits null or `Date.now() + remaining`, capped at
+    // MAX_COOLDOWN_SEC — so zero, negative and far-future deadlines were never
+    // produced here. An acceptance pass found `{"failures":0,
+    // "blockedUntilMs":0}` reading back as a healthy route.
+    mkdirSync(stateDir, { recursive: true });
+    for (const [label, blockedUntilMs] of [
+      ["zero", 0],
+      ["negative", -1],
+      ["further ahead than the maximum cooldown", Date.now() + 48 * 60 * 60 * 1000],
+    ] as const) {
+      writeFileSync(
+        path.join(stateDir, "codex_cli.json"),
+        JSON.stringify({ failures: 0, blockedUntilMs }),
+      );
+      const store = new BreakerStore(stateDir);
+      expect(store.loadAll(), label).toEqual({});
+      expect(store.unreadableRoutes(), label).toEqual(["codex_cli"]);
+    }
+  });
+
+  it("a cooldown that has merely EXPIRED is still a valid record", () => {
+    // The guard must not widen into "is it in the past". A real cooldown
+    // becomes past simply by time passing, and nothing rewrites the file until
+    // the route's next event — so reporting those would flag ordinary records
+    // on every install. This one is indistinguishable from a corrupt
+    // plausible-looking timestamp, by construction, and that limit is stated
+    // rather than papered over.
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      path.join(stateDir, "codex_cli.json"),
+      JSON.stringify({ failures: 2, blockedUntilMs: Date.now() - 60_000 }),
+    );
+    const store = new BreakerStore(stateDir);
+    expect(Object.keys(store.loadAll())).toEqual(["codex_cli"]);
+    expect(store.unreadableRoutes()).toEqual([]);
+  });
 
   it("a JSON array is unreadable — an array is not a record, whatever its contents", () => {
     // Kept separate from the healthy-contradiction cases above on purpose:
@@ -179,7 +232,7 @@ describe("BreakerStore", () => {
     store.loadAll();
     expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
 
-    store.save("codex_cli", { failures: 2, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 2, blockedUntilMs: SOON });
     store.loadAll();
     expect(store.unreadableRoutes()).toEqual([]);
   });
@@ -190,11 +243,11 @@ describe("BreakerStore", () => {
     const legacy = path.join(dir, "breaker_state.json");
     writeFileSync(
       legacy,
-      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: SOON } }),
     );
     const store = new BreakerStore(stateDir);
     expect(store.loadAll()).toEqual({
-      codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+      codex_cli: { failures: 5, blockedUntilMs: SOON },
     });
     expect(readdirSync(dir)).not.toContain("breaker_state.json");
   });
@@ -210,12 +263,12 @@ describe("BreakerStore", () => {
       legacy,
       JSON.stringify({
         codex_cli: { failures: "5", blockedUntilMs: "2099-01-01" },
-        cursor_cli: { failures: 3, blockedUntilMs: 1_900_000_000_000 },
+        cursor_cli: { failures: 3, blockedUntilMs: SOON },
       }),
     );
     const store = new BreakerStore(stateDir);
     expect(store.loadAll()).toEqual({
-      cursor_cli: { failures: 3, blockedUntilMs: 1_900_000_000_000 },
+      cursor_cli: { failures: 3, blockedUntilMs: SOON },
     });
     expect(store.unreadableRoutes()).toEqual(["codex_cli"]);
     expect(readdirSync(dir)).toContain("breaker_state.json");
@@ -228,7 +281,7 @@ describe("BreakerStore", () => {
   // shapes the per-route reader catches were still being swallowed here.
   for (const [label, entry] of [
     ["an empty object", {}],
-    ["a foreign nested schema", { state: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }],
+    ["a foreign nested schema", { state: { failures: 5, blockedUntilMs: SOON } }],
     [
       "the snake_case shape of the Python implementation this was ported from",
       { consecutive_failures: 5, blocked_until: "2099-01-01T00:00:00Z" },
@@ -308,12 +361,12 @@ describe("BreakerStore", () => {
     const legacy = path.join(dir, "breaker_state.json");
     writeFileSync(
       legacy,
-      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: SOON } }),
     );
     new BreakerStore(stateDir).loadAll(); // the migrating process
     // A different process (fresh store), after the blob is gone:
     expect(new BreakerStore(stateDir).loadAll()).toEqual({
-      codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 },
+      codex_cli: { failures: 5, blockedUntilMs: SOON },
     });
   });
 
@@ -325,7 +378,7 @@ describe("BreakerStore", () => {
     );
     writeFileSync(
       path.join(dir, "breaker_state.json"),
-      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: 1_900_000_000_000 } }),
+      JSON.stringify({ codex_cli: { failures: 5, blockedUntilMs: SOON } }),
     );
     // Per-route files are newer by construction; the blob must lose both in
     // the returned map and on disk.
@@ -342,12 +395,12 @@ describe("BreakerStore", () => {
     // asserted neither half of it — it only re-read the state file. Now it
     // actually lists the directory.
     const store = new BreakerStore(stateDir);
-    store.save("codex_cli", { failures: 5, blockedUntilMs: 1_900_000_000_000 });
+    store.save("codex_cli", { failures: 5, blockedUntilMs: SOON });
     const entries = readdirSync(stateDir);
     expect(entries.filter((f) => f.includes(".tmp"))).toEqual([]);
     expect(JSON.parse(readFileSync(path.join(stateDir, "codex_cli.json"), "utf-8"))).toEqual({
       failures: 5,
-      blockedUntilMs: 1_900_000_000_000,
+      blockedUntilMs: SOON,
     });
   });
 });

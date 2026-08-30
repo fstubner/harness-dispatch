@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import type { CircuitBreakerSnapshot } from "./circuit-breaker.js";
+import { MAX_COOLDOWN_SEC, type CircuitBreakerSnapshot } from "./circuit-breaker.js";
 import { withFileLock } from "./file-lock.js";
 import { stateRoot } from "./state-dir.js";
 
@@ -157,8 +157,25 @@ function snapshotFromRecord(v: unknown): CircuitBreakerSnapshot | undefined {
   // floor costs nothing an older build would trip over.
   if (r.failures === undefined && r.blockedUntilMs === undefined) return undefined;
   if (r.failures !== undefined && typeof r.failures !== "number") return undefined;
-  if (r.blockedUntilMs !== undefined && r.blockedUntilMs !== null && typeof r.blockedUntilMs !== "number") {
-    return undefined;
+  if (r.blockedUntilMs !== undefined && r.blockedUntilMs !== null) {
+    if (typeof r.blockedUntilMs !== "number") return undefined;
+    // A deadline this module could never have WRITTEN.
+    //
+    // snapshot() only ever emits `null` or `Date.now() + remaining`, and
+    // cooldownRemaining is capped at MAX_COOLDOWN_SEC — so a real record's
+    // deadline is positive, finite, and at most a day ahead of when it was
+    // written. Values outside that were not produced here.
+    //
+    // Deliberately NOT "is it in the past": a genuine cooldown becomes past
+    // simply by time passing, and calling that corrupt would report every
+    // expired record on disk. An acceptance pass found `blockedUntilMs: 0`
+    // reading as a healthy route and the CHANGELOG claiming the
+    // healthy-is-a-contradiction rule "catches every unrecognised shape" —
+    // it cannot, and a plausible-but-wrong timestamp stays indistinguishable
+    // from a real expired one by construction. This closes the impossible
+    // values only, and the claim is corrected rather than widened.
+    if (!Number.isFinite(r.blockedUntilMs) || r.blockedUntilMs <= 0) return undefined;
+    if (r.blockedUntilMs > Date.now() + MAX_COOLDOWN_SEC * 1000) return undefined;
   }
   if (r.lastFailureAtMs !== undefined && r.lastFailureAtMs !== null && typeof r.lastFailureAtMs !== "number") {
     return undefined;

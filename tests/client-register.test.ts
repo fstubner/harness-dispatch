@@ -91,6 +91,30 @@ describe("planClientWrites", () => {
     }
   });
 
+  it("does not touch a config whose mcpServers is not an object", async () => {
+    // The root guard was added and the SAME defect one level down was not:
+    // `{"mcpServers":"oops"}` had its string rekeyed into
+    // `{"0":"o","1":"o","2":"p","3":"s","harness-dispatch":{…}}` and connect
+    // reported success. Right about the case in front of it, wrong one level
+    // over — found by the very next acceptance pass.
+    for (const servers of ['"oops"', "[1,2,3]", "42"]) {
+      await fs.writeFile(claudeFile(), `{"mcpServers": ${servers}}`, "utf8");
+      const before = await fs.readFile(claudeFile(), "utf8");
+      const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+      expect(outcome.action, `mcpServers: ${servers} was rewritten`).toBe("skipped");
+      expect(await fs.readFile(claudeFile(), "utf8")).toBe(before);
+    }
+  });
+
+  it("does not touch a config whose own harness-dispatch entry is not an object", async () => {
+    // Third level, same spread, same question.
+    await writeJson(claudeFile(), { mcpServers: { [ENTRY_KEY]: "not an object" } });
+    const before = await fs.readFile(claudeFile(), "utf8");
+    const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s", consented: true });
+    expect(outcome.action).toBe("skipped");
+    expect(await fs.readFile(claudeFile(), "utf8")).toBe(before);
+  });
+
   it("an EMPTY or absent config is still mergeable — that is the first run", async () => {
     // The guard must refuse only shapes it cannot merge into. `null` and a
     // missing file are the ordinary first-install case, and refusing those

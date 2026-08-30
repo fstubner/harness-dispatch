@@ -221,6 +221,12 @@ const NOT_AN_OBJECT =
  *
  * `null`/absent stays mergeable: that is an empty file, which is the ordinary
  * first-run case.
+ *
+ * Applied at EVERY level this spreads, not just the root. The first version
+ * guarded the root only, so `{"mcpServers": "oops"}` still had its string
+ * rekeyed into `{"0":"o","1":"o",…}` and reported success — the same defect
+ * one level down, found by the very next acceptance pass. Anywhere a spread
+ * happens, this question has to be asked first.
  */
 function mergeableRoot(value: unknown): Record<string, unknown> | undefined {
   if (value === null || value === undefined) return {};
@@ -361,8 +367,15 @@ export async function writeClientEntry(
   }
   const root = mergeableRoot(parsed.value);
   if (root === undefined) return { ...base, action: "skipped", reason: NOT_AN_OBJECT };
-  const servers = { ...((root[plan.serversKey] as Record<string, unknown> | undefined) ?? {}) };
-  const existing = (servers[ENTRY_KEY] as Record<string, unknown> | undefined) ?? {};
+  const serversValue = mergeableRoot(root[plan.serversKey]);
+  if (serversValue === undefined) {
+    return { ...base, action: "skipped", reason: `its \`${plan.serversKey}\` is not a JSON object` };
+  }
+  const servers = { ...serversValue };
+  const existing = mergeableRoot(servers[ENTRY_KEY]);
+  if (existing === undefined) {
+    return { ...base, action: "skipped", reason: `its existing \`${ENTRY_KEY}\` entry is not a JSON object` };
+  }
   servers[ENTRY_KEY] = { ...existing, ...plan.desired };
 
   const backupPath = await backup(plan.file, opts.stamp);
@@ -411,7 +424,9 @@ export async function removeClientEntry(
   // by accident of a later check. A test for it was written and then deleted —
   // it passed with the guard removed, so it was evidence of nothing.
   if (root === undefined) return { ...base, action: "unchanged" };
-  const servers = { ...((root[plan.serversKey] as Record<string, unknown> | undefined) ?? {}) };
+  const serversValue = mergeableRoot(root[plan.serversKey]);
+  if (serversValue === undefined) return { ...base, action: "unchanged" };
+  const servers = { ...serversValue };
   if (!(ENTRY_KEY in servers)) return { ...base, action: "unchanged" };
   delete servers[ENTRY_KEY];
 

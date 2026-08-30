@@ -134,12 +134,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   mistake produced two opposite shapes depending on whether the route named
   happened to exist and be disabled. The error names each route and why.
 
-- `connect` no longer rewrites a client config whose JSON root is not an
-  object. "Does it parse" and "is it the shape I am about to merge into" are
-  different questions and only the first was asked, so an array-rooted file
-  came back as `{"0":…,"1":…,"mcpServers":{…}}` with success reported. A backup
-  made it recoverable, but this writes another application's config, which is
-  the highest-consequence thing here.
+- `connect` no longer rewrites a client config whose shape it does not
+  understand — at any level, not just the outermost one. "Does it parse" and
+  "is it the shape I am about to merge into" are different questions and only
+  the first was asked, so an array-rooted file came back as
+  `{"0":…,"1":…,"mcpServers":{…}}` with success reported.
+
+  The first version of this fix guarded the JSON root alone, and an acceptance
+  pass the next day found `{"mcpServers":"oops"}` still having its string
+  rekeyed the same way — the same defect one level down. The question is now
+  asked wherever this spreads: the root, the servers map, and our own existing
+  entry. A backup was always taken, so both were recoverable, but this writes
+  another application's config, which is the highest-consequence thing here.
 
 - `workspace apply` no longer overwrites a file you wrote and committed
   yourself, when the agent CREATED a file at the same path. The conflict check
@@ -240,11 +246,24 @@ pre-1.0, so minor versions can carry behaviour changes.
   passes kept finding entries missing from — this checks the invariant the
   module already holds: a healthy route has NO file, because a healthy save
   deletes one. So a file that reads back fully healthy is a contradiction, and
-  that catches every unrecognised shape at once, including the `[]`, `{}` and
-  foreign-schema records that a list of type checks had missed. Type checks
-  remain for the case the invariant cannot see: a wrong-typed field on a
-  record that is otherwise not-healthy. A field that is simply ABSENT is still
-  tolerated, because older builds wrote fewer of them.
+  that catches the `[]`, `{}` and foreign-schema records a list of type checks
+  had missed, without having to name them.
+
+  It does NOT catch everything, and an earlier version of this entry claimed
+  it did. A record carrying a *deadline* is not fully healthy, so the
+  invariant never looks at it — leaving a nonsense deadline to read as a
+  normal route. Deadlines are now checked against what the code can actually
+  produce: `snapshot()` emits `null` or `Date.now() + remaining`, capped at
+  `MAX_COOLDOWN_SEC`, so zero, negative and far-future values were never
+  written here. That last one matters most — an unchecked far-future deadline
+  would have blocked a route for years rather than merely un-blocking it.
+
+  What remains, stated rather than papered over: a corrupt deadline that
+  happens to look plausible is indistinguishable from a real cooldown that
+  has simply expired, because nothing rewrites the file until the route's next
+  event. Type checks remain for a wrong-typed field on a record that is
+  otherwise not-healthy. A field that is simply ABSENT is still tolerated,
+  because older builds wrote fewer of them.
 
   The same validation runs on the pre-split `breaker_state.json` read during
   an upgrade, which had none of it: a bad entry there was coerced to healthy,
