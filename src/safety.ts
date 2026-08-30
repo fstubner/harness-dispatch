@@ -26,7 +26,37 @@ export function effectiveSafetyProfile(
   svc: ServiceConfig,
   requested?: SafetyProfile,
 ): SafetyProfile {
-  // A route's declared capability floor wins over any request — this comes
+  // The flag-gap check runs FIRST, ahead of any declared floor, because no
+  // declaration can conjure a flag that does not exist.
+  //
+  // It used to run last, so `effective_safety` returned before ever reaching
+  // it — and a route pinning `effective_safety: read_only` while defining
+  // flags for only `workspace_edit` launched its harness with NO safety
+  // argument, reported `read_only` on every surface including the dispatch
+  // log, and wrote a file into the project under a read_only dispatch. An
+  // acceptance pass measured the argv and the resulting file. Worse, this
+  // file's own comment below offered pinning as the REMEDY for a flag gap,
+  // when it was the way to silence the check.
+  //
+  // A pin is still honoured for a route that is not flag-controlled at all
+  // (`protocol.safety` undefined) — that is a route saying "I am capped by
+  // construction", which is the case the pin exists for, and the one an
+  // endpoint or a wrapper script is in.
+  //
+  // `{{safety}}` expands to the protocol's argument list for the requested
+  // profile, and to `[]` when the profile is missing (generic-cli.ts), so a
+  // gap means the harness launches with no safety argument at all. Reporting
+  // `full_auto` is what makes `safetyProfileCompatible` refuse the route for a
+  // stricter request — the safe direction: a route that cannot prove it
+  // constrains anything is treated as constraining nothing.
+  //
+  // The shipped harnesses are unaffected; they define all three profiles.
+  if (svc.protocol?.safety !== undefined) {
+    const request = requestedSafetyProfile(svc, requested);
+    if (svc.protocol.safety[request] === undefined) return "full_auto";
+  }
+
+  // A route's declared capability floor wins over the request — this comes
   // from config (`effective_safety:` on the route or its harness defaults),
   // NOT from harness-name special cases in code. openai_compatible is the
   // one structural rule: an HTTP endpoint has no file or shell access, so
@@ -41,31 +71,6 @@ export function effectiveSafetyProfile(
     if (mapped !== undefined) return mapped;
   }
   if (svc.type === "openai_compatible") return "read_only";
-
-  // A CLI route that controls safety with FLAGS, asked for a profile it has no
-  // flags for, runs unconstrained. Report that honestly instead of echoing the
-  // request back.
-  //
-  // `{{safety}}` expands to the protocol's argument list for the requested
-  // profile, and to `[]` when the profile is missing (generic-cli.ts). So a
-  // route whose `protocol.safety` defines workspace_edit and full_auto but not
-  // read_only launched the harness with NO safety arguments at all — and
-  // because this function returned the REQUESTED profile, nothing skipped the
-  // route and the dispatch log recorded `safetyProfile: read_only` for a run
-  // that carried no restriction. An acceptance pass measured the child's argv:
-  // just the prompt.
-  //
-  // The shipped harnesses are unaffected — they define all three profiles, or
-  // pin the gaps with `effective_safety`. This is the user-added route case,
-  // where nothing required either.
-  //
-  // Reporting `full_auto` here is what makes `safetyProfileCompatible` refuse
-  // the route for a stricter request, which is the safe direction: a route that
-  // cannot prove it constrains anything is treated as constraining nothing.
-  if (svc.protocol?.safety !== undefined) {
-    const request = requestedSafetyProfile(svc, requested);
-    if (svc.protocol.safety[request] === undefined) return "full_auto";
-  }
 
   return requestedSafetyProfile(svc, requested);
 }

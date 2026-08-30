@@ -207,15 +207,46 @@ describe("a CLI route with no flags for the requested profile", () => {
     expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
   });
 
-  it("honours an explicit effective_safety pin over the flag check", () => {
+  it("honours an effective_safety pin on a route that is NOT flag-controlled", () => {
     // Declaring the floor is how a route says "I am read-only by
-    // construction" without needing a flag to prove it.
+    // construction" without needing a flag to prove it — a wrapper script, or
+    // anything whose limits are not expressed as arguments. No `safety:` map,
+    // so there is no flag for the pin to contradict.
+    const svc = {
+      ...base,
+      effectiveSafety: "read_only",
+      protocol: { args: ["{{prompt}}"] },
+    } as never;
+    expect(effectiveSafetyProfile(svc, "read_only")).toBe("read_only");
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+  });
+
+  it("a pin does NOT silence the flag check on a route that is flag-controlled", () => {
+    // The previous version of this test used exactly this fixture while
+    // claiming the route was "read-only by construction". It is not: it
+    // controls safety with flags and has none for read_only, so `{{safety}}`
+    // expands to [] and the harness launches unconstrained. An acceptance
+    // pass measured the argv (just the prompt) and the file the "read_only"
+    // dispatch wrote into the project. A declaration cannot conjure a flag.
     const svc = {
       ...base,
       effectiveSafety: "read_only",
       protocol: { args: ["{{safety}}"], safety: { full_auto: ["--yolo"] } },
     } as never;
-    expect(effectiveSafetyProfile(svc, "read_only")).toBe("read_only");
-    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+    expect(effectiveSafetyProfile(svc, "read_only")).toBe("full_auto");
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(false);
+  });
+
+  it("a pin still applies where the flags DO back it", () => {
+    // The guard must not fire on the case the pin legitimately covers: a
+    // harness whose capability varies by mode, with a flag for the mode asked
+    // for. Pinning workspace_edit down to read_only is honoured.
+    const svc = {
+      ...base,
+      effectiveSafety: { workspace_edit: "read_only" },
+      protocol: { args: ["{{safety}}"], safety: { workspace_edit: ["--sandbox"] } },
+    } as never;
+    expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("read_only");
+    expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(true);
   });
 });
