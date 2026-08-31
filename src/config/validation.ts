@@ -71,7 +71,7 @@ export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
  * indistinguishable from not setting it, which is exactly the silent-default
  * class that has bitten this file twice already.
  */
-export const KNOWN_TOP_LEVEL_KEYS = new Set([
+export const KNOWN_TOP_LEVEL_KEYS = new Set([
   "version",
   // Opt back into auto-detection when a config defines its own routes, or
   // opt out when it does not. See loadConfig for the three cases.
@@ -150,6 +150,36 @@ const NUMERIC_ROUTE_KEYS = new Set([
   "timeout_ms",
 ]);
 
+/**
+ * The smallest value each numeric route key can carry and still mean anything.
+ *
+ * Every one of these is positive-only, and being in range is not a style
+ * preference — the router multiplies three of them together
+ * (`quality * cli_capability * capability * quota * weight`) and orders by
+ * `tier` ASCENDING. A negative pair therefore does not degrade a route, it
+ * PROMOTES it: an acceptance pass measured `tier: -5, weight: -100,
+ * cli_capability: -3` scoring 299.8 against a normal route's 0.88, from a
+ * tier that sorts ahead of every real one — a route that wins every routing
+ * decision, silently, with no warning anywhere.
+ *
+ * `tier` starts at 1 because tier 1 is the frontier band and lower sorts
+ * first; 0 and below are ahead of a band that already means "best". The rest
+ * are exclusive of 0 (a zero weight or capability multiplies the score to
+ * nothing, and a zero timeout is not a timeout).
+ *
+ * No upper bounds. `cli_capability: 1.1` ships in this repo's own default
+ * config as deliberate tuning, so a cap would reject a documented value; the
+ * defect being fixed is sign, not magnitude.
+ */
+const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }> = {
+  tier: { min: 1, exclusive: false },
+  weight: { min: 0, exclusive: true },
+  cli_capability: { min: 0, exclusive: true },
+  max_output_tokens: { min: 0, exclusive: true },
+  max_input_tokens: { min: 0, exclusive: true },
+  timeout_ms: { min: 0, exclusive: true },
+};
+
 /** Recognised keys whose value must be a boolean. */
 const BOOLEAN_ROUTE_KEYS = new Set([
   "enabled",
@@ -180,6 +210,18 @@ function readsAsNumber(v: unknown): boolean {
  *
  * Reports rather than rejects, like every other warning here: the config still
  * loads, and `doctor` exits non-zero so the signal is not merely decorative.
+ *
+ * The one thing it does beyond reporting is DELETE an out-of-range numeric
+ * value from the entry, so the built-in default applies. That is not a second
+ * behaviour bolted on: a non-numeric `tier: metered` already ends up at the
+ * default, because `num()` cannot read it. `tier: -5` is different only in
+ * that the coercion CAN read it, which is exactly why it is dangerous — it
+ * reaches routing and wins. Deleting the key makes the two unusable cases
+ * behave the same way, which is what an operator reading either warning
+ * ("IGNORED, and the built-in default applies instead") is being told.
+ *
+ * Every caller warns before it parses the same object, so the deletion is
+ * visible to the parse that follows.
  */
 export function warnMistypedRouteValues(
   entry: Record<string, unknown>,
@@ -194,6 +236,19 @@ export function warnMistypedRouteValues(
           `IGNORED, and the built-in default applies instead. Routing reads this ` +
           `field, so the route is not behaving the way this line says it does.`,
       );
+    } else if (NUMERIC_ROUTE_KEYS.has(key)) {
+      const bound = NUMERIC_ROUTE_MINIMUMS[key];
+      const n = Number(value);
+      if (bound !== undefined && (bound.exclusive ? n <= bound.min : n < bound.min)) {
+        warnings.push(
+          `${label}: ${key} is ${JSON.stringify(value)}, which is below the minimum ` +
+            `of ${bound.min}${bound.exclusive ? " (exclusive)" : ""} — IGNORED, and the ` +
+            `built-in default applies instead. Routing multiplies these fields and ` +
+            `orders tiers ascending, so a negative one PROMOTES the route over every ` +
+            `other rather than demoting it.`,
+        );
+        delete entry[key];
+      }
     }
     if (BOOLEAN_ROUTE_KEYS.has(key) && typeof value !== "boolean") {
       // A quoted "true"/"false" is accepted by bool() and is not a mistake
@@ -251,8 +306,22 @@ export function warnDuplicateRouteNames(
  *
  * Verified read-nowhere in src/ at the time of writing; if one is implemented
  * later, delete it from here and the warning goes away.
+ *
+ * `policy` and `workspace_policy` were added after an acceptance pass found
+ * them allow-listed at top level and read nowhere — top-level isolation
+ * controls that do nothing, the same shape as `default_safety_profile` above.
+ * Both names ARE real per-route keys (see KNOWN_ROUTE_KEYS), which is what
+ * makes the top-level spelling plausible enough to write by mistake: it looks
+ * like a global default for the per-route setting, and there is no such thing.
+ * Re-verified read-nowhere at top level on 2026-08-31 — `raw?.policy` in
+ * jobs.ts reads a JOB MANIFEST, not this config file.
  */
-const ACCEPTED_BUT_UNIMPLEMENTED = new Set(["protocols", "default_safety_profile"]);
+const ACCEPTED_BUT_UNIMPLEMENTED = new Set([
+  "protocols",
+  "default_safety_profile",
+  "policy",
+  "workspace_policy",
+]);
 
 export function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
   for (const key of Object.keys(raw)) {
