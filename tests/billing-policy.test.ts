@@ -284,3 +284,51 @@ describe("nonLocalIncludedRoutePenalty", () => {
     expect(includedPenalty).toBeGreaterThan(localPenalty);
   });
 });
+
+describe("the unknown-billing refusal says WHICH thing is unknown", () => {
+  // billingIsUnknown is true when the KIND is unknown OR the CONFIDENCE is.
+  // One message covered both, so a route `status` prints as
+  // `billing=metered_api` was refused with "billing source is unknown" - the
+  // kind is known perfectly well; what is unknown is how sure we are of it. An
+  // acceptance pass caught the two surfaces contradicting each other.
+  function svc(over: Record<string, unknown>): never {
+    return {
+      name: "r",
+      enabled: true,
+      type: "openai_compatible",
+      tier: 1,
+      weight: 1,
+      cliCapability: 1,
+      capabilities: { execute: 1, plan: 1, review: 1 },
+      escalateOn: [],
+      provider: "openai",
+      surface: "openai_api",
+      authSource: "api_key",
+      paidUsagePossible: true,
+      ...over,
+    } as never;
+  }
+
+  it("names the kind when the kind is what is missing", () => {
+    const out = evaluateRoutePolicy(
+      "r",
+      svc({ billingKind: "unknown", billingConfidence: "documented" }),
+      { dispatcher: { isAvailable: () => true } as never },
+    );
+    expect(out.skipped?.message).toContain("billing source is unknown");
+  });
+
+  it("names the CONFIDENCE when the kind is known", () => {
+    const out = evaluateRoutePolicy(
+      "r",
+      svc({ billingKind: "metered_api", billingConfidence: "unknown" }),
+      { dispatcher: { isAvailable: () => true } as never },
+    );
+    expect(out.skipped?.message).toContain("metered_api");
+    expect(out.skipped?.message).toContain("confidence is unknown");
+    expect(
+      out.skipped?.message,
+      "told the operator the source was unknown for a route whose kind is known",
+    ).not.toContain("billing source is unknown");
+  });
+});

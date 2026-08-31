@@ -44,15 +44,40 @@ const SSE_FRAME_BOUNDARY = /\r?\n\r?\n/;
 const RAW_HEAD_CHARS = 300;
 
 /**
- * Append `path` onto `baseUrl`, inserting `/v1` unless it's already there.
+ * Append `path` onto `baseUrl`, inserting `/v1` only when the base URL has no
+ * path of its own.
+ *
  * Exported so callers other than this dispatcher (e.g. the `usage` tool's
- * listModels, which hits GET {baseUrl}/models on the same endpoint) build
- * URLs the same way — a baseUrl configured without a /v1 suffix must not
- * 404 on one code path while working on the other.
+ * listModels, which hits GET {baseUrl}/models on the same endpoint) build URLs
+ * the same way — a baseUrl configured bare must not 404 on one code path while
+ * working on the other.
+ *
+ * The rule used to be "append /v1 unless it already ENDS in /v1", which
+ * mangles any other path. This project's own config.default.yaml documents
+ * `base_url: https://generativelanguage.googleapis.com/v1beta/openai` — Google's
+ * OpenAI-compatible endpoint — and that produced
+ * `/v1beta/openai/v1/chat/completions`, which is not a URL Google serves. An
+ * acceptance pass noticed the same shape via `anthropic_messages`, whose
+ * documented form is `POST {base_url}/messages`: a third-party host on a
+ * non-/v1 path was simply unconfigurable.
+ *
+ * "You gave me a path, I use it" is the predictable rule, and every other
+ * documented example already spells out its own `/v1` (`.../api/v1`,
+ * `http://localhost:11434/v1`), so they are unaffected. A bare origin still
+ * gets `/v1`, which is what makes `https://api.anthropic.com` work.
  */
 export function endpointUrl(baseUrl: string, path: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
-  return trimmed.endsWith("/v1") ? `${trimmed}${path}` : `${trimmed}/v1${path}`;
+  let hasPath: boolean;
+  try {
+    const parsed = new URL(trimmed);
+    hasPath = parsed.pathname !== "" && parsed.pathname !== "/";
+  } catch {
+    // Not parseable as a URL — fall back to the old suffix test rather than
+    // guessing, so a malformed base_url behaves as it always did.
+    hasPath = trimmed.endsWith("/v1");
+  }
+  return hasPath ? `${trimmed}${path}` : `${trimmed}/v1${path}`;
 }
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_SYSTEM_PROMPT =

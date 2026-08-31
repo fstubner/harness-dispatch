@@ -46,10 +46,20 @@ export function evaluateRoutePolicy(
     !isIncludedOrLocalRoute(billing) &&
     !billing.allowPaidUsage
   ) {
+    // Two different conditions reach here and they need different words.
+    // `billingIsUnknown` is true when the KIND is unknown OR the CONFIDENCE
+    // is. Saying "billing source is unknown" for both told an operator that
+    // about a route `status` prints as `billing=metered_api` — the kind is
+    // known perfectly well; what is unknown is how sure we are of it. An
+    // acceptance pass caught the two surfaces contradicting each other.
+    const why =
+      billing.kind === "unknown"
+        ? "billing source is unknown"
+        : `billing is recorded as ${billing.kind} but its confidence is unknown`;
     return skip(
       route,
       "unknown_billing",
-      "billing source is unknown and paid usage is not allowed — this is a config-level " +
+      `${why} and paid usage is not allowed — this is a config-level ` +
         `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
         `to '${route}' in config.yaml to enable it`,
     );

@@ -199,6 +199,9 @@ export class QuotaCache {
   private pendingDelta: Record<string, { calls: number; success: number; failure: number; rateLimited: number; inputTokens: number; outputTokens: number }> = {};
   private persistCounter = 0;
 
+  /** Last failure to persist local counts; surfaced by status. */
+  private persistError: string | undefined;
+
   constructor(
     dispatchers: Record<string, Dispatcher>,
     opts: QuotaCacheOptions = {},
@@ -546,9 +549,28 @@ export class QuotaCache {
       // Only cleared once the write succeeded, so a failure is retried rather
       // than silently dropped.
       this.pendingDelta = {};
-    } catch {
-      // Ignore — counters are informational and must never fail a dispatch.
+      this.persistError = undefined;
+    } catch (err) {
+      // Never fail a dispatch over a counter — but do not pretend it worked.
+      //
+      // The in-process view keeps serving the numbers it accumulated, so
+      // nothing looks wrong until the server restarts and every count is zero.
+      // Two acceptance passes measured that: four recorded results, no file on
+      // disk, no error, and `usage` reporting the counts as fact until the
+      // next boot. Recorded here so `status` can say the numbers are not
+      // durable, which is the honest answer to "how much have I used this?".
+      this.persistError = err instanceof Error ? err.message : String(err);
     }
+  }
+
+  /**
+   * Why local counters are not reaching disk, or undefined if they are.
+   *
+   * Read by `buildStatus`. Deliberately not thrown: a dispatch that produced a
+   * real answer must not fail because a counter could not be written.
+   */
+  localCountsPersistError(): string | undefined {
+    return this.persistError;
   }
 
   /**

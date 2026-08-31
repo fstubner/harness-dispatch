@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServiceConfig } from "../../src/types.js";
 
-const { OpenAICompatibleDispatcher } = await import(
+const { OpenAICompatibleDispatcher, endpointUrl } = await import(
   "../../src/dispatchers/openai-compatible.js"
 );
 
@@ -758,5 +758,35 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as { stream_options?: { include_usage: boolean } };
     expect(body.stream_options).toEqual({ include_usage: true });
+  });
+});
+
+describe("endpointUrl", () => {
+  // Every base_url shape config.default.yaml documents, plus the bare origin.
+  // The rule used to be "append /v1 unless it already ends in /v1", which
+  // mangles any OTHER path - including Google's OpenAI-compatible endpoint,
+  // which this project's own config file documents. That produced
+  // /v1beta/openai/v1/chat/completions, a URL Google does not serve.
+  it.each([
+    // A bare origin still gets /v1 - this is what makes the helpful default
+    // helpful, and what an acceptance pass found unconfigurable for a
+    // third-party anthropic_messages host.
+    ["https://api.anthropic.com", "/messages", "https://api.anthropic.com/v1/messages"],
+    // Already /v1: unchanged, as before.
+    ["https://api.anthropic.com/v1", "/messages", "https://api.anthropic.com/v1/messages"],
+    ["http://localhost:11434/v1", "/chat/completions", "http://localhost:11434/v1/chat/completions"],
+    ["https://openrouter.ai/api/v1", "/chat/completions", "https://openrouter.ai/api/v1/chat/completions"],
+    // The case that was broken, documented in config.default.yaml.
+    [
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+      "/chat/completions",
+      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    ],
+    // Trailing slashes are still trimmed, and a bare origin with one is still
+    // a bare origin.
+    ["https://api.example.com/", "/models", "https://api.example.com/v1/models"],
+    ["https://api.example.com/gw/", "/models", "https://api.example.com/gw/models"],
+  ])("%s + %s", (base, path, want) => {
+    expect(endpointUrl(base, path)).toBe(want);
   });
 });

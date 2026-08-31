@@ -356,7 +356,14 @@ export async function buildStatus(
   // `Object.hasOwn`, not `=== undefined`: a record named `constructor` or
   // `toString` would otherwise find a match on Object.prototype and suppress
   // its own warning.
+  const quotaPersistError = quota.localCountsPersistError();
   const stateWarnings = [
+    ...(quotaPersistError !== undefined
+      ? [
+          `usage counters are not reaching disk (${quotaPersistError}) — the numbers ` +
+            `below are this process's only, and reset to zero when it restarts`,
+        ]
+      : []),
     ...(config.reloadError !== undefined
       ? [
           `config reload FAILED — the file on disk is NOT the config in effect; still routing ` +

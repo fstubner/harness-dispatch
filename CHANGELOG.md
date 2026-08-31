@@ -112,6 +112,46 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- The CLI no longer aborts with exit 127 after printing a correct answer. A
+  routed fallback — the first route answering but unusably, the second
+  succeeding — ended in a libuv assertion on Windows and an exit status every
+  shell reads as "command not found". The work was done and the report of it
+  was a crash. Three acceptance passes reproduced it 3/3 and it was the oldest
+  confirmed defect here; the cause was tearing the event loop down with
+  `process.exit()` while two HTTP connections were still closing. Verified at
+  the built binary: 127 with the assertion on all three runs before, 0 with
+  none on all three after.
+
+- `base_url` values with a path of their own are no longer mangled. `/v1` was
+  appended to anything not already ending in it, so this project's own
+  documented `https://generativelanguage.googleapis.com/v1beta/openai` became
+  `/v1beta/openai/v1/chat/completions`, which Google does not serve, and an
+  `anthropic_messages` host on a non-`/v1` path was unconfigurable. A bare
+  origin still gets `/v1`; a path you supplied is now used as you wrote it.
+
+- `configure` writes `config.yaml` with 0600. It can contain a literal
+  `api_key` — `configure` deliberately preserves one rather than replacing it
+  with a `${VAR}` reference — and it was written with default permissions,
+  0644 under a typical umask, in a module family that is careful everywhere
+  else. POSIX only; Windows ignores the mode.
+
+- Usage counters that cannot reach disk now say so. The in-process view kept
+  serving the numbers it had accumulated, so nothing looked wrong until the
+  next restart showed every count at zero, with `usage` reporting them as fact
+  in between. Reported under `status`'s "State problems", never thrown: a
+  dispatch that produced a real answer must not fail over a counter.
+
+- `doctor` reports unreadable saved state. It read the config warnings
+  directly, so a corrupt breaker record or unwritable usage counters were
+  invisible to it — eleven green checks over state it could not read. `status`
+  grew a heading for this and `doctor` had not followed.
+
+- Two messages that reached the right conclusion by the wrong description: a
+  route blocked because its billing CONFIDENCE is unknown was told "billing
+  source is unknown", for a route `status` prints as `billing=metered_api`;
+  and `doctor` described a dead `--config` path as somewhere the client
+  "launches from".
+
 - The test suite no longer dispatches to your real subscription harnesses.
   Config entries are additive, so a test config declaring empty CLI and
   endpoint lists did NOT isolate it from the harnesses installed on the

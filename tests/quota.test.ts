@@ -524,3 +524,35 @@ describe("token totals — the honest answer to 'what has this cost me'", () => 
     expect(snap.beta!.localOutputTokens).toBe(0);
   });
 });
+
+describe("QuotaCache — a failed persist is reported, not swallowed", () => {
+  it("reports why counters are not reaching disk", () => {
+    // The in-process view keeps serving the numbers it accumulated, so nothing
+    // looks wrong until the server restarts and every count is zero. Two
+    // acceptance passes measured that: four recorded results, no file on disk,
+    // no error, and `usage` reporting the counts as fact until the next boot.
+    // Never thrown - a dispatch that produced a real answer must not fail
+    // because a counter could not be written.
+    const dir = tmpFile("unwritable-dir");
+    // A path whose PARENT is a file, so mkdir and write both fail on every
+    // platform without needing permission bits.
+    writeFileSync(dir, "not a directory", "utf-8");
+    const cache = new QuotaCache(
+      { a: makeDispatcher("a") },
+      { stateFile: path.join(dir, "quota_state.json") },
+    );
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    expect(() => cache.saveLocalCountsSync()).not.toThrow();
+    expect(cache.localCountsPersistError(), "the failure was swallowed").toBeDefined();
+  });
+
+  it("clears once a write succeeds", () => {
+    // A warning that outlives its cause is the same class of lie in the other
+    // direction.
+    const file = tmpFile("recovers.json");
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    cache.saveLocalCountsSync();
+    expect(cache.localCountsPersistError()).toBeUndefined();
+  });
+});
