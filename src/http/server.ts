@@ -83,7 +83,7 @@ function isLoopbackHost(host: string): boolean {
 
 
 /**
- * Run fanout arms to completion INDEPENDENTLY of one another.
+ * Run fanout arms to completion INDEPENDENTLY of one another, and DURABLY.
  *
  * Promise.all rejected the whole batch when one arm threw (workspace lock
  * timeout, worktree setup failure), discarding every other arm's completed —
@@ -91,34 +91,71 @@ function isLoopbackHost(host: string): boolean {
  * own; a thrown arm becomes a failed row naming its route. One row shape for
  * the streaming and non-streaming branches on purpose: they used to differ
  * (streaming omitted success/error), the one-sibling-guarded pattern again.
+ *
+ * JOB-BACKED, like the MCP fanout. These arms called `router.routeTo`
+ * directly, so an arm's work existed ONLY inside the HTTP request: no job
+ * directory, no manifest, no partial log. Kill the client — or the server —
+ * mid-fanout and every arm's output was gone, with nothing on disk to salvage.
+ * PRODUCT.md names that as the defining failure ("a wasted attempt with no
+ * trail"), and the MCP surface had been durable all along; an acceptance pass
+ * caught the two surfaces disagreeing about the product's central promise.
+ *
+ * The RESPONSE SHAPE IS UNCHANGED. This awaits each arm's completion and
+ * returns the same rows it always did, so an OpenAI-compatible client sees
+ * exactly what it saw before — durability was never a contract change, which
+ * is what made deferring this to a breaking release the wrong call. The one
+ * addition is `jobId` per row: additive, inside the `harness_dispatch`
+ * extension namespace, and the thing that makes salvage possible at all.
  */
 async function runFanoutArms(
-  router: Router,
+  holder: RuntimeHolder,
   routes: string[],
   parsed: { prompt: string; files: string[]; workingDir: string; hints: RouteHints },
 ): Promise<
-  Array<{ route: string; success: boolean; output: string; error?: string; workspace?: unknown }>
+  Array<{
+    route: string;
+    jobId?: string;
+    success: boolean;
+    output: string;
+    error?: string;
+    workspace?: unknown;
+  }>
 > {
   const settled = await Promise.allSettled(
-    routes.map((route) =>
-      router.routeTo(
-        route,
-        parsed.prompt,
-        parsed.files,
-        parsed.workingDir,
-        explicitOptsFromHints(parsed.hints),
-      ),
-    ),
+    routes.map(async (route) => {
+      const started = await startAsyncJobTracked(
+        { holder },
+        {
+          prompt: parsed.prompt,
+          files: parsed.files,
+          workingDir: parsed.workingDir,
+          hints: parsed.hints,
+          service: route,
+        },
+      );
+      // `completion` never rejects and resolves on a terminal state, so the
+      // await below cannot hang on a crashed arm.
+      await started.completion;
+      return { route, job: await getAsyncJob(started.status.jobId) };
+    }),
   );
   return settled.map((s, i) => {
     if (s.status === "fulfilled") {
-      const r = s.value.result;
+      const { route, job } = s.value;
+      const r = job.result?.result;
       return {
-        route: r.service,
-        success: r.success,
-        output: r.output,
-        ...(r.error !== undefined ? { error: r.error } : {}),
-        ...(r.workspace !== undefined ? { workspace: r.workspace } : {}),
+        route,
+        jobId: job.status.jobId,
+        success: r?.success ?? false,
+        // A job that ended without a result still hands back whatever it got
+        // to — the same salvage rule the orphan path follows.
+        output: r?.output ?? job.partialOutput ?? "",
+        ...(r?.error !== undefined
+          ? { error: r.error }
+          : job.status.error !== undefined
+            ? { error: job.status.error }
+            : {}),
+        ...(r?.workspace !== undefined ? { workspace: r.workspace } : {}),
       };
     }
     return {
@@ -238,7 +275,7 @@ async function handleChatCompletions(
     sse.started = true;
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
-      const rows = await runFanoutArms(state.router, selected.routes, parsed);
+      const rows = await runFanoutArms(holder, selected.routes, parsed);
       writeSse(
         res,
         sseContent(JSON.stringify(rows), {
@@ -327,7 +364,7 @@ async function handleChatCompletions(
         ? parsed.models
         : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
     const selected = eligibleRoutes(routes);
-    const rows = await runFanoutArms(state.router, selected.routes, parsed);
+    const rows = await runFanoutArms(holder, selected.routes, parsed);
     sendJson(
       res,
       200,
