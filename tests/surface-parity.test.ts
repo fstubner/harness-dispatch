@@ -38,7 +38,34 @@ let close: () => Promise<void>;
 beforeAll(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), "hr-parity-live-"));
   const configPath = path.join(dir, "config.yaml");
-  await fs.writeFile(configPath, "clis: []\nendpoints: []\n", "utf8");
+  // `disabled:`, not just empty lists. CLI entries are ADDITIVE: `clis: []`
+  // does NOT isolate a config from the routes auto-detected on the machine, so
+  // this file ran with claude_code_cli, codex_cli, cursor_cli and
+  // antigravity_cli configured and reachable — and the boundary test below
+  // DISPATCHED to the real Claude Code CLI on every `npm test`, every
+  // `npm run check` and every CI run, spending subscription quota to prove a
+  // schema check. An acceptance pass measured the dispatch returning in 6.4s
+  // having consumed 47k input tokens, and found the comment on that test
+  // asserting the opposite ("fails later ... no configured routes").
+  //
+  // Every auto-detected route is named, including the retired gemini_cli, so
+  // the list is a ceiling rather than a snapshot of what happens to be
+  // installed here.
+  await fs.writeFile(
+    configPath,
+    [
+      "clis: []",
+      "endpoints: []",
+      "disabled:",
+      "  - claude_code_cli",
+      "  - codex_cli",
+      "  - cursor_cli",
+      "  - antigravity_cli",
+      "  - gemini_cli",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
 
   const { server } = await buildMcpServer({ configPath });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -131,8 +158,14 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     // rather than applying .strict() to the outer object, so an MCP client
     // attaching its own fields still works.
     //
-    // This call fails later for an unrelated reason (no configured routes);
-    // what matters is only that it is not turned away at the boundary.
+    // This call fails later because the config disables every route; what
+    // matters is only that it is not turned away at the boundary.
+    //
+    // That was NOT true when written. The comment said "no configured
+    // routes", but `clis: []` does not isolate from auto-detected CLIs — so
+    // this line dispatched to the real Claude Code CLI on every run of the
+    // suite, and an acceptance pass measured it doing so. The `disabled:`
+    // block in the setup above is what makes the sentence true.
     //
     // Default grace on purpose (NOT graceSeconds: 0): the reply must not
     // arrive until the background run has fully landed. Fire-and-forget left

@@ -112,6 +112,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- The test suite no longer dispatches to your real subscription harnesses.
+  Config entries are additive, so a test config declaring empty CLI and
+  endpoint lists did NOT isolate it from the harnesses installed on the
+  machine — and one boundary test reached the real Claude Code CLI on every
+  `npm test`, every `npm run check` and every CI run, spending quota to prove a
+  schema check. An acceptance pass measured it: 6.4 seconds, 47k input tokens.
+  The test carried a comment asserting the opposite, which nobody had checked.
+  Verified fixed by measurement rather than by reading — the dispatch log stood
+  at 425 lines before a full run and 425 after.
+
 - A mistyped safety setting no longer gets you MORE access than you asked for.
   `safteyProfile: "read_only"` at the top level of an MCP call was accepted in
   silence and the dispatch then ran at the `workspace_edit` default — an
@@ -126,6 +136,15 @@ pre-1.0, so minor versions can carry behaviour changes.
   arguments before delegating, leaving routing, validation and progress
   reporting untouched. Both surfaces now run one shared check, and the parity
   suite asserts it on both rather than recording the difference as deliberate.
+
+  The refusal says WHERE the key belongs, per key and per surface, because the
+  two differ: the HTTP surface reads all seven hint names from the top level of
+  the request, while on MCP only two are top-level and the rest go inside
+  `hints`. A single "did you mean X?" sent the caller to a second rejection -
+  the same failure this project already recorded from its snake_case traps, "a
+  refusal that confidently points at the wrong landing spot costs the round
+  trip it exists to save". On the five tools that take no hints at all the
+  message says so, rather than warning about access it cannot grant.
 
 - An endpoint credential embedded in `base_url` no longer reaches the terminal
   or `logs/dispatches.jsonl` through an error message. The redaction only ever
