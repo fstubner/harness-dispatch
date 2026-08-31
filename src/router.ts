@@ -565,6 +565,7 @@ export class Router {
         circuitBroken: Boolean(breaker?.isTripped),
         ...(requestedSafety !== undefined ? { requestedSafetyProfile: requestedSafety } : {}),
         ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+        taskType,
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);
       if (policy.blocked || dispatcher === undefined) return null;
@@ -615,6 +616,7 @@ export class Router {
         circuitBroken: Boolean(breaker?.isTripped),
         ...(requestedSafety !== undefined ? { requestedSafetyProfile: requestedSafety } : {}),
         ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+        taskType,
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);
       if (policy.blocked || dispatcher === undefined) continue;
@@ -1010,6 +1012,7 @@ export class Router {
       dispatcher,
       ...(opts.safetyProfile !== undefined ? { requestedSafetyProfile: opts.safetyProfile } : {}),
       ...(opts.routePolicy !== undefined ? { routePolicy: opts.routePolicy } : {}),
+      ...(opts.taskType !== undefined ? { taskType: opts.taskType } : {}),
     });
     if (policy.blocked) {
       const result: DispatchResult = {
@@ -1290,6 +1293,7 @@ export class Router {
       dispatcher,
       ...(opts.safetyProfile !== undefined ? { requestedSafetyProfile: opts.safetyProfile } : {}),
       ...(opts.routePolicy !== undefined ? { routePolicy: opts.routePolicy } : {}),
+      ...(opts.taskType !== undefined ? { taskType: opts.taskType } : {}),
     });
     if (policy.blocked) {
       const result: DispatchResult = {

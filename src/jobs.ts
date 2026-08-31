@@ -1203,18 +1203,29 @@ export async function getAsyncJob(jobId: string): Promise<{
   if (result !== undefined) {
     return { manifest, status, result };
   }
-  if (status.status === "orphaned") {
-    // Terminal: no poll guidance — polling will never resolve this job.
-    return { manifest, status };
-  }
-
+  // Terminal: no poll guidance — polling will never resolve an orphaned job.
+  // But it still gets its partial output, which is the whole point of the
+  // record surviving the runner.
+  //
+  // This branch used to `return` here, ABOVE the partial-output read below, so
+  // an orphaned job handed back nothing at all while its progress sat in
+  // output/stdout.partial.log. PRODUCT.md's success criterion is explicit that
+  // a dispatch must never die returning nothing — "at worst it fails and hands
+  // back its latest progress… a wasted attempt with no trail is the defining
+  // failure" — and orphaning is exactly the case that criterion was written
+  // for: the supervisor died, so there is no result.json and the partial log
+  // is all that survived. An acceptance pass measured eight chunks of progress
+  // on disk and an empty response.
+  const terminalOrphan = status.status === "orphaned";
   const out: { manifest: JobManifest; status: JobStatus; partialOutput?: string } = {
     manifest,
-    status: {
-      ...status,
-      nextPollSeconds: SUGGESTED_POLL_SECONDS,
-      instructions: pollInstructions(jobId),
-    },
+    status: terminalOrphan
+      ? status
+      : {
+          ...status,
+          nextPollSeconds: SUGGESTED_POLL_SECONDS,
+          instructions: pollInstructions(jobId),
+        },
   };
   const partialPath = path.join(jobDir, "output", "stdout.partial.log");
   if (existsSync(partialPath)) {

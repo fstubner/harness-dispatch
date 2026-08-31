@@ -197,6 +197,10 @@ async function handleChatCompletions(
         ...(parsed.hints.routePolicy !== undefined
           ? { routePolicy: parsed.hints.routePolicy }
           : {}),
+        // Same refusal as every other surface: an HTTP endpoint route cannot
+        // carry an `execute` task. Omitted here, this surface would keep
+        // routing execution to endpoints after the others stopped.
+        ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);
       if (!policy.blocked) routes.push(route);

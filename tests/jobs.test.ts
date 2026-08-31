@@ -99,6 +99,65 @@ describe("orphaned job detection", () => {
     expect(listed.find((j) => j.jobId === jobId)?.status).toBe("orphaned");
   });
 
+  it("hands back the progress an orphaned job saved, instead of nothing", async () => {
+    // PRODUCT.md's success criterion, verbatim: a dispatch must never die
+    // returning nothing - "at worst it fails and hands back its latest
+    // progress... a wasted attempt with no trail is the defining failure."
+    // Orphaning is precisely the case it was written for: the supervisor died,
+    // so there is no result.json and stdout.partial.log is all that survived.
+    //
+    // The orphan branch returned ABOVE the partial-output read, so an
+    // acceptance pass measured eight chunks of progress on disk and an empty
+    // response.
+    const jobId = "job-1786977300001-0f0bbbbb";
+    const jobDir = path.join(tmpDir, jobId);
+    await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
+    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await fs.writeFile(
+      path.join(jobDir, "status.json"),
+      JSON.stringify({ jobId, status: "running", createdAt: stale, updatedAt: stale, jobDir }),
+    );
+    await fs.writeFile(
+      path.join(jobDir, "manifest.json"),
+      JSON.stringify({ jobId, createdAt: stale, workingDir: tmpDir, promptPath: "", files: [] }),
+    );
+    await fs.writeFile(
+      path.join(jobDir, "output", "stdout.partial.log"),
+      ["step 1 done", "step 2 done", "halfway through step 3"].join("|"),
+      "utf8",
+    );
+
+    const job = await getAsyncJob(jobId);
+    expect(job.status.status).toBe("orphaned");
+    expect(job.partialOutput, "the trail was on disk and was not returned").toContain(
+      "halfway through step 3",
+    );
+    // Still terminal: salvage does not mean "keep polling".
+    expect(job.status.instructions).toBeUndefined();
+    expect(job.status.nextPollSeconds).toBeUndefined();
+  });
+
+  it("an orphaned job with no partial log still reports cleanly", async () => {
+    // The salvage path must not invent a field when there is nothing to
+    // salvage - absence of progress is not an error.
+    const jobId = "job-1786977300002-0f0ccccc";
+    const jobDir = path.join(tmpDir, jobId);
+    await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
+    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await fs.writeFile(
+      path.join(jobDir, "status.json"),
+      JSON.stringify({ jobId, status: "running", createdAt: stale, updatedAt: stale, jobDir }),
+    );
+    await fs.writeFile(
+      path.join(jobDir, "manifest.json"),
+      JSON.stringify({ jobId, createdAt: stale, workingDir: tmpDir, promptPath: "", files: [] }),
+    );
+
+    const job = await getAsyncJob(jobId);
+    expect(job.status.status).toBe("orphaned");
+    expect(job.partialOutput).toBeUndefined();
+  });
+
   it("keeps a freshly-heartbeated running job as running", async () => {
     const jobId = "job-1786977300001-0f0bbbbb";
     const jobDir = path.join(tmpDir, jobId);

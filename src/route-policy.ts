@@ -7,6 +7,7 @@ import type {
   RouteSkip,
   SafetyProfile,
   ServiceConfig,
+  TaskType,
 } from "./types.js";
 
 export interface RoutePolicyResult {
@@ -22,6 +23,7 @@ export function evaluateRoutePolicy(
     circuitBroken?: boolean;
     requestedSafetyProfile?: SafetyProfile;
     routePolicy?: RoutePolicy;
+    taskType?: TaskType;
   } = {},
 ): RoutePolicyResult {
   if (!svc.enabled) {
@@ -80,6 +82,30 @@ export function evaluateRoutePolicy(
         `\`harness-dispatch configure --allow-paid\`). If it cannot — a local runtime, or a ` +
         `route already covered by a subscription — the correct fix is ` +
         `\`paid_usage_possible: false\` instead.`,
+    );
+  }
+
+  // An HTTP endpoint cannot execute, structurally: no agent loop, no file
+  // access, no shell. PRODUCT.md states this as design rather than gap — and
+  // routing still sent `execute` work to one, because an undeclared capability
+  // defaults to 1.0 and NO endpoint example in config.default.yaml declares
+  // any. An acceptance pass measured a `--task-type execute` dispatch routed to
+  // an endpoint returning prose and exit 0: execution reported as succeeded
+  // when none happened. It surfaces exactly when the CLI routes are busy or
+  // tripped — the degraded case the caller is least able to check.
+  //
+  // A REFUSAL rather than a capability score, for two reasons. A score of 0
+  // still leaves the route selectable when it is the only candidate, which is
+  // the failing case itself. And declared capabilities must not be able to
+  // override it: this is the same rule as the safety-flag check below — a
+  // declaration cannot conjure an ability the route does not have.
+  if (opts.taskType === "execute" && svc.type === "openai_compatible") {
+    return skip(
+      route,
+      "cannot_execute",
+      "this is an HTTP model endpoint — it has no agent loop, no file access and no shell, " +
+        "so it cannot carry out an `execute` task. Endpoint routes serve plan, review and " +
+        "second opinions. Use a CLI route for execution, or send this as taskType: plan/review.",
     );
   }
 

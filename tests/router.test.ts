@@ -921,7 +921,14 @@ describe("Router.pickService", () => {
     expect(decision?.service, "a metered loopback proxy was preferred as 'local'").toBe("free_cli");
     // And the proxy really was eligible — otherwise this passes because the
     // route never entered candidacy, which proves nothing about the predicate.
-    const anyTask = await router.pickService({ hints: { taskType: "execute" } });
+    //
+    // `plan`, not `execute`: an openai_compatible route is now refused for
+    // execute outright (it has no agent loop or file access), so an execute
+    // probe would report it skipped for a reason that has nothing to do with
+    // the locality predicate under test — and the control would start passing
+    // for the wrong reason, which is exactly what it exists to prevent. An
+    // endpoint is legitimately eligible for plan.
+    const anyTask = await router.pickService({ hints: { taskType: "plan" } });
     expect(anyTask?.skippedRoutes?.some((s) => s.route === "paid_proxy") ?? false).toBe(false);
   });
 

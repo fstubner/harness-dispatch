@@ -526,6 +526,7 @@ async function startFanout(
       circuitBroken: Boolean(breaker?.isTripped),
       ...(hints.safetyProfile !== undefined ? { requestedSafetyProfile: hints.safetyProfile } : {}),
       ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
+      taskType,
     });
     if (policy.skipped) skippedRoutes.push(policy.skipped);
     if (policy.blocked) continue;

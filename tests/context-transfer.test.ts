@@ -112,3 +112,42 @@ describe("buildContextPreamble", () => {
     expect(preamble.length).toBeLessThan(30_000);
   });
 });
+
+describe("chaining on a job that never finished", () => {
+  /** A job whose supervisor died: progress on disk, no result.json. */
+  async function plantOrphan(jobId: string, prompt: string, partial: string): Promise<void> {
+    const dir = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(dir, "output"), { recursive: true });
+    await fs.writeFile(path.join(dir, "prompt.md"), prompt, "utf8");
+    await fs.writeFile(path.join(dir, "output", "stdout.partial.log"), partial, "utf8");
+  }
+
+  it("carries the partial output rather than reporting no result", async () => {
+    // Chaining fell back to "(no result available)" whenever result.json was
+    // missing - including for an orphaned job whose progress was sitting right
+    // beside it. Chaining on "what the last job got to" is exactly what a
+    // caller wants after a run whose supervisor died, and PRODUCT.md names
+    // losing that trail as the defining failure.
+    await plantOrphan("job-1786977300009-0f0eeeee", "Refactor the parser", "Renamed two symbols");
+
+    const preamble = await buildContextPreamble(["job-1786977300009-0f0eeeee"]);
+    expect(preamble).toContain("Renamed two symbols");
+    expect(preamble).toContain("Refactor the parser");
+    // Labelled honestly: this is not a completed result.
+    expect(preamble).toMatch(/INCOMPLETE/);
+    expect(preamble).not.toMatch(/no result available/);
+  });
+
+  it("still says no result available when there is genuinely nothing", async () => {
+    // The salvage path must not paper over an unknown or pruned job - it is
+    // a fallback for real progress, not a replacement for the honest answer.
+    const preamble = await buildContextPreamble(["job-1786977300010-0f0fffff"]);
+    expect(preamble).toMatch(/no result available/);
+  });
+
+  it("ignores an empty partial log", async () => {
+    await plantOrphan("job-1786977300011-0f0abcde", "Do a thing", "   ");
+    const preamble = await buildContextPreamble(["job-1786977300011-0f0abcde"]);
+    expect(preamble).toMatch(/no result available/);
+  });
+});
