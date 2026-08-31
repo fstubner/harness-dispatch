@@ -565,6 +565,69 @@ describe("HTTP server", () => {
     expect(body.choices[0]!.message.content).toContain("workspace");
   });
 
+  it("leaves a durable trail for every fanout arm, not just a response", async () => {
+    // These arms called router.routeTo directly, so an arm's work existed ONLY
+    // inside the HTTP request: no job directory, no manifest, no partial log.
+    // Kill the client or the server mid-fanout and every arm's output was
+    // gone, with nothing on disk to salvage — while the MCP fanout had been
+    // job-backed all along. PRODUCT.md names losing that trail as the defining
+    // failure, so the two surfaces disagreed about the product's central
+    // promise. An acceptance pass found it by reading.
+    const jobsDir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-http-fanout-jobs-"));
+    const prev = process.env.HARNESS_DISPATCH_JOBS_DIR;
+    process.env.HARNESS_DISPATCH_JOBS_DIR = jobsDir;
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    try {
+      const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      handles.push(handle);
+
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "local-test",
+          mode: "fanout",
+          messages: [{ role: "user", content: "say hello" }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        harness_dispatch?: { mode?: string };
+        choices: Array<{ message: { content: string } }>;
+      };
+
+      // The RESPONSE SHAPE is unchanged - durability was never a contract
+      // change, which is what made deferring this the wrong call.
+      expect(body.harness_dispatch?.mode).toBe("fanout");
+      const rows = JSON.parse(body.choices[0]!.message.content) as Array<{
+        route: string;
+        jobId?: string;
+        success: boolean;
+        output: string;
+      }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0]!.route).toBeDefined();
+      expect(rows[0]!.success).toBe(true);
+
+      // The trail: a jobId the caller can come back to, and a real job
+      // directory on disk that outlives the request.
+      expect(rows[0]!.jobId, "no jobId — nothing to salvage with").toBeDefined();
+      const onDisk = await fs.readdir(jobsDir);
+      expect(onDisk, "no job directory survived the request").toContain(rows[0]!.jobId);
+      const manifest = await fs.readFile(
+        path.join(jobsDir, rows[0]!.jobId!, "manifest.json"),
+        "utf8",
+      );
+      expect(JSON.parse(manifest)).toMatchObject({ jobId: rows[0]!.jobId });
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_JOBS_DIR;
+      else process.env.HARNESS_DISPATCH_JOBS_DIR = prev;
+      await fs.rm(jobsDir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+
   it("serves MCP tools and resources over the same authenticated HTTP server", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);

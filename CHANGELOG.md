@@ -31,13 +31,19 @@ pre-1.0, so minor versions can carry behaviour changes.
   carries that output, labelled INCOMPLETE. PRODUCT.md names losing this trail
   as the defining failure: "a wasted attempt with no trail".
 
-### Known gaps
+- HTTP fanout arms are now job-backed, like the MCP surface has always been.
+  They called `routeTo` directly, so an arm's work existed only inside the
+  request — no job directory, no manifest, no partial log. Killing the client
+  or the server mid-fanout lost every arm's output with nothing on disk to
+  salvage, which is the failure PRODUCT.md names as defining, on one of two
+  surfaces.
 
-- HTTP fanout arms are not job-backed: unlike the MCP surface, an arm's result
-  lives only in the request, so it dies with the connection. Reported by the
-  same acceptance pass. NOT fixed here — making it job-backed changes what an
-  OpenAI-compatible client receives, so it belongs in a release that can carry
-  a contract change rather than in a patch.
+  The response shape is unchanged: arms are awaited and the same rows are
+  returned, so an OpenAI-compatible client sees exactly what it saw before.
+  Each row additionally carries the arm's `jobId`, which is what makes salvage
+  possible. This was briefly recorded here as deferred "because it changes what
+  a client receives" — that was wrong, and re-reading the MCP path showed why:
+  durability and the response contract are independent.
 
 ## [0.8.0] — 2026-08-31
 
