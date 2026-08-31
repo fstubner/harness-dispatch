@@ -99,7 +99,11 @@ describe("status payload redaction", () => {
       },
     };
 
-    const quota = { fullStatus: async () => ({}), getQuotaScore: async () => 1 };
+    const quota = {
+      fullStatus: async () => ({}),
+      getQuotaScore: async () => 1,
+      localCountsPersistError: () => undefined,
+    };
     const router = {
       circuitBreakerStatus: () => ({}),
       breakerStateUnreadable: () => [],

@@ -201,7 +201,19 @@ async function cmdConfigure(
     );
     return 1;
   }
-  await fs.writeFile(target, yamlText, "utf-8");
+  // 0600, because this file can contain a LITERAL api_key: `apiKeyForYaml`
+  // deliberately preserves one rather than replacing it with a `${VAR}`
+  // reference, so `configure` can write a real credential to disk. It was
+  // written with default permissions — 0644 under a typical umask — in a
+  // module family that is careful everywhere else (leaderboard 0600, state dir
+  // 0700, client-register carries the original file's mode). Found by an
+  // acceptance pass from reading, POSIX-only and not reproduced on Windows,
+  // where the mode is ignored.
+  //
+  // Applied on create only: `writeFile`'s mode does not change an existing
+  // file's permissions, so re-running `configure` will not silently tighten a
+  // file the user deliberately made group-readable.
+  await fs.writeFile(target, yamlText, { encoding: "utf-8", mode: 0o600 });
   const absoluteTarget = path.resolve(target);
   process.stdout.write(`Wrote ${target}.\n`);
 
@@ -608,9 +620,17 @@ async function cmdDoctor(
             : broken
                 .map(
                   (e) =>
-                    `${e.client} (${e.file}) launches ${e.entry} from a path that does not ` +
-                    `exist: ${e.missingPaths.join(", ")} — that client has been getting NO ` +
-                    "tools from this server, silently. `harness-dispatch connect` rewrites the entry.",
+                    // "references", not "launches ... from": missingPaths
+                    // holds any path the entry names that is not there, and
+                    // that is routinely the `--config` argument rather than
+                    // the launch binary. An acceptance pass found the message
+                    // reaching the right conclusion by the wrong description —
+                    // a missing explicit --config does make the CLI exit 1,
+                    // but it is not where the client launches from.
+                    `${e.client} (${e.file}) references a path that does not exist: ` +
+                    `${e.missingPaths.join(", ")} (entry: ${e.entry}) — that client has been ` +
+                    "getting NO tools from this server, silently. `harness-dispatch connect` " +
+                    "rewrites the entry.",
                 )
                 .join(" | "),
       };
@@ -650,6 +670,20 @@ async function cmdDoctor(
         runtime.config.configWarnings && runtime.config.configWarnings.length > 0
           ? runtime.config.configWarnings.join(" | ")
           : "no unrecognized config entries",
+    },
+    {
+      // Saved state that could not be read, which is NOT a config problem and
+      // so never reached this list: `doctor` read `configWarnings` directly
+      // and stayed silent about an unreadable breaker record or usage counters
+      // that are not reaching disk. Two acceptance passes recorded that
+      // silence as an open item; `status` grew a "State problems" heading and
+      // `doctor` did not follow.
+      name: "saved-state",
+      ok: (status.stateWarnings?.length ?? 0) === 0,
+      detail:
+        status.stateWarnings && status.stateWarnings.length > 0
+          ? status.stateWarnings.join(" | ")
+          : "readable",
     },
     {
       name: "routes",
@@ -1089,12 +1123,42 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
+/**
+ * End the process with `code`, letting the event loop drain first.
+ *
+ * `process.exit(code)` tears the loop down mid-flight, and on Windows that
+ * aborts: `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win * async.c` and an exit status of 127, which every shell reads as "command not
+ * found". It fired AFTER a correct answer had been printed, so the work was
+ * done and the report of it was a crash.
+ *
+ * Reproduced 3/3 across three acceptance passes, and confirmed here: two
+ * endpoint routes, the first answering 200 with an unusable body and the
+ * second succeeding. The fallback is what makes it two in-flight HTTP
+ * connections; `--no-fallback` and a refused connection both exited 1 cleanly,
+ * which is why it looked intermittent. Setting `exitCode` instead removes it,
+ * measured on the same probe.
+ *
+ * The force-exit is the safety net `process.exit` was providing: if something
+ * still holds the loop open after a grace window, leave anyway rather than
+ * hanging a CLI. It is `unref`d, so it does not itself keep the process alive
+ * — every command measured here exits in under a second without it firing.
+ */
+const EXIT_DRAIN_GRACE_MS = 3000;
+
+function finish(code: number): void {
+  process.exitCode = code;
+  const bail = setTimeout(() => {
+    process.exit(code);
+  }, EXIT_DRAIN_GRACE_MS);
+  bail.unref();
+}
+
 const entrypoint =
   typeof process !== "undefined" && Array.isArray(process.argv) ? process.argv[1] : "";
 if (entrypoint && (entrypoint.endsWith("bin.ts") || entrypoint.endsWith("bin.js"))) {
   void main(process.argv.slice(2))
     .then((code) => {
-      process.exit(code);
+      finish(code);
     })
     .catch((err: unknown) => {
       // A CLI user gets one actionable line, not a stack trace. Every Error is

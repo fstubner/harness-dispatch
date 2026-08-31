@@ -134,6 +134,40 @@ describe("CLI parser", () => {
     },
   );
 
+  it("reports UNREADABLE SAVED STATE, which is not a config problem", async () => {
+    // doctor read `configWarnings` directly, so a corrupt breaker record or
+    // usage counters that cannot reach disk were invisible to it - it printed
+    // eleven green checks over state it could not read. `status` grew a "State
+    // problems" heading and doctor did not follow; two acceptance passes
+    // recorded that silence as open.
+    //
+    // The record is written for a route the config does NOT define, which is
+    // what routes it to stateWarnings rather than onto a per-route line - the
+    // corrupt-legacy-blob case, and any route since renamed.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-doctor-state-"));
+    const breakerDir = path.join(stateDir, "breaker_state");
+    await fs.mkdir(breakerDir, { recursive: true });
+    await fs.writeFile(path.join(breakerDir, "route_since_renamed.json"), "{ truncated", "utf8");
+    const prev = process.env.HARNESS_DISPATCH_STATE_DIR;
+    process.env.HARNESS_DISPATCH_STATE_DIR = stateDir;
+    try {
+      const config = await writeConfig();
+      const result = await capture(() => main(["doctor", "--config", config, "--json"]));
+      const report = JSON.parse(result.stdout) as { checks: Array<{ name: string; ok: boolean; detail: string }> };
+      const check = report.checks.find((c) => c.name === "saved-state");
+      expect(check, "doctor has no saved-state check").toBeDefined();
+      // ok:false, not just a detail line — a check that reports the problem
+      // while still passing is the same silence one level in.
+      expect(check!.ok, "doctor reported unreadable state as fine").toBe(false);
+      expect(check!.detail).toContain("route_since_renamed");
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_STATE_DIR;
+      else process.env.HARNESS_DISPATCH_STATE_DIR = prev;
+      await fs.rm(stateDir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
   it("reports git as its own doctor check rather than failing later at workspace diff", async () => {
     // Without git, a delegate's work COMPLETES in an isolated workspace and
     // then `workspace diff` dies with `spawn git ENOENT` — a message about a
