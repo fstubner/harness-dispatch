@@ -12,6 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 
 import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
 import { orphanStrandedSlotQueue } from "../jobs.js";
+import { installNearMissGuard } from "./near-miss-guard.js";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
@@ -77,6 +78,10 @@ export function buildMcpServerInstance(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: SERVER_INSTRUCTIONS },
   );
+  // BEFORE registerTools: the SDK installs its CallTool handler on the first
+  // tool registration, and this wraps that handler as it goes in. See
+  // near-miss-guard.ts for why the check cannot live in the schema.
+  installNearMissGuard(server);
   registerTools(server, { holder, reloader });
   registerResources(server, { holder, reloader });
   return server;

@@ -5,8 +5,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
+import { buildMcpServerInstance } from "../../src/mcp/server.js";
 import { registerResources } from "../../src/mcp/resources.js";
-import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
+import { ConfigHotReloader, RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
 import { LeaderboardCache } from "../../src/leaderboard.js";
@@ -188,6 +189,101 @@ describe("MCP server — public surface", () => {
       expect(parsed.routes[0]).toHaveProperty("effectiveSafetyProfile");
       expect(parsed.routes[0]).not.toHaveProperty("kind");
       expect(Array.isArray(parsed.skippedRoutes)).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+});
+
+/**
+ * A near-miss TOP-LEVEL key asked for read-only and got write access.
+ *
+ * `safteyProfile: "read_only"` was accepted in silence — the SDK validates
+ * against `z.object(shape)` and zod STRIPS unknown keys, so no handler ever saw
+ * it — and the dispatch then ran at the `workspace_edit` default. An acceptance
+ * pass measured it writing a file into the project. The HTTP surface has
+ * rejected the same input all along, so one input got two opposite answers.
+ *
+ * These build through `buildMcpServerInstance`, the REAL production builder,
+ * rather than the helper above. The helper constructs its own McpServer, so a
+ * guard installed only there would keep these green while production shipped
+ * without it — the "correct but never delivered" hole this project keeps
+ * finding in its own tests.
+ */
+describe("MCP server — near-miss top-level keys", () => {
+  async function startProductionLinked(): Promise<{ client: Client; close: () => Promise<void> }> {
+    const holder = new RuntimeHolder(buildState());
+    const server = buildMcpServerInstance(holder, new ConfigHotReloader(holder, undefined));
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "typo-test", version: "test" }, { capabilities: {} });
+    await server.connect(serverT);
+    await client.connect(clientT);
+    return {
+      client,
+      async close() {
+        await client.close();
+        await server.close();
+      },
+    };
+  }
+
+  it("refuses a transposed safetyProfile instead of running with more access", async () => {
+    const { client, close } = await startProductionLinked();
+    try {
+      await expect(
+        client.callTool({
+          name: "dispatch",
+          arguments: { prompt: "hi", workingDir: process.cwd(), safteyProfile: "read_only" },
+        }),
+      ).rejects.toThrow(/did you mean safetyProfile/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("refuses a near-miss on the other hint names too", async () => {
+    // One name fixed would be a special case, not a rule.
+    const { client, close } = await startProductionLinked();
+    try {
+      await expect(
+        client.callTool({
+          name: "dispatch",
+          arguments: { prompt: "hi", workingDir: process.cwd(), workspacePolcy: "copy" },
+        }),
+      ).rejects.toThrow(/did you mean workspacePolicy/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("leaves `_meta` and other legitimate unknown keys alone", async () => {
+    // The outer object cannot be strict — MCP carries `_meta` there — so the
+    // guard must reject near misses and nothing else. Rejecting `_meta` would
+    // break every compliant client.
+    const { client, close } = await startProductionLinked();
+    try {
+      const res = await client.callTool({
+        name: "job_status",
+        arguments: { _meta: { progressToken: "t" }, somethingUnrelated: true },
+      });
+      expect(res).toBeDefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("accepts the CORRECT spelling, which is the whole point", async () => {
+    const { client, close } = await startProductionLinked();
+    try {
+      const res = await client.callTool({
+        name: "dispatch",
+        arguments: {
+          prompt: "hi",
+          workingDir: process.cwd(),
+          hints: { safetyProfile: "read_only", taskType: "plan" },
+        },
+      });
+      expect(res).toBeDefined();
     } finally {
       await close();
     }

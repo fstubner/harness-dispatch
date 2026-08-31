@@ -902,34 +902,26 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
 export type InvokeResult = { kind: "json"; data: unknown };
 
 /**
- * A near-miss top-level key (`safteyProfile`) is caught on the HTTP surface
- * and NOT here, which is a real asymmetry rather than an oversight.
+ * Near-miss top-level keys are caught by `mcp/near-miss-guard.ts`, not here.
  *
- * The MCP SDK validates against `z.object(dispatchInputShape)` before any code
- * in this file runs, and zod strips unknown keys — so by the time a handler
- * sees the arguments, the misspelled key is already gone. There is nowhere in
- * the registered-tool path to inspect what the caller actually sent. Closing it
- * means intercepting the CallTool request below the SDK's own routing, which is
- * a larger change than the defect warrants today.
+ * This is where the gap used to be documented. The MCP SDK validates against
+ * `z.object(dispatchInputShape)` before any code in this file runs, and zod
+ * STRIPS unknown keys — so by the time a handler sees the arguments, a
+ * misspelled key is already gone, and nothing in the registered-tool path can
+ * see what the caller actually sent. `hints` is `.strict()`, which is why the
+ * nested form was always rejected; the outer object cannot be, because MCP
+ * carries `_meta` there.
  *
- * Scope, corrected after an acceptance pass measured it: only the TOP-LEVEL
- * key is affected. `hints: { safteyProfile: ... }` IS rejected here, because
- * `hints` is `.strict()` — an earlier version of this comment said "the
- * consequence is the same on both surfaces", which is true of the top-level
- * key and false of the nested one.
+ * An acceptance pass measured what that cost: `safteyProfile: "read_only"` was
+ * accepted in silence and the dispatch ran at the `workspace_edit` default,
+ * writing a file. Asking for read-only by way of a typo got you write access,
+ * while the HTTP surface refused the same input — one input, two opposite
+ * answers, which is the class the parity suite exists to end.
  *
- * The consequence for the top-level key is not merely a dropped hint. The pass
- * sent `safteyProfile: "read_only"`, watched it accepted in silence, and
- * watched the dispatch run at the `workspace_edit` default and WRITE a file:
- * asking for read-only by way of a typo gets you write access. That is a
- * safety consequence rather than an ergonomic one, and it is the reason this
- * is recorded as open with a measured effect rather than as a nicety.
- *
- * Closing it means taking over `CallToolRequestSchema` below the SDK's own
- * routing — every tool's dispatch path — which is not a change to make in the
- * same breath as a one-line fix. Written down here because an undocumented
- * difference between the surfaces is exactly what the parity suite exists to
- * prevent.
+ * The guard wraps the CallTool handler the SDK installs and inspects the raw
+ * arguments before delegating, so the SDK's routing, validation and `extra`
+ * plumbing are untouched. Both surfaces now run the same check from
+ * `near-miss.ts`, and `surface-parity.test.ts` asserts it on both.
  */
 
 export async function invokeTool(
