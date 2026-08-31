@@ -33,6 +33,26 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A negative `tier`, `weight` or `cli_capability` no longer hands a route
+  every dispatch.** These were type-checked but never range-checked, and
+  routing multiplies `weight` and `cli_capability` into the score while
+  ordering `tier` ascending — so a negative pair does not demote a route, it
+  promotes it past every legitimate one. An acceptance pass measured
+  `tier: -5, weight: -100, cli_capability: -3` scoring 299.8 against a normal
+  route's 0.88, from a tier sorting ahead of them all, with no warning
+  anywhere. Out-of-range values are now reported and ignored, so the built-in
+  default applies — the same outcome an unreadable value already got. Upper
+  bounds were deliberately not added: `cli_capability: 1.1` ships in this
+  repo's own default config as real tuning, and the defect is sign, not
+  magnitude.
+
+- Top-level `policy:` and `workspace_policy:` now say they have no effect.
+  Both were allow-listed and read nowhere — and both ARE valid per-route keys,
+  which is what makes the top-level spelling easy to write: it looks like a
+  global default for the per-route setting, and there is no such default. An
+  isolation control that silently does nothing is the failure the config
+  validator exists to prevent. The per-route keys are unaffected.
+
 - An `execute` task can no longer be routed to an HTTP endpoint. An endpoint
   has no agent loop, no file access and no shell — PRODUCT.md states this as
   design rather than gap — but an undeclared capability defaults to 1.0 and no
