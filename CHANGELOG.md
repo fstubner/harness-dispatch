@@ -6,6 +6,31 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A config file that defines routes is now authoritative about them.**
+  Auto-detection used to run unconditionally, so a file with `clis:` or
+  `endpoints:` entries ADDED to the installed harnesses rather than replacing
+  them, and only `disabled:` — naming every route, including ones you might
+  not know existed — subtracted.
+
+  That default caught three acceptance passes in a row despite explicit
+  warnings, and caught this project's own test suite: one test dispatched to
+  the real Claude Code CLI on every `npm test` and every CI run, under a
+  comment asserting it could not reach a route. It also decayed — adding
+  support for a new harness would auto-add it to every existing config, so a
+  `disabled:` list written today quietly stopped isolating tomorrow.
+
+  The legacy `services:` format has always behaved this way, so the two shapes
+  now agree rather than this being a new rule.
+
+  **What changes for you.** A config with `clis:`/`endpoints:` entries gets
+  exactly those routes. Add `detect: true` to keep the old behaviour. A config
+  with NO routes of its own — one carrying only `overrides:`, `disabled:` or
+  settings — still auto-detects, because a file cannot be authoritative about
+  routes it does not describe; it now says so in a warning. `detect: false`
+  turns detection off outright.
+
 ### Fixed
 
 - An `execute` task can no longer be routed to an HTTP endpoint. An endpoint
