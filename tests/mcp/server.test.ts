@@ -256,6 +256,64 @@ describe("MCP server — near-miss top-level keys", () => {
     }
   });
 
+  it("tells the caller WHERE the key goes, so following the advice works", async () => {
+    // Correcting `safteyProfile` to `safetyProfile` at the top level of
+    // `dispatch` lands on a z.never() trap — a SECOND rejection. That is the
+    // failure tool-schemas.ts already records from its own snake_case traps:
+    // "a refusal that confidently points at the wrong landing spot costs the
+    // round trip it exists to save". The rule was re-learned there and not
+    // applied to this message until an acceptance pass measured it.
+    const { client, close } = await startProductionLinked();
+    try {
+      await expect(
+        client.callTool({
+          name: "dispatch",
+          arguments: { prompt: "hi", workingDir: process.cwd(), safteyProfile: "read_only" },
+        }),
+      ).rejects.toThrow(/inside `hints`/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("names a top-level key as top-level, not as a hint", async () => {
+    // `workspacePolicy` and `workingDir` ARE top-level dispatch parameters, so
+    // sending the caller to `hints` would be the same defect mirrored.
+    const { client, close } = await startProductionLinked();
+    try {
+      await expect(
+        client.callTool({
+          name: "dispatch",
+          arguments: { prompt: "hi", workingDir: process.cwd(), workspacePolcy: "copy" },
+        }),
+      ).rejects.toThrow(/top level/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("does not promise a safety consequence on a tool that dispatches nothing", async () => {
+    // The guard fires on every tool, and the message was written for
+    // `dispatch`. On `job_status` the corrected spelling is not a field
+    // either — and "the run gets MORE access than you asked for" is simply
+    // false, since job_status runs nothing. An acceptance pass followed the
+    // advice and watched the corrected key be silently ignored.
+    const { client, close } = await startProductionLinked();
+    try {
+      const err = await client
+        .callTool({ name: "job_status", arguments: { safteyProfile: "read_only" } })
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+      expect(err).toBeDefined();
+      expect(err).toContain("job_status");
+      expect(err, "promised a safety consequence on a tool that runs nothing").not.toContain(
+        "MORE access",
+      );
+    } finally {
+      await close();
+    }
+  });
+
   it("leaves `_meta` and other legitimate unknown keys alone", async () => {
     // The outer object cannot be strict — MCP carries `_meta` there — so the
     // guard must reject near misses and nothing else. Rejecting `_meta` would
@@ -271,6 +329,38 @@ describe("MCP server — near-miss top-level keys", () => {
       await close();
     }
   });
+
+  it("still delivers progress notifications through the wrapper", async () => {
+    // The guard wraps the SDK's CallTool handler and forwards `extra`, which
+    // is what carries `sendNotification` and the progress token. Dropping it
+    // would silence progress for EVERY tool call — and an acceptance pass
+    // changed `handler(request, extra)` to `handler(request, undefined)` and
+    // watched the full suite pass, 1041 tests, zero failures. The one thing
+    // this wrapper could most plausibly break had nothing holding it.
+    const { client, close } = await startProductionLinked();
+    const seen: number[] = [];
+    try {
+      await client.callTool(
+        {
+          name: "dispatch",
+          arguments: {
+            prompt: "hi",
+            workingDir: process.cwd(),
+            hints: { taskType: "plan" },
+          },
+        },
+        undefined,
+        {
+          onprogress: (p: { progress: number }) => {
+            seen.push(p.progress);
+          },
+        },
+      );
+      expect(seen.length, "no progress notification reached the client").toBeGreaterThan(0);
+    } finally {
+      await close();
+    }
+  }, 30_000);
 
   it("accepts the CORRECT spelling, which is the whole point", async () => {
     const { client, close } = await startProductionLinked();

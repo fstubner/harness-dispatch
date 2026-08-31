@@ -39,16 +39,29 @@ import { CallToolRequestSchema, McpError, ErrorCode } from "@modelcontextprotoco
 
 import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 
+/** The method string the SDK keys its CallTool handler by. */
+const CALL_TOOL_METHOD = "tools/call";
+
 interface RawCallToolRequest {
-  params?: { arguments?: unknown };
+  params?: { name?: unknown; arguments?: unknown };
 }
 
 /** The near-miss message for the first offending key, or undefined. */
-export function nearMissInArguments(args: unknown): string | undefined {
+export function nearMissInArguments(args: unknown, toolName?: string): string | undefined {
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
   for (const key of Object.keys(args as Record<string, unknown>)) {
     const meant = nearMissHintKey(key);
-    if (meant !== undefined) return nearMissMessage(key, meant);
+    if (meant !== undefined) {
+      // The TOOL is passed on, because the advice differs by it: on a tool
+      // that takes no hints, the corrected spelling is not a field either, and
+      // a message telling the caller to fix the spelling sends them to a key
+      // that is silently ignored — the class this guard exists to close,
+      // reopened one step later. Measured by an acceptance pass.
+      return nearMissMessage(key, meant, {
+        surface: "mcp",
+        ...(toolName !== undefined ? { toolName } : {}),
+      });
+    }
   }
   return undefined;
 }
@@ -60,6 +73,16 @@ export function nearMissInArguments(args: unknown): string | undefined {
  */
 export function installNearMissGuard(server: McpServer): void {
   const inner = server.server;
+  // Installing after `registerTools` is inert — the SDK's handler is already
+  // in place and this would wrap nothing — and the failure mode of getting the
+  // order wrong is a SILENT safety hole rather than an error. An acceptance
+  // pass confirmed the late install accepts a near miss with no complaint.
+  // There is one call site and its comment states the requirement, so this is
+  // a guard against a future edit, not a live bug; it costs one line and turns
+  // "safety check quietly absent" into a startup failure.
+  if (inner.assertCanSetRequestHandler !== undefined) {
+    inner.assertCanSetRequestHandler(CALL_TOOL_METHOD);
+  }
   const original = inner.setRequestHandler.bind(inner);
   // The cast is confined to this one line. The SDK types `setRequestHandler`
   // against the specific schema it is given, and this wrapper is deliberately
@@ -73,7 +96,11 @@ export function installNearMissGuard(server: McpServer): void {
       return (original as unknown as (...a: unknown[]) => unknown)(schema, handler, ...rest);
     }
     const guarded = async (request: unknown, extra: unknown): Promise<unknown> => {
-      const message = nearMissInArguments((request as RawCallToolRequest)?.params?.arguments);
+      const params = (request as RawCallToolRequest)?.params;
+      const message = nearMissInArguments(
+        params?.arguments,
+        typeof params?.name === "string" ? params.name : undefined,
+      );
       // InvalidParams, so it reaches the caller as a protocol error naming the
       // key rather than as a tool result they might not read. The HTTP surface
       // answers 400 for the same input.

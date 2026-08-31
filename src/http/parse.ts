@@ -325,7 +325,11 @@ function parseHints(body: ChatRequest): RouteHints {
   // and a key that is genuinely unrelated stays legitimate.
   for (const key of Object.keys(body as Record<string, unknown>)) {
     const meant = nearMissHintKey(key);
-    if (meant !== undefined) throw new BadRequestError(nearMissMessage(key, meant));
+    if (meant !== undefined) {
+      // All seven hint names are read from the top level here, so the advice
+      // is "top level" — the opposite of what MCP needs for five of them.
+      throw new BadRequestError(nearMissMessage(key, meant, { surface: "http" }));
+    }
   }
   // MCP parameters this surface does not implement. Both were accepted and
   // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior

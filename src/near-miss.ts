@@ -84,11 +84,55 @@ function isAdjacentSwap(a: string, b: string): boolean {
   return y === x + 1 && a[x] === b[y] && a[y] === b[x];
 }
 
-/** The message both surfaces give, so the advice cannot drift either. */
-export function nearMissMessage(key: string, meant: string): string {
-  return (
-    `${key} is not a field — did you mean ${meant}? It would otherwise be accepted ` +
-    `and silently ignored, which for a safety setting means the dispatch runs with ` +
-    `MORE access than you asked for.`
-  );
+/**
+ * Where each hint name legitimately goes on the MCP surface.
+ *
+ * Only these two are top-level `dispatch` parameters; the rest are `z.never()`
+ * traps there and belong inside `hints`. The HTTP surface reads ALL SEVEN from
+ * the top level of the request body (`http/parse.ts`), which is why the advice
+ * below has to know which surface is asking.
+ */
+const MCP_TOP_LEVEL_NAMES = new Set(["workingDir", "workspacePolicy"]);
+
+export type NearMissSurface = "mcp" | "http";
+
+/**
+ * The message both surfaces give — same RULE, correct advice for each.
+ *
+ * The rule is shared on purpose (see this file's header). The advice cannot
+ * be: a single "did you mean X?" sent the caller somewhere the surface would
+ * refuse or ignore, which is the failure `tool-schemas.ts` already records
+ * from its own snake_case traps — "a refusal that confidently points at the
+ * wrong landing spot costs the round trip it exists to save". An acceptance
+ * pass measured the new message repeating it: correcting `safteyProfile` to
+ * `safetyProfile` on MCP `dispatch` produced a SECOND rejection, because the
+ * corrected spelling is a trap at that level.
+ *
+ * `toolName` is MCP-only and names the tool the call was for. On a tool that
+ * takes no hints at all — `job_status`, `usage`, `cancel_job`, `retry_job`,
+ * `workspace` — the corrected spelling is simply not a field, and the old
+ * message's "the dispatch runs with MORE access than you asked for" was false
+ * on every one of them: none of them dispatch anything.
+ */
+export function nearMissMessage(
+  key: string,
+  meant: string,
+  opts: { surface: NearMissSurface; toolName?: string } = { surface: "http" },
+): string {
+  const head = `${key} is not a field — did you mean ${meant}?`;
+  const ignored = "As written it is accepted and silently ignored";
+  const safetyTail =
+    ", which for a safety setting means the run gets MORE access than you asked for.";
+
+  if (opts.surface === "mcp" && opts.toolName !== undefined && opts.toolName !== "dispatch") {
+    return (
+      `${head} Neither spelling is a field on \`${opts.toolName}\` — hints apply to ` +
+      `\`dispatch\`. ${ignored}.`
+    );
+  }
+  const where =
+    opts.surface === "mcp" && !MCP_TOP_LEVEL_NAMES.has(meant)
+      ? `On this surface it goes inside \`hints\` — hints: { ${meant}: ... }.`
+      : `It belongs at the top level of the request.`;
+  return `${head} ${where} ${ignored}${safetyTail}`;
 }

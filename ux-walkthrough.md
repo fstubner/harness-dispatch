@@ -176,7 +176,7 @@ Every surface has to be right in these, not just the happy one:
 | A file outside `workingDir` under `copy` | Sent, but the isolation-widening is reported in the workspace notes |
 | A symlink pointing outside the workspace | Not recreated in the copy; the drop is reported |
 | `safety_profile: read_onlyy` | Ignored **and warned** on both surfaces, never silently downgraded to a looser default |
-| `safteyProfile` (letters transposed) | Rejected with the near-miss message on HTTP; accepted SILENTLY on MCP, which then runs at the default `workspace_edit` — i.e. more access than was asked for. `tools.ts` documents the asymmetry; the row above generalised past it until 2026-08-30 |
+| `safteyProfile` (letters transposed) | Rejected with the near-miss message on BOTH surfaces. It was accepted silently on MCP until 2026-08-31 — running at the `workspace_edit` default, i.e. more access than was asked for — because the MCP SDK strips unknown keys before any handler sees them; `mcp/near-miss-guard.ts` now inspects the raw arguments. This row described that hole as current for a day after it was closed, which is its own kind of wrong: a shipped document telling a reader a safety gap is live |
 | `${VAR}` in `config.yaml` | Survives `configure` as a reference; never rewritten to the literal secret. The reference is RELOCATED into the route's own `api_key:` — the top-level `api_keys:` block itself is not re-emitted. Functionally lossless (the key resolves identically on reload), but the block does not survive verbatim, and this row claimed it did until 2026-08-19 |
 | Two dispatches, same `workingDir`, `shared_locked` | Serialized across processes, not just within one |
 
