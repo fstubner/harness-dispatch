@@ -6,6 +6,8 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-31
+
 ### Added
 
 - `GET /health` — liveness on the HTTP surface, and the only route served
@@ -1442,7 +1444,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/fstubner/harness-dispatch/compare/v0.7.6...v0.7.7

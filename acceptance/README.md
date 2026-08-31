@@ -87,7 +87,7 @@ node dist/bin.js dispatch --service <route> --safety read_only --no-fallback "Re
 
 `--service` goes through `routeTo`, so it runs exactly that route and cannot
 fall onto another. That distinction matters here: the plain `route`/`dispatch`
-path hardcoded `execute` with two fallbacks until 0.7.10, so a pass asking for
+path hardcoded `execute` with two fallbacks until 0.8.0, so a pass asking for
 one read-only call could get an execute-profile run on up to three.
 
 Record it under **Verified**, naming the route and what came back. If no
