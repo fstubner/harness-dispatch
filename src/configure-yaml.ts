@@ -187,9 +187,20 @@ function endpointEntryToYaml(
  * simply gone, and `configure --yes --force` wrote the result over the user's
  * file.
  */
-function topLevelToYaml(config: RouterConfig): Record<string, unknown> {
+function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  if (config.disabled && config.disabled.length > 0) out.disabled = [...config.disabled];
+  // `disabled:` only means something to AUTO-DETECTION, and a config that
+  // lists its own routes is authoritative — a disabled route is simply absent
+  // from that list, so carrying the name forward says nothing and actively
+  // breaks the file: `doctor` warns that `disabled:` had no effect and exits
+  // 1. An acceptance pass reproduced it end to end, so the setup path was
+  // generating a config that fails the project's own health check.
+  //
+  // Kept when the config defines NO routes, because there it is still the
+  // thing doing the work.
+  if (!definesRoutes && config.disabled && config.disabled.length > 0) {
+    out.disabled = [...config.disabled];
+  }
   if (config.maxConcurrentRuns !== undefined) out.max_concurrent_runs = config.maxConcurrentRuns;
   if (config.retention?.jobsDays !== undefined) {
     out.retention = { jobs_days: config.retention.jobsDays };
@@ -210,7 +221,8 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
     if (svc.type === "cli") clis.push(cliEntryToYaml(svc, config, opts));
     else endpoints.push(endpointEntryToYaml(svc, config, opts));
   }
-  const doc: Record<string, unknown> = { ...topLevelToYaml(config) };
+  const definesRoutes = clis.length > 0 || endpoints.length > 0;
+  const doc: Record<string, unknown> = { ...topLevelToYaml(config, definesRoutes) };
   if (clis.length > 0) doc.clis = clis;
   if (endpoints.length > 0) doc.endpoints = endpoints;
   return yaml.dump(doc, { noRefs: true, lineWidth: 100 });

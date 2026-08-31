@@ -8,8 +8,9 @@
  * over their file. `--force` is what the tool's own overwrite message tells
  * them to use, and adding a harness is the documented README path.
  *
- * Top-level settings went the same way: nothing recomputes `disabled:` or
- * `max_concurrent_runs`, so a dropped value is simply gone.
+ * Top-level settings went the same way: nothing recomputes
+ * `max_concurrent_runs`, so a dropped value is simply gone. `disabled:` is
+ * the exception and goes the other way now — see the test below.
  *
  * Built-in harnesses deliberately keep the lean output — their preset supplies
  * protocol and billing, and emitting a copy would freeze a snapshot that stops
@@ -96,7 +97,31 @@ describe("configure round-trip", () => {
     const reloaded = await loadConfig(out, { whichFn: async () => null });
 
     expect(reloaded.maxConcurrentRuns).toBe(7);
-    expect(reloaded.disabled).toContain("cursor_cli");
+  });
+
+  it("drops disabled: from a generated config that lists its own routes", async () => {
+    // This used to assert the opposite, and was right when it was written:
+    // nothing recomputed `disabled:`, so re-emitting it was the only way to
+    // keep it. Once a config that lists routes became authoritative, carrying
+    // it forward became actively wrong — the disabled route is simply absent
+    // from `clis:`, so the name says nothing, and `doctor` reports that
+    // `disabled:` had no effect and EXITS 1. An acceptance pass reproduced
+    // the whole chain: the setup command generated a config that failed the
+    // project's own health check.
+    const src = path.join(dir, "in2b.yaml");
+    await fs.writeFile(src, SOURCE, "utf8");
+    const printed = await capture(() => main(["configure", "--print", "--config", src]));
+    expect(printed.stdout).toContain("clis:");
+    expect(printed.stdout).not.toContain("disabled:");
+
+    const out = path.join(dir, "out2b.yaml");
+    await fs.writeFile(out, printed.stdout, "utf8");
+    const reloaded = await loadConfig(out, { whichFn: async () => null });
+    // The point of dropping it: the generated file is clean, not merely tidy.
+    const warnings = (reloaded.configWarnings ?? []).join(" ");
+    expect(warnings).not.toMatch(/disabled/);
+    // And cursor_cli is still gone, which is what the operator asked for.
+    expect(Object.keys(reloaded.services)).not.toContain("cursor_cli");
   });
 
   it("preserves a generic route's declared billing, which has no default to fall back on", async () => {

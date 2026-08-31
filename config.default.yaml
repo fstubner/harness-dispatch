@@ -11,7 +11,15 @@
 # actually installed. To customize, copy this file to config.yaml in your
 # own project and edit — or run `harness-dispatch configure` to generate a
 # starting point instead. Same schema, same parser, no special cases either
-# way. Add a new entry and it's a route; delete one and auto-detection may re-add it — use `disabled:` to suppress a route for good.
+# way. Add a new entry and it's a route.
+#
+# A config that lists any `clis:` or `endpoints:` is AUTHORITATIVE: it gets
+# exactly the routes it names, and nothing is auto-detected alongside them.
+# So deleting an entry from your own config.yaml removes that route, full
+# stop — `disabled:` is not needed for it, and has no effect in such a file.
+# `disabled:` applies only to a config that names no routes of its own and is
+# therefore still relying on auto-detection. Add `detect: true` if you want
+# both: your entries AND whatever is installed.
 #
 # Route selection scores each entry by task fit:
 #   capabilities[task_type] x leaderboard ELO x cli_capability x quota x weight

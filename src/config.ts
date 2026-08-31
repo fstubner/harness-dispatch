@@ -940,6 +940,12 @@ export async function loadConfig(
     const legacyCfg = buildLegacyConfig(raw);
     const enumWarnings: string[] = [];
     warnUnknownSafetyEnums(raw, enumWarnings);
+    // The legacy shape returns before the modern path's top-level key check
+    // ever runs, so the same `policy: copy` that warns twice in a `clis:`
+    // config warned about nothing here. An acceptance pass reproduced the two
+    // shapes side by side. The check is about the top level of the FILE, which
+    // both shapes have; only route-entry validation is format-specific.
+    warnUnknownTopLevelKeys(raw, enumWarnings);
     if (enumWarnings.length > 0) {
       legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
     }
@@ -1024,9 +1030,32 @@ export async function loadConfig(
   //     only `overrides:`/`disabled:`/settings exists to TUNE detection; it
   //     cannot be authoritative about routes it does not describe, and
   //     switching detection off for it would leave such a user with nothing.
-  const definesRoutes =
-    (Array.isArray(raw.clis) && raw.clis.length > 0) ||
-    (Array.isArray(raw.endpoints) && raw.endpoints.length > 0);
+  // PRESENCE of the key, not a non-empty list. `clis: []` is someone writing
+  // down "no CLI routes" — an opinion about routes, and the most explicit one
+  // available. Requiring a non-empty array meant `clis: []` still loaded every
+  // harness on the machine, which is the precise failure the comment above
+  // describes in the past tense. An acceptance pass caught the contradiction:
+  // `clis: []` returned all four real CLIs, so the fix did not cover its own
+  // motivating example, and this project's test suite still leans on
+  // `disabled:` naming every route to stay off them.
+  const definesRoutes = Array.isArray(raw.clis) || Array.isArray(raw.endpoints);
+  // A `clis:` written as a MAPPING rather than a list is the same silent-drop
+  // class this module exists to prevent, and it fails in the worst direction:
+  // the entries vanish, `definesRoutes` is false, detection runs, and the user
+  // who was trying to name their own routes gets every installed paid harness
+  // instead — under a warning telling them their config "defines no routes",
+  // which contradicts the file in front of them.
+  for (const key of ["clis", "endpoints"] as const) {
+    const value = raw[key];
+    if (value !== undefined && value !== null && !Array.isArray(value)) {
+      warnings.push(
+        `${key}: must be a LIST, but this config has ${
+          typeof value === "object" ? "a mapping" : `a ${typeof value}`
+        } — every entry under it was IGNORED. Write it as \`${key}:\` followed by ` +
+          `\`  - name: ...\` items. As written this config defines no ${key} at all.`,
+      );
+    }
+  }
   const detectRequested = typeof raw.detect === "boolean" ? raw.detect : undefined;
   const detect = detectRequested ?? !definesRoutes;
   if (detectRequested === undefined && !definesRoutes && Object.keys(raw).length > 0) {

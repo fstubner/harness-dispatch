@@ -180,6 +180,15 @@ const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }
   timeout_ms: { min: 0, exclusive: true },
 };
 
+/**
+ * Of those, the ones the router actually multiplies into a score.
+ *
+ * Only these three get the "PROMOTES the route" explanation. Giving that
+ * reason for `timeout_ms` or a token cap told the operator something untrue
+ * about their own config: routing multiplies neither.
+ */
+const ROUTING_SCORED_KEYS = new Set(["tier", "weight", "cli_capability"]);
+
 /** Recognised keys whose value must be a boolean. */
 const BOOLEAN_ROUTE_KEYS = new Set([
   "enabled",
@@ -188,10 +197,34 @@ const BOOLEAN_ROUTE_KEYS = new Set([
   "stdin",
 ]);
 
-/** Is this a value `num()` would accept — a number, or a numeric string? */
+/**
+ * Is this a value that reads as a USABLE number?
+ *
+ * Finite on both branches, and the string branch is the one that was wrong:
+ * `Number("1e999")` is `Infinity`, and `!Number.isNaN(Infinity)` is true, so a
+ * YAML `weight: 1e999` (which parses as a string, not a number) sailed through
+ * as "reads as a number", then sailed through the range check too — `Infinity`
+ * is not below any minimum. An acceptance pass measured it loading as
+ * `weight = Infinity` with NO warning of any kind.
+ *
+ * `Number.isFinite` on both branches closes that: `.inf`, `-.inf`, `.nan` and
+ * `1e999` are all unusable, whichever way YAML happened to type them.
+ */
 function readsAsNumber(v: unknown): boolean {
   if (typeof v === "number") return Number.isFinite(v);
-  return typeof v === "string" && v !== "" && !Number.isNaN(Number(v));
+  return typeof v === "string" && v !== "" && Number.isFinite(Number(v));
+}
+
+/**
+ * How to name the offending value back to the operator.
+ *
+ * `JSON.stringify` has no representation for the non-finite numbers and emits
+ * `null`, so a warning about YAML's `-.inf` read "tier is null" — naming a
+ * value that appears nowhere in the file the reader is being asked to fix.
+ */
+function describeValue(v: unknown): string {
+  if (typeof v === "number" && !Number.isFinite(v)) return String(v);
+  return JSON.stringify(v);
 }
 
 /**
@@ -232,20 +265,36 @@ export function warnMistypedRouteValues(
     if (value === null || value === undefined) continue;
     if (NUMERIC_ROUTE_KEYS.has(key) && !readsAsNumber(value)) {
       warnings.push(
-        `${label}: ${key} is ${JSON.stringify(value)}, which is not a number — ` +
+        `${label}: ${key} is ${describeValue(value)}, which is not a number — ` +
           `IGNORED, and the built-in default applies instead. Routing reads this ` +
           `field, so the route is not behaving the way this line says it does.`,
       );
+      // This branch WARNED without neutralising, and for a plain unreadable
+      // value that was harmless — `num()` returns the default anyway, so the
+      // warning was true by accident. `.inf` and `.nan` are `typeof "number"`,
+      // so `num()` hands them straight back: the route loaded at
+      // `tier=-Infinity, weight=Infinity` — ahead of every tier and above
+      // every score — underneath a warning reading "IGNORED, and the built-in
+      // default applies instead". The message asserted the opposite of what
+      // happened, which is worse than the silence it replaced.
+      delete entry[key];
     } else if (NUMERIC_ROUTE_KEYS.has(key)) {
       const bound = NUMERIC_ROUTE_MINIMUMS[key];
       const n = Number(value);
       if (bound !== undefined && (bound.exclusive ? n <= bound.min : n < bound.min)) {
+        // The consequence differs by field, and stating the routing one for
+        // all six was simply false: routing does not multiply `timeout_ms` or
+        // the token caps. A warning that explains the wrong mechanism teaches
+        // the reader something untrue about their own config.
+        const consequence = ROUTING_SCORED_KEYS.has(key)
+          ? `Routing multiplies these fields and orders tiers ascending, so a ` +
+            `negative one PROMOTES the route over every other rather than demoting it.`
+          : `A value at or below ${bound.min} here does not mean "no limit"; it ` +
+            `describes a route that can never do any work.`;
         warnings.push(
-          `${label}: ${key} is ${JSON.stringify(value)}, which is below the minimum ` +
+          `${label}: ${key} is ${describeValue(value)}, which is below the minimum ` +
             `of ${bound.min}${bound.exclusive ? " (exclusive)" : ""} — IGNORED, and the ` +
-            `built-in default applies instead. Routing multiplies these fields and ` +
-            `orders tiers ascending, so a negative one PROMOTES the route over every ` +
-            `other rather than demoting it.`,
+            `built-in default applies instead. ${consequence}`,
         );
         delete entry[key];
       }
@@ -255,7 +304,7 @@ export function warnMistypedRouteValues(
       // worth reporting; anything else selects the default silently.
       if (value === "true" || value === "false") continue;
       warnings.push(
-        `${label}: ${key} is ${JSON.stringify(value)}, which is not true or false — ` +
+        `${label}: ${key} is ${describeValue(value)}, which is not true or false — ` +
           `IGNORED, and the built-in default applies instead.`,
       );
     }
