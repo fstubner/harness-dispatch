@@ -43,6 +43,31 @@ function clip(text: string, limit: number): string {
  * a delegate told "here is what came before" while a step is quietly missing
  * would reason from an incomplete picture and never know.
  */
+/**
+ * A prior job's PARTIAL output, when it has no result.json.
+ *
+ * Returns undefined when there is nothing on disk, so the caller can fall
+ * through to its "no result available" wording — the partial log is the
+ * salvage path, not a replacement for a real result.
+ */
+async function partialSection(jobId: string): Promise<string | undefined> {
+  const partialPath = path.join(jobsRoot(), jobId, "output", "stdout.partial.log");
+  const partial = await readFile(partialPath, "utf8").catch(() => undefined);
+  if (partial === undefined || partial.trim() === "") return undefined;
+  const priorPrompt = await readFile(path.join(jobsRoot(), jobId, "prompt.md"), "utf8").catch(
+    () => "(prompt unavailable)",
+  );
+  return [
+    `### ${jobId} (INCOMPLETE — no final result; this is how far it got)`,
+    "",
+    "Task it was given:",
+    clip(priorPrompt.trim(), 1_000),
+    "",
+    "Partial output before it stopped:",
+    clip(partial.trim(), MAX_CONTEXT_CHARS_PER_JOB),
+  ].join(NL);
+}
+
 export async function buildContextPreamble(contextJobs: string[]): Promise<string> {
   if (contextJobs.length === 0) return "";
   const sections: string[] = [];
@@ -70,7 +95,13 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
         clip(output.trim() || "(no output)", MAX_CONTEXT_CHARS_PER_JOB),
       ].join(NL);
     } catch {
-      section = `### ${jobId}${NL}${NL}(no result available — this job is unknown, still running, or was pruned)`;
+      // No result.json — but a job whose supervisor died leaves its progress
+      // in stdout.partial.log, and chaining on "what the last job got to" is
+      // exactly what a caller wants after an orphaned run. Reporting "no
+      // result available" while that file sits on disk discards the trail
+      // PRODUCT.md names as the thing that must never be lost.
+      section = await partialSection(jobId).catch(() => undefined) ??
+        `### ${jobId}${NL}${NL}(no result available — this job is unknown, still running, or was pruned)`;
     }
     if (section.length > budget) section = clip(section, Math.max(0, budget));
     budget -= section.length;

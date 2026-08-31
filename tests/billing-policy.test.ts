@@ -332,3 +332,76 @@ describe("the unknown-billing refusal says WHICH thing is unknown", () => {
     ).not.toContain("billing source is unknown");
   });
 });
+
+describe("an HTTP endpoint cannot be given an execute task", () => {
+  // PRODUCT.md states this as design, not gap: an endpoint has no agent loop,
+  // no file access and no shell. But an undeclared capability defaults to 1.0
+  // and NO endpoint example in config.default.yaml declares any, so an
+  // endpoint scored PERFECT for execute. An acceptance pass measured a
+  // --task-type execute dispatch routed to an endpoint, returning prose with
+  // exit 0 - execution reported as succeeded when none happened. It surfaces
+  // when the CLI routes are busy or tripped: the degraded case.
+  function endpoint(over: Record<string, unknown> = {}): never {
+    return {
+      name: "ep",
+      enabled: true,
+      type: "openai_compatible",
+      baseUrl: "http://127.0.0.1:9/v1",
+      model: "m",
+      tier: 3,
+      weight: 1,
+      cliCapability: 1,
+      capabilities: { execute: 1, plan: 1, review: 1 },
+      escalateOn: [],
+      provider: "local",
+      surface: "local_endpoint",
+      authSource: "local_network",
+      billingKind: "local_compute",
+      paidUsagePossible: false,
+      billingConfidence: "documented",
+      ...over,
+    } as never;
+  }
+  const avail = { dispatcher: { isAvailable: () => true } as never };
+
+  it("refuses the route rather than scoring it low", () => {
+    // A REFUSAL, not a capability score: a score of 0 still leaves the route
+    // selectable when it is the only candidate, which is the failing case.
+    const out = evaluateRoutePolicy("ep", endpoint(), { ...avail, taskType: "execute" });
+    expect(out.blocked).toBe(true);
+    expect(out.skipped?.code).toBe("cannot_execute");
+    expect(out.skipped?.message).toMatch(/no agent loop|cannot carry out/);
+  });
+
+  it("a declared execute capability cannot override it", () => {
+    // Same rule as the safety-flag check: a declaration cannot conjure an
+    // ability the route does not have.
+    const out = evaluateRoutePolicy("ep", endpoint({ capabilities: { execute: 1, plan: 1, review: 1 } }), {
+      ...avail,
+      taskType: "execute",
+    });
+    expect(out.blocked).toBe(true);
+  });
+
+  it.each(["plan", "review", "local", undefined] as const)(
+    "still allows %s, which is what endpoints are for",
+    (taskType) => {
+      const out = evaluateRoutePolicy("ep", endpoint(), {
+        ...avail,
+        ...(taskType !== undefined ? { taskType } : {}),
+      });
+      expect(out.blocked, `${taskType} was refused`).toBe(false);
+    },
+  );
+
+  it("does not refuse a CLI route for execute", () => {
+    // The guard must fire on endpoint type alone - a CLI route is exactly the
+    // thing that SHOULD carry execution.
+    const out = evaluateRoutePolicy(
+      "cli",
+      endpoint({ type: "cli", harness: "generic", command: "node" }),
+      { ...avail, taskType: "execute" },
+    );
+    expect(out.blocked).toBe(false);
+  });
+});

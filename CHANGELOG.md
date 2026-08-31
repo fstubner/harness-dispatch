@@ -6,6 +6,39 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- An `execute` task can no longer be routed to an HTTP endpoint. An endpoint
+  has no agent loop, no file access and no shell — PRODUCT.md states this as
+  design rather than gap — but an undeclared capability defaults to 1.0 and no
+  endpoint example declares any, so endpoints scored PERFECT for execute. An
+  acceptance pass measured a `--task-type execute` dispatch routed to an
+  endpoint, returning prose with exit 0: execution reported as succeeded when
+  none happened. It surfaced exactly when the CLI routes were busy or tripped,
+  which is the case a caller is least able to check.
+
+  Refused outright rather than scored low, on both counts deliberately: a score
+  of 0 still leaves a route selectable when it is the only candidate — the
+  failing case itself — and a declared capability must not override it, the
+  same rule as the safety-flag check. Endpoints remain full members of the mix
+  for plan, review and second opinions.
+
+- An orphaned job now hands back the progress it saved. When a supervisor dies
+  there is no result, but its output is on disk in `stdout.partial.log` — and
+  the orphan branch returned above the code that reads it, so the response was
+  empty while the trail sat there. Chaining had the same gap, reporting "no
+  result available" for a job whose partial output was recoverable; it now
+  carries that output, labelled INCOMPLETE. PRODUCT.md names losing this trail
+  as the defining failure: "a wasted attempt with no trail".
+
+### Known gaps
+
+- HTTP fanout arms are not job-backed: unlike the MCP surface, an arm's result
+  lives only in the request, so it dies with the connection. Reported by the
+  same acceptance pass. NOT fixed here — making it job-backed changes what an
+  OpenAI-compatible client receives, so it belongs in a release that can carry
+  a contract change rather than in a patch.
+
 ## [0.8.0] — 2026-08-31
 
 ### Added
