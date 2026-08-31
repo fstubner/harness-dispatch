@@ -197,8 +197,16 @@ clis:
     surface: cursor_agent_cli
     auth_source: product_login
     billing_kind: included_usage_then_on_demand
-    # Cursor hard-stops at the plan's included pool unless on-demand billing is
-    # enabled in Settings -> Billing -> Spending — set true here if you did.
+    # Cursor stops at the plan's included pool unless you have turned on
+    # on-demand usage in Settings -> Billing -> Spending. Set true here if you
+    # did — and note the second half, which the earlier wording ("hard-stops")
+    # missed: once on-demand IS on, overage is billed in ARREARS at the end of
+    # the cycle, and Cursor's own docs recommend setting a spend limit because
+    # without one there is no cap. So this route is the one subscription in the
+    # shipped set whose overage is not prepaid, which is why the `true` here is
+    # a bigger statement than it looks. Checked against Cursor's 2026 pricing
+    # documentation on 2026-08-31; NOT live-verified, because doing so means
+    # exhausting a real included pool.
     paid_usage_possible: false
     # Capability floor, per requested profile. cursor-agent's capability really
     # does differ by mode, so a single value cannot describe it:

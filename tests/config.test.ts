@@ -668,8 +668,29 @@ clis:
     expect(svc.billingKind).toBe("metered_api");
   });
 
-  it("can coexist with an auto-detected route of the same harness under a different name", async () => {
+  it("is AUTHORITATIVE: a config defining routes does not also get detected ones", async () => {
+    // This test previously asserted the opposite - that a `clis:` entry
+    // coexists with every auto-detected harness. That additive default caught
+    // three acceptance passes in a row despite explicit warnings, and caught
+    // this project's own suite dispatching to the real Claude Code CLI on
+    // every CI run. A file that describes routes now describes ALL of them.
     const yamlText = `
+clis:
+  - name: codex_sol
+    harness: codex
+    model: gpt-5.6-sol
+`;
+    const p = await writeTmpYaml("clis-authoritative.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services)).toEqual(["codex_sol"]);
+  });
+
+  it("`detect: true` restores coexistence with auto-detected routes", async () => {
+    // The mechanism still exists and is still supported - it is opt-in now
+    // rather than unavoidable. Same fixture as the old default-behaviour test,
+    // so what it used to prove is still proven.
+    const yamlText = `
+detect: true
 clis:
   - name: codex_sol
     harness: codex
@@ -684,6 +705,55 @@ clis:
       "codex_sol",
       "cursor_cli",
     ]);
+  });
+
+  it("a config with NO routes of its own still auto-detects, and says so", async () => {
+    // The migration hazard: a file carrying only `overrides:` exists to TUNE
+    // detection. Making it authoritative would leave that user with zero
+    // routes. A file cannot be authoritative about routes it does not
+    // describe - so detection stays on, and the warning says the rule out
+    // loud rather than leaving it to be discovered.
+    const yamlText = `
+overrides:
+  codex_cli:
+    tier: 1
+`;
+    const p = await writeTmpYaml("tune-only.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services)).toContain("codex_cli");
+    expect(cfg.configWarnings?.join(" ")).toMatch(/defines no routes of its own/);
+  });
+
+  it("`detect: false` on a route-less config yields nothing, deliberately", async () => {
+    const yamlText = `
+detect: false
+overrides:
+  codex_cli:
+    tier: 1
+`;
+    const p = await writeTmpYaml("detect-off.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services)).toEqual([]);
+  });
+
+  it("warns that disabled:/overrides: did nothing on an authoritative config", async () => {
+    // They apply to auto-detected routes, and there are none. Silence here
+    // would be the same class of defect the warning machinery exists for: a
+    // config entry that reads as effective and is not.
+    const yamlText = `
+disabled:
+  - codex_cli
+overrides:
+  codex_cli:
+    tier: 1
+clis:
+  - name: mine
+    harness: codex
+`;
+    const p = await writeTmpYaml("authoritative-with-tuning.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services)).toEqual(["mine"]);
+    expect(cfg.configWarnings?.join(" ")).toMatch(/neither had any effect/);
   });
 });
 

@@ -234,6 +234,30 @@ export function buildRouteBilling(svc: ServiceConfig): RouteBilling {
   return billing;
 }
 
+/**
+ * Whether this route's billing is too uncertain to run without an opt-in.
+ *
+ * `confidence` LOOKS like a four-value enum and behaves like one bit: only
+ * `unknown` changes anything, and `documented`/`inferred`/`unsupported` are
+ * indistinguishable to every caller. That invited a real mistake — this
+ * repo's own config carried `billing_confidence: undocumented`, an invalid
+ * value that resolved to the less restrictive default (now warned about, but
+ * still the wrong direction).
+ *
+ * Collapsing the field was considered on 2026-08-31 and rejected on
+ * measurement rather than taste. In every INFERRED case, confidence tracks
+ * kind exactly — loopback and custom surfaces already get `kind: unknown`, so
+ * the second test is redundant there. It does independent work in exactly one
+ * case: an operator explicitly writing `billing_confidence: unknown` on a
+ * route whose kind IS known, which is how you say "I do not trust this
+ * classification" about a route you have otherwise described. Removing it
+ * would silently unblock that config — a behaviour change in the unsafe
+ * direction, to tidy a field whose actual defect (invalid values failing
+ * open) is already fixed elsewhere.
+ *
+ * So it stays, and this comment is the collapse: the four values are one bit,
+ * `unknown` is the bit, and nothing else here reads the other three.
+ */
 export function billingIsUnknown(billing: RouteBilling): boolean {
   return billing.kind === "unknown" || billing.confidence === "unknown";
 }

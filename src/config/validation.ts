@@ -71,8 +71,11 @@ export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
  * indistinguishable from not setting it, which is exactly the silent-default
  * class that has bitten this file twice already.
  */
-export const KNOWN_TOP_LEVEL_KEYS = new Set([
+export const KNOWN_TOP_LEVEL_KEYS = new Set([
   "version",
+  // Opt back into auto-detection when a config defines its own routes, or
+  // opt out when it does not. See loadConfig for the three cases.
+  "detect",
   "clis",
   "endpoints",
   "services",

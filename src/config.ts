@@ -994,7 +994,60 @@ export async function loadConfig(
   }
 
   const apiKeys = collectApiKeys(raw);
-  const services = await detectServices(disabled, apiKeys, overrides, whichFn);
+
+  // A CONFIG FILE THAT DEFINES ROUTES IS AUTHORITATIVE about them.
+  //
+  // Detection used to run unconditionally, so `clis: []` did NOT isolate a
+  // config from the harnesses installed on the machine — the file added to
+  // auto-detection rather than replacing it, and only `disabled:` (naming
+  // every route, including ones you might not know existed) subtracted. That
+  // default caught three acceptance passes in a row DESPITE explicit warnings,
+  // and caught this project's own test suite: one boundary test dispatched to
+  // the real Claude Code CLI on every `npm test` and every CI run, measured at
+  // 6.4s and 47k input tokens, under a comment asserting it could not reach a
+  // route. When a default surprises the maintainer, the reviewers, and the
+  // product's own tests, it is a least-surprise violation rather than a
+  // convenience.
+  //
+  // It also decayed: a future release adding a fifth supported harness would
+  // auto-add it to every existing config, so a `disabled:` list written today
+  // silently stops isolating tomorrow.
+  //
+  // The legacy `services:` format has ALWAYS been authoritative (it returns
+  // above without calling detection), so this makes the two shapes agree
+  // rather than inventing a rule.
+  //
+  // Three cases, and the third is what keeps the migration safe:
+  //   detect: true/false   — explicit, always wins.
+  //   file defines routes  — authoritative; detection off.
+  //   file defines NO routes — detection ON, with a warning. A file carrying
+  //     only `overrides:`/`disabled:`/settings exists to TUNE detection; it
+  //     cannot be authoritative about routes it does not describe, and
+  //     switching detection off for it would leave such a user with nothing.
+  const definesRoutes =
+    (Array.isArray(raw.clis) && raw.clis.length > 0) ||
+    (Array.isArray(raw.endpoints) && raw.endpoints.length > 0);
+  const detectRequested = typeof raw.detect === "boolean" ? raw.detect : undefined;
+  const detect = detectRequested ?? !definesRoutes;
+  if (detectRequested === undefined && !definesRoutes && Object.keys(raw).length > 0) {
+    warnings.push(
+      "this config defines no routes of its own (no `clis:` or `endpoints:` entries), so " +
+        "installed harness CLIs are still auto-detected and added. That is the old default " +
+        "and it still applies here; a config that DOES define routes is now authoritative " +
+        "and detection is off for it. Say `detect: true` to keep this explicit, or " +
+        "`detect: false` to run with no routes at all.",
+    );
+  }
+  const services = detect
+    ? await detectServices(disabled, apiKeys, overrides, whichFn)
+    : {};
+  if (!detect && (disabled.length > 0 || Object.keys(overrides).length > 0)) {
+    warnings.push(
+      "`disabled:` and `overrides:` apply to AUTO-DETECTED routes, and this config is " +
+        "authoritative (it defines its own routes), so detection is off and neither had any " +
+        "effect. Remove them, or add `detect: true` if you also want detected routes.",
+    );
+  }
   addClis(services, raw, apiKeys, warnings);
   addEndpoints(services, raw, apiKeys, warnings);
 
