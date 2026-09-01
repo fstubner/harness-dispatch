@@ -201,3 +201,56 @@ describe("a chained job says where it ran", () => {
     expect(preamble).not.toContain("ran in");
   });
 });
+
+describe("jobs that do not fit the context budget", () => {
+  /**
+   * The loop dropped every job past the budget with no header and no note —
+   * measured with five 8KB results: three appeared, four and five were absent
+   * from the output entirely. That contradicts this module's own contract:
+   * "Unknown or unfinished jobs are reported inline rather than skipped
+   * silently: a delegate ... would reason from an incomplete picture and never
+   * know." A job dropped for want of budget is worse than an unknown one,
+   * because the caller explicitly asked for it.
+   */
+  async function plantBig(jobId: string, marker: string): Promise<void> {
+    const jd = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(jd, "output"), { recursive: true });
+    await fs.writeFile(path.join(jd, "prompt.md"), "task", "utf8");
+    await fs.writeFile(
+      path.join(jd, "output", "result.json"),
+      JSON.stringify({
+        result: { success: true, output: `${marker} ${"x".repeat(8000)}`, route: "r" },
+        decision: {},
+      }),
+      "utf8",
+    );
+  }
+
+  const ids = [1, 2, 3, 4, 5].map((n) => `job-17000000005${n}0-aaaaaaa${n}`);
+
+  it("names the jobs it could not fit instead of dropping them silently", async () => {
+    for (const [i, id] of ids.entries()) await plantBig(id, `MARKER-${i + 1}`);
+    const preamble = await buildContextPreamble(ids);
+
+    // Something was dropped — that part is by design, the budget is real.
+    expect(preamble).not.toContain("MARKER-5");
+    // But the delegate is told, and told WHICH.
+    expect(preamble).toContain("omitted");
+    expect(preamble).toContain(ids[4]!);
+  });
+
+  it("says nothing about omissions when everything fits", async () => {
+    const small = "job-1700000000560-bbbbbbbb";
+    const jd = path.join(jobsDir, small);
+    await fs.mkdir(path.join(jd, "output"), { recursive: true });
+    await fs.writeFile(path.join(jd, "prompt.md"), "t", "utf8");
+    await fs.writeFile(
+      path.join(jd, "output", "result.json"),
+      JSON.stringify({ result: { success: true, output: "short", route: "r" }, decision: {} }),
+      "utf8",
+    );
+    const preamble = await buildContextPreamble([small]);
+    expect(preamble).toContain("short");
+    expect(preamble).not.toContain("omitted");
+  });
+});

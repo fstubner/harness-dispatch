@@ -40,6 +40,8 @@ export interface HttpServerHandle extends McpHandle {
   port: number;
   host: string;
   token: string | null;
+  /** Live per-session MCP servers. See the implementation for why it is exposed. */
+  openMcpSessions: () => number;
 }
 
 export interface StartHttpOptions extends BuildMcpOptions {
@@ -495,6 +497,41 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const sessionServers = new Set<McpServer>();
+  /** Last time each live session was used, for the idle sweep below. */
+  const sessionLastSeen = new Map<string, number>();
+
+  /**
+   * How long an MCP session may sit unused before it is closed.
+   *
+   * Sessions were never expired or capped. `transports` is pruned only by
+   * `transport.onclose`, and the SDK fires that only on an explicit HTTP
+   * DELETE — which `StreamableHTTPClientTransport.close()` does not send. So a
+   * client that shuts down cleanly left its session, and its whole `McpServer`
+   * instance, resident for the lifetime of the process. This surface exists
+   * for CI, cron and scripts, i.e. exactly the callers that connect and go.
+   *
+   * Thirty minutes is far longer than any dispatch grace window, so it cannot
+   * reap a session a caller is still polling on.
+   */
+  const SESSION_IDLE_MS = 30 * 60_000;
+
+  /**
+   * Close sessions idle past the ceiling. Runs on request rather than on a
+   * timer, deliberately: an interval would keep the process alive and need
+   * unref'ing plus teardown, for a sweep that only matters when requests are
+   * arriving anyway.
+   */
+  const sweepIdleSessions = (): void => {
+    const now = Date.now();
+    for (const [sid, seen] of sessionLastSeen) {
+      if (now - seen <= SESSION_IDLE_MS) continue;
+      sessionLastSeen.delete(sid);
+      const idle = transports.get(sid);
+      // close() fires onclose, which removes it from `transports` and drops
+      // the McpServer from `sessionServers`.
+      void idle?.close().catch(() => undefined);
+    }
+  };
 
   const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (isAuthorized(req.headers.authorization, activeToken())) return true;
@@ -618,17 +655,24 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
       if (url.pathname === mcpRoute) {
         if (!requireAuth(req, res)) return;
+        sweepIdleSessions();
         const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
         let transport: StreamableHTTPServerTransport;
+        // Held so the post-request check below can dispose of a server whose
+        // session never came into existence.
+        let freshServer: McpServer | undefined;
         if (sessionId && transports.has(sessionId)) {
           transport = transports.get(sessionId)!;
+          sessionLastSeen.set(sessionId, Date.now());
         } else {
           const sessionServer = buildMcpServerInstance(holder, reloader);
+          freshServer = sessionServer;
           sessionServers.add(sessionServer);
           transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sid: string) => {
               transports.set(sid, transport);
+              sessionLastSeen.set(sid, Date.now());
             },
           });
           // Bookkeeping only — do NOT call sessionServer.close() here.
@@ -640,12 +684,29 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           // initiated or via our shutdown path below) is sufficient on its
           // own to tear down sessionServer's Protocol-side state too.
           transport.onclose = () => {
-            if (transport.sessionId) transports.delete(transport.sessionId);
+            if (transport.sessionId) {
+              transports.delete(transport.sessionId);
+              sessionLastSeen.delete(transport.sessionId);
+            }
             sessionServers.delete(sessionServer);
           };
           await sessionServer.connect(transport as unknown as Transport);
         }
         await transport.handleRequest(req, res);
+        // A session that never came into existence still left a server behind.
+        //
+        // The McpServer and transport are built BEFORE it is known whether
+        // this is an `initialize`. For anything else with an unknown session
+        // id the SDK answers 400 without initialising, so
+        // `onsessioninitialized` never fires (nothing enters `transports`) and
+        // `onclose` never fires (nothing leaves `sessionServers`). Measured:
+        // five POSTs with unknown session ids left five orphaned servers alive
+        // until shutdown. Anyone can trigger it with a wrong header, and the
+        // auth check above does not help — a valid token is enough.
+        if (freshServer !== undefined && transport.sessionId === undefined) {
+          sessionServers.delete(freshServer);
+          await freshServer.close().catch(() => undefined);
+        }
         return;
       }
 
@@ -744,6 +805,16 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     port: actualPort,
     host,
     token,
+    /**
+     * How many per-session MCP servers are alive.
+     *
+     * Exposed because a leak here is invisible from outside: a request that
+     * never initialises a session used to leave its `McpServer` resident with
+     * nothing to observe it by. There is no other seam — the count lives in a
+     * closure — and a test that reimplemented the bookkeeping would pin its
+     * own copy rather than this one.
+     */
+    openMcpSessions: () => sessionServers.size,
     async close() {
       for (const transport of transports.values()) {
         try {

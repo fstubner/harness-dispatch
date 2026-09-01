@@ -747,3 +747,47 @@ describe("GET /health", () => {
     }
   });
 });
+
+describe("MCP sessions that never come into existence", () => {
+  /**
+   * The per-session `McpServer` and transport are built BEFORE it is known
+   * whether the request is an `initialize`. For anything else carrying an
+   * unknown session id the SDK answers 400 without initialising, so
+   * `onsessioninitialized` never fires (nothing enters the transport map) and
+   * `onclose` never fires (nothing leaves the server set).
+   *
+   * An acceptance pass counted five POSTs with unknown session ids leaving
+   * five orphaned servers alive until shutdown. A valid token is all it takes,
+   * so any authorised client with a stale session id leaks one per request.
+   */
+  it("does not leave a server behind for every rejected request", async () => {
+    const fake = await startFakeOpenAi();
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    try {
+
+    expect(handle.openMcpSessions()).toBe(0);
+
+    for (let i = 0; i < 5; i++) {
+      await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer secret",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-session-id": `no-such-session-${i}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: i, method: "tools/list", params: {} }),
+      }).catch(() => undefined);
+    }
+
+    expect(
+      handle.openMcpSessions(),
+      "one MCP server leaked per rejected request",
+    ).toBe(0);
+    } finally {
+      await handle.close();
+      await fake.close();
+    }
+  });
+});

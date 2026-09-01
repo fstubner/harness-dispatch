@@ -1507,3 +1507,41 @@ describe("the worktree path explains its own limit", () => {
     await expect(buildWorkspacePatch(run)).rejects.not.toThrow(/maxBuffer/);
   }, 60_000);
 });
+
+describe("the size refusal names the right directory", () => {
+  /**
+   * The copy path's per-file refusal came from `git()`, which only knows the
+   * cwd it was handed — the PARENT OF THE PROJECT on that path, not the
+   * workspace. So it told the reader their work was somewhere it is not,
+   * which is worse than saying nothing: the named directory exists.
+   */
+  it("points at the workspace, not the project's parent", async () => {
+    const repo = await makeRepo("dirproj");
+    const wsRoot = path.join(dir, "dirws");
+    const workspace = path.join(wsRoot, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.cp(repo, workspace, { recursive: true });
+    // One file over the per-file execFile buffer, which is the branch that
+    // used to interpolate the wrong cwd.
+    await fs.writeFile(path.join(workspace, "huge.txt"), "z".repeat(MAX_PATCH_BYTES + 4096), "utf8");
+
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: workspace,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "huge.txt", kind: "added" }],
+    };
+
+    const err = await buildWorkspacePatch(run).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toContain("patch limit");
+    expect(message).toContain(workspace);
+    expect(message, "named the project's parent instead").not.toContain(
+      `still in ${path.dirname(repo)}\n`,
+    );
+  }, 60_000);
+});

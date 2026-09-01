@@ -369,6 +369,19 @@ async function buildCopyPatchFromChanges(
         path.dirname(run.originalWorkingDir),
       );
     } catch (err) {
+      // The size refusal names a DIRECTORY, and `git()` only knows the cwd it
+      // was handed — which on this path is the parent of the user's project,
+      // not the workspace. So it told the reader their work was somewhere it
+      // is not. Re-raised here, where `run` is in scope, with the same wording
+      // the accumulation check below uses.
+      if (err instanceof Error && err.message.includes("patch limit")) {
+        throw new Error(
+          `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
+            `patch limit (${rel} alone is over it), so a patch cannot be returned. Nothing has ` +
+            `been applied and nothing has been deleted — the work is still in ` +
+            `${isolatedRoot(run)}, where you can copy out what you need or diff it by hand.`,
+        );
+      }
       // An unreadable file must not silently shrink the patch — that is the
       // failure mode this whole area keeps producing.
       throw new Error(

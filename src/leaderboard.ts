@@ -383,42 +383,54 @@ export class LeaderboardCache {
   private async doFetch(): Promise<void> {
     try {
       const controller = new AbortController();
+      // The abort must span the BODY, not just the headers.
+      //
+      // `clearTimeout` sat in a `finally` around `fetch()` alone, so the
+      // timeout was cancelled the moment response headers arrived and
+      // `response.json()` then ran with nothing bounding it. Measured against
+      // a server that answered 200 and never sent a body: still pending after
+      // 15s, abort never fired, against an 8s ceiling — and this sits on the
+      // routing path, awaited per candidate, so a half-dead endpoint wedges
+      // every dispatch indefinitely. The class docblock above promises the
+      // opposite ("delays routing once ... with an 8s timeout").
+      //
+      // The fix is only the placement of `clearTimeout`: it now runs after the
+      // body has been read, so one timer covers the whole exchange.
       const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      let response: Response;
       try {
-        response = await fetch(LEADERBOARD_URL, {
+        const response = await fetch(LEADERBOARD_URL, {
           headers: { "User-Agent": USER_AGENT },
           signal: controller.signal,
         });
+        if (!response.ok) {
+          this.fetchFailed = true;
+          // Update fetchedAt so the failure-suppression window starts now.
+          this.fetchedAt = Date.now();
+          this.persist();
+          return;
+        }
+        const payload = (await response.json()) as {
+          models?: Array<{ model?: string; score?: number }>;
+        };
+        const models = Array.isArray(payload.models) ? payload.models : [];
+        const parsed: Record<string, number> = {};
+        for (const m of models) {
+          if (typeof m.model === "string" && typeof m.score === "number") {
+            parsed[m.model.toLowerCase()] = m.score;
+          }
+        }
+        if (Object.keys(parsed).length > 0) {
+          this.data = parsed;
+          this.fetchedAt = Date.now();
+          this.fetchFailed = false;
+        } else {
+          this.fetchFailed = true;
+          this.fetchedAt = Date.now();
+        }
+        this.persist();
       } finally {
         clearTimeout(timer);
       }
-      if (!response.ok) {
-        this.fetchFailed = true;
-        // Update fetchedAt so the failure-suppression window starts now.
-        this.fetchedAt = Date.now();
-        this.persist();
-        return;
-      }
-      const payload = (await response.json()) as {
-        models?: Array<{ model?: string; score?: number }>;
-      };
-      const models = Array.isArray(payload.models) ? payload.models : [];
-      const parsed: Record<string, number> = {};
-      for (const m of models) {
-        if (typeof m.model === "string" && typeof m.score === "number") {
-          parsed[m.model.toLowerCase()] = m.score;
-        }
-      }
-      if (Object.keys(parsed).length > 0) {
-        this.data = parsed;
-        this.fetchedAt = Date.now();
-        this.fetchFailed = false;
-      } else {
-        this.fetchFailed = true;
-        this.fetchedAt = Date.now();
-      }
-      this.persist();
     } catch {
       this.fetchFailed = true;
       this.fetchedAt = Date.now();

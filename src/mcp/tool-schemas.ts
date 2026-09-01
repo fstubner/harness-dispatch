@@ -467,8 +467,11 @@ export const workspaceInputShape = {
     .optional()
     .describe(
       "Override a refusal. On 'apply': apply even when the target project has " +
-        "uncommitted changes — off by default because the patch was built against a " +
-        "clean base, so applying over newer work can conflict with or overwrite it. " +
+        "uncommitted changes (a check only possible IN A GIT REPOSITORY — outside " +
+        "one, apply still refuses a file the patch touches that changed since the " +
+        "dispatch, but cannot see unrelated edits) — off by default because the " +
+        "patch was built against a clean base, so applying over newer work can " +
+        "conflict with or overwrite it. " +
         "On 'discard': delete the workspace even when it holds changes your project " +
         "does not have — off by default because discard is irreversible and the " +
         "workspace may be the only copy.",

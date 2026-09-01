@@ -255,3 +255,50 @@ describe("retryJob", () => {
     );
   });
 });
+
+describe("retrying a derived orphan", () => {
+  /**
+   * `retryJob` refuses `running`/`queued` because "retrying a live run would
+   * leave two attempts racing on the same working directory" — and produced
+   * exactly that for a DERIVED orphan. The guard reads the derived status
+   * (`orphaned`, so it passes), while `claimNextJob` filters on the raw status
+   * file, which still says `queued`. So a supervisor could claim the original
+   * while the retry ran.
+   *
+   * `cancelJob` was taught to tell the two kinds of orphan apart; retry was
+   * not, so that fix stopped one square short. Marking the original cancelled
+   * is what closes it — claimNextJob refuses a marked job.
+   */
+  it("marks the original cancelled so nothing can reclaim it", async () => {
+    const jobId = "job-1700000000901-aaaaaaaa";
+    const dir = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(dir, "output"), { recursive: true });
+    await fs.writeFile(path.join(dir, "prompt.md"), "do a thing", "utf8");
+    await fs.writeFile(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({
+        jobId, createdAt: new Date().toISOString(), workingDir: dir,
+        promptPath: path.join(dir, "prompt.md"), files: [], service: "fake",
+      }),
+      "utf8",
+    );
+    // Raw status `queued`, heartbeat stale: derived orphan, still claimable.
+    await fs.writeFile(
+      path.join(dir, "status.json"),
+      JSON.stringify({
+        jobId, status: "queued", jobDir: dir,
+        createdAt: new Date(Date.now() - 600_000).toISOString(),
+        updatedAt: new Date(Date.now() - 600_000).toISOString(),
+      }),
+      "utf8",
+    );
+
+    const { getAsyncJob } = await import("../src/jobs.js");
+    expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");
+
+    await retryJob(jobId, await buildDeps());
+
+    const raw = JSON.parse(await fs.readFile(path.join(dir, "status.json"), "utf8"));
+    expect(raw.status, "the original stayed claimable while a retry ran").toBe("cancelled");
+  });
+});

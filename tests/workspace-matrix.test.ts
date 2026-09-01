@@ -468,3 +468,43 @@ describe("an isolated workspace is not world-readable", () => {
     },
   );
 });
+
+describe("an existing workspace root is brought up to 0700", () => {
+  /**
+   * The `mode:` option on `mkdir` applies only to directories it CREATES; it
+   * never chmods one that already exists. So the fix that shipped with it did
+   * nothing for anyone who had used `copy` before — they kept a 0755 root
+   * forever — and its CHANGELOG entry said otherwise. Measured on real Linux:
+   * a pre-existing 0755 directory was still 0755 after
+   * `mkdir(recursive, 0o700)`.
+   *
+   * This is the case the original test could not catch, because it only ever
+   * exercised a fresh root.
+   *
+   * POSIX only: Windows ignores mode and `os.tmpdir()` is per-user there.
+   */
+  it.skipIf(process.platform === "win32")(
+    "chmods a root that was created before the fix",
+    async () => {
+      const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
+      const project = path.join(root, "oldproj");
+      await fs.mkdir(project, { recursive: true });
+      await fs.writeFile(path.join(project, "a.txt"), "secret source", "utf8");
+
+      // Exactly what a pre-fix run left behind.
+      const projectWsRoot = workspaceRootFor(project);
+      await fs.mkdir(projectWsRoot, { recursive: true, mode: 0o755 });
+      expect((await fs.stat(projectWsRoot)).mode & 0o777).toBe(0o755);
+
+      await prepareWorkspace({
+        policy: "copy",
+        workingDir: project,
+        files: [],
+        routeName: "r",
+      });
+
+      const mode = (await fs.stat(projectWsRoot)).mode & 0o777;
+      expect(mode & 0o077, `root left at ${mode.toString(8)}`).toBe(0);
+    },
+  );
+});

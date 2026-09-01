@@ -39,6 +39,45 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **An existing `copy` workspace directory is now actually secured.** The
+  previous release set 0700 with `mkdir`'s `mode` option, which applies only to
+  directories it CREATES — so everyone who had used `copy` before kept a
+  world-readable root holding a full copy of their source, and the entry
+  claiming otherwise was wrong. Measured on Linux: 0755 before, 0755 after. An
+  explicit chmod fixes them. A root owned by ANOTHER user is now refused
+  outright rather than copied into: the path is deterministic inside a shared
+  temp directory, so on the multi-user machine this guard exists for, someone
+  else can create it first.
+
+- **A half-dead leaderboard endpoint no longer hangs every dispatch.** The 8s
+  timeout was cancelled as soon as response headers arrived, leaving the body
+  read unbounded — measured still pending after 15s. Quality scores are awaited
+  per routing candidate, so this stalled routing indefinitely. Off by default,
+  which is why it was not worse.
+
+- **The HTTP server no longer leaks an MCP server per rejected request.** A
+  request carrying an unknown session id is answered 400 without initialising,
+  so nothing ever closed the server built for it in advance — five such
+  requests left five alive until shutdown. Sessions are also expired after 30
+  minutes idle: nothing removed them before except an explicit HTTP DELETE,
+  which the standard client never sends, so a clean shutdown left its session
+  resident forever.
+
+- **`retry_job` on an abandoned job no longer races the original.** Its guard
+  read the derived status while the claim path reads the raw status file, so a
+  supervisor could pick up the original while the retry ran — the exact outcome
+  the command's own error text says it prevents. The original is now marked
+  cancelled.
+
+- **Chained context says what it left out.** Jobs past the character budget
+  were dropped with no header and no note, contradicting the contract stated in
+  the same file. The docblock also claimed oldest entries truncate first, which
+  was never true — the last ones go.
+
+- The `copy` size refusal named the parent of your project rather than the
+  workspace holding the work, and the `force` flag's description still promised
+  an uncommitted-changes refusal that only exists inside a git repository.
+
 - **`configure` no longer deletes `detect: false`.** That key is the only
   setting that isolates a machine from its installed paid CLIs, and it had no
   field on the internal config object, so regenerating a file silently dropped
