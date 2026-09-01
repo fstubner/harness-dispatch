@@ -1273,3 +1273,126 @@ describe("a copy workspace that lives INSIDE the project", () => {
     expect(out.message).toMatch(/uncommitted/);
   });
 });
+
+describe("a gitignored file the agent wrote", () => {
+  /**
+   * `git add -A -N` obeys .gitignore; `changedFiles` comes from a filesystem
+   * fingerprint and does not. So a worktree job that wrote a gitignored file
+   * REPORTED it as applied while the patch never carried it — an acceptance
+   * pass measured `applied: true` naming two files with one in the diff.
+   *
+   * It compounds: the "already applied" guard needs every recorded change
+   * present, so it never fires, and the next apply refuses with "changed
+   * since dispatch" — blaming the caller for the first apply's own writes.
+   */
+  async function ignoredRun(): Promise<WorkspaceRun> {
+    const repo = await makeRepo("iproj");
+    await fs.writeFile(path.join(repo, ".gitignore"), "secret.env\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "ignore"], repo);
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+
+    const wsRoot = path.join(dir, "iws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+
+    await fs.writeFile(path.join(worktree, "app.js"), "const a = 7;\n", "utf8");
+    await fs.writeFile(path.join(worktree, "secret.env"), "TOKEN=abc\n", "utf8");
+
+    return {
+      policy: "git_worktree",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: worktree,
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [
+        { path: "app.js", kind: "modified" },
+        { path: "secret.env", kind: "added" },
+      ],
+    } as WorkspaceRun;
+  }
+
+  it("appears in the patch rather than being dropped", async () => {
+    const patch = await buildWorkspacePatch(await ignoredRun());
+    expect(patch).toContain("secret.env");
+    expect(patch).toContain("TOKEN=abc");
+  });
+
+  it("actually lands when apply reports it applied", async () => {
+    const run = await ignoredRun();
+    const result = await applyWorkspace("job-1700000000801-aaaaaaaa", jobDir, run);
+    expect(result.applied, result.message).toBe(true);
+    // The whole point: the file named in the result exists in the project.
+    expect(existsSync(path.join(run.originalWorkingDir, "secret.env"))).toBe(true);
+  });
+
+  it("recognises its own work on a second apply instead of blaming the caller", async () => {
+    const run = await ignoredRun();
+    await applyWorkspace("job-1700000000802-bbbbbbbb", jobDir, run);
+    const second = await applyWorkspace("job-1700000000802-bbbbbbbb", jobDir, run);
+    expect(second.message).toContain("Already applied");
+    expect(second.message).not.toContain("changed since dispatch");
+  });
+});
+
+describe("discarding a workspace that is already gone", () => {
+  /**
+   * `discardWorkspace` early-returned "Already gone" when the root had
+   * vanished — skipping the block that removes the worktree THROUGH GIT. So a
+   * workspace pruned by retention, or deleted by hand, left
+   * `.git/worktrees/<name>` registered in the user's repo permanently. The
+   * function's own docblock says worktrees are removed through git for
+   * exactly this reason.
+   *
+   * Reproduced: `git worktree list` still showing the path, marked
+   * `prunable`, after discard answered `discarded: true`.
+   */
+  it("still clears the registration git is holding", async () => {
+    const repo = await makeRepo("pproj");
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+    const wsRoot = path.join(dir, "pws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+
+    // Retention pruned the workspace, or a user deleted it.
+    await fs.rm(wsRoot, { recursive: true, force: true });
+
+    const run: WorkspaceRun = {
+      policy: "git_worktree",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: worktree,
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+    const res = await discardWorkspace("job-1700000000031-aaaaaaaa", run);
+    expect(res.discarded).toBe(true);
+
+    const list = (await git(["worktree", "list"], repo)).stdout;
+    expect(list).not.toContain("prunable");
+    expect(existsSync(path.join(repo, ".git", "worktrees", "worktree"))).toBe(false);
+  });
+
+  it("does not fail the discard when the project is not a git repo", async () => {
+    // Best-effort: a missing repo or git binary must not turn a successful
+    // discard into a failure.
+    const plain = path.join(dir, "plainproj");
+    await fs.mkdir(plain, { recursive: true });
+    const wsRoot = path.join(dir, "gone-ws");
+    const res = await discardWorkspace("job-1700000000032-bbbbbbbb", {
+      policy: "git_worktree",
+      originalWorkingDir: plain,
+      effectiveWorkingDir: path.join(wsRoot, "worktree"),
+      workspaceRoot: wsRoot,
+      baseCommit: "deadbeef",
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    } as WorkspaceRun);
+    expect(res.discarded).toBe(true);
+  });
+});

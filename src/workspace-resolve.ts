@@ -188,6 +188,31 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
     await git(["add", "-A", "-N"], root).catch(() => undefined);
+    // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
+    // a filesystem fingerprint. So an agent that wrote a gitignored file (a
+    // `.env`, a local config) had that file REPORTED as changed and applied,
+    // and silently left behind: the patch never carried it. An acceptance pass
+    // measured `applied: true` naming two files with only one in the diff.
+    //
+    // It compounds: the "already applied" guard needs every recorded change
+    // present in the project, so it never fires, and the next apply refuses
+    // with "changed since dispatch" — blaming the user for the first apply's
+    // own writes, the exact misleading refusal an earlier fix removed.
+    //
+    // Force-add EXACTLY the paths already recorded as changed, never `-f -A`.
+    // The recorded list comes from a fingerprint that skips node_modules,
+    // dist, build and friends (EXCLUDED_DIRS), so it stays bounded; a blanket
+    // force-add would sweep whole ignored trees into the patch.
+    //
+    // This also makes the two policies agree: a `copy` patch is built per file
+    // from this same list and has always carried ignored files.
+    const ignoredCandidates = (run.changedFiles ?? [])
+      .filter((c) => c.kind !== "deleted")
+      .map((c) => c.path);
+    for (let i = 0; i < ignoredCandidates.length; i += 100) {
+      const batch = ignoredCandidates.slice(i, i + 100);
+      await git(["add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
+    }
     return gitDiff(["diff", "--binary", run.baseCommit, "--"], root);
   }
 
@@ -1026,6 +1051,22 @@ export async function discardWorkspace(
     return { jobId, discarded: false, message: "This job has no isolated workspace to discard." };
   }
   if (!existsSync(root)) {
+    // The directory is gone, but git may still have the worktree REGISTERED.
+    // This function's own docblock says worktrees must be removed through git
+    // for exactly that reason, and this early return skipped the block that
+    // does it — so a workspace that aged out of retention, or that someone
+    // deleted by hand, left `.git/worktrees/<name>` in the user's repo
+    // permanently. Reproduced: `git worktree list` still showing the path,
+    // marked `prunable`, after discard answered `discarded: true`.
+    //
+    // Prune rather than `worktree remove`: the directory is already gone, so
+    // remove has nothing to act on, and prune is precisely the "forget
+    // registrations whose directories vanished" operation. Best-effort — a
+    // non-repo or a missing git binary must not turn a successful discard
+    // into a failure.
+    if (run.policy === "git_worktree") {
+      await git(["worktree", "prune"], run.originalWorkingDir).catch(() => undefined);
+    }
     return { jobId, discarded: true, message: `Already gone: ${root}` };
   }
 

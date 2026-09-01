@@ -39,6 +39,56 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Usage counters are no longer silently lost when two dispatches finish at
+  once.** `withFileLock` runs its critical section unlocked after a 2s
+  timeout — deliberate, and still right for the circuit breaker, which has
+  nothing to fall back on. It was wrong for the quota counters, which keep a
+  pending delta and clear it only on success: an unserialised write landed,
+  the delta was cleared as though serialised, and the process actually holding
+  the lock then overwrote the file with a value computed before that write
+  existed. Reproduced against the built artifact: five recorded calls gone,
+  no error. The counters now defer instead, and the delta lands on the next
+  result. A busy moment is no longer reported as "counters not reaching
+  disk" — they are delayed, not lost, and saying otherwise makes a working
+  system look broken.
+
+- **A route knocked out by a 429 no longer reports `tripped: true,
+  failures: 0`.** `trip()` set the cooldown without counting the failure, so
+  `usage` — the surface an orchestrator is told to consult before delegating
+  — showed a contradiction that reads as a bookkeeping bug rather than a real
+  trip.
+
+- **Discarding a workspace whose directory is already gone now clears the
+  registration git is still holding.** The early return skipped the block that
+  removes a worktree through git, so a workspace pruned by retention or
+  deleted by hand left `.git/worktrees/<name>` in the user's repo
+  permanently — the exact outcome `discardWorkspace`'s own documentation says
+  it exists to prevent. Reproduced: `git worktree list` still showing the path
+  as `prunable` after discard reported success.
+
+- **An orphaned or cancelled job now hands back its partial work through the
+  tool an orchestrator actually calls.** The progress was on disk and
+  `getAsyncJob` read it, but `job_status` answered `output: ""`: orphaned and
+  cancelled count as terminal, and the poll response attached `partialOutput`
+  only on the NOT-terminal branch. So a commit titled "an orphaned job hands
+  back its progress" was correct in the module it edited and had no effect at
+  the surface a caller touches — verified at the function, not at the tool.
+  The crash path (a `failed` status with no result) was losing its output the
+  same way. The HTTP surface already salvaged this; MCP now matches it, and
+  the answer says the output is PARTIAL so salvage is not read as a result.
+
+- **A gitignored file the agent wrote is no longer reported as applied while
+  being left behind.** Under `git_worktree`, the patch came from `git add -A
+  -N`, which obeys `.gitignore`, while the changed-file list came from a
+  filesystem fingerprint, which does not. A job that wrote a `.env` or any
+  ignored file got `applied: true` naming it, with the file absent from the
+  patch and from the project. It compounded: the already-applied guard needs
+  every recorded change present, so it never fired, and the next apply refused
+  with "changed since dispatch" — blaming the caller for the first apply's own
+  writes, the misleading refusal an earlier fix had removed. The paths already
+  recorded as changed are now force-added, which also makes `git_worktree`
+  agree with `copy`, whose per-file patch always carried them.
+
 - **`clis: []` now isolates a config, which is what the previous release said
   it did.** Authoritativeness keyed off a NON-EMPTY list, so the most explicit
   way to write "no CLI routes" still loaded every harness on the machine —

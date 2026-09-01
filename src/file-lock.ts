@@ -44,7 +44,25 @@ const LOCK_TIMEOUT_MS = 2_000;
  * Failing to acquire runs `fn` anyway rather than dropping the update: an
  * un-serialised write is what we had before, so the fallback is no worse than
  * the old behaviour, while a dropped failure would be strictly worse.
+ *
+ * That reasoning holds for a caller with NOTHING to fall back on, and it is
+ * why BreakerStore still uses the default. It does not hold for a caller that
+ * can retry: QuotaCache accumulates a pending delta and only clears it once a
+ * write succeeds, so for it a deferred write loses nothing while an
+ * unserialised one silently loses counts — it clears the delta believing the
+ * write was serialised, and the real lock holder then overwrites the file with
+ * a value computed before that write existed. `requireLock` is for that case:
+ * throw instead of running unserialised, and let the caller try again.
  */
+export class LockNotAcquiredError extends Error {
+  constructor(file: string) {
+    super(
+      `Could not acquire the lock on ${file} within ${LOCK_TIMEOUT_MS}ms — not running ` +
+        `unserialised, because this caller can retry.`,
+    );
+    this.name = "LockNotAcquiredError";
+  }
+}
 /**
  * Block this thread briefly without spinning.
  *
@@ -61,7 +79,11 @@ function sleepSync(ms: number): void {
   }
 }
 
-export function withFileLock<T>(file: string, fn: () => T): T {
+export function withFileLock<T>(
+  file: string,
+  fn: () => T,
+  opts: { requireLock?: boolean } = {},
+): T {
   const lockDir = `${file}.lock`;
   // Ensure the parent exists before trying to lock inside it: a caller whose
   // state directory has not been created yet would otherwise spin against an
@@ -123,6 +145,11 @@ export function withFileLock<T>(file: string, fn: () => T): T {
       if (Date.now() >= deadline) break;
       sleepSync(RETRY_MS);
     }
+  }
+  if (!held && opts.requireLock === true) {
+    // Nothing to clean up: the lock was never taken, and the directory that
+    // blocked us belongs to whoever is holding it.
+    throw new LockNotAcquiredError(file);
   }
   try {
     return fn();
