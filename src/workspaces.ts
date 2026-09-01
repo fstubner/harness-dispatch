@@ -192,7 +192,21 @@ const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
 /** Record that this root is ours. Best effort: never fail a dispatch over it. */
 async function markProjectRoot(root: string): Promise<void> {
   try {
-    await mkdir(root, { recursive: true });
+    // 0700, like the state directory and every job directory.
+    //
+    // A `copy` workspace holds a full copy of the user's source, and the
+    // default base lives in the SHARED os.tmpdir() — so on a multi-user POSIX
+    // machine it was readable by everyone, while the job directory holding the
+    // same project's prompt was 0700 and its files 0600. This module was the
+    // only one in the family with no mode at all.
+    //
+    // Applied at the roots rather than to every copied directory: `recursive`
+    // creates the missing parents with this mode too, and a 0700 ancestor
+    // already stops another user traversing in, so per-file modes inside the
+    // tree would be belt-and-braces on a throwaway copy. No effect on Windows,
+    // where Node ignores mode — which is also why it cannot be verified on
+    // this maintainer's machine, only in CI.
+    await mkdir(root, { recursive: true, mode: 0o700 });
     const marker = path.join(root, ROOT_MARKER);
     if (!existsSync(marker)) {
       await writeFile(
@@ -887,7 +901,9 @@ async function prepareGitWorktreeWorkspace(
   await markProjectRoot(gitWorkspaceRoot);
   const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
-  await mkdir(workspaceRoot, { recursive: true });
+  // Same 0700 reasoning as markProjectRoot: this run's directory holds the
+  // worktree checkout, i.e. the project's source.
+  await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
   // A repository with no commits yet is an ordinary state, not a fault, and
   // `git worktree add` has nothing to branch from in it.
   const baseCommit = await git(["rev-parse", "HEAD"], gitRoot).catch(() => {

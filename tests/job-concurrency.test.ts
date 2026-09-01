@@ -261,3 +261,36 @@ describe("concurrency bound — runner not built", () => {
     ).toBe(true);
   });
 });
+
+describe("dead supervisor heartbeats are cleaned up", () => {
+  /**
+   * A supervisor that exits cleanly deletes its own heartbeat; one that is
+   * KILLED cannot. Those files stopped being COUNTED but stayed on disk
+   * forever, and the liveness check reads every file in the directory on
+   * every drain — so each hard kill left a permanent cost paid by every
+   * dispatch afterwards.
+   *
+   * The sweep is deliberately limited to `<id>.txt`. The same directory holds
+   * `spawn-<id>.log`, the bootstrap output that exists to explain a
+   * supervisor that DIED — i.e. the very supervisor whose heartbeat is
+   * stale. A sweep over every file would delete the diagnostic for the
+   * failure it was cleaning up after.
+   */
+  it("removes a stale heartbeat but keeps the crash log beside it", async () => {
+    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const dir = path.join(jobsDir, ".supervisors");
+    await fs.mkdir(dir, { recursive: true });
+
+    const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+    await fs.writeFile(path.join(dir, "9991.txt"), stale, "utf8");
+    await fs.writeFile(path.join(dir, "spawn-9991.log"), "Error: bad config\n", "utf8");
+    await fs.writeFile(path.join(dir, "9992.txt"), new Date().toISOString(), "utf8");
+
+    const live = await countLiveSupervisorsForTest();
+    expect(live).toBe(1);
+    expect(existsSync(path.join(dir, "9991.txt"))).toBe(false);
+    // The reason the dead one died must survive the cleanup.
+    expect(existsSync(path.join(dir, "spawn-9991.log"))).toBe(true);
+    expect(existsSync(path.join(dir, "9992.txt"))).toBe(true);
+  });
+});

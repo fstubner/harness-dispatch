@@ -331,3 +331,33 @@ describe("a config that lists routes must not carry dead controls", () => {
     expect(w).toContain("NOT IMPLEMENTED");
   });
 });
+
+describe("a warning explains the field it is about", () => {
+  /**
+   * The range branch was fixed to vary its consequence per field; the
+   * NOT-A-NUMBER branch in the same function still told every key that
+   * "routing reads this field". Routing does not read timeout_ms or the token
+   * caps — the same defect one branch over, found by the very next pass.
+   */
+  async function warnFor(field: string): Promise<string> {
+    const file = path.join(dir, `w-${Math.random().toString(36).slice(2, 7)}.yaml`);
+    await fs.writeFile(
+      file,
+      ["clis:", "  - name: a", "    harness: codex", `    ${field}`, ""].join("\n"),
+      "utf8",
+    );
+    const cfg = await loadConfig(file, { whichFn: async () => null });
+    return (cfg.configWarnings ?? []).join(" | ");
+  }
+
+  it("does not claim routing reads timeout_ms", async () => {
+    const w = await warnFor("timeout_ms: soon");
+    expect(w).toContain("timeout_ms");
+    expect(w).not.toContain("Routing reads this field");
+  });
+
+  it("still says routing reads weight, because it does", async () => {
+    const w = await warnFor("weight: very-high");
+    expect(w).toContain("Routing reads this field");
+  });
+});

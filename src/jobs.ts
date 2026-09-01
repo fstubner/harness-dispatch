@@ -946,15 +946,44 @@ async function countLiveSupervisors(): Promise<number> {
   }
   let live = 0;
   for (const entry of entries) {
+    // Heartbeats only. This directory also holds `spawn-<id>.log`, the
+    // bootstrap output of each supervisor — and those exist precisely to
+    // explain a supervisor that DIED, which is the same supervisor that left
+    // a stale heartbeat. A sweep that treated every file as a heartbeat would
+    // delete the diagnostic for the failure it was cleaning up after.
+    // Counting was already ignoring them only by accident: a log body does
+    // not Date.parse, so it read as not-live.
+    if (!entry.endsWith(".txt")) continue;
     try {
       const beat = await readFile(path.join(dir, entry), "utf8");
-      if (Date.now() - Date.parse(beat) <= ORPHAN_THRESHOLD_MS) live += 1;
+      if (Date.now() - Date.parse(beat) <= ORPHAN_THRESHOLD_MS) {
+        live += 1;
+        continue;
+      }
+      // Dead: remove it rather than only declining to count it.
+      //
+      // A supervisor that exits cleanly deletes its own file; one that is
+      // KILLED cannot, so its heartbeat stopped being counted but stayed on
+      // disk forever — and this loop reads every file in the directory on
+      // every drain, so the cost of each hard kill was permanent and paid by
+      // every dispatch afterwards. Safe to delete: the file is already past
+      // the staleness threshold, and a supervisor that somehow revives simply
+      // writes it again on its next beat.
+      await rm(path.join(dir, entry), { force: true });
     } catch {
-      // Vanished mid-read: it is not live.
+      // Vanished mid-read, or another drain removed it first: not live, and
+      // nothing here needs to succeed for the count to be usable.
     }
   }
   return live;
 }
+
+/**
+ * Exported for the cleanup test, which must exercise the REAL sweep rather
+ * than a copy of its logic — the bug being pinned is that a stale heartbeat
+ * was never removed, and a reimplementation in the test would pin nothing.
+ */
+export const countLiveSupervisorsForTest = countLiveSupervisors;
 
 /**
  * Start one detached supervisor; it finds its own work.
@@ -1302,7 +1331,32 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   const job = await getAsyncJob(jobId); // throws the friendly "No such job" for a stranger
   const current = job.status.status;
 
-  if (current === "completed" || current === "failed" || current === "orphaned" || current === "cancelled") {
+  // There are TWO kinds of orphaned job and they need opposite answers.
+  //
+  //   WRITTEN — `drainSlotQueue` marks a slot-queued job orphaned on disk when
+  //     the server exits before it ever starts. That job is genuinely
+  //     terminal: its own error text says it is not resumed automatically and
+  //     to use retry_job. Cancelling it is a no-op that would leave a marker
+  //     nothing reads.
+  //   DERIVED — `withOrphanCheck` reports a job orphaned when its heartbeat
+  //     goes stale, while the FILE still says `queued` or `running`. That job
+  //     is not inert: once the dead owner's claim ages out, claimNextJob will
+  //     pick it up and run it. Answering "had already finished; nothing to
+  //     cancel" was wrong about work that could still start, and left the
+  //     caller no way to stop it.
+  //
+  // So the raw status decides, not the derived one. `getAsyncJob` has already
+  // applied the orphan check, which is why this re-reads the file.
+  const rawStatus = await readJson<JobStatus>(
+    path.join(jobsRoot(), jobId, "status.json"),
+  ).catch(() => undefined);
+  const terminalOnDisk = rawStatus?.status === "orphaned";
+  if (
+    current === "completed" ||
+    current === "failed" ||
+    current === "cancelled" ||
+    terminalOnDisk
+  ) {
     return {
       jobId,
       outcome: "already_finished",
@@ -1317,7 +1371,13 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   // A job still waiting for a slot has no runner to notice the marker, so
   // stop it here. claimNextJob also refuses to claim a marked job, which
   // closes the window where a supervisor picks it up between these two steps.
-  if (current === "queued") {
+  // `orphaned` joins `queued` here rather than falling through to "the runner
+  // will notice the marker": an orphaned job has no live runner BY
+  // DEFINITION, so nothing would ever act on the marker and the job would sit
+  // at "cancelling" forever. The marker written above still matters — it is
+  // what stops a supervisor reclaiming it — but the status has to be settled
+  // here, by the only process still involved.
+  if (current === "queued" || current === "orphaned") {
     await updateStatus(jobDir, {
       ...job.status,
       status: "cancelled",
@@ -1335,7 +1395,12 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
       jobId,
       outcome: "cancelled",
       status: "cancelled",
-      message: `Job ${jobId} was waiting for a slot and has been cancelled; it never started.`,
+      message:
+        current === "orphaned"
+          ? `Job ${jobId} was orphaned — the process running it is gone — and is now ` +
+            `marked cancelled, so no supervisor can reclaim it. Any partial output it ` +
+            `wrote is still available from job_status.`
+          : `Job ${jobId} was waiting for a slot and has been cancelled; it never started.`,
     };
   }
 

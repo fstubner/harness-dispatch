@@ -113,6 +113,19 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
         : "";
       throw new Error(`git could not produce a patch for this workspace: ${failure}.${hint}`);
     }
+    // The cap firing reads as gibberish otherwise. `maxBuffer` surfaces as
+    // `stdout maxBuffer length exceeded` with no mention of patches, limits,
+    // or the fact that the work is safe and still on disk — for a user whose
+    // agent simply changed a lot. Same wording as the copy path's own bound,
+    // so the two policies explain the same limit the same way.
+    if ((err as { code?: unknown })?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new Error(
+        `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
+          `patch limit, so a patch cannot be returned. Nothing has been applied and nothing ` +
+          `has been deleted — the work is still in ${cwd}, where you can copy out what you ` +
+          `need or diff it by hand.`,
+      );
+    }
     throw err;
   }
 }
@@ -304,6 +317,7 @@ async function buildCopyPatchFromChanges(
   changes: ReadonlyArray<{ path: string; kind: string }>,
 ): Promise<string> {
   const sections: string[] = [];
+  let total = 0;
   for (const change of changes) {
     const rel = change.path.split(path.sep).join("/");
     const projectFile = path.join(run.originalWorkingDir, change.path);
@@ -363,6 +377,21 @@ async function buildCopyPatchFromChanges(
     }
     if (raw.trim() === "") continue;
     sections.push(rewriteSectionHeaders(raw, rel));
+    total += sections[sections.length - 1]!.length;
+    // MAX_PATCH_BYTES documents itself as bounding patches because they are
+    // "read into memory and returned over MCP" — and it did, for the worktree
+    // path, where it is an execFile maxBuffer. This path concatenates per file
+    // and had no bound at all, so the guarantee held for one policy and not
+    // the other. Refuse with the same limit and say where the work still is,
+    // rather than building a patch too large to hand back.
+    if (total > MAX_PATCH_BYTES) {
+      throw new Error(
+        `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
+          `patch limit, so a patch cannot be returned. Nothing has been applied and nothing ` +
+          `has been deleted — the work is still in ${isolatedRoot(run)}, where you can copy ` +
+          `out what you need or diff it by hand.`,
+      );
+    }
   }
   return sections.join("");
 }

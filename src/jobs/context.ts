@@ -44,6 +44,36 @@ function clip(text: string, limit: number): string {
  * would reason from an incomplete picture and never know.
  */
 /**
+ * Where a prior job ran, as a header suffix — or "" when it cannot be read.
+ *
+ * `contextJobs` takes any jobId from the machine-wide jobs root and inlines
+ * that job's prompt and output verbatim, with no working-directory scoping.
+ * Reproduced: a job recorded against one project chained cleanly into a
+ * dispatch for another, its prompt and output carried across with nothing
+ * saying they came from somewhere else.
+ *
+ * Deliberately DISCLOSED rather than blocked. Chaining across projects is a
+ * legitimate thing to want — a review job informing work in a sibling
+ * checkout — and the jobId has to be passed explicitly by the orchestrator, so
+ * this is a missing guardrail, not an injection route. What was actually
+ * wrong is that neither the orchestrator nor the delegate could SEE it: an
+ * agent that passed the wrong id got another project's source in its prompt
+ * and no hint of it. Naming the directory is also plainly useful when the
+ * chaining is intended.
+ */
+async function ranIn(jobId: string): Promise<string> {
+  try {
+    const manifest = await readJson<{ workingDir?: string }>(
+      path.join(jobsRoot(), jobId, "manifest.json"),
+    );
+    const dir = manifest.workingDir;
+    return typeof dir === "string" && dir !== "" ? `, ran in ${dir}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * A prior job's PARTIAL output, when it has no result.json.
  *
  * Returns undefined when there is nothing on disk, so the caller can fall
@@ -58,7 +88,7 @@ async function partialSection(jobId: string): Promise<string | undefined> {
     () => "(prompt unavailable)",
   );
   return [
-    `### ${jobId} (INCOMPLETE — no final result; this is how far it got)`,
+    `### ${jobId} (INCOMPLETE — no final result; this is how far it got${await ranIn(jobId)})`,
     "",
     "Task it was given:",
     clip(priorPrompt.trim(), 1_000),
@@ -86,7 +116,7 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
       );
       const output = payload.result?.output ?? "";
       section = [
-        `### ${jobId} (${payload.result?.success === false ? "FAILED" : "completed"})`,
+        `### ${jobId} (${payload.result?.success === false ? "FAILED" : "completed"}${await ranIn(jobId)})`,
         "",
         "Task it was given:",
         clip(priorPrompt.trim(), 1_000),

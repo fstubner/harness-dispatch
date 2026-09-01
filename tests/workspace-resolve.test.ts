@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyWorkspace,
   buildWorkspacePatch,
+  MAX_PATCH_BYTES,
   discardWorkspace,
   workspaceDiff,
 } from "../src/workspace-resolve.js";
@@ -1395,4 +1396,114 @@ describe("discarding a workspace that is already gone", () => {
     } as WorkspaceRun);
     expect(res.discarded).toBe(true);
   });
+});
+
+describe("a patch too large to return", () => {
+  /**
+   * MAX_PATCH_BYTES documents itself as bounding patches because they are
+   * "read into memory and returned over MCP". Two different limits turned out
+   * to be involved, and the first version of this test proved the wrong one:
+   *
+   *   PER FILE — the copy path diffs each file with execFile's maxBuffer set
+   *     to MAX_PATCH_BYTES, so one enormous file was already refused. That
+   *     refusal surfaced as `stdout maxBuffer length exceeded`, which says
+   *     nothing about patches or limits, and now carries a real message.
+   *   IN TOTAL — the per-file sections are concatenated with no bound at all,
+   *     so MANY files each comfortably under the limit still built an
+   *     unbounded patch. That is the gap, and it needs several medium files
+   *     to reach: a single huge one trips the per-file buffer first and never
+   *     gets here. Sabotaging the accumulation check with a one-big-file
+   *     fixture left every test passing.
+   */
+  it("refuses when many files together exceed the limit, not just one huge one", async () => {
+    const repo = await makeRepo("bigproj");
+    const wsRoot = path.join(dir, "bigws");
+    const workspace = path.join(wsRoot, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.cp(repo, workspace, { recursive: true });
+
+    // Six files at ~500KB: each far under MAX_PATCH_BYTES, together over it.
+    const chunk = "x".repeat(500 * 1024);
+    const changed = [];
+    for (let i = 0; i < 6; i++) {
+      await fs.writeFile(path.join(workspace, `part-${i}.txt`), chunk, "utf8");
+      changed.push({ path: `part-${i}.txt`, kind: "added" as const });
+    }
+
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: workspace,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: changed,
+    };
+
+    await expect(buildWorkspacePatch(run)).rejects.toThrow(/patch limit/);
+    // The reassurance matters as much as the refusal: nothing was applied,
+    // nothing was deleted, and the work is still retrievable by hand.
+    await expect(buildWorkspacePatch(run)).rejects.toThrow(/still in/);
+  }, 60_000);
+
+  it("builds a normal patch when the total is under the limit", async () => {
+    // Guards the bound against firing on ordinary work.
+    const repo = await makeRepo("smallproj");
+    const wsRoot = path.join(dir, "smallws");
+    const workspace = path.join(wsRoot, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.cp(repo, workspace, { recursive: true });
+    await fs.writeFile(path.join(workspace, "app.js"), "const a = 5;" + String.fromCharCode(10), "utf8");
+
+    const patch = await buildWorkspacePatch({
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: workspace,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "app.js", kind: "modified" }],
+    } as WorkspaceRun);
+    expect(patch).toContain("app.js");
+  }, 30_000);
+});
+
+describe("the worktree path explains its own limit", () => {
+  /**
+   * The worktree patch is one `git diff`, bounded by execFile's maxBuffer.
+   * Hitting it produced `stdout maxBuffer length exceeded` — no mention of
+   * patches, limits, or the work still being safe on disk, for a user whose
+   * agent simply wrote a lot. Sabotaging this message left every other test
+   * passing, which is why it gets one of its own.
+   */
+  it("says what the limit is and where the work still is", async () => {
+    const repo = await makeRepo("wtbig");
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+    const wsRoot = path.join(dir, "wtbigws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+
+    // One file past the whole-diff budget.
+    await fs.writeFile(
+      path.join(worktree, "huge.txt"),
+      "y".repeat(MAX_PATCH_BYTES + 64 * 1024),
+      "utf8",
+    );
+
+    const run: WorkspaceRun = {
+      policy: "git_worktree",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: worktree,
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [{ path: "huge.txt", kind: "added" }],
+    };
+
+    await expect(buildWorkspacePatch(run)).rejects.toThrow(/patch limit/);
+    await expect(buildWorkspacePatch(run)).rejects.toThrow(/still in/);
+    await expect(buildWorkspacePatch(run)).rejects.not.toThrow(/maxBuffer/);
+  }, 60_000);
 });

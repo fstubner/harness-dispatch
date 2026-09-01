@@ -14,7 +14,7 @@
  * suite is run in a loop, which is exactly how it is run.
  */
 import { afterAll } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -38,6 +38,39 @@ process.env.HARNESS_DISPATCH_JOBS_DIR = sandbox("hr-test-jobs-");
 // here. The detached path gets its own end-to-end coverage in
 // tests/job-runner.test.ts against the real dist/ build.
 process.env.HARNESS_DISPATCH_INPROC_JOBS = "1";
+
+/**
+ * Config too — the side channel that costs MONEY rather than tidiness.
+ *
+ * The three above sandbox where the suite WRITES. This one sandboxes what it
+ * DISCOVERS. A test that loads config without stubbing `whichFn` and without
+ * naming a file gets the shipped defaults filtered by which harness CLIs are
+ * on PATH — so on a maintainer's machine it silently acquires claude_code_cli,
+ * codex_cli, cursor_cli and antigravity_cli, and a dispatch from there spends
+ * real subscription quota.
+ *
+ * That is not hypothetical. One boundary test dispatched to the real Claude
+ * Code on every `npm test` and every CI run, measured at 6.4s and 47k input
+ * tokens, under a comment asserting it could not reach a route. Making a
+ * route-defining config authoritative fixed that test; it did not close the
+ * class, because a config that names no routes still auto-detects — by design,
+ * and correctly.
+ *
+ * `detect: false` is the explicit "no routes at all" setting, so any
+ * un-stubbed load lands on an empty route table instead of the real fleet. A
+ * test that wants routes passes its own config path, which still wins: this is
+ * the LAST rung of the precedence ladder, below an explicit --config.
+ *
+ * Deliberately a guard rather than a check. The natural evidence for this
+ * failure is the dispatch log, which line 29 redirects — so an unnoticed
+ * regression here cannot be spotted by looking, only by instrumenting PATH.
+ * Making it impossible costs three lines; noticing it costs a bespoke run
+ * nobody remembers to do.
+ */
+const configSandbox = sandbox("hr-test-config-");
+const isolatedConfig = path.join(configSandbox, "config.yaml");
+writeFileSync(isolatedConfig, "detect: false\n", "utf8");
+process.env.HARNESS_DISPATCH_CONFIG = isolatedConfig;
 
 afterAll(() => {
   for (const dir of sandboxes) {

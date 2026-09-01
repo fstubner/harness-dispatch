@@ -39,6 +39,61 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The test suite can no longer reach a real route.** Test setup already
+  sandboxed the log, state and jobs directories — where the suite WRITES — but
+  not config, which is what it DISCOVERS. A test that loaded config without
+  naming a file or stubbing detection picked up whatever the developer's
+  machine offers. Measured while closing this: on the maintainer's machine
+  that is the repo's own `config.yaml`, yielding four API routes with real
+  keys; on a machine with the CLIs installed it is the harness fleet, on real
+  subscriptions. One boundary test really did dispatch to Claude Code on every
+  CI run once. Setup now pins `HARNESS_DISPATCH_CONFIG` at a `detect: false`
+  sandbox, so an un-stubbed load gets an empty route table; a test wanting
+  routes passes its own path, which still wins.
+
+- **An orphaned job can be cancelled again — when it is still able to run.**
+  There are two kinds: one written to disk when the server exits before a
+  queued job starts (genuinely terminal), and one DERIVED from a stale
+  heartbeat while the file still says `queued`. The second is not inert — a
+  supervisor reclaims it once the dead owner's claim ages out — and `cancel`
+  answered "had already finished; nothing to cancel" about work that could
+  still start, leaving no way to stop it. It now settles the status itself,
+  since an orphaned job has no runner to notice a marker. The written kind
+  still reports nothing to cancel.
+
+- **A `copy` workspace of many files can no longer build an unbounded patch.**
+  The per-file diff was already bounded; the concatenation of those files was
+  not, so files each under the limit still summed past it. Both limits now
+  explain themselves — the worktree path used to surface the cap as
+  `stdout maxBuffer length exceeded`, which says nothing about patches or
+  about the work still being safe on disk.
+
+- **Isolated workspaces are created 0700**, like the state and job
+  directories. A `copy` workspace holds a full copy of your source and the
+  default base is in the shared temp directory, so on a multi-user POSIX
+  machine it was readable by everyone. No effect on Windows.
+
+- **Chained context says which project it came from.** `contextJobs` inlines
+  any job from the machine-wide store with no working-directory scoping, so a
+  job from one project could be pulled into a dispatch for another with
+  nothing indicating it. Disclosed rather than blocked: chaining across
+  projects is legitimate and the caller passes the id explicitly — what was
+  missing is that nobody could see it happen.
+
+- **Dead supervisor heartbeats are swept.** A killed supervisor's file stopped
+  being counted but stayed forever, and the liveness check reads every file on
+  every drain. The sweep is limited to heartbeats: the crash log beside them
+  exists to explain the very supervisor that died.
+
+- `workspace apply`'s description no longer claims a refusal it cannot always
+  make: the uncommitted-changes check needs a git repository. Outside one,
+  only the per-file check applies — a file the patch touches is still
+  refused, unrelated edits cannot be seen.
+
+- A `timeout_ms` or token-cap warning no longer claims routing reads the
+  field. Routing does not; the range branch was fixed for this and the
+  not-a-number branch beside it was not.
+
 - **Usage counters are no longer silently lost when two dispatches finish at
   once.** `withFileLock` runs its critical section unlocked after a 2s
   timeout — deliberate, and still right for the circuit breaker, which has

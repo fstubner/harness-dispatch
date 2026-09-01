@@ -151,3 +151,53 @@ describe("chaining on a job that never finished", () => {
     expect(preamble).toMatch(/no result available/);
   });
 });
+
+describe("a chained job says where it ran", () => {
+  /**
+   * `contextJobs` inlines any jobId from the machine-wide jobs root, with no
+   * working-directory scoping — reproduced: a job recorded against one
+   * project chained into a dispatch for another, prompt and output carried
+   * across with nothing saying they came from elsewhere.
+   *
+   * Disclosed rather than blocked. Cross-project chaining is legitimate and
+   * the caller must pass the id explicitly, so this is a missing guardrail
+   * rather than an injection route; what was wrong is that nobody could see
+   * it happening.
+   */
+  it("names the prior job's working directory in the header", async () => {
+    const jobId = "job-1700000000401-aaaaaaaa";
+    const jd = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(jd, "output"), { recursive: true });
+    await fs.writeFile(path.join(jd, "prompt.md"), "refactor billing", "utf8");
+    await fs.writeFile(
+      path.join(jd, "manifest.json"),
+      JSON.stringify({ jobId, workingDir: "/projects/other-project", files: [] }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(jd, "output", "result.json"),
+      JSON.stringify({ result: { success: true, output: "done", route: "r" }, decision: {} }),
+      "utf8",
+    );
+
+    const preamble = await buildContextPreamble([jobId]);
+    expect(preamble).toContain("/projects/other-project");
+    // Still carries the content — disclosure, not suppression.
+    expect(preamble).toContain("done");
+  });
+
+  it("says nothing extra when the working directory cannot be read", async () => {
+    const jobId = "job-1700000000402-bbbbbbbb";
+    const jd = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(jd, "output"), { recursive: true });
+    await fs.writeFile(path.join(jd, "prompt.md"), "p", "utf8");
+    await fs.writeFile(
+      path.join(jd, "output", "result.json"),
+      JSON.stringify({ result: { success: true, output: "out", route: "r" }, decision: {} }),
+      "utf8",
+    );
+    const preamble = await buildContextPreamble([jobId]);
+    expect(preamble).toContain("out");
+    expect(preamble).not.toContain("ran in");
+  });
+});
