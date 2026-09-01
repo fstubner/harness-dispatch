@@ -207,3 +207,127 @@ describe("top-level isolation keys that do nothing", () => {
     expect(cfg.services["a"]?.workspacePolicy).toBe("copy");
   });
 });
+
+describe("non-finite numeric route fields", () => {
+  /**
+   * The range check added for negative values did not cover the infinite
+   * ones, and the branch that DID catch them warned without neutralising.
+   * An acceptance pass measured the result: `tier: -.inf, weight: .inf`
+   * loading as tier=-Infinity weight=Infinity — ahead of every tier and above
+   * every score — underneath a warning reading "IGNORED, and the built-in
+   * default applies instead". The message asserted the opposite of what
+   * happened, which is worse than the original silence.
+   *
+   * `1e999` is the same defect by a different door: YAML types it as a
+   * STRING, and `Number("1e999")` is Infinity, which `!Number.isNaN(...)`
+   * accepted as "reads as a number" — so it passed the type check and then
+   * the range check, producing weight=Infinity with NO warning at all.
+   */
+  async function routeFrom(body: string) {
+    const file = path.join(dir, `f-${Math.random().toString(36).slice(2, 7)}.yaml`);
+    await fs.writeFile(file, body, "utf8");
+    return loadConfig(file, { whichFn: async () => null });
+  }
+
+  const cli = (fields: string[]) =>
+    ["clis:", "  - name: a", "    harness: codex", ...fields.map((f) => `    ${f}`), ""].join("\n");
+
+  it("does not load an infinite tier or weight", async () => {
+    const cfg = await routeFrom(cli(["tier: -.inf", "weight: .inf"]));
+    expect(Number.isFinite(cfg.services["a"]?.tier)).toBe(true);
+    expect(Number.isFinite(cfg.services["a"]?.weight)).toBe(true);
+  });
+
+  it("does not load NaN", async () => {
+    const cfg = await routeFrom(cli(["tier: .nan", "weight: .nan"]));
+    expect(Number.isNaN(cfg.services["a"]?.tier)).toBe(false);
+    expect(Number.isNaN(cfg.services["a"]?.weight)).toBe(false);
+  });
+
+  it("catches an overflowing numeric STRING, which used to warn about nothing", async () => {
+    const cfg = await routeFrom(cli(["weight: 1e999"]));
+    expect(Number.isFinite(cfg.services["a"]?.weight)).toBe(true);
+    expect((cfg.configWarnings ?? []).join(" | ")).toContain("weight");
+  });
+
+  it("names the value the operator actually wrote, not null", async () => {
+    // JSON.stringify(Infinity) is "null", so the warning used to report
+    // `tier is null` for a file containing `-.inf`.
+    const cfg = await routeFrom(cli(["tier: -.inf"]));
+    const w = (cfg.configWarnings ?? []).join(" | ");
+    expect(w).toContain("-Infinity");
+    expect(w).not.toContain("tier is null");
+  });
+
+  it("explains the right mechanism for a field routing does not score", async () => {
+    const cfg = await routeFrom(cli(["timeout_ms: 0"]));
+    const w = (cfg.configWarnings ?? []).join(" | ");
+    expect(w).toContain("timeout_ms");
+    expect(w).not.toContain("PROMOTES");
+  });
+});
+
+describe("an empty route list is an opinion about routes", () => {
+  /**
+   * `clis: []` is the most explicit way to say "no CLI routes", and the
+   * commit that made configs authoritative named it as the motivating
+   * failure — in the past tense, while it still loaded every harness on the
+   * machine, because `definesRoutes` required a NON-EMPTY array.
+   *
+   * `whichFn` here pretends every harness is installed. It never runs one.
+   */
+  const pretendInstalled = async (cmd: string) => `/fake/bin/${cmd}`;
+
+  async function routesFor(body: string): Promise<string[]> {
+    const file = path.join(dir, `e-${Math.random().toString(36).slice(2, 7)}.yaml`);
+    await fs.writeFile(file, body, "utf8");
+    const cfg = await loadConfig(file, { whichFn: pretendInstalled });
+    return Object.keys(cfg.services);
+  }
+
+  it("isolates a config from every installed harness", async () => {
+    expect(await routesFor("clis: []\n")).toEqual([]);
+  });
+
+  it("does the same for an empty endpoints list", async () => {
+    expect(await routesFor("endpoints: []\n")).toEqual([]);
+  });
+
+  it("still auto-detects for a config that mentions no route list at all", async () => {
+    // The carve-out that keeps an overrides-only config working must survive:
+    // it tunes detection rather than replacing it.
+    expect((await routesFor("overrides:\n  codex_cli:\n    tier: 2\n")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("a config that lists routes must not carry dead controls", () => {
+  const pretendInstalled = async (cmd: string) => `/fake/bin/${cmd}`;
+
+  async function warningsWith(body: string): Promise<string> {
+    const file = path.join(dir, `d-${Math.random().toString(36).slice(2, 7)}.yaml`);
+    await fs.writeFile(file, body, "utf8");
+    const cfg = await loadConfig(file, { whichFn: pretendInstalled });
+    return (cfg.configWarnings ?? []).join(" | ");
+  }
+
+  it("warns when clis: is written as a mapping instead of a list", async () => {
+    // The entries vanish, detection runs, and the user who was naming their
+    // own routes silently gets every installed paid harness instead.
+    const w = await warningsWith("clis:\n  my_route:\n    harness: codex\n");
+    expect(w).toContain("must be a LIST");
+  });
+
+  it("warns for endpoints: written as a mapping too", async () => {
+    const w = await warningsWith("endpoints:\n  mine:\n    base_url: http://x/v1\n");
+    expect(w).toContain("must be a LIST");
+  });
+
+  it("gives a legacy services: config the same top-level key warnings", async () => {
+    // The legacy shape returned before the top-level check ran, so the same
+    // key warned twice in one format and not at all in the other.
+    const w = await warningsWith(
+      ["policy: copy", "services:", "  a:", "    type: cli", "    command: echo", ""].join("\n"),
+    );
+    expect(w).toContain("NOT IMPLEMENTED");
+  });
+});

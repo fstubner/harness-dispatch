@@ -24,14 +24,58 @@ pre-1.0, so minor versions can carry behaviour changes.
   The legacy `services:` format has always behaved this way, so the two shapes
   now agree rather than this being a new rule.
 
-  **What changes for you.** A config with `clis:`/`endpoints:` entries gets
-  exactly those routes. Add `detect: true` to keep the old behaviour. A config
-  with NO routes of its own — one carrying only `overrides:`, `disabled:` or
+  **What changes for you.** A config that has a `clis:` or `endpoints:` key
+  gets exactly the routes listed under it — including `clis: []`, which means
+  no CLI routes. Add `detect: true` to keep the old behaviour. A config
+  mentioning NEITHER key — one carrying only `overrides:`, `disabled:` or
   settings — still auto-detects, because a file cannot be authoritative about
   routes it does not describe; it now says so in a warning. `detect: false`
   turns detection off outright.
 
+  Note that `disabled:` and `overrides:` tune AUTO-DETECTION, so they do
+  nothing in a config that lists its own routes — remove the entry instead.
+  The config the README tells you to copy said the opposite of this until it
+  was corrected in the same release; check yours if you wrote it from that.
+
 ### Fixed
+
+- **`clis: []` now isolates a config, which is what the previous release said
+  it did.** Authoritativeness keyed off a NON-EMPTY list, so the most explicit
+  way to write "no CLI routes" still loaded every harness on the machine —
+  the exact failure the change was written for, described in its own comment
+  in the past tense while remaining true. Presence of `clis:`/`endpoints:` is
+  now what makes a config authoritative, empty or not. A config that mentions
+  neither still auto-detects, unchanged.
+
+- **An infinite or NaN route field is no longer accepted, and the warning
+  about it is no longer false.** The new range check covered negative values
+  but not `.inf`, `.nan`, or `1e999` (which YAML types as a string, and
+  `Number()` overflows to `Infinity`). Two paths were wrong: `1e999` produced
+  no warning at all, and `tier: -.inf, weight: .inf` loaded as
+  `-Infinity`/`Infinity` — ahead of every tier, above every score —
+  underneath a warning reading "IGNORED, and the built-in default applies
+  instead". A message asserting the opposite of what happened is worse than
+  the silence it replaced. Warnings also now name the value the operator
+  actually wrote (`JSON.stringify(Infinity)` is `null`, so they reported
+  `tier is null` for a file saying `-.inf`), and explain the right mechanism
+  per field rather than describing routing for `timeout_ms`.
+
+- **`configure` no longer generates a config that fails its own `doctor`.**
+  It carried `disabled:` forward alongside the `clis:` it generates; in an
+  authoritative config that control does nothing, so `doctor` reported it had
+  no effect and exited 1. The disabled route is already absent from the
+  generated list, so the name was saying nothing. It is still emitted for a
+  generated config that lists no routes, where it does the work.
+
+- **A `clis:` or `endpoints:` written as a mapping instead of a list now
+  says so.** The entries vanished, the config counted as defining no routes,
+  detection ran, and someone trying to name their own routes silently got
+  every installed paid harness instead — under a warning claiming their
+  config defined no routes, which contradicted the file in front of them.
+
+- Legacy `services:` configs now get the same top-level key warnings as the
+  modern shape. That path returned before the check ran, so `policy: copy`
+  warned twice in one format and not at all in the other.
 
 - **A negative `tier`, `weight` or `cli_capability` no longer hands a route
   every dispatch.** These were type-checked but never range-checked, and

@@ -211,6 +211,8 @@ Adding a harness that isn't auto-detected — a second Codex route pinned to a s
 model, or a local/hosted OpenAI-compatible endpoint — is a few lines:
 
 ```yaml
+detect: true            # keep auto-detected harnesses as well; see below
+
 clis:
   - name: codex_sol
     harness: codex        # picks the dispatcher: claude_code | codex | cursor | antigravity_cli | generic
@@ -223,6 +225,21 @@ endpoints:
     model: qwen2.5-coder
     tier: 3
 ```
+
+**`detect: true` is doing real work there.** A config that lists any `clis:` or
+`endpoints:` is authoritative: it gets exactly the routes it names, and nothing is
+auto-detected alongside them. Without that line, the snippet above does not *add*
+`codex_sol` and `ollama` to your installed harnesses — it replaces them, and
+`claude_code_cli`, `codex_cli`, `cursor_cli` and `antigravity_cli` are gone.
+
+Which one you want depends on the goal:
+
+| You want | Write |
+|---|---|
+| My routes *plus* whatever is installed | `detect: true` alongside your entries |
+| Exactly the routes I list, nothing else | just the entries (the default) |
+| Nothing but auto-detection, minus a route | no `clis:`/`endpoints:`, plus `disabled: [name]` |
+| No routes at all | `detect: false` |
 
 See the shipped [`config.default.yaml`](config.default.yaml) for the full field
 reference (capability weights, tiers, escalation, workspace policy, and more) — copy
