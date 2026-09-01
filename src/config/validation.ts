@@ -264,10 +264,18 @@ export function warnMistypedRouteValues(
   for (const [key, value] of Object.entries(entry)) {
     if (value === null || value === undefined) continue;
     if (NUMERIC_ROUTE_KEYS.has(key) && !readsAsNumber(value)) {
+      // Per field, for the same reason the range branch varies its text: the
+      // routing sentence was emitted for all six keys, and routing does not
+      // read `timeout_ms` or the token caps. The very next acceptance pass
+      // found this branch still saying it after the other was fixed — the
+      // same defect one branch over, in one function.
       warnings.push(
         `${label}: ${key} is ${describeValue(value)}, which is not a number — ` +
-          `IGNORED, and the built-in default applies instead. Routing reads this ` +
-          `field, so the route is not behaving the way this line says it does.`,
+          `IGNORED, and the built-in default applies instead. ` +
+          (ROUTING_SCORED_KEYS.has(key)
+            ? `Routing reads this field, so the route is not behaving the way this ` +
+              `line says it does.`
+            : `The route runs with the built-in ${key}, not the one written here.`),
       );
       // This branch WARNED without neutralising, and for a plain unreadable
       // value that was harmless — `num()` returns the default anyway, so the

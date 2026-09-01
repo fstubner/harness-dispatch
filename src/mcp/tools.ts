@@ -895,8 +895,11 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "changes live in an isolated workspace and were NEVER applied to your project. " +
         "This is how you deal with them. 'diff' returns the real patch of what changed " +
         "(review this before keeping it). 'apply' applies that patch to the original " +
-        "project — it refuses when the project has uncommitted changes, since the patch " +
-        "was built against a clean base, and force: true overrides. 'discard' deletes " +
+        "project. IN A GIT REPOSITORY it refuses when the project has uncommitted " +
+        "changes, since the patch was built against a clean base; force: true " +
+        "overrides. Outside a repository there is no way to ask that question, so only " +
+        "the per-file check applies — a file the patch TOUCHES that changed since the " +
+        "dispatch still refuses, but unrelated edits cannot be seen. 'discard' deletes " +
         "the workspace and leaves the project untouched. The full patch is always " +
         "written to the job directory, so `git apply` by hand is available even when " +
         "the automatic apply declines.",

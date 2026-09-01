@@ -427,3 +427,44 @@ describe("git_worktree cleanup when git refuses", () => {
     }
   }, 60_000);
 });
+
+describe("an isolated workspace is not world-readable", () => {
+  /**
+   * A `copy` workspace holds a full copy of the user's source, and the default
+   * base is in the SHARED os.tmpdir() — so on a multi-user POSIX machine it
+   * was readable by everyone, while the job directory holding the same
+   * project's prompt was 0700 and its files 0600. This module was the only one
+   * in the family with no mode set at all.
+   *
+   * Asserted on the PER-PROJECT root, which is the directory the fix creates.
+   * The run directory beneath it is made by copyTree's recursive mkdir and
+   * keeps the default mode — which is fine, and deliberately not changed: a
+   * 0700 ancestor already stops another user traversing in, so tightening
+   * every copied directory would be belt-and-braces on a throwaway tree.
+   * Asserting on the run directory instead would have pinned something the
+   * fix does not do.
+   *
+   * POSIX only: Windows ignores mode, which is why this could not be verified
+   * on the maintainer's machine and runs in CI instead.
+   */
+  it.skipIf(process.platform === "win32")(
+    "creates its root 0700, like the job and state directories",
+    async () => {
+      const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
+      const project = path.join(dir, "permproj");
+      await fs.mkdir(project, { recursive: true });
+      await fs.writeFile(path.join(project, "a.txt"), "secret source" + String.fromCharCode(10), "utf8");
+
+      await prepareWorkspace({
+        policy: "copy",
+        workingDir: project,
+        files: [],
+        routeName: "r",
+      });
+
+      const root = workspaceRootFor(project);
+      const mode = (await fs.stat(root)).mode & 0o777;
+      expect(mode & 0o077, `workspace root is ${mode.toString(8)}`).toBe(0);
+    },
+  );
+});

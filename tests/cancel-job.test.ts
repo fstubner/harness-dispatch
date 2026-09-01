@@ -320,3 +320,51 @@ describe("a job that ends without a result still hands back its progress", () =>
     expect(res.result?.warning ?? "").not.toContain("PARTIAL");
   });
 });
+
+describe("an orphaned job can still be cancelled", () => {
+  /**
+   * `orphaned` is DERIVED from a stale heartbeat, not written to the status
+   * file — the file still says `queued` or `running`. So an orphaned job is
+   * not necessarily inert: one orphaned while queued still reads `queued` on
+   * disk and claimNextJob will pick it up once the dead owner's claim ages
+   * out. cancelJob answered "had already finished; nothing to cancel" about
+   * work that could still start, leaving no way to stop it.
+   */
+  async function orphaned(jobId: string): Promise<string> {
+    const dir = await plantJob(jobId, "queued", { route: "fake_cli" });
+    // Backdate the heartbeat past the orphan threshold: orphan detection is
+    // staleness of updatedAt, so this is equivalent to the owner having died.
+    const statusPath = path.join(dir, "status.json");
+    const status = JSON.parse(await fs.readFile(statusPath, "utf8"));
+    status.updatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    await fs.writeFile(statusPath, JSON.stringify(status), "utf8");
+    return dir;
+  }
+
+  it("cancels rather than reporting nothing to cancel", async () => {
+    const jobId = "job-1700000000021-aaaaaaaa";
+    await orphaned(jobId);
+    const { cancelJob } = await import("../src/jobs.js");
+    const out = await cancelJob(jobId, "no longer needed");
+    expect(out.outcome).not.toBe("already_finished");
+    expect(out.status).toBe("cancelled");
+  });
+
+  it("settles the status itself, since no runner is alive to notice a marker", async () => {
+    // Falling through to "the runner will notice" would leave the job at
+    // `cancelling` forever: an orphaned job has no runner by definition.
+    const jobId = "job-1700000000022-bbbbbbbb";
+    const dir = await orphaned(jobId);
+    const { cancelJob } = await import("../src/jobs.js");
+    await cancelJob(jobId);
+    const status = JSON.parse(await fs.readFile(path.join(dir, "status.json"), "utf8"));
+    expect(status.status).toBe("cancelled");
+  });
+
+  it("still reports nothing to cancel for a genuinely finished job", async () => {
+    await plantJob("job-1700000000023-cccccccc", "completed");
+    const { cancelJob } = await import("../src/jobs.js");
+    const out = await cancelJob("job-1700000000023-cccccccc");
+    expect(out.outcome).toBe("already_finished");
+  });
+});

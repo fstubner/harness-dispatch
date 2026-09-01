@@ -57,11 +57,18 @@ export interface StartJobInput {
 export interface JobStatus {
   jobId: string;
   /**
-   * "orphaned" is never written to disk — it's computed on read: a job
+   * "orphaned" is USUALLY computed on read rather than written: a job
    * whose status file says "running" but whose heartbeat (updatedAt) has
    * gone stale means the server process that owned the background run
    * exited (session restart, crash) and the run died with it. Reporting it
    * as still "running" forever is a lie that makes callers poll a corpse.
+   *
+   * The one exception, and the comment said "never" until it misled a reader:
+   * `drainSlotQueue` DOES write this status for a job still waiting for a
+   * concurrency slot when the server exited. That one is terminal on disk and
+   * is not resumed automatically; the derived kind above is not terminal at
+   * all, because the file still says `queued`/`running` and a supervisor can
+   * still claim it. `cancelJob` distinguishes them by reading the raw file.
    */
   /**
    * "cancelled" is terminal and deliberate: someone asked for this run to
