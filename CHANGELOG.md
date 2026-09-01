@@ -39,6 +39,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The test suite can no longer reach a real route.** Test setup already
+  sandboxed the log, state and jobs directories — where the suite WRITES — but
+  not config, which is what it DISCOVERS. A test that loaded config without
+  naming a file or stubbing detection picked up whatever the developer's
+  machine offers. Measured while closing this: on the maintainer's machine
+  that is the repo's own `config.yaml`, yielding four API routes with real
+  keys; on a machine with the CLIs installed it is the harness fleet, on real
+  subscriptions. One boundary test really did dispatch to Claude Code on every
+  CI run once. Setup now pins `HARNESS_DISPATCH_CONFIG` at a `detect: false`
+  sandbox, so an un-stubbed load gets an empty route table; a test wanting
+  routes passes its own path, which still wins.
+
 - **An orphaned job can be cancelled again — when it is still able to run.**
   There are two kinds: one written to disk when the server exits before a
   queued job starts (genuinely terminal), and one DERIVED from a stale

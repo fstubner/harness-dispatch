@@ -260,6 +260,13 @@ describe("CLI parser", () => {
     const config = await writeConfig();
     const dir = path.dirname(config);
     const originalCwd = process.cwd();
+    // This test is ABOUT the config-path precedence ladder, and the suite-wide
+    // isolation guard in setup-env.ts occupies the rung above the one under
+    // test (HARNESS_DISPATCH_CONFIG beats ./config.yaml). So it has to own the
+    // variable rather than inherit it — otherwise it asserts the guard's
+    // behaviour instead of its own.
+    const savedEnvConfig = process.env["HARNESS_DISPATCH_CONFIG"];
+    delete process.env["HARNESS_DISPATCH_CONFIG"];
     process.chdir(dir);
     try {
       const result = await capture(() => main(["status", "--json"]));
@@ -270,6 +277,8 @@ describe("CLI parser", () => {
       expect(parsed.routes[0]!.id).toBe("local");
     } finally {
       process.chdir(originalCwd);
+      if (savedEnvConfig === undefined) delete process.env["HARNESS_DISPATCH_CONFIG"];
+      else process.env["HARNESS_DISPATCH_CONFIG"] = savedEnvConfig;
     }
   });
 
