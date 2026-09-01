@@ -19,9 +19,13 @@ import type { JobResultPayload } from "./types.js";
  * Every character here is a character the delegate's model must read before it
  * reaches the actual instruction, and agent CLIs are already carrying a system
  * prompt and file contents. 24k is roughly six pages: enough for several prior
- * results, small enough that it cannot crowd out the task itself. Oldest
- * entries are truncated first, since the most recent step is usually the one
- * being built on.
+ * results, small enough that it cannot crowd out the task itself.
+ *
+ * Entries are filled in the order the CALLER listed them, and it is the LAST
+ * ones that get truncated or omitted when the budget runs out. This comment
+ * claimed the opposite — "oldest entries are truncated first" — which was
+ * never true of the loop below and would be the wrong policy to infer: the
+ * caller controls the order, so put the job you most want carried first.
  */
 /** Newline, named so the templates below stay readable. */
 const NL = "\n";
@@ -136,7 +140,28 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
     if (section.length > budget) section = clip(section, Math.max(0, budget));
     budget -= section.length;
     sections.push(section);
-    if (budget <= 0) break;
+    if (budget <= 0) {
+      // Name what did not fit, rather than stopping silently.
+      //
+      // This loop dropped every remaining job with no header and no note —
+      // measured with five 8KB results: three appeared, jobs 4 and 5 were
+      // absent from the output entirely. That contradicts this module's own
+      // contract two functions up: "Unknown or unfinished jobs are reported
+      // inline rather than skipped silently: a delegate ... would reason from
+      // an incomplete picture and never know." A job dropped for want of
+      // budget is exactly that case, and it is worse than an unknown one,
+      // because the caller explicitly asked for it.
+      const dropped = contextJobs.slice(contextJobs.indexOf(jobId) + 1);
+      if (dropped.length > 0) {
+        sections.push(
+          `### ${dropped.length} earlier job(s) omitted` +
+            `${NL}${NL}The ${MAX_CONTEXT_CHARS}-character context budget ran out before these: ` +
+            `${dropped.join(", ")}. Their output is NOT below. Ask for it with job_status if ` +
+            `you need it.`,
+        );
+      }
+      break;
+    }
   }
 
   return [

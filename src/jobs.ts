@@ -1491,6 +1491,29 @@ export async function retryJob(
         `same working directory.`,
     );
   }
+  // A DERIVED orphan produces exactly the outcome the message above forbids,
+  // and this guard could not see it.
+  //
+  // `getAsyncJob` reports orphaned when the heartbeat is stale, but the status
+  // FILE still says `queued`, and `claimNextJob` filters on the raw file — so
+  // a supervisor can still claim the original while the retry runs. The guard
+  // reads the derived status, which is neither `running` nor `queued`, so it
+  // let the retry through. `cancelJob` was given this reasoning when it learnt
+  // to tell the two kinds of orphan apart; retry was not, so the fix stopped
+  // one square short.
+  //
+  // Marking the original cancelled is what closes it: claimNextJob refuses a
+  // marked job, so the retry becomes the only attempt. A job orphaned while
+  // RUNNING has no live runner either, so the marker is equally correct there
+  // and simply has nothing left to interrupt.
+  if (state === "orphaned") {
+    const rawStatus = await readJson<JobStatus>(
+      path.join(jobsRoot(), jobId, "status.json"),
+    ).catch(() => undefined);
+    if (rawStatus?.status === "queued" || rawStatus?.status === "running") {
+      await cancelJob(jobId, `superseded by a retry`);
+    }
+  }
 
   const manifest = prior.manifest;
   const prompt = await readFile(manifest.promptPath, "utf8");

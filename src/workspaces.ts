@@ -2,6 +2,7 @@ import { execFile as execFileCb } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
 import {
+  chmod,
   copyFile,
   mkdir,
   readdir,
@@ -189,9 +190,58 @@ const ROOT_MARKER = ".harness-dispatch-root";
  */
 const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
 
-/** Record that this root is ours. Best effort: never fail a dispatch over it. */
+/**
+ * Bring an existing workspace root up to 0700, and refuse one we do not own.
+ *
+ * Two separate problems, both POSIX-only, both found by an acceptance pass
+ * measuring the shipped `mode:` fix on real Linux rather than trusting it:
+ *
+ *   ALREADY THERE — `mkdir`'s mode applies only to directories it creates, so
+ *     an existing 0755 root stayed 0755. Every pre-existing user was
+ *     unaffected by the "fix". An explicit chmod is the only thing that
+ *     changes them.
+ *   SOMEBODY ELSE'S — the root path is fully deterministic
+ *     (`<tmp>/harness-dispatch/workspaces/<basename>-<hash of path>`) inside a
+ *     SHARED `os.tmpdir()`, so on the multi-user machine this whole guard
+ *     exists for, another local user can create it first. Then it is theirs:
+ *     chmod fails, and copying the project into it would hand them the
+ *     source. That is not a mode to fix, it is a directory to refuse.
+ *
+ * Throws on the second case. `markProjectRoot`'s caller treats a marker
+ * failure as harmless — correctly, a root without its marker is merely not
+ * auto-reclaimed — but "another user owns the directory I am about to copy
+ * your code into" is not in that category and must not be swallowed.
+ *
+ * Windows is skipped deliberately: `uid` is 0 for every process, Node ignores
+ * mode, and `os.tmpdir()` is already per-user there.
+ */
+async function secureProjectRoot(root: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const info = await stat(root);
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid !== undefined && info.uid !== uid) {
+    throw new Error(
+      `The workspace directory ${root} exists and is owned by another user (uid ${info.uid}, ` +
+        `this process is uid ${uid}). Refusing to copy your project into it: on a shared ` +
+        `machine this path is predictable, so a directory you do not own may have been ` +
+        `created there deliberately. Remove it, or set HARNESS_DISPATCH_WORKSPACES_DIR to a ` +
+        `location you control.`,
+    );
+  }
+  if ((info.mode & 0o077) !== 0) await chmod(root, 0o700);
+}
+
+/**
+ * Create the project's workspace root, secure it, and mark it as ours.
+ *
+ * The MARKER is best effort — a root without one is merely not reclaimed
+ * automatically, which is the safe direction to fail in. Creating and securing
+ * the directory is not, and used to sit inside the same swallowing `catch`:
+ * an ownership refusal raised there would have been discarded and the copy
+ * would have proceeded into someone else's directory.
+ */
 async function markProjectRoot(root: string): Promise<void> {
-  try {
+  {
     // 0700, like the state directory and every job directory.
     //
     // A `copy` workspace holds a full copy of the user's source, and the
@@ -206,7 +256,20 @@ async function markProjectRoot(root: string): Promise<void> {
     // tree would be belt-and-braces on a throwaway copy. No effect on Windows,
     // where Node ignores mode — which is also why it cannot be verified on
     // this maintainer's machine, only in CI.
+    //
+    // The `mode` option alone was NOT enough, and the CHANGELOG entry that
+    // shipped with it overclaimed. `mkdir` applies a mode only to directories
+    // it CREATES; it never chmods one that already exists. So every user who
+    // ran `copy` before that change kept a 0755 root forever and the upgrade
+    // did nothing for them. Measured on real Linux: a pre-existing 0755
+    // directory is still 0755 after `mkdir(recursive, 0o700)`.
+    //
+    // Hence the explicit chmod below — see secureProjectRoot, which also
+    // handles the case this path cannot: a root somebody ELSE owns.
     await mkdir(root, { recursive: true, mode: 0o700 });
+    await secureProjectRoot(root);
+  }
+  try {
     const marker = path.join(root, ROOT_MARKER);
     if (!existsSync(marker)) {
       await writeFile(
