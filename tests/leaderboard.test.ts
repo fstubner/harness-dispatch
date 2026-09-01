@@ -296,3 +296,46 @@ describe("THINKING_MULTIPLIERS constants", () => {
     expect(THINKING_MULTIPLIERS["low"]).toBe(1.0);
   });
 });
+
+
+describe("the fetch timeout covers the response body", () => {
+  /**
+   * `clearTimeout` sat in a `finally` around `fetch()` alone, so the abort was
+   * cancelled the moment response headers arrived and `response.json()` then
+   * ran with nothing bounding it. An acceptance pass measured a request still
+   * pending after 15s against an 8s ceiling, abort never fired.
+   *
+   * This sits on the routing path — quality scores are awaited per candidate —
+   * so a half-dead endpoint wedged every dispatch indefinitely, while the
+   * class docblock promised "delays routing once ... with an 8s timeout".
+   *
+   * The mock answers headers and then hangs on the BODY, rejecting only when
+   * the abort signal fires. Against the old code nothing ever fires, so this
+   * test hangs until vitest kills it — which is the failure it exists to
+   * produce.
+   */
+  it("gives up when the body never arrives, instead of hanging routing", async () => {
+    const headersOnly = vi.fn(async (_input: unknown, options?: unknown) => {
+      const signal = (options as RequestInit | undefined)?.signal;
+      return {
+        ok: true,
+        json: () =>
+          new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", headersOnly);
+
+    const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
+    const started = Date.now();
+    const { qualityScore } = await cache.getQualityScore("some-model");
+
+    expect(headersOnly).toHaveBeenCalled();
+    // It gave up and fell back rather than never returning.
+    expect(qualityScore).toBeGreaterThan(0);
+    // Bounded by the 8s ceiling with room for scheduling, and far below the
+    // 15s the acceptance pass measured with no bound at all.
+    expect(Date.now() - started).toBeLessThan(12_000);
+  }, 25_000);
+});
