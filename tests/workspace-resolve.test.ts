@@ -1337,3 +1337,62 @@ describe("a gitignored file the agent wrote", () => {
     expect(second.message).not.toContain("changed since dispatch");
   });
 });
+
+describe("discarding a workspace that is already gone", () => {
+  /**
+   * `discardWorkspace` early-returned "Already gone" when the root had
+   * vanished — skipping the block that removes the worktree THROUGH GIT. So a
+   * workspace pruned by retention, or deleted by hand, left
+   * `.git/worktrees/<name>` registered in the user's repo permanently. The
+   * function's own docblock says worktrees are removed through git for
+   * exactly this reason.
+   *
+   * Reproduced: `git worktree list` still showing the path, marked
+   * `prunable`, after discard answered `discarded: true`.
+   */
+  it("still clears the registration git is holding", async () => {
+    const repo = await makeRepo("pproj");
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+    const wsRoot = path.join(dir, "pws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+
+    // Retention pruned the workspace, or a user deleted it.
+    await fs.rm(wsRoot, { recursive: true, force: true });
+
+    const run: WorkspaceRun = {
+      policy: "git_worktree",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: worktree,
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    };
+    const res = await discardWorkspace("job-1700000000031-aaaaaaaa", run);
+    expect(res.discarded).toBe(true);
+
+    const list = (await git(["worktree", "list"], repo)).stdout;
+    expect(list).not.toContain("prunable");
+    expect(existsSync(path.join(repo, ".git", "worktrees", "worktree"))).toBe(false);
+  });
+
+  it("does not fail the discard when the project is not a git repo", async () => {
+    // Best-effort: a missing repo or git binary must not turn a successful
+    // discard into a failure.
+    const plain = path.join(dir, "plainproj");
+    await fs.mkdir(plain, { recursive: true });
+    const wsRoot = path.join(dir, "gone-ws");
+    const res = await discardWorkspace("job-1700000000032-bbbbbbbb", {
+      policy: "git_worktree",
+      originalWorkingDir: plain,
+      effectiveWorkingDir: path.join(wsRoot, "worktree"),
+      workspaceRoot: wsRoot,
+      baseCommit: "deadbeef",
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+    } as WorkspaceRun);
+    expect(res.discarded).toBe(true);
+  });
+});

@@ -104,8 +104,22 @@ export class CircuitBreaker {
     this.reset();
   }
 
-  /** Immediately trip — use on 429 or explicit rate-limit response. */
+  /**
+   * Immediately trip — use on 429 or explicit rate-limit response.
+   *
+   * Counts the failure as well as tripping. It did not, so `usage` reported
+   * `tripped: true, failures: 0` for a route knocked out by a 429 — a
+   * contradiction on the surface an orchestrator is told to consult before
+   * delegating, and one that makes a real trip look like a bookkeeping bug.
+   * A 429 IS a failed attempt; the threshold path already counts it.
+   */
   trip(retryAfterSec?: number): void {
+    // monotonicSec, matching recordFailure — this field feeds the decay
+    // window and lastFailureWallMs, both of which read it as monotonic
+    // seconds. An epoch value here would put the last failure decades in the
+    // future and disable decay entirely.
+    this.failures += 1;
+    this.lastFailureAt = monotonicSec();
     this.trippedAt = monotonicSec();
     this.cooldown = boundedCooldown(retryAfterSec);
   }

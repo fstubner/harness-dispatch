@@ -195,7 +195,11 @@ describe("CircuitBreaker", () => {
       const before = Date.now();
       const snap = cb.snapshot();
       const after = Date.now();
-      expect(snap.failures).toBe(0);
+      // 1, not 0: an immediate trip counts the failure it tripped on. This
+      // asserted 0 incidentally — the test is about the wall-clock deadline —
+      // and that 0 was the defect an acceptance pass reported as `usage`
+      // showing `tripped: true, failures: 0`.
+      expect(snap.failures).toBe(1);
       expect(snap.blockedUntilMs).not.toBeNull();
       // Should land ~42s out from real wall-clock time (independent of the
       // mocked performance.now() used for the breaker's own monotonic math).
@@ -290,5 +294,30 @@ describe("CircuitBreaker — failure decay across snapshot/restore", () => {
     cb.restore({ failures: 2, blockedUntilMs: null });
     cb.recordFailure();
     expect(cb.status().failures).toBe(3);
+  });
+});
+
+describe("an immediate trip is a failure too", () => {
+  /**
+   * `trip()` set trippedAt and cooldown but never touched the counter, so
+   * `usage` reported `tripped: true, failures: 0` for a route knocked out by
+   * a 429 — a contradiction on the surface an orchestrator is told to consult
+   * before delegating, which reads as a bookkeeping bug rather than a real
+   * trip. Reproduced against the built artifact:
+   *   {"tripped":true,"failures":0,"cooldownRemainingSec":30}
+   */
+  it("counts the failure it tripped on", () => {
+    const b = new CircuitBreaker("r");
+    b.trip(30);
+    const s = b.status();
+    expect(s.tripped).toBe(true);
+    expect(s.failures).toBeGreaterThan(0);
+  });
+
+  it("still clears on success", () => {
+    const b = new CircuitBreaker("r");
+    b.trip(30);
+    b.recordSuccess();
+    expect(b.status().failures).toBe(0);
   });
 });

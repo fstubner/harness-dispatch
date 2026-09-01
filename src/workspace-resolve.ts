@@ -1051,6 +1051,22 @@ export async function discardWorkspace(
     return { jobId, discarded: false, message: "This job has no isolated workspace to discard." };
   }
   if (!existsSync(root)) {
+    // The directory is gone, but git may still have the worktree REGISTERED.
+    // This function's own docblock says worktrees must be removed through git
+    // for exactly that reason, and this early return skipped the block that
+    // does it — so a workspace that aged out of retention, or that someone
+    // deleted by hand, left `.git/worktrees/<name>` in the user's repo
+    // permanently. Reproduced: `git worktree list` still showing the path,
+    // marked `prunable`, after discard answered `discarded: true`.
+    //
+    // Prune rather than `worktree remove`: the directory is already gone, so
+    // remove has nothing to act on, and prune is precisely the "forget
+    // registrations whose directories vanished" operation. Best-effort — a
+    // non-repo or a missing git binary must not turn a successful discard
+    // into a failure.
+    if (run.policy === "git_worktree") {
+      await git(["worktree", "prune"], run.originalWorkingDir).catch(() => undefined);
+    }
     return { jobId, discarded: true, message: `Already gone: ${root}` };
   }
 

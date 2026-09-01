@@ -34,7 +34,7 @@
  * correctly.
  */
 
-import { withFileLock } from "./file-lock.js";
+import { LockNotAcquiredError, withFileLock } from "./file-lock.js";
 import {
   existsSync,
   mkdirSync,
@@ -528,6 +528,12 @@ export class QuotaCache {
     const pending = this.pendingDelta;
     if (Object.keys(pending).length === 0) return;
     try {
+      // requireLock: an unserialised write here LOSES counts rather than
+      // merely racing. The write lands, `pendingDelta` is cleared as though it
+      // was serialised, and the process actually holding the lock then writes
+      // the value it computed before that write existed — so the counts are
+      // gone with no error and no retry. Deferring costs nothing, because the
+      // delta stays pending and the next recorded result writes it.
       withFileLock(this.stateFile, () => {
         const existing = this.readStateFile();
         for (const [service, delta] of Object.entries(pending)) {
@@ -545,7 +551,7 @@ export class QuotaCache {
           existing[service] = bucket;
         }
         this.writeStatePayloadAtomicSync(JSON.stringify(existing, null, 2));
-      });
+      }, { requireLock: true });
       // Only cleared once the write succeeded, so a failure is retried rather
       // than silently dropped.
       this.pendingDelta = {};
@@ -559,6 +565,13 @@ export class QuotaCache {
       // disk, no error, and `usage` reporting the counts as fact until the
       // next boot. Recorded here so `status` can say the numbers are not
       // durable, which is the honest answer to "how much have I used this?".
+      //
+      // A lock miss is NOT that condition and must not report it. The delta is
+      // still pending and the next recorded result writes it, so the counts
+      // are delayed, not lost — saying "not durable" for a busy moment would
+      // make a working system look broken, which is the mirror image of the
+      // defect this field exists to prevent.
+      if (err instanceof LockNotAcquiredError) return;
       this.persistError = err instanceof Error ? err.message : String(err);
     }
   }

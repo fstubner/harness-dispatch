@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -554,5 +554,113 @@ describe("QuotaCache — a failed persist is reported, not swallowed", () => {
     cache.recordResult("a", { output: "", service: "a", success: true });
     cache.saveLocalCountsSync();
     expect(cache.localCountsPersistError()).toBeUndefined();
+  });
+});
+
+describe("counts survive a contended lock", () => {
+  /**
+   * `withFileLock` runs its critical section UNLOCKED after a 2s timeout, by
+   * design — dropping a breaker failure would be worse than racing. That
+   * reasoning does not transfer to this caller: it keeps a pending delta and
+   * clears it only on success, so an unserialised write silently LOSES the
+   * counts. The write lands, the delta is cleared as though serialised, and
+   * the process actually holding the lock then overwrites the file with a
+   * value it computed before that write existed.
+   *
+   * Reproduced against the built artifact before the fix: a holder at 0, our
+   * 5 calls written unlocked, the holder's +3 landing last — final count 3,
+   * five calls gone with no error.
+   */
+  it("keeps the delta pending instead of writing unserialised", () => {
+    const file = tmpFile("contended.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ a: { local_calls: 0 } }), "utf-8");
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+
+    // Another process holds the lock and has already read the file.
+    mkdirSync(`${file}.lock`);
+    const holderRead = JSON.parse(readFileSync(file, "utf-8"));
+
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    // Nothing of ours reached disk while the lock was held.
+    expect(JSON.parse(readFileSync(file, "utf-8")).a.local_calls).toBe(0);
+
+    // The holder finishes its critical section and releases.
+    holderRead.a.local_calls += 3;
+    writeFileSync(file, JSON.stringify(holderRead), "utf-8");
+    rmSync(`${file}.lock`, { recursive: true });
+
+    // Our retained delta lands on the next result: 3 + 2, nothing lost.
+    cache.recordResult("a", { output: "", service: "a", success: true });
+    expect(JSON.parse(readFileSync(file, "utf-8")).a.local_calls).toBe(5);
+  }, 20_000);
+
+  it("does not report the counters as undurable for a busy moment", () => {
+    // The delta is delayed, not lost. Saying "not reaching disk" here would
+    // make a working system look broken — the mirror of the defect that
+    // field exists to prevent.
+    const file = tmpFile("contended2.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "{}", "utf-8");
+    const cache = new QuotaCache({ a: makeDispatcher("a") }, { stateFile: file });
+    mkdirSync(`${file}.lock`);
+    try {
+      cache.recordResult("a", { output: "", service: "a", success: true });
+      expect(cache.localCountsPersistError()).toBeUndefined();
+    } finally {
+      rmSync(`${file}.lock`, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe("usage tells the truth about its own durability", () => {
+  /**
+   * The cache records `persistError` and a test above pins that. Nothing
+   * pinned that it REACHES the surface — and a fix that is correct in the
+   * module and absent at the tool is the exact failure two acceptance passes
+   * caught in a row (an orphaned job's progress, and a warning describing
+   * behaviour the code did not have).
+   *
+   * `usage` is what CLAUDE.md and OPERATIONS.md tell an orchestrator to
+   * consult before delegating, so silent-zero counters there are worse than
+   * elsewhere: the agent reads "you have used nothing" and keeps delegating.
+   */
+  it("says so in the status payload, not just in the cache", async () => {
+    const { buildStatus } = await import("../src/status.js");
+    const quota = {
+      fullStatus: async () => ({}),
+      getQuotaScore: async () => 1,
+      localCountsPersistError: () => "EACCES: permission denied, mkdir '/nope'",
+    };
+    const router = {
+      circuitBreakerStatus: () => ({}),
+      breakerStateUnreadable: () => [],
+      pickService: () => undefined,
+      getBreaker: () => undefined,
+    };
+    const status = await buildStatus(
+      { services: {} } as never,
+      {} as never,
+      quota as never,
+      router as never,
+      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
+    );
+    const serialised = JSON.stringify(status);
+    expect(serialised).toContain("not reaching disk");
+    expect(serialised).toContain("EACCES");
+  });
+
+  it("says nothing when the counters are fine", async () => {
+    const { buildStatus } = await import("../src/status.js");
+    const status = await buildStatus(
+      { services: {} } as never,
+      {} as never,
+      { fullStatus: async () => ({}), getQuotaScore: async () => 1,
+        localCountsPersistError: () => undefined } as never,
+      { circuitBreakerStatus: () => ({}), breakerStateUnreadable: () => [],
+        pickService: () => undefined, getBreaker: () => undefined } as never,
+      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
+    );
+    expect(JSON.stringify(status)).not.toContain("not reaching disk");
   });
 });
