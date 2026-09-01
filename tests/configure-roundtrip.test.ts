@@ -176,3 +176,66 @@ describe("configure round-trip", () => {
     expect(printed.stdout).not.toMatch(/^\s+protocol:/m);
   });
 });
+
+describe("detect: survives a regenerate", () => {
+  /**
+   * `detect: false` is the only setting that isolates a machine from its
+   * installed paid CLIs — it is what this suite's own `setup-env.ts` relies
+   * on. It was a top-level key with no field on RouterConfig, so nothing
+   * carried it and `configure` dropped it silently.
+   *
+   * Measured before the fix: `detect: false` + `max_concurrent_runs: 2`
+   * regenerated as `max_concurrent_runs: 2` alone, and reloading with all four
+   * harness CLIs present yielded claude_code_cli, codex_cli, cursor_cli and
+   * antigravity_cli. A bare `detect: false` regenerated as the literal `{}`,
+   * where even the "this config defines no routes" warning is suppressed —
+   * its trigger requires a non-empty document.
+   */
+  const pretendInstalled = async (cmd: string) => `/fake/bin/${cmd}`;
+
+  async function regenerate(body: string, name: string): Promise<string> {
+    const src = path.join(dir, name);
+    await fs.writeFile(src, body, "utf8");
+    const printed = await capture(() => main(["configure", "--print", "--config", src]));
+    expect(printed.code).toBe(0);
+    return printed.stdout;
+  }
+
+  it("keeps detect: false rather than dropping it", async () => {
+    const out = await regenerate("detect: false\nmax_concurrent_runs: 2\n", "d1.yaml");
+    expect(out).toContain("detect: false");
+    expect(out).toContain("max_concurrent_runs: 2");
+  });
+
+  it("keeps a bare detect: false, which otherwise regenerates as nothing at all", async () => {
+    const out = await regenerate("detect: false\n", "d2.yaml");
+    expect(out).toContain("detect: false");
+  });
+
+  it("leaves the regenerated config still isolated from installed harnesses", async () => {
+    // The assertion that matters: not the text, but that reloading it on a
+    // machine where every harness IS present still yields no routes.
+    const out = await regenerate("detect: false\n", "d3.yaml");
+    const reloaded = path.join(dir, "d3-out.yaml");
+    await fs.writeFile(reloaded, out, "utf8");
+    const cfg = await loadConfig(reloaded, { whichFn: pretendInstalled });
+    expect(Object.keys(cfg.services)).toEqual([]);
+  });
+
+  it("does not invent detect: for a config that never mentioned it", async () => {
+    // Carrying the RESOLVED value would write `detect: true` into every config
+    // that merely omitted it, turning a default into a permanent declaration.
+    const out = await regenerate("max_concurrent_runs: 3\n", "d4.yaml");
+    expect(out).not.toContain("detect:");
+  });
+
+  it("keeps detect: true too, which is the opt-in to additive behaviour", async () => {
+    const out = await regenerate(
+      ["detect: true", "clis:", "  - name: fake_echo", "    harness: generic", "    command: node",
+       "    protocol:", '      args: ["-e", "console.log(1)", "{{prompt}}"]',
+       "      output: { mode: text }", ""].join("\n"),
+      "d5.yaml",
+    );
+    expect(out).toContain("detect: true");
+  });
+});

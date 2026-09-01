@@ -39,6 +39,28 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`configure` no longer deletes `detect: false`.** That key is the only
+  setting that isolates a machine from its installed paid CLIs, and it had no
+  field on the internal config object, so regenerating a file silently dropped
+  it. Measured: `detect: false` plus `max_concurrent_runs: 2` came back as the
+  latter alone, and reloading it with all four harness CLIs present produced
+  four routes on real subscriptions — under a "Wrote" message. A bare
+  `detect: false` regenerated as an empty document, where even the
+  "this config defines no routes" warning is suppressed, because its trigger
+  requires a non-empty file. `detect` now round-trips, and is written only when
+  the file stated it — carrying the resolved value would stamp `detect: true`
+  into every config that merely omitted it.
+
+- **`connect --remove` now removes the entry.** Without `--clients` it printed
+  "our entry is here — will be removed", exited 0, and left the file
+  byte-identical. The chooser filtered out plans whose entry already matches —
+  correct when registering, and exactly backwards when removing, where a
+  matching entry is the one being removed. `--clients` bypassed that function
+  and always worked; the broken form is the one documented in README and
+  OPERATIONS.md. A hand-edited entry is still refused without `--force`, and
+  now exits non-zero rather than reporting success for work it did not do.
+  This command had no test coverage at all; it does now.
+
 - **The test suite can no longer reach a real route.** Test setup already
   sandboxed the log, state and jobs directories — where the suite WRITES — but
   not config, which is what it DISCOVERS. A test that loaded config without

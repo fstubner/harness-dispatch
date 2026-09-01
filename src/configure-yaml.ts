@@ -189,6 +189,17 @@ function endpointEntryToYaml(
  */
 function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  // FIRST, and unconditionally when the file stated it.
+  //
+  // `detect` is the only setting that isolates a machine from its installed
+  // paid CLIs, and it was dropped on every round-trip because nothing carried
+  // it. An acceptance pass measured `configure --yes --force` turning
+  // `detect: false` into a config that routes to four real subscriptions,
+  // printing "Wrote", with the safety warning suppressed because the emptied
+  // document failed its own trigger condition. That is the same class as the
+  // two failures this file's header already records in the past tense: a
+  // regenerate that silently drops what it cannot represent.
+  if (config.detect !== undefined) out.detect = config.detect;
   // `disabled:` only means something to AUTO-DETECTION, and a config that
   // lists its own routes is authoritative — a disabled route is simply absent
   // from that list, so carrying the name forward says nothing and actively

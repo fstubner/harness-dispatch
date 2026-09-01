@@ -431,9 +431,28 @@ function summariseEntry(entry: unknown): unknown {
  */
 async function chooseInteractively(
   plans: ClientPlan[],
-  opts: { yes: boolean },
+  opts: { yes: boolean; remove?: boolean },
 ): Promise<ClientPlan[] | undefined> {
-  const actionable = plans.filter((p) => p.state !== "matches" && p.state !== "unreadable");
+  // What counts as actionable INVERTS under --remove.
+  //
+  // Registering: `matches` means the entry is already what we would write, so
+  // there is nothing to do. Removing: `matches` is exactly the entry being
+  // removed, so filtering it out left nothing actionable — and the command
+  // printed "our entry is here — will be removed", exited 0, and changed
+  // nothing. Reproduced byte-for-byte: same md5 before and after.
+  //
+  // Only the bare form was affected, because `--clients` bypasses this
+  // function entirely. That is the form README documents twice and
+  // OPERATIONS.md once, and no test covered this command at all.
+  // Stated as what IS actionable rather than what is not: the states are
+  // absent / unreadable / missing-entry / matches / differs, and under
+  // --remove only the two that actually hold an entry qualify. Written as a
+  // negation, `absent` (no config file at all) slipped through.
+  const actionable = plans.filter((p) =>
+    opts.remove === true
+      ? p.state === "matches" || p.state === "differs"
+      : p.state !== "matches" && p.state !== "unreadable",
+  );
   if (actionable.length === 0) return [];
   // `--yes` skips the question; it does NOT answer it.
   //
