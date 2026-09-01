@@ -451,7 +451,7 @@ describe("an isolated workspace is not world-readable", () => {
     "creates its root 0700, like the job and state directories",
     async () => {
       const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
-      const project = path.join(dir, "permproj");
+      const project = path.join(root, "permproj");
       await fs.mkdir(project, { recursive: true });
       await fs.writeFile(path.join(project, "a.txt"), "secret source" + String.fromCharCode(10), "utf8");
 
@@ -462,8 +462,8 @@ describe("an isolated workspace is not world-readable", () => {
         routeName: "r",
       });
 
-      const root = workspaceRootFor(project);
-      const mode = (await fs.stat(root)).mode & 0o777;
+      const projectWsRoot = workspaceRootFor(project);
+      const mode = (await fs.stat(projectWsRoot)).mode & 0o777;
       expect(mode & 0o077, `workspace root is ${mode.toString(8)}`).toBe(0);
     },
   );
