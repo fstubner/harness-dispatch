@@ -469,6 +469,21 @@ export interface RouterConfig {
   services: Record<string, ServiceConfig>;
   disabled?: readonly string[];
   /**
+   * Whether auto-detection ran, as the loaded config resolved it.
+   *
+   * Carried so `configure` can WRITE IT BACK. It could not: `detect` was a
+   * top-level key with no field here, so regenerating a config dropped it
+   * silently — and `detect: false` is the only setting that isolates a machine
+   * from its installed paid CLIs. An acceptance pass measured
+   * `configure --yes --force` turning an isolating config into one routing to
+   * four real subscriptions, reporting "Wrote", with the safety warning
+   * suppressed because an emptied document fails its own trigger condition.
+   *
+   * Undefined means "not stated in the file"; the loader's default then
+   * applies (detection on when the config names no routes, off when it does).
+   */
+  detect?: boolean;
+  /**
    * OpenTelemetry traces. OFF by default — purely operator-facing local
    * observability (OTLP to localhost unless redirected); enable only if you
    * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.

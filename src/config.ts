@@ -1086,6 +1086,10 @@ export async function loadConfig(
   const cfg: RouterConfig = {
     services,
     disabled,
+    // Only when the file SAID so. Carrying the resolved value instead would
+    // make `configure` write `detect: true` into every config that merely
+    // omitted it, turning a default into a permanent declaration.
+    ...(detectRequested !== undefined ? { detect: detectRequested } : {}),
     ...topLevelSettings(raw, warnings),
     ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
