@@ -361,14 +361,41 @@ function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteRe
   if (job.result) {
     return routeResponse(job.result.result, job.result.decision, job.status.warning);
   }
+  // A job that ended without a result.json still has whatever the delegate
+  // managed to write. PRODUCT.md makes that the defining criterion — work that
+  // dies must come back inspectable rather than as a wasted attempt with no
+  // trail — and `getAsyncJob` reads the partial log precisely so this path can
+  // hand it over.
+  //
+  // It did not. `jobCompleted` counts orphaned and cancelled as terminal
+  // (correctly — they will never finish), and `pollDispatch` only attached
+  // `partialOutput` on the NOT-completed branch, so every terminal-without-
+  // result job returned `output: ""`. An acceptance pass measured it: three
+  // steps of progress on disk, `getAsyncJob` returning them, and `job_status`
+  // answering with an empty string.
+  //
+  // The commit that added the partial read is right in the module it edited
+  // and never reached the surface a caller touches. Same for the crash path
+  // (a `failed` status with no result.json) and for a cancelled job. The HTTP
+  // surface already salvages this; MCP now matches it.
   const response: RouteResponse = {
     success: false,
-    output: "",
+    output: job.partialOutput ?? "",
     route: job.status.route ?? job.status.service ?? "none",
   };
   if (job.status.error !== undefined) response.error = job.status.error;
   if (job.status.warning !== undefined) response.warning = job.status.warning;
   if (job.status.durationMs !== undefined) response.durationMs = job.status.durationMs;
+  // Say which kind of output this is. `success: false` already tells a caller
+  // the run did not finish, but a non-empty `output` next to it reads like a
+  // completed answer, and salvage that is mistaken for a result is a worse
+  // outcome than the empty string this replaced.
+  if (job.partialOutput !== undefined && job.partialOutput !== "") {
+    const note =
+      `\`output\` is PARTIAL — everything the delegate wrote before it stopped, not a ` +
+      `finished answer. Inspect or salvage it; re-dispatch if you need the work completed.`;
+    response.warning = response.warning === undefined ? note : `${response.warning} ${note}`;
+  }
   return response;
 }
 

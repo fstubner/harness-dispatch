@@ -39,6 +39,29 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **An orphaned or cancelled job now hands back its partial work through the
+  tool an orchestrator actually calls.** The progress was on disk and
+  `getAsyncJob` read it, but `job_status` answered `output: ""`: orphaned and
+  cancelled count as terminal, and the poll response attached `partialOutput`
+  only on the NOT-terminal branch. So a commit titled "an orphaned job hands
+  back its progress" was correct in the module it edited and had no effect at
+  the surface a caller touches — verified at the function, not at the tool.
+  The crash path (a `failed` status with no result) was losing its output the
+  same way. The HTTP surface already salvaged this; MCP now matches it, and
+  the answer says the output is PARTIAL so salvage is not read as a result.
+
+- **A gitignored file the agent wrote is no longer reported as applied while
+  being left behind.** Under `git_worktree`, the patch came from `git add -A
+  -N`, which obeys `.gitignore`, while the changed-file list came from a
+  filesystem fingerprint, which does not. A job that wrote a `.env` or any
+  ignored file got `applied: true` naming it, with the file absent from the
+  patch and from the project. It compounded: the already-applied guard needs
+  every recorded change present, so it never fired, and the next apply refused
+  with "changed since dispatch" — blaming the caller for the first apply's own
+  writes, the misleading refusal an earlier fix had removed. The paths already
+  recorded as changed are now force-added, which also makes `git_worktree`
+  agree with `copy`, whose per-file patch always carried them.
+
 - **`clis: []` now isolates a config, which is what the previous release said
   it did.** Authoritativeness keyed off a NON-EMPTY list, so the most explicit
   way to write "no CLI routes" still loaded every harness on the machine —

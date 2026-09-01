@@ -188,6 +188,31 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
     await git(["add", "-A", "-N"], root).catch(() => undefined);
+    // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
+    // a filesystem fingerprint. So an agent that wrote a gitignored file (a
+    // `.env`, a local config) had that file REPORTED as changed and applied,
+    // and silently left behind: the patch never carried it. An acceptance pass
+    // measured `applied: true` naming two files with only one in the diff.
+    //
+    // It compounds: the "already applied" guard needs every recorded change
+    // present in the project, so it never fires, and the next apply refuses
+    // with "changed since dispatch" — blaming the user for the first apply's
+    // own writes, the exact misleading refusal an earlier fix removed.
+    //
+    // Force-add EXACTLY the paths already recorded as changed, never `-f -A`.
+    // The recorded list comes from a fingerprint that skips node_modules,
+    // dist, build and friends (EXCLUDED_DIRS), so it stays bounded; a blanket
+    // force-add would sweep whole ignored trees into the patch.
+    //
+    // This also makes the two policies agree: a `copy` patch is built per file
+    // from this same list and has always carried ignored files.
+    const ignoredCandidates = (run.changedFiles ?? [])
+      .filter((c) => c.kind !== "deleted")
+      .map((c) => c.path);
+    for (let i = 0; i < ignoredCandidates.length; i += 100) {
+      const batch = ignoredCandidates.slice(i, i + 100);
+      await git(["add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
+    }
     return gitDiff(["diff", "--binary", run.baseCommit, "--"], root);
   }
 

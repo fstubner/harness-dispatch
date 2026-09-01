@@ -255,3 +255,68 @@ describe("a cancelled job is terminal", () => {
     expect(res.instructions ?? "").not.toMatch(/check again/i);
   });
 });
+
+describe("a job that ends without a result still hands back its progress", () => {
+  /**
+   * PRODUCT.md makes this the defining criterion: work that dies must come
+   * back inspectable rather than as a wasted attempt with no trail.
+   * `getAsyncJob` reads `output/stdout.partial.log` precisely so this can
+   * happen, and a commit titled "an orphaned job hands back its progress"
+   * added that read.
+   *
+   * It never reached the caller. `jobCompleted` counts orphaned and cancelled
+   * as terminal — correctly, they will never finish — and the poll response
+   * attached `partialOutput` only on the NOT-completed branch, so
+   * `jobRouteResponse` returned `output: ""`. An acceptance pass measured it
+   * through this exact tool: three steps of progress on disk, and an empty
+   * string in the answer.
+   *
+   * The fix is verified HERE, at the tool an orchestrator calls, rather than
+   * at the function that reads the file — that gap is the whole defect.
+   */
+  const PARTIAL = "STEP 1 of 5: analysing\nSTEP 2 of 5: editing\n";
+
+  async function statusFor(jobId: string, state: string) {
+    const dir = await plantJob(jobId, state, {
+      error: "The process that owned this job is gone; it will never complete.",
+      route: "fake_cli",
+    });
+    await fs.writeFile(path.join(dir, "output", "stdout.partial.log"), PARTIAL, "utf8");
+    const { invokeTool } = await import("../src/mcp/tools.js");
+    const invoked = await invokeTool("job_status", { jobId }, {} as never);
+    return (invoked as { data: unknown }).data as {
+      completed: boolean;
+      result?: { output: string; success: boolean; warning?: string };
+    };
+  }
+
+  it("returns an orphaned job's partial output instead of an empty string", async () => {
+    const res = await statusFor("job-1700000000011-aaaaaaaa", "orphaned");
+    expect(res.completed).toBe(true);
+    expect(res.result?.output).toContain("STEP 2 of 5");
+  });
+
+  it("does the same for a cancelled job", async () => {
+    const res = await statusFor("job-1700000000012-bbbbbbbb", "cancelled");
+    expect(res.result?.output).toContain("STEP 1 of 5");
+  });
+
+  it("says the output is partial, so salvage is not mistaken for a result", async () => {
+    const res = await statusFor("job-1700000000013-cccccccc", "orphaned");
+    expect(res.result?.success).toBe(false);
+    expect(res.result?.warning ?? "").toContain("PARTIAL");
+  });
+
+  it("leaves output empty when there is genuinely no progress to hand back", async () => {
+    const jobId = "job-1700000000014-dddddddd";
+    await plantJob(jobId, "orphaned", { error: "gone", route: "fake_cli" });
+    const { invokeTool } = await import("../src/mcp/tools.js");
+    const invoked = await invokeTool("job_status", { jobId }, {} as never);
+    const res = (invoked as { data: unknown }).data as {
+      result?: { output: string; warning?: string };
+    };
+    expect(res.result?.output).toBe("");
+    // And no partial-output warning, which would be a lie about an empty log.
+    expect(res.result?.warning ?? "").not.toContain("PARTIAL");
+  });
+});
