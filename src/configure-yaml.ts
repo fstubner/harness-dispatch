@@ -16,6 +16,7 @@
  * recomputes those, so a dropped one is simply gone).
  */
 
+import { createHash } from "node:crypto";
 import yaml from "js-yaml";
 
 import type { RouterConfig, ServiceConfig } from "./types.js";
@@ -237,4 +238,48 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   if (clis.length > 0) doc.clis = clis;
   if (endpoints.length > 0) doc.endpoints = endpoints;
   return yaml.dump(doc, { noRefs: true, lineWidth: 100 });
+}
+
+/**
+ * `configure` stamps what it writes so a later run can tell its own unedited
+ * output from a file someone has worked on.
+ *
+ * The natural first-run order is: install this tool, run configure (0 routes),
+ * discover a harness is needed, install one, run configure again — and the
+ * second run was refused: "already exists ... --force". The refusal exists
+ * because overwriting a hand-written config is unrecoverable, and that reason
+ * does not apply to a file configure itself wrote and nobody has touched. The
+ * fingerprint is a sha256 of everything after the header; the header lines
+ * are comments, so the file loads exactly as before.
+ *
+ * Only a leading block of `#` lines may sit above the fingerprint line. An
+ * edit inserted ABOVE it — `detect: false` at the top of the file, say — is
+ * still an edit, and a check that skipped to the fingerprint would miss it.
+ */
+const FINGERPRINT_LINE = /^# harness-dispatch configure: fingerprint=([0-9a-f]{64})$/m;
+
+function fingerprint(body: string): string {
+  // Line endings are not an edit: an editor that saves CRLF changed nothing
+  // the loader can see.
+  return createHash("sha256").update(body.replace(/\r\n/g, "\n")).digest("hex");
+}
+
+export function stampGenerated(body: string): string {
+  return [
+    "# Written by `harness-dispatch configure`. Re-running configure regenerates this",
+    "# file from a fresh detection for as long as it is unedited; change anything below",
+    "# and it will refuse to overwrite without --force. The fingerprint is how it tells.",
+    `# harness-dispatch configure: fingerprint=${fingerprint(body)}`,
+    body,
+  ].join("\n");
+}
+
+export function isUneditedGenerated(text: string): boolean {
+  const normalised = text.replace(/\r\n/g, "\n");
+  const match = FINGERPRINT_LINE.exec(normalised);
+  if (match === null || match.index === undefined) return false;
+  const above = normalised.slice(0, match.index);
+  if (!above.split("\n").every((line) => line === "" || line.startsWith("#"))) return false;
+  const body = normalised.slice(match.index + match[0].length + 1);
+  return fingerprint(body) === match[1];
 }
