@@ -2,9 +2,16 @@
  * MCP tool registry for harness-dispatch.
  *
  * The public MCP surface is six tools, each doing exactly one thing:
- * `dispatch` starts routed work (single or fanout) and only ever starts —
- * `job_status` checks or lists it, `usage` reads route/quota state. Every
- * dispatch is job-backed from the first moment — dispatch races an inline
+ * `dispatch` starts routed work (single or fanout) and only ever starts;
+ * `job_status` checks or lists it; `cancel_job` stops one; `retry_job` runs a
+ * finished one again; `workspace` inspects, keeps or discards isolated work;
+ * `usage` reads route/quota state.
+ *
+ * The count was corrected from three to six a release ago and this list was
+ * not — the same defect one line further down, which is why it is spelled out
+ * in full here rather than summarised.
+ *
+ * Every dispatch is job-backed from the first moment — dispatch races an inline
  * grace window against the background run, so a fast task returns its full
  * result in-call and a slow one degrades to a pollable jobId with NOTHING
  * lost to a timeout; job_status is how that jobId gets checked on later.

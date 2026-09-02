@@ -58,17 +58,32 @@ const HTTP_429_RE =
  * Checked per line, so an assertion elsewhere in a long transcript cannot mask
  * a genuine 429 on its own line.
  *
+ * The tick/cross and "Test Files"/"Tests " markers were added after this
+ * repository's OWN vitest output was measured flagging as rate-limited: a
+ * test NAME containing "usage limit" is not an assertion and carried no
+ * keyword, so nothing here caught it. A delegated "run the tests" task that
+ * exits non-zero then blocks its route for 300 seconds.
+ *
+ * This stays a HEURISTIC, and it is worth saying so rather than implying a
+ * solved problem: separating "the delegate hit a limiter" from "the delegate
+ * printed the words" is undecidable from text alone. The structural answer is
+ * to discriminate by STREAM — a harness reports its own limiter on stderr,
+ * while a test runner writes results to stdout — and that is deliberately not
+ * done here, because some CLIs do print limiter errors to stdout and getting
+ * it wrong in that direction MISSES a real limit, which is the worse failure.
+ *
  * `should` was in this list and had to come out: it discards
  * "429 received; the request should be retried", a REAL limiter message that
  * matched before this filter existed. A guard against false positives that
  * creates false negatives on the same surface is worse than the problem — a
  * missed 429 means the router keeps hammering an exhausted route.
  *
- * `it(` and `describe(` are written without a trailing ``, which could never
+ * `it(` and `describe(` are written without a trailing `\b`, which could never
  * match: `(` followed by a quote is not a word boundary, so both alternatives
  * were dead while the docblock named them as covered.
  */
-const ASSERTION_CONTEXT_RE = /\bassert\w*|\bexpect\w*|\btest case\b|\bit\(|\bdescribe\(/i;
+const ASSERTION_CONTEXT_RE =
+  /\bassert\w*|\bexpect\w*|\btest case\b|\bit\(|\bdescribe\(|^\s*[✓✗×]|\bTest Files\b|\bTests\s\s/i;
 
 /** Does any line report a 429 without reading as a test assertion? */
 function mentions429(text: string): boolean {
@@ -93,20 +108,44 @@ export function rateLimitScanTail(text: string): string {
   return text.length > RATE_LIMIT_SCAN_TAIL_BYTES ? text.slice(-RATE_LIMIT_SCAN_TAIL_BYTES) : text;
 }
 
+/** Phrases a limiter actually uses, matched per line. */
+const LIMITER_PHRASES = [
+  "rate limit",
+  // Anthropic's own error type, and OpenAI's 429 body text. Neither matched:
+  // the list had `rate limit` with a SPACE and `quota exceeded` in that order,
+  // so `rate_limit_error` and "You exceeded your current quota" both went
+  // through as ordinary failures. A missed limiter is the worse direction —
+  // the router keeps hammering a route that has already said stop.
+  "rate_limit_error",
+  "rate-limited",
+  "quota exceeded",
+  "exceeded your quota",
+  "exceeded your current quota",
+  "resource_exhausted",
+  "too many requests",
+  // "usage limit" is OpenAI Codex's real phrasing (confirmed live,
+  // 2026-07-24: "You've hit your usage limit... try again at Jul 28th,
+  // 2026 10:16 PM.") — none of the phrases above matched it, so a real
+  // Codex exhaustion was silently NOT flagged as rate-limited.
+  "usage limit",
+];
+
 /** Exported for tests: the false-positive space here is what trips breakers. */
 export function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: number | null } {
-  const lowered = text.toLowerCase();
-  const flagged =
-    lowered.includes("rate limit") ||
-    lowered.includes("quota exceeded") ||
-    lowered.includes("resource_exhausted") ||
-    lowered.includes("too many requests") ||
-    // "usage limit" is OpenAI Codex's real phrasing (confirmed live,
-    // 2026-07-24: "You've hit your usage limit... try again at Jul 28th,
-    // 2026 10:16 PM.") — none of the phrases above matched it, so a real
-    // Codex exhaustion was silently NOT flagged as rate-limited.
-    lowered.includes("usage limit") ||
-    mentions429(text);
+  // PER LINE, and past the assertion filter — like the 429 check beside it.
+  //
+  // These phrases were matched against the whole blob with no filter at all,
+  // so the assertion guard protected one half of this function and not the
+  // other. Measured: this repository's OWN vitest output, fed back in, flags
+  // as rate-limited — a delegated "run the tests" task that exits non-zero
+  // then trips the breaker with no threshold, blocks the route for 300s, and
+  // records a rate limit that never happened. The scan-tail comment above
+  // claims the tail exists to stop exactly that.
+  const flagged = text.split(/\r?\n/).some((line) => {
+    if (ASSERTION_CONTEXT_RE.test(line)) return false;
+    const lowered = line.toLowerCase();
+    return LIMITER_PHRASES.some((phrase) => lowered.includes(phrase)) || mentions429(line);
+  });
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
   const retryAfter = match?.[1] ? Number.parseFloat(match[1]) : null;

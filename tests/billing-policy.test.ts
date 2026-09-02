@@ -405,3 +405,51 @@ describe("an HTTP endpoint cannot be given an execute task", () => {
     expect(out.blocked).toBe(false);
   });
 });
+
+describe("billing_confidence: unknown on a route that cannot bill you", () => {
+  /**
+   * Such a route is blocked deliberately — `unknown` means "do not trust this
+   * classification" — but it was told "route can incur paid usage" beside
+   * `paid=no` and advised to set `paid_usage_possible: false`, which it
+   * already had. The only escape offered was `allow_paid_usage: true`: "yes,
+   * bill me", for a route the operator has said cannot.
+   *
+   * The first fix for this went into a branch the metered case never reaches,
+   * so it worked for local routes only.
+   */
+  const svc = (over: Record<string, unknown>) => ({
+    name: "r", enabled: true, type: "openai_compatible",
+    baseUrl: "http://127.0.0.1:1/v1", model: "m",
+    tier: 3, weight: 1, cliCapability: 1, capabilities: {}, escalateOn: [],
+    allowPaidUsage: false, provider: "openai", surface: "openai_api", authSource: "api_key",
+    ...over,
+  }) as never;
+  const dispatcher = { isAvailable: () => true } as never;
+
+  it.each(["metered_api", "local_compute"])(
+    "advises fixing the confidence, not allowing paid usage (%s)",
+    async (kind) => {
+      const { evaluateRoutePolicy } = await import("../src/route-policy.js");
+      const r = evaluateRoutePolicy(
+        "r",
+        svc({ billingKind: kind, paidUsagePossible: false, billingConfidence: "unknown" }),
+        { dispatcher },
+      );
+      expect(r.blocked).toBe(true);
+      expect(r.skipped?.message).toMatch(/billing_confidence/);
+      expect(r.skipped?.message, "offered the permissive remedy").not.toMatch(
+        /add `allow_paid_usage: true`/,
+      );
+    },
+  );
+
+  it("still tells a route that genuinely can bill you to allow paid usage", async () => {
+    const { evaluateRoutePolicy } = await import("../src/route-policy.js");
+    const r = evaluateRoutePolicy(
+      "r",
+      svc({ billingKind: "metered_api", paidUsagePossible: true, billingConfidence: "documented" }),
+      { dispatcher },
+    );
+    expect(r.skipped?.message).toMatch(/allow_paid_usage: true/);
+  });
+});
