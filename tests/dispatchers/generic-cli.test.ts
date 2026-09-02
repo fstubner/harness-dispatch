@@ -1225,3 +1225,43 @@ describe("an environment failure is the harness's, not the agent's prose", () =>
     expect(detectHarnessEnvironmentFailure(buried)).toBeUndefined();
   });
 });
+
+describe("429 detection does not fire on text about 429", () => {
+  /**
+   * The comment above this pattern claimed it had replaced a check that
+   * flagged "a port, a line number, a test count". An acceptance pass measured
+   * it still flagging a line number and two test assertions, because the gap
+   * between the keyword and the number allowed arbitrary WORDS.
+   *
+   * One flag trips the breaker with NO threshold: the route is blocked for
+   * 300s and `usage` records a rate limit that never happened, on the surface
+   * an orchestrator is told to consult before delegating.
+   */
+  it.each([
+    "Error on line 429 of the config",
+    "AssertionError: expected error code 429 but got 200",
+    "assertion failed: status code 429 expected",
+    "listening on port 4290",
+    "429 tests passed",
+  ])("does not flag %j", (text) => {
+    expect(detectRateLimit(text).rateLimited).toBe(false);
+  });
+
+  it.each([
+    "HTTP 429 Too Many Requests",
+    "status_code: 429",
+    "error code 429 returned by the API",
+  ])("still flags a real one: %j", (text) => {
+    expect(detectRateLimit(text).rateLimited).toBe(true);
+  });
+
+  it("finds a genuine 429 even when an assertion mentions one elsewhere", () => {
+    // Per line, so a test suite in the transcript cannot mask the real thing.
+    const transcript = [
+      "expected status code 429 but got 200",
+      "...",
+      "HTTP 429 Too Many Requests",
+    ].join("\n");
+    expect(detectRateLimit(transcript).rateLimited).toBe(true);
+  });
+});

@@ -508,3 +508,39 @@ describe("an existing workspace root is brought up to 0700", () => {
     },
   );
 });
+
+describe("a workspace root that is a symlink", () => {
+  /**
+   * `secureProjectRoot` used `stat`, which FOLLOWS symlinks, so the uid it
+   * compared was the target's rather than the link's. An attacker who owns
+   * neither end plants a link at this predictable path pointing at a directory
+   * the victim owns, and the ownership check passes against the victim's own
+   * uid. Reproduced in a container: the guard did not fire, the victim's
+   * directory was chmod'd to 0700, the project was copied into it, and the
+   * retention sweep — which ran BEFORE the guard and had no ownership or name
+   * check at all — deleted the victim's files.
+   *
+   * POSIX-only for the ownership half, but the symlink refusal itself is
+   * checkable anywhere Node can make a link.
+   */
+  it.skipIf(process.platform === "win32")("is refused rather than followed", async () => {
+    const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
+    const project = path.join(root, "linkproj");
+    const elsewhere = path.join(root, "victim-data");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(path.join(elsewhere, "important"), { recursive: true });
+    await fs.writeFile(path.join(elsewhere, "important", "thesis.txt"), "mine", "utf8");
+    await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+
+    const projectWsRoot = workspaceRootFor(project);
+    await fs.mkdir(path.dirname(projectWsRoot), { recursive: true });
+    await fs.symlink(elsewhere, projectWsRoot, "dir");
+
+    await expect(
+      prepareWorkspace({ policy: "copy", workingDir: project, files: [], routeName: "r" }),
+    ).rejects.toThrow(/symbolic link/i);
+
+    // And nothing was written into, or removed from, what it pointed at.
+    expect(await fs.readdir(elsewhere)).toEqual(["important"]);
+  });
+});

@@ -3,9 +3,17 @@
  *
  * Companion to `runSubprocess` — same spawn/kill/timeout semantics but emits
  * stdout and stderr chunks as the child writes them via an `AsyncIterable`.
- * Consumers drive backpressure by how fast they iterate. A bounded internal
- * queue protects against runaway processes flooding memory (exceeding the
- * bound kills the child).
+ * A bounded internal queue protects against runaway processes flooding memory
+ * (exceeding the bound kills the child).
+ *
+ * There is NO backpressure, and this said there was ("consumers drive
+ * backpressure by how fast they iterate"). Nothing pauses the child's stdout,
+ * so a slow consumer does not slow the producer — the queue grows instead,
+ * and past `maxBufferedChunks` the child is killed and the iterator REJECTS,
+ * which in the job runner marks a healthy run failed and discards its result.
+ * Not reached at the shipped bound of 1000 in measurement, but the behaviour
+ * when it is reached is wrong, and the reader deserves to know which of the
+ * two it is relying on.
  *
  * The iterator yields `{ stream, chunk }` tuples until the child exits,
  * whereupon it yields a single terminal `{ kind: "end", exitCode, timedOut,
@@ -23,6 +31,7 @@
  * working without modification while still exercising the streaming code
  * path in production.
  */
+import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
@@ -199,7 +208,38 @@ function realStreamSubprocess(
     }
   }
 
+  // One decoder per stream, held across chunks.
+  //
+  // Each `data` buffer used to be decoded on its own with `buf.toString()`, so
+  // any multi-byte character straddling two reads became replacement
+  // characters. Reproduced: a child writing "price: € done", split inside
+  // the euro sign, arrived as "price: ��� done".
+  //
+  // This is the path every MCP job uses — partialOutput, stdout.log, result.md
+  // — so accented text, CJK, emoji and box-drawing were being corrupted in
+  // delivered work product. The buffered sibling in subprocess.ts concatenates
+  // before decoding and was always correct, which is why only the path nothing
+  // but tests exercise looked right.
+  //
+  // StringDecoder holds an incomplete sequence back until the bytes that
+  // finish it arrive; `end()` at teardown flushes whatever never completed.
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+
   function finish(): void {
+    // Flush whatever the decoders were holding back.
+    //
+    // A StringDecoder withholds an incomplete multi-byte sequence until the
+    // bytes completing it arrive. If the child exits mid-character — a
+    // truncated run, a kill, a crash partway through a write — those bytes
+    // would otherwise be dropped silently, which is the same class of loss the
+    // decoders were added to prevent, just at the end instead of the middle.
+    // `end()` returns them as replacement characters: visibly wrong beats
+    // invisibly absent.
+    const tailOut = stdoutDecoder.end();
+    if (tailOut !== "") push({ stream: "stdout", chunk: tailOut });
+    const tailErr = stderrDecoder.end();
+    if (tailErr !== "") push({ stream: "stderr", chunk: tailErr });
     done = true;
     while (waiters.length > 0) {
       const w = waiters.shift();
@@ -258,7 +298,7 @@ function realStreamSubprocess(
     if (stdoutBytes + buf.length > maxOutputBytes) {
       const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
       if (remaining > 0) {
-        push({ stream: "stdout", chunk: buf.subarray(0, remaining).toString("utf8") });
+        push({ stream: "stdout", chunk: stdoutDecoder.write(buf.subarray(0, remaining)) });
       }
       stdoutBytes = maxOutputBytes;
       truncated = true;
@@ -266,7 +306,7 @@ function realStreamSubprocess(
       return;
     }
     stdoutBytes += buf.length;
-    push({ stream: "stdout", chunk: buf.toString("utf8") });
+    push({ stream: "stdout", chunk: stdoutDecoder.write(buf) });
   });
 
   child.stderr?.on("data", (buf: Buffer) => {
@@ -274,7 +314,7 @@ function realStreamSubprocess(
     if (stderrBytes + buf.length > maxOutputBytes) {
       const remaining = Math.max(0, maxOutputBytes - stderrBytes);
       if (remaining > 0) {
-        push({ stream: "stderr", chunk: buf.subarray(0, remaining).toString("utf8") });
+        push({ stream: "stderr", chunk: stderrDecoder.write(buf.subarray(0, remaining)) });
       }
       stderrBytes = maxOutputBytes;
       truncated = true;
@@ -282,7 +322,7 @@ function realStreamSubprocess(
       return;
     }
     stderrBytes += buf.length;
-    push({ stream: "stderr", chunk: buf.toString("utf8") });
+    push({ stream: "stderr", chunk: stderrDecoder.write(buf) });
   });
 
   child.on("error", (err) => {

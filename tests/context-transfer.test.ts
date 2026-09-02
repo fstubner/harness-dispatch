@@ -254,3 +254,41 @@ describe("jobs that do not fit the context budget", () => {
     expect(preamble).not.toContain("omitted");
   });
 });
+
+describe("the omission notice with a repeated jobId", () => {
+  /**
+   * The notice sliced from `contextJobs.indexOf(jobId)`, which is the FIRST
+   * occurrence. With a duplicate id it described the wrong point in the list:
+   * for [j1,j2,j1,j3,j4] it claimed four jobs omitted, naming two whose output
+   * was rendered directly above it, and told the delegate to fetch them.
+   */
+  it("names only the jobs that were actually dropped", async () => {
+    const ids = [1, 2, 3, 4].map((n) => `job-17000000006${n}0-ccccccc${n}`);
+    for (const [i, id] of ids.entries()) {
+      const jd = path.join(jobsDir, id);
+      await fs.mkdir(path.join(jd, "output"), { recursive: true });
+      await fs.writeFile(path.join(jd, "prompt.md"), "task", "utf8");
+      await fs.writeFile(
+        path.join(jd, "output", "result.json"),
+        JSON.stringify({
+          result: { success: true, output: `MARK-${i + 1} ${"y".repeat(8000)}`, route: "r" },
+          decision: {},
+        }),
+        "utf8",
+      );
+    }
+    // The first id repeats, which is what broke the arithmetic.
+    const withDuplicate = [ids[0]!, ids[1]!, ids[0]!, ids[2]!, ids[3]!];
+    const preamble = await buildContextPreamble(withDuplicate);
+
+    // Three sections fit (8k each against a 24k budget), so the loop breaks at
+    // the THIRD entry and only the tail after it was dropped: j3 and j4.
+    // Under `indexOf` the notice said four, naming j2 and the duplicate j1
+    // whose output is rendered directly above it.
+    expect(preamble).toContain("2 earlier job(s) omitted");
+    expect(preamble).toContain(ids[2]!);
+    expect(preamble).toContain(ids[3]!);
+    const notice = preamble.slice(preamble.indexOf("earlier job(s) omitted"));
+    expect(notice, "named a job whose output is right above the notice").not.toContain(ids[1]!);
+  });
+});

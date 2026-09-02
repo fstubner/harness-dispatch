@@ -4,6 +4,7 @@ import { constants as fsConstants, existsSync } from "node:fs";
 import {
   chmod,
   copyFile,
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -215,9 +216,30 @@ const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
  * Windows is skipped deliberately: `uid` is 0 for every process, Node ignores
  * mode, and `os.tmpdir()` is already per-user there.
  */
-async function secureProjectRoot(root: string): Promise<void> {
+export async function secureProjectRoot(root: string): Promise<void> {
   if (process.platform === "win32") return;
-  const info = await stat(root);
+  // lstat, NOT stat.
+  //
+  // `stat` follows symlinks, so the uid compared was the TARGET's. An
+  // attacker who owns neither end simply plants a link at this predictable
+  // path pointing at a directory the victim DOES own, and the check passes
+  // against the victim's own uid. Reproduced in a container: the guard did
+  // not fire, the victim's home directory was chmod'd to 0700, and the
+  // project was copied into it.
+  //
+  // A symlink here is refused outright rather than resolved and re-checked.
+  // Nothing this tool creates is ever a link, so there is no legitimate case
+  // to preserve, and "follow it and then validate" is how the first version
+  // of this guard was defeated.
+  const info = await lstat(root);
+  if (info.isSymbolicLink()) {
+    throw new Error(
+      `The workspace directory ${root} is a symbolic link. Refusing to use it: this path is ` +
+        `predictable, nothing this tool creates is ever a link, and following one would let ` +
+        `it write into — and prune — whatever the link points at. Remove it, or set ` +
+        `HARNESS_DISPATCH_WORKSPACES_DIR to a location you control.`,
+    );
+  }
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (uid !== undefined && info.uid !== uid) {
     throw new Error(
@@ -353,6 +375,17 @@ async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: strin
   let removedWorktree = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Only directories WE named. This loop deletes recursively and had no
+    // check of any kind — not a name, not a marker, not an owner — while its
+    // sibling `pruneAbandonedProjectRoots` has all three under a comment
+    // saying "this deletes directories nothing else is watching". With a
+    // symlink planted at the root, that gap swept a user's own files.
+    //
+    // The same guard `pruneStaleJobs` already uses, and for the same reason:
+    // a recursive delete takes positive evidence that the thing is ours,
+    // rather than the absence of a reason to stop. `RUN_DIR_RE` is the exact
+    // shape `workspaceRunId` generates.
+    if (!RUN_DIR_RE.test(entry.name)) continue;
     const full = path.join(root, entry.name);
     try {
       const info = await stat(full);
@@ -835,8 +868,17 @@ async function prepareCopyWorkspace(
   const projectGitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir)
     .then((out) => out || undefined)
     .catch(() => undefined);
-  await pruneStaleCopyWorkspaces(root, projectGitRoot);
+  // SECURE BEFORE PRUNING. The order was the other way round, and the guard
+  // could not protect the one operation that deletes: `pruneStaleCopyWorkspaces`
+  // ran first and `rm -rf`d every aged subdirectory of `root` — a root the
+  // guard had not yet looked at. With a symlink planted at that path, the
+  // victim's own directory was swept. Reproduced end to end.
+  //
+  // `markProjectRoot` is what creates and secures the root, so calling it
+  // first means the prune can only ever run against a directory that exists,
+  // is not a link, and belongs to this user.
   await markProjectRoot(root);
+  await pruneStaleCopyWorkspaces(root, projectGitRoot);
   const workspaceRoot = path.join(root, workspaceRunId(routeName));
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];

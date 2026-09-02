@@ -108,9 +108,20 @@ class Mutex {
 /**
  * Reload helper — pairs with a RuntimeHolder for in-place swap.
  *
- * If the config file's mtime has not moved since we last reloaded, the call
- * is a cheap no-op. Circuit-breaker state from the previous router is
- * preserved for every service that still exists in the new config.
+ * If the config file's mtime is UNCHANGED since we last reloaded, the call is
+ * a cheap no-op. Any difference — forwards or backwards — counts as a change:
+ * this said "has not moved" while testing "has not increased", so a config
+ * restored from a backup or extracted from an archive never reloaded.
+ * Circuit-breaker state from the previous router is preserved for every
+ * service that still exists in the new config.
+ *
+ * TWO SITUATIONS IN WHICH THIS DOES NOTHING, both by construction and both
+ * worth knowing before relying on it:
+ *   - No `configPath` — i.e. every auto-detect install with no config file.
+ *     There is no file to watch, so nothing reloads.
+ *   - A config that is DELETED or renamed away. `statMtime` answers 0, which
+ *     is treated as "unchanged" so a transient read failure does not tear down
+ *     a working router. The server keeps serving the last good config.
  */
 export class ConfigHotReloader {
   private readonly mutex = new Mutex();
@@ -127,13 +138,20 @@ export class ConfigHotReloader {
     if (!this.configPath) return false;
     const mtimeMs = await statMtime(this.configPath);
     if (mtimeMs === 0) return false;
-    if (mtimeMs <= this.holder.state.mtimeMs) return false;
+    // `!==`, not `<=`.
+    //
+    // Comparing "newer than" meant a config whose mtime went BACKWARDS was
+    // invisible forever: restored from a backup, copied with `cp -p`,
+    // extracted from an archive, or renamed in from an older temp file. Each
+    // is an ordinary way to change a config, and each left the server routing
+    // on the previous one with nothing said. Any difference is a change.
+    if (mtimeMs === this.holder.state.mtimeMs) return false;
 
     return this.mutex.run(async () => {
       // Re-check after acquiring the lock — another caller may have already
       // reloaded, in which case we bail without redoing the work.
       const current = this.holder.state.mtimeMs;
-      if (mtimeMs <= current) return false;
+      if (mtimeMs === current) return false;
 
       let next: RuntimeState;
       try {

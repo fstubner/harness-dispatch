@@ -29,7 +29,9 @@ import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
 import { configToYaml, type YamlOpts } from "./configure-yaml.js";
 import {
+  desiredEntry,
   devLaunchCommand,
+  launchCommand,
   planClientWrites,
   removeClientEntry,
   writeClientEntry,
@@ -240,7 +242,16 @@ async function cmdConfigure(
       "directory the MCP client launches from — a relative path or none at all silently\n" +
       "falls back to the shipped defaults, ignoring every edit you make to this file):\n",
   );
-  printMcpSnippet({ command: "harness-dispatch", args: ["--config", absoluteTarget] });
+  // The SAME entry `connect` writes, built by the same function.
+  //
+  // This printed a hardcoded `harness-dispatch --config <path>` while connect
+  // writes whatever `launchCommand()` resolves to — `npx -y harness-dispatch
+  // --config <path>` without a global install. So pasting the snippet this
+  // command prints and then running `connect --remove` was answered "has an
+  // entry we did not write — left alone unless --force", and exit 1. The tool
+  // called its own documented output hand-edited, and blocked both update and
+  // removal on the manual-install path it had just recommended.
+  printMcpSnippet(desiredEntry(absoluteTarget, launchCommand()));
   process.stdout.write("Or let `harness-dispatch connect` write it for you.\n");
   return 0;
 }
