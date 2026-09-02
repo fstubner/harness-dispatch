@@ -564,26 +564,47 @@ describe("a workspace root that is a symlink", () => {
     },
   );
 
-  // The parent segments are equally plantable: `<tmp>/harness-dispatch` and
-  // `<tmp>/harness-dispatch/workspaces` are fixed names under a world-writable
-  // directory. The first guard checked only the leaf, so a link at the BASE
-  // redirected the whole copy into the attacker's tree.
-  it.skipIf(process.platform === "win32")("is refused when a PARENT segment is a link", async () => {
-    const { prepareWorkspace, workspacesBase } = await import("../src/workspaces.js");
-    const project = path.join(root, "baseproj");
-    const elsewhere = path.join(root, "base-victim");
-    await fs.mkdir(project, { recursive: true });
-    await fs.mkdir(elsewhere, { recursive: true });
-    await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+  // WHAT THE ANCHOR RULE ACTUALLY IS, pinned in both directions.
+  //
+  // A link AT or ABOVE the anchor is allowed when it lands somewhere this user
+  // owns — that is not a concession, it is required: `os.tmpdir()` is a
+  // symlink on macOS (`/var` -> `/private/var`), so refusing links there
+  // refuses every legitimate macOS run. What must be refused is a link
+  // landing on a directory owned by SOMEONE ELSE, and a link anywhere BELOW
+  // the anchor, which is territory this tool creates and can insist on.
+  //
+  // The cross-user half needs two real uids and lives in the container
+  // verification recorded in acceptance/0.8.0.md; a single-user test cannot
+  // express it. This pins the half that is expressible, and pins it in the
+  // direction that used to be wrong: an earlier version of this test asserted
+  // that ANY link at the base was refused, which would have made the macOS
+  // path shape a failure.
+  it.skipIf(process.platform === "win32")(
+    "allows an anchor reached through a link to a directory we own",
+    async () => {
+      const { prepareWorkspace, workspacesBase } = await import("../src/workspaces.js");
+      const project = path.join(root, "baseproj");
+      const realBase = path.join(root, "real-base");
+      await fs.mkdir(project, { recursive: true });
+      await fs.mkdir(realBase, { recursive: true });
+      await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
 
-    const base = workspacesBase();
-    await fs.rm(base, { recursive: true, force: true });
-    await fs.mkdir(path.dirname(base), { recursive: true });
-    await fs.symlink(elsewhere, base, "dir");
+      const base = workspacesBase();
+      await fs.rm(base, { recursive: true, force: true });
+      await fs.mkdir(path.dirname(base), { recursive: true });
+      await fs.symlink(realBase, base, "dir");
 
-    await expect(
-      prepareWorkspace({ policy: "copy", workingDir: project, files: [], routeName: "r" }),
-    ).rejects.toThrow(/symbolic link/i);
-    expect(await fs.readdir(elsewhere)).toEqual([]);
-  });
+      const prepared = await prepareWorkspace({
+        policy: "copy",
+        workingDir: project,
+        files: [],
+        routeName: "r",
+      });
+      expect(existsSync(path.join(prepared.effectiveWorkingDir, "a.txt"))).toBe(true);
+      // And it landed through the link, in the directory we own.
+      expect(await fs.realpath(prepared.effectiveWorkingDir)).toContain(
+        await fs.realpath(realBase),
+      );
+    },
+  );
 });
