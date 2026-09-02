@@ -332,6 +332,43 @@ describe("CLI parser", () => {
     }
   });
 
+  it("writes a bare configure --yes to the state directory, not the current one, and doctor names it", async () => {
+    // Seen on the cold-install walk: run from `/`, configure wrote
+    // `/config.yaml`, and doctor from any other directory could not see it.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "hd-configure-cwd-"));
+    const stateParent = await fs.mkdtemp(path.join(os.tmpdir(), "hd-configure-state-"));
+    const state = path.join(stateParent, "nested");
+    const savedCwd = process.cwd();
+    const savedState = process.env["HARNESS_DISPATCH_STATE_DIR"];
+    const savedEnvConfig = process.env["HARNESS_DISPATCH_CONFIG"];
+    process.chdir(cwd);
+    process.env["HARNESS_DISPATCH_STATE_DIR"] = state;
+    delete process.env["HARNESS_DISPATCH_CONFIG"];
+    try {
+      const written = await capture(() => main(["configure", "--yes", "--no-clients"]));
+      expect(written.code).toBe(0);
+      const expected = path.join(state, "config.yaml");
+      expect(written.stdout).toContain(`Wrote ${expected}`);
+      await expect(fs.stat(expected)).resolves.toBeDefined();
+      await expect(fs.stat(path.join(cwd, "config.yaml"))).rejects.toThrow();
+
+      // A different directory, no --config: doctor finds it and says which.
+      process.chdir(stateParent);
+      const doctored = await capture(() => main(["doctor", "--json"]));
+      const checks = JSON.parse(doctored.stdout).checks as Array<{ name: string; detail: string }>;
+      expect(checks.find((c) => c.name === "config")?.detail).toContain(expected);
+    } finally {
+      process.chdir(savedCwd);
+      if (savedState === undefined) delete process.env["HARNESS_DISPATCH_STATE_DIR"];
+      else process.env["HARNESS_DISPATCH_STATE_DIR"] = savedState;
+      if (savedEnvConfig === undefined) delete process.env["HARNESS_DISPATCH_CONFIG"];
+      else process.env["HARNESS_DISPATCH_CONFIG"] = savedEnvConfig;
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(stateParent, { recursive: true, force: true });
+    }
+  });
+
   it("still refuses to overwrite an existing ./config.yaml on bare configure --yes", async () => {
     const config = await writeConfig();
     const dir = path.dirname(config);

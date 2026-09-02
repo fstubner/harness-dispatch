@@ -39,7 +39,7 @@ import {
   type ClientPlan,
   type ClientState,
 } from "./client-register.js";
-import { stateRoot } from "./state-dir.js";
+import { stateRoot, userConfigPath } from "./state-dir.js";
 
 interface Runtime {
   config: RouterConfig;
@@ -178,7 +178,7 @@ async function cmdConfigure(
     }
   }
 
-  const target = configPath ?? "config.yaml";
+  const target = configPath ?? userConfigPath();
   if (!opts.yes) {
     process.stdout.write(
       `\nNo files written. Re-run with --yes to write ${target}, or use --print to inspect YAML.\n`,
@@ -216,9 +216,12 @@ async function cmdConfigure(
   // Applied on create only: `writeFile`'s mode does not change an existing
   // file's permissions, so re-running `configure` will not silently tighten a
   // file the user deliberately made group-readable.
+  // The default target lives in the state directory, which a first run has
+  // not created yet. Same mode the rest of the state dir gets.
+  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
   await fs.writeFile(target, yamlText, { encoding: "utf-8", mode: 0o600 });
   const absoluteTarget = path.resolve(target);
-  process.stdout.write(`Wrote ${target}.\n`);
+  process.stdout.write(`Wrote ${absoluteTarget}.\n`);
 
   // The last step of setup used to be "here is some JSON, paste it somewhere".
   // Nobody owned the result, and the paths in it later moved — which is how one
@@ -284,7 +287,7 @@ async function cmdConnect(
     dev: boolean;
   },
 ): Promise<number> {
-  const target = path.resolve(configPath ?? "config.yaml");
+  const target = path.resolve(configPath ?? userConfigPath());
   if (!existsSync(target) && !opts.remove) {
     process.stderr.write(
       `connect: no config at ${target}. Run \`harness-dispatch configure --yes\` first —\n` +
@@ -616,7 +619,14 @@ async function cmdDoctor(
     {
       name: "config",
       ok: Object.keys(runtime.config.services).length > 0,
-      detail: `${Object.keys(runtime.config.services).length} configured route(s)`,
+      // Names the file, because "which config is this looking at" was the
+      // question: `configure` run from one directory and `doctor` from
+      // another used to load different things and neither said so.
+      detail:
+        `${Object.keys(runtime.config.services).length} configured route(s)` +
+        (configPath !== undefined
+          ? ` from ${path.resolve(configPath)}`
+          : " (no config file found; shipped defaults with auto-detected harnesses)"),
     },
     // This one DOES fail, unlike the advisory git check below.
     //

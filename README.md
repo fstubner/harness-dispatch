@@ -66,7 +66,9 @@ harness-dispatch configure --yes
 harness-dispatch doctor --live
 ```
 
-`configure --yes` detects installed harnesses, writes `config.yaml`, and then
+`configure --yes` detects installed harnesses, writes `config.yaml` into the
+tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`),
+and then
 offers to register this server with each MCP client it finds (Claude Code,
 Cursor) — showing you what it would write, and what is already there, before
 changing anything. `--no-clients` skips the offer and prints a snippet to paste

@@ -14,6 +14,7 @@
  */
 
 import { existsSync, readFileSync, promises as fs } from "node:fs";
+import { userConfigPath } from "./state-dir.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
@@ -855,8 +856,10 @@ export interface LoadConfigOptions {
  */
 /**
  * The config file a process should load: an explicit `--config`, else
- * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else nothing
- * (auto-detect).
+ * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else the
+ * state directory's `config.yaml` (where `configure` writes) if it exists,
+ * else nothing (auto-detect). The current directory stays ahead of the user
+ * file so a per-project config still wins when one is present.
  *
  * ONE function because there used to be two, and they disagreed. job-runner.ts
  * read the environment variable and bin.ts did not, while job-runner's own
@@ -876,7 +879,9 @@ export function resolveConfigPath(explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
   const fromEnv = process.env["HARNESS_DISPATCH_CONFIG"];
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  return existsSync("config.yaml") ? "config.yaml" : undefined;
+  if (existsSync("config.yaml")) return "config.yaml";
+  const user = userConfigPath();
+  return existsSync(user) ? user : undefined;
 }
 
 export async function loadConfig(
