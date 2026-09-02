@@ -112,11 +112,25 @@ function isProse(line, ext, userFacing) {
  * real internally and was advertised externally, where it is refused.
  * claims-check-ignore
  */
+// Files whose PROSE reaches a user or an agent, and is therefore scanned in
+// full rather than comments-only.
+//
+// `src/mcp/tools.ts` was the gap. It holds every `registerTool({description})`
+// string — the text an orchestrating agent actually reads before choosing what
+// to send — and it was neither listed here nor covered by the comments-only
+// rule, so those descriptions were invisible to both. An acceptance pass found
+// the `usage` description telling agents that `service` and `models` are
+// unvalidated when both throw, while this checker exited 0 over it. The same
+// wrong sentence was corrected in the plugin skill in the very commit that
+// left it standing here.
 const USER_FACING = new Set([
   "src/mcp/tool-schemas.ts",
+  "src/mcp/tools.ts",
   "src/mcp/server.ts",
   "README.md",
   "CHANGELOG.md",
+  "OPERATIONS.md",
+  "PRODUCT.md",
 ]);
 
 function trackedFiles() {

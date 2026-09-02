@@ -218,6 +218,47 @@ const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
  */
 export async function secureProjectRoot(root: string): Promise<void> {
   if (process.platform === "win32") return;
+  // EVERY SEGMENT WE CREATE, not just the last one.
+  //
+  // The first version checked only the leaf. `<tmp>/harness-dispatch` and
+  // `<tmp>/harness-dispatch/workspaces` are equally attacker-plantable — they
+  // are fixed names under a world-writable directory — and neither was ever
+  // looked at. Reproduced with a link at the BASE: the guard passed, and the
+  // project was copied into the attacker's tree. Only the 0700 applied to the
+  // leaf kept them from reading it, while they still owned the parent.
+  //
+  // Stops at `workspacesBase()`: everything at or below it is ours to insist
+  // on, and `os.tmpdir()` itself is the system's business, not this tool's.
+  // With HARNESS_DISPATCH_WORKSPACES_DIR pointed somewhere the user chose,
+  // the same rule applies from that directory down.
+  const base = workspacesBase();
+  const segments: string[] = [];
+  for (let dir = root; dir.startsWith(base) || dir === base; dir = path.dirname(dir)) {
+    segments.unshift(dir);
+    if (dir === base || dir === path.dirname(dir)) break;
+  }
+  for (const segment of segments) {
+    if (segment === root) continue; // checked in full below
+    const seg = await lstat(segment).catch(() => undefined);
+    if (seg === undefined) continue; // not created yet: nothing to subvert
+    if (seg.isSymbolicLink()) {
+      throw new Error(
+        `${segment} is a symbolic link, and it is a parent of this project's workspace ` +
+          `directory. Refusing to use it: following it would put your project — and this ` +
+          `tool's recursive cleanup — wherever the link points. Remove it, or set ` +
+          `HARNESS_DISPATCH_WORKSPACES_DIR to a location you control.`,
+      );
+    }
+    const segUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (segUid !== undefined && seg.uid !== segUid) {
+      throw new Error(
+        `${segment} is owned by another user (uid ${seg.uid}, this process is uid ` +
+          `${segUid}), and it is a parent of this project's workspace directory. Refusing ` +
+          `to copy your project beneath it. Remove it, or set ` +
+          `HARNESS_DISPATCH_WORKSPACES_DIR to a location you control.`,
+      );
+    }
+  }
   // lstat, NOT stat.
   //
   // `stat` follows symlinks, so the uid compared was the TARGET's. An
@@ -504,6 +545,10 @@ async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<vo
   let removedAny = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Only directories WE named — the same guard the copy sweep and
+    // pruneStaleJobs use. This loop `rm -rf`s recursively and had no name,
+    // marker or ownership check of any kind.
+    if (!RUN_DIR_RE.test(entry.name)) continue;
     const workspaceRoot = path.join(root, entry.name);
     try {
       const info = await stat(workspaceRoot);
@@ -1002,8 +1047,19 @@ async function prepareGitWorktreeWorkspace(
   );
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
   const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
-  await pruneStaleGitWorktrees(gitRoot, gitWorkspaceRoot);
+  // SECURE BEFORE PRUNING, exactly as the copy path does.
+  //
+  // This ordering fix and the name check inside the sweep were applied to
+  // `copy` only, so the identical attack still worked here: same predictable
+  // path, same delete-before-validate. Reproduced as two real users — with a
+  // symlink planted at the root, the copy policy refused and the worktree
+  // policy DELETED the victim's directory, then raised the guard's error
+  // afterwards. The release that fixed `copy` claimed the class was closed.
+  //
+  // Two policies, one hazard: whenever one of these gets a guard, check the
+  // other in the same edit.
   await markProjectRoot(gitWorkspaceRoot);
+  await pruneStaleGitWorktrees(gitRoot, gitWorkspaceRoot);
   const workspaceRoot = path.join(gitWorkspaceRoot, workspaceRunId(routeName));
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   // Same 0700 reasoning as markProjectRoot: this run's directory holds the

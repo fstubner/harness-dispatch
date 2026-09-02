@@ -67,6 +67,29 @@ export function evaluateRoutePolicy(
     );
   }
   if (billingIsBlocked(billing)) {
+    // THREE conditions reach `billingIsBlocked`, and the message below fitted
+    // only two of them.
+    //
+    // A route with `paid_usage_possible: false` and a KNOWN kind is blocked
+    // solely because its `billing_confidence` is `unknown` — a deliberate
+    // operator signal meaning "I do not trust this classification", kept on
+    // purpose. But it was told "route can incur paid usage" (contradicting
+    // `paid=no` on the same screen) and handed `paid_usage_possible: false` as
+    // the remedy, which it already had. An acceptance pass measured the
+    // recommended fix producing byte-identical output: the only working escape
+    // was `allow_paid_usage: true` — "yes, bill me" — for a free local model.
+    if (billing.kind !== "unknown" && !billing.paidUsagePossible) {
+      return skip(
+        route,
+        "paid_blocked",
+        `billing_confidence is \`unknown\` for '${route}', which blocks it even though ` +
+          `its billing kind (${billing.kind}) is declared and \`paid_usage_possible\` is ` +
+          `false. That is what \`billing_confidence: unknown\` means — "do not trust this ` +
+          `classification" — so the fix is to set it to the value you actually believe ` +
+          `(\`documented\` or \`inferred\`), NOT to allow paid usage on a route you have ` +
+          `said cannot bill you.`,
+      );
+    }
     return skip(
       route,
       "paid_blocked",

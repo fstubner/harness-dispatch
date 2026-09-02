@@ -127,6 +127,7 @@ vi.mock("../src/leaderboard.js", () => {
 
 // ---- Imports come AFTER vi.mock calls ------------------------------------
 
+import { workspaceRunId } from "../src/workspaces.js";
 import { Router, SCORING } from "../src/router.js";
 import { aRunDirName } from "./support/fixtures.js";
 import { nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
@@ -1418,8 +1419,16 @@ describe("Router.route", () => {
     const staleGitWorkspaceRoot = path.dirname(probeRoot!);
 
     // Simulate a leftover worktree from a run older than the retention
-    // window, created the same way prepareGitWorktreeWorkspace does.
-    const staleWorkspaceRoot = path.join(staleGitWorkspaceRoot, "stale-run");
+    // window, NAMED THE WAY THE PRODUCT NAMES ONE.
+    //
+    // This said "created the same way prepareGitWorktreeWorkspace does" while
+    // using the hand-written name "stale-run", which that function cannot
+    // generate. The sweep now refuses to delete anything whose name it did not
+    // produce — a recursive delete taking positive evidence that the directory
+    // is ours — so the fixture was testing an input that never occurs, and
+    // would have gone on passing while the real shape went unswept.
+    // `workspaceRunId` is exported for exactly this.
+    const staleWorkspaceRoot = path.join(staleGitWorkspaceRoot, workspaceRunId("alpha"));
     const staleWorktreeRoot = path.join(staleWorkspaceRoot, "worktree");
     await fs.mkdir(staleWorkspaceRoot, { recursive: true });
     await git(root, ["worktree", "add", "--detach", staleWorktreeRoot, "HEAD"]);

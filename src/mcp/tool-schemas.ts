@@ -1,5 +1,5 @@
 /**
- * The MCP input contract: what the three tools accept, and what they refuse.
+ * The MCP input contract: what the six tools accept, and what they refuse.
  *
  * Split out of tools.ts, which had grown to 1040 lines mixing the contract
  * with the handlers that run after it. This half earns its own file rather

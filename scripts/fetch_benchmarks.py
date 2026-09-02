@@ -210,6 +210,36 @@ def main() -> None:
         "models": results,
     }
 
+    # REFUSE TO SHRINK THE SHIPPED FILE.
+    #
+    # Both fetchers swallow every exception and return {}, so a DNS blip, an
+    # outage or a 403 leaves only the hand-maintained bundled scores -- and
+    # this wrote them out unconditionally and exited 0. The file it overwrites
+    # ships inside the npm package and holds far more models than the bundled
+    # fallback, so one bad network moment silently degraded routing quality for
+    # everyone who installed afterwards.
+    #
+    # Compared against what is ON DISK rather than a fixed number: the bundled
+    # set grows over time, and the question is only ever "is this worse than
+    # what we already have".
+    existing_count = 0
+    if os.path.exists(_OUTPUT):
+        try:
+            with open(_OUTPUT, "r", encoding="utf-8") as f:
+                existing_count = len(json.load(f).get("models", {}))
+        except Exception:
+            existing_count = 0
+    if existing_count > len(results):
+        print(
+            "\nREFUSING TO WRITE: fetched %d models but %s already holds %d. "
+            "A network failure returns an empty set, and overwriting good data "
+            "with the bundled fallback is worse than doing nothing. Re-run when "
+            "the sources are reachable, or delete the file first if you "
+            "genuinely intend to shrink it."
+            % (len(results), os.path.relpath(_OUTPUT), existing_count)
+        )
+        sys.exit(1)
+
     os.makedirs(os.path.dirname(_OUTPUT), exist_ok=True)
     with open(_OUTPUT, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)

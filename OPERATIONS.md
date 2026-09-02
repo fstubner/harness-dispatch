@@ -131,11 +131,20 @@ than resumed, because silently running an abandoned job against your repository
 is not a decision a restart should make.
 
 **A streamed request is interrupted.** `POST /v1/chat/completions` with
-`stream: true` creates no job record, so there is no `jobId` and nothing to
-recover. The run is now STOPPED when the client disconnects — it used to keep
-going to completion, spending quota with no way to cancel it, because nothing
-connected the disconnect to the dispatch. Either way its output is gone with
-the connection. Every other dispatch path
+`stream: true` on a SINGLE-ROUTE request creates no job record, so there is no
+`jobId` and nothing to recover. That run is now STOPPED when the client
+disconnects — it used to keep going to completion, spending quota with no way
+to cancel it, because nothing connected the disconnect to the dispatch. Either
+way its output is gone with the connection.
+
+A streamed FANOUT request is different, and the paragraph above used to cover
+it wrongly: each arm runs as its own job, so `jobId`s DO exist and the work is
+recoverable with `job_status` — but the disconnect abort is wired into the
+single-route branch only, so those arms keep running after the caller leaves.
+Collect their ids from the response, or call `job_status` with no id to list
+them.
+
+Every other dispatch path
 survives a client timeout or a server restart. This is a real gap rather than a
 design choice: streaming is the mode where a long run is most likely to be
 interrupted, and it is the one mode with no record. Prefer the non-streaming
