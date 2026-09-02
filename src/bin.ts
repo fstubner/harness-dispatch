@@ -17,7 +17,7 @@ import { LeaderboardCache } from "./leaderboard.js";
 import { VERSION } from "./version.js";
 import { commandAvailable } from "./dispatchers/shared/which-available.js";
 import { codexLoginState } from "./dispatchers/shared/harness-login.js";
-import { inspectClientEntries } from "./mcp-clients.js";
+import { clientConfigLocations, inspectClientEntries } from "./mcp-clients.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
 import { initObservability } from "./observability/index.js";
@@ -384,7 +384,8 @@ async function cmdConnect(
     if (outcome.action === "written") {
       wrote = true;
       process.stdout.write(
-        `${opts.remove ? "Removed from" : "Wrote"} ${outcome.client} (backup: ${outcome.backupPath})\n`,
+        `${opts.remove ? "Removed from" : "Wrote"} ${outcome.client} ` +
+          `(${outcome.backupPath !== undefined ? `backup: ${outcome.backupPath}` : `created ${outcome.file}`})\n`,
       );
     } else if (outcome.action === "unchanged") {
       process.stdout.write(
@@ -415,6 +416,7 @@ function describeState(state: ClientState, removing: boolean): string {
   if (removing) {
     return {
       absent: "not installed",
+      "missing-file": "installed, no config file yet — nothing to remove",
       unreadable: "config does not parse — will be left alone",
       "missing-entry": "no entry of ours to remove",
       matches: "our entry is here — will be removed",
@@ -423,6 +425,7 @@ function describeState(state: ClientState, removing: boolean): string {
   }
   return {
     absent: "not installed",
+    "missing-file": "installed, no config file yet — one will be created",
     unreadable: "config does not parse — will be left alone",
     "missing-entry": "no harness-dispatch entry yet",
     matches: "already registered correctly",
@@ -644,12 +647,21 @@ async function cmdDoctor(
       const entries = inspectClientEntries();
       const broken = entries.filter((e) => e.missingPaths.length > 0);
       if (entries.length === 0) {
+        // Name the client that IS here, so "not registered" reads as the
+        // next step rather than as "nothing to register with".
+        const present = clientConfigLocations()
+          .filter((c) => c.commands.some((cmd) => commandAvailable(cmd)))
+          .map((c) => c.client);
         return {
           name: "mcp-clients",
           ok: true,
           detail:
-            "not registered with any MCP client this tool knows how to read " +
-            "(Claude Code, Cursor) — run `harness-dispatch connect` to register it",
+            present.length > 0
+              ? `${present.join(", ")} installed but harness-dispatch is not registered with it — ` +
+                "run `harness-dispatch connect`"
+              : "not registered with any MCP client this tool knows how to read " +
+                "(Claude Code, Cursor), and none is installed — run `harness-dispatch connect` " +
+                "after installing one",
         };
       }
       return {

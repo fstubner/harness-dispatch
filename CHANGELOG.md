@@ -39,6 +39,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`connect` now registers with a Claude Code that has never been opened.**
+  A client counted as installed only if its config file existed, and Claude
+  Code writes `~/.claude.json` on its first interactive launch — so a user who
+  installed Claude Code and this tool together was told "No MCP clients found
+  on this machine" with `claude` on PATH, handed JSON to paste by hand, and
+  `claude mcp list` stayed empty. A client whose command is on PATH now counts
+  as installed; when its file is missing, `connect` creates it holding only
+  our entry (0600), which Claude Code accepts as a user-scope registration.
+  Doctor's `mcp-clients` line names the installed-but-unregistered client
+  instead of a generic "not registered". Seen on the cold-install walk.
+
 - **`configure` writes its config where every later command can find it.**
   It wrote `./config.yaml` into whatever directory it was run from, and
   lookup stopped at the current directory, so a config written from `~` was

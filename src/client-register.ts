@@ -33,6 +33,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { commandAvailable } from "./dispatchers/shared/which-available.js";
 import { clientConfigLocations, type ClientConfigLocation } from "./mcp-clients.js";
 
 /** The key this server is registered under, and the only one we ever touch. */
@@ -51,7 +52,21 @@ export interface ServerEntry {
  * other application's problem, and the one thing we must not do is rewrite a
  * file we could not understand.
  */
-export type ClientState = "absent" | "unreadable" | "missing-entry" | "matches" | "differs";
+/**
+ * `absent`: neither the config file nor the client's command exists — not
+ * installed. `missing-file`: the command is on PATH but the file is not there
+ * yet (Claude Code writes it on first interactive launch) — the file will be
+ * created with just our entry, which the client accepts as a user-scope
+ * registration (checked against Claude Code 2.1.258: `claude mcp list` shows
+ * the server from a file holding only `mcpServers`).
+ */
+export type ClientState =
+  | "absent"
+  | "missing-file"
+  | "unreadable"
+  | "missing-entry"
+  | "matches"
+  | "differs";
 
 export interface ClientPlan {
   id: string;
@@ -165,13 +180,21 @@ function readJsonFile(file: string): { ok: true; value: unknown } | { ok: false 
  */
 export function planClientWrites(
   configPath: string,
-  opts: { home?: string; command?: string[] } = {},
+  opts: {
+    home?: string;
+    command?: string[];
+    /** Is any of these commands on PATH? Injectable so tests never depend on what is installed. */
+    installed?: (commands: string[]) => boolean;
+  } = {},
 ): ClientPlan[] {
   const desired = desiredEntry(configPath, opts.command ?? launchCommand());
+  const installed = opts.installed ?? ((commands) => commands.some((c) => commandAvailable(c)));
   const locations: ClientConfigLocation[] = clientConfigLocations(opts.home);
-  return locations.map(({ id, client, file, serversKey }) => {
+  return locations.map(({ id, client, file, serversKey, commands }) => {
     const base = { id, client, file, serversKey, desired };
-    if (!existsSync(file)) return { ...base, state: "absent" as const };
+    if (!existsSync(file)) {
+      return { ...base, state: installed(commands) ? ("missing-file" as const) : ("absent" as const) };
+    }
     const parsed = readJsonFile(file);
     if (!parsed.ok) return { ...base, state: "unreadable" as const };
     const servers = (parsed.value as Record<string, unknown> | null)?.[serversKey];
@@ -277,7 +300,11 @@ async function pruneOwnBackups(file: string): Promise<void> {
  * `~/.claude.json` costs someone their entire Claude Code configuration, which
  * is a far worse outcome than failing to register.
  */
-async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+async function writeJsonAtomic(
+  file: string,
+  value: unknown,
+  opts: { createMode?: number } = {},
+): Promise<void> {
   const tmp = `${file}.harness-dispatch-tmp-${process.pid}`;
   const text = `${JSON.stringify(value, null, 2)}\n`;
   await mkdir(path.dirname(file), { recursive: true });
@@ -296,7 +323,7 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   // the Windows machine it was found on, which is exactly why it survived.
   const mode = await stat(file)
     .then((s) => s.mode & 0o777)
-    .catch(() => undefined);
+    .catch(() => opts.createMode);
   await writeFile(tmp, text, mode === undefined ? "utf8" : { encoding: "utf8", mode });
   try {
     JSON.parse(await readFile(tmp, "utf8"));
@@ -339,6 +366,16 @@ export async function writeClientEntry(
     return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
   }
   if (plan.state === "matches") return { ...base, action: "unchanged" };
+  if (plan.state === "missing-file") {
+    // Nothing to merge and nothing to back up. 0600 because this file is
+    // where the client will later keep its own credentials.
+    await writeJsonAtomic(
+      plan.file,
+      { [plan.serversKey]: { [ENTRY_KEY]: plan.desired } },
+      { createMode: 0o600 },
+    );
+    return { ...base, action: "written" };
+  }
   // An entry someone edited by hand is not ours to replace unasked.
   //
   // `removeClientEntry` has always refused this and this function did not, so
@@ -398,7 +435,7 @@ export async function removeClientEntry(
   opts: { stamp: string; force?: boolean },
 ): Promise<WriteOutcome> {
   const base = { id: plan.id, client: plan.client, file: plan.file };
-  if (plan.state === "absent" || plan.state === "missing-entry") {
+  if (plan.state === "absent" || plan.state === "missing-file" || plan.state === "missing-entry") {
     return { ...base, action: "unchanged" };
   }
   if (plan.state === "unreadable") {
