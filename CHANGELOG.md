@@ -6,6 +6,8 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-02
+
 ### Changed (breaking)
 
 - **A config file that defines routes is now authoritative about them.**
@@ -48,7 +50,14 @@ pre-1.0, so minor versions can carry behaviour changes.
   with a fingerprint; a re-run that finds its own unedited output regenerates
   it from a fresh detection, and says so. A file that has been edited, or
   that configure did not write, is still loaded (so its settings migrate)
-  and still refused without `--force`. Seen on the cold-install walk.
+  and still refused without `--force` — and since such a file lists its own
+  routes, `--force` regenerates it from the file, not from a detection. It
+  used to print "Detected N harness routes" there anyway; an acceptance pass
+  measured that line with a second harness on PATH that never appeared. It
+  now says detection did not run and how to merge (`detect: true`). The
+  non-interactive hint at the end of `configure --yes` also told the user to
+  pass `--yes`, which they just had; it now names `connect`. Seen on the
+  cold-install walk.
 
 - **`connect` now registers with a Claude Code that has never been opened.**
   A client counted as installed only if its config file existed, and Claude
@@ -1947,7 +1956,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/fstubner/harness-dispatch/compare/v0.7.7...v0.7.8

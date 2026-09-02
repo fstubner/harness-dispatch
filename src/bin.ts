@@ -156,7 +156,18 @@ async function cmdConfigure(
 
   const yamlText = configToYaml(config, { redactLiterals: false });
 
-  process.stdout.write(`Detected ${routeCount} harness route${routeCount === 1 ? "" : "s"}.\n`);
+  // "Detected" is only true when detection ran. Over an edited file that lists
+  // its own routes it does not (the file is authoritative), and an acceptance
+  // pass measured `configure --yes --force` printing "Detected 1 harness route"
+  // with a second harness on PATH that never appeared in the output.
+  const plural = routeCount === 1 ? "" : "s";
+  process.stdout.write(
+    config.detectionRan === false
+      ? `${routeCount} route${plural} from ${path.resolve(configPath ?? target)} — detection did not run, ` +
+          "because this file lists its own routes. To merge harnesses installed since, add " +
+          "`detect: true` to it; to start over from a fresh detection, delete it first.\n"
+      : `Detected ${routeCount} harness route${plural}.\n`,
+  );
   for (const [name, svc] of Object.entries(config.services)) {
     process.stdout.write(
       `- ${name}: harness=${svc.harness ?? name} billing=${buildRouteBilling(svc).kind} safety=${effectiveSafetyProfile(svc)} model=${
@@ -495,8 +506,11 @@ async function chooseInteractively(
   if (opts.yes) return actionable;
   if (!process.stdin.isTTY) {
     process.stdout.write(
-      "\nNot a terminal, so nothing was written. Re-run with --clients " +
-        `${actionable.map((p) => p.id).join(",")} (or --yes) to apply.\n`,
+      // Names the command, not just the flags: this is reached from
+      // `configure --yes` too, where "or --yes" told the user to pass the flag
+      // they had already passed.
+      "\nNot a terminal, so nothing was written. Run `harness-dispatch connect --clients " +
+        `${actionable.map((p) => p.id).join(",")}\` (or \`connect --yes\`) to register.\n`,
     );
     return undefined;
   }

@@ -484,6 +484,14 @@ export interface RouterConfig {
    */
   detect?: boolean;
   /**
+   * Whether detection actually ran for THIS load, after the file's own
+   * `detect:` and the authoritative-routes rule were applied. `configure`
+   * printed "Detected N harness routes" from the route count alone, so a
+   * re-run over an edited, authoritative file reported a detection it never
+   * made and left a newly installed harness out without saying so.
+   */
+  detectionRan?: boolean;
+  /**
    * OpenTelemetry traces. OFF by default — purely operator-facing local
    * observability (OTLP to localhost unless redirected); enable only if you
    * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.

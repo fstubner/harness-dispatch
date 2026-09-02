@@ -89,6 +89,21 @@ describe("re-running configure", () => {
     expect((await configure("--force")).code).toBe(0);
   });
 
+  it("says so when --force over an edited file skips detection, instead of claiming one", async () => {
+    // The acceptance pass for 0.9.0: edited codex-only file, claude installed
+    // since, `--force` printed "Detected 1 harness route" and wrote codex only.
+    installed.add("codex");
+    expect((await configure()).code).toBe(0);
+    await fs.appendFile(target, "max_concurrent_runs: 2\n", "utf8");
+    installed.add("claude");
+    const forced = await configure("--force");
+    expect(forced.code).toBe(0);
+    expect(forced.stdout).not.toMatch(/Detected \d+ harness route/);
+    expect(forced.stdout).toContain("detection did not run");
+    expect(forced.stdout).toContain("detect: true");
+    expect(await fs.readFile(target, "utf8")).not.toContain("claude_code_cli");
+  });
+
   it("treats a line added above the fingerprint as an edit", async () => {
     installed.add("codex");
     expect((await configure()).code).toBe(0);

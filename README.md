@@ -76,7 +76,9 @@ instead; `harness-dispatch connect` does the same registration later on its own,
 and `connect --remove` undoes it. Without
 `--yes` configure previews and writes nothing. Re-running it regenerates a file it
 wrote and you have not edited, so installing a harness later is just `configure --yes`
-again; a file you have changed is refused without `--force`. `doctor` then checks the whole chain:
+again; a file you have changed is refused without `--force`, and because such a file
+lists its own routes, even `--force` regenerates it from the file rather than from a
+fresh detection (it says so; add `detect: true` to the file to merge new harnesses). `doctor` then checks the whole chain:
 binary, config load, harness detection, auth and billing classification, route
 readiness, and for a Codex route asks `codex login status` whether the CLI is
 logged in (the other harnesses have no equivalent this tool has verified, so
