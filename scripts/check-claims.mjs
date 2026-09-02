@@ -126,7 +126,16 @@ function isProse(line, ext, userFacing) {
 const USER_FACING = new Set([
   "src/mcp/tool-schemas.ts",
   "src/mcp/tools.ts",
+  // Resource descriptions reach an agent exactly as tool descriptions do, and
+  // were invisible for the same reason. An audit planted a dead path and a
+  // phantom `hints.` key in one and this checker returned exit 0.
+  "src/mcp/resources.ts",
   "src/mcp/server.ts",
+  // Every refusal message a caller reads, and the rendered status body.
+  "src/route-policy.ts",
+  "src/status.ts",
+  // The CLI's own help and error text.
+  "src/bin.ts",
   "README.md",
   "CHANGELOG.md",
   "OPERATIONS.md",

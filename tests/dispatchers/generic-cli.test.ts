@@ -1265,3 +1265,45 @@ describe("429 detection does not fire on text about 429", () => {
     expect(detectRateLimit(transcript).rateLimited).toBe(true);
   });
 });
+
+describe("a delegate's own test output must not block its route", () => {
+  /**
+   * The phrase list (`rate limit`, `quota exceeded`, `usage limit`, …) was
+   * matched against the whole blob with no assertion filter, so the guard
+   * protected the numeric 429 half of this function and not the other half.
+   *
+   * Measured with this repository's OWN vitest output: it flags. One flag
+   * trips the breaker with NO threshold, blocking the route for 300s and
+   * recording a rate limit that never happened — from a delegated "run the
+   * tests" task that exits non-zero. The scan-tail comment above the function
+   * says the tail exists to stop precisely that.
+   */
+  const runnerOutput = [
+    "  \u2713 detectRateLimit recognizes OpenAI Codex's real 'usage limit' phrasing 0ms",
+    "  \u00d7 flags a real status signal: 429 Too Many Requests 5ms",
+    "  \u2713 still flags a real one: \"HTTP 429 Too Many Requests\" 0ms",
+    "Test Files  1 failed (1)",
+    "Tests  84 passed | 1 failed (85)",
+  ].join("\n");
+
+  it("does not flag a test runner's own summary", () => {
+    expect(detectRateLimit(runnerOutput).rateLimited).toBe(false);
+  });
+
+  it("still flags a real limiter on its own line in the same transcript", () => {
+    // Per line: a delegate whose tests mention limits AND which then really
+    // hits one must still be reported.
+    const mixed = `${runnerOutput}\nError: 429 Too Many Requests\n`;
+    expect(detectRateLimit(mixed).rateLimited).toBe(true);
+  });
+
+  it.each([
+    "You have exceeded your quota",
+    "You exceeded your current quota, please check your plan and billing details.",
+    '{"type":"error","error":{"type":"rate_limit_error","message":"per-minute limit"}}',
+  ])("flags a real limiter phrasing that used to be missed: %j", (text) => {
+    // A MISSED limiter is the worse direction — the router keeps hammering a
+    // route that has already said stop.
+    expect(detectRateLimit(text).rateLimited).toBe(true);
+  });
+});

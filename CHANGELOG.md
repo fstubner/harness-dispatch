@@ -39,6 +39,50 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **SECURITY: workspace paths are now built and verified rather than checked
+  and trusted.** Four consecutive releases patched a guard that inspected a
+  path STRING and then let every later write re-resolve it, and each patch was
+  found incomplete by the next review: it followed the link it was checking,
+  then covered one of the two isolation policies, then only the last path
+  segment, then stopped one directory short of the one the release notes named
+  — and was silently inert altogether if the workspaces setting had a trailing
+  slash or a `..` in it. Validating once also left the rest of the dispatch
+  trusting the result, so swapping a directory for a link mid-copy redirected
+  it.
+
+  Every directory from the anchor down is now created by this tool with a
+  non-recursive `mkdir`, which cannot traverse a link it did not make, and the
+  verified path is returned and used instead of being re-derived. Destructive
+  operations re-verify immediately before acting. The symlink refusal now
+  applies on Windows too, where junctions need no privileges and were being
+  followed.
+
+  Verified as two separate users on Linux across every shape reported: a link
+  at the workspace root, at the base, at the base's parent, and with the
+  setting spelled with a trailing slash or `..` — all refused, with nothing
+  written into the attacker's directory. Legitimate use is unaffected,
+  including a symlinked temp directory, which is normal on macOS.
+
+- **A delegated "run the tests" task no longer blocks its own route.** The
+  rate-limit phrase check ran against the whole transcript with no filter, so
+  this project's own test output — which names rate limits in test titles —
+  flagged as a real limiter, tripping the breaker for 300 seconds and
+  recording a rate limit that never happened. It is now checked per line and
+  past the same filter the numeric check uses.
+
+- **Real limiter messages that were being missed now register**, including
+  Anthropic's `rate_limit_error` and OpenAI's "You exceeded your current
+  quota" wording. A missed limit is the worse direction: the router keeps
+  hammering a route that has already said stop.
+
+- A metered route that declares it cannot bill you is no longer told to allow
+  paid usage. The previous release put that advice in a branch such a route
+  never reaches, so it worked for local routes only.
+
+- The claims checker now also scans MCP resource descriptions, every
+  route-refusal message, the rendered status body and the CLI's own help text
+  — surfaces a user or agent reads that it could not see.
+
 - **SECURITY: the workspace symlink guard covered one of the two isolation
   policies.** The previous release applied the `lstat` refusal, the
   guard-before-prune ordering and the sweep's name check to `copy` only.

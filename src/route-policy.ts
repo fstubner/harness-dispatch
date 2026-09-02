@@ -54,6 +54,26 @@ export function evaluateRoutePolicy(
     // about a route `status` prints as `billing=metered_api` — the kind is
     // known perfectly well; what is unknown is how sure we are of it. An
     // acceptance pass caught the two surfaces contradicting each other.
+    // A KNOWN kind that has declared it cannot bill you gets the remedy that
+    // works, and it has to be given HERE.
+    //
+    // The same advice was added to the `billingIsBlocked` branch below and was
+    // unreachable for any non-included kind, because this branch catches those
+    // first — so a `metered_api` route with `paid_usage_possible: false` was
+    // still told to add `allow_paid_usage: true`, which is "yes, bill me" for
+    // a route the operator has said cannot. The fix that was supposed to stop
+    // that was one branch too late.
+    if (billing.kind !== "unknown" && !billing.paidUsagePossible) {
+      return skip(
+        route,
+        "unknown_billing",
+        `billing_confidence is \`unknown\` for '${route}', which blocks it even though its ` +
+          `billing kind (${billing.kind}) is declared and \`paid_usage_possible\` is false. ` +
+          `That is what \`billing_confidence: unknown\` means — "do not trust this ` +
+          `classification". Set it to the value you actually believe (\`documented\` or ` +
+          `\`inferred\`); do NOT allow paid usage on a route you have said cannot bill you.`,
+      );
+    }
     const why =
       billing.kind === "unknown"
         ? "billing source is unknown"
