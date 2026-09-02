@@ -205,6 +205,33 @@ describe("resolveConfigPath — one resolution, shared by the server and its run
     );
   });
 
+  it("falls back to the state directory's config.yaml when the current directory has none", async () => {
+    // `configure` writes there now (userConfigPath), so a config written from
+    // one directory is found by a command run from any other. Before this the
+    // lookup stopped at ./config.yaml, and a user who ran configure in ~ and
+    // doctor in a project got "0 configured route(s)" with no hint why.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "hd-resolve-cwd-"));
+    const state = await fs.mkdtemp(path.join(os.tmpdir(), "hd-resolve-state-"));
+    const userFile = path.join(state, "config.yaml");
+    await fs.writeFile(userFile, "clis: []\n", "utf8");
+    const savedCwd = process.cwd();
+    const savedState = process.env["HARNESS_DISPATCH_STATE_DIR"];
+    process.chdir(cwd);
+    process.env["HARNESS_DISPATCH_STATE_DIR"] = state;
+    try {
+      expect(resolveConfigPath()).toBe(userFile);
+      // And the current directory still wins when it has one.
+      await fs.writeFile(path.join(cwd, "config.yaml"), "clis: []\n", "utf8");
+      expect(resolveConfigPath()).toBe("config.yaml");
+    } finally {
+      process.chdir(savedCwd);
+      if (savedState === undefined) delete process.env["HARNESS_DISPATCH_STATE_DIR"];
+      else process.env["HARNESS_DISPATCH_STATE_DIR"] = savedState;
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(state, { recursive: true, force: true });
+    }
+  });
+
   it("ignores an empty variable rather than resolving to an empty path", () => {
     process.env[VAR] = "";
     // Falls through to ./config.yaml-or-nothing; either is fine, an empty

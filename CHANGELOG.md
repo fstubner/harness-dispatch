@@ -39,6 +39,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`configure` writes its config where every later command can find it.**
+  It wrote `./config.yaml` into whatever directory it was run from, and
+  lookup stopped at the current directory, so a config written from `~` was
+  invisible to `doctor` or `dispatch` run inside a project — "0 configured
+  route(s)", no hint why — while the MCP client, handed the absolute path,
+  saw it fine. The default target is now the state directory
+  (`~/.harness-dispatch/config.yaml`, or under `HARNESS_DISPATCH_STATE_DIR`),
+  lookup falls back to that file after `./config.yaml` (a per-project file
+  still wins), `connect` looks in the same place, and doctor's `config` line
+  names the file it loaded. `--config` and `HARNESS_DISPATCH_CONFIG` are
+  unchanged. Seen on the cold-install walk, where a run from `/` produced
+  `/config.yaml`.
+
 - **`doctor` now notices a Codex that is installed but not logged in.** A
   ready route meant "the CLI is on PATH", so a never-logged-in Codex passed
   routes, billing and safety, and the first dispatch failed with a raw OpenAI

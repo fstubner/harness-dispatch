@@ -20,3 +20,16 @@ import path from "node:path";
 export function stateRoot(): string {
   return process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
 }
+
+/**
+ * Where `configure` writes and the last place config lookup looks: the tool's
+ * own state directory, so a global install has one config no matter which
+ * directory a command is run from. `configure` used to write `./config.yaml`
+ * wherever the user happened to be, and lookup stopped at the current
+ * directory, so a config written from `~` was invisible to `doctor` run inside
+ * a project — while the MCP client, given the absolute path, saw it fine. The
+ * cold-install walk in acceptance/0.8.0.md is where that was seen.
+ */
+export function userConfigPath(): string {
+  return path.join(stateRoot(), "config.yaml");
+}
