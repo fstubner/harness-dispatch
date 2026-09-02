@@ -67,8 +67,9 @@ harness-dispatch doctor --live
 ```
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
-tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`),
-and then
+tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
+— unless a `config.yaml` already exists in the current directory or
+`HARNESS_DISPATCH_CONFIG` is set, in which case that file is the target — and then
 offers to register this server with each MCP client it finds (Claude Code,
 Cursor) — showing you what it would write, and what is already there, before
 changing anything. `--no-clients` skips the offer and prints a snippet to paste
@@ -390,14 +391,16 @@ harness-dispatch status --json           # structured route metadata
 harness-dispatch status --watch          # live status refresh
 harness-dispatch usage                   # per-route call counts, quota, billing kind
 harness-dispatch usage --json            # structured usage metadata
+harness-dispatch dispatch "<prompt>"     # route one task and print the result
+harness-dispatch dispatch "<prompt>" --service codex_cli --safety read_only --task-type review --no-fallback --json
 harness-dispatch serve --port 3333       # /mcp and /v1/* over local HTTP
 harness-dispatch auth show               # print HTTP bearer token
 harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
 Hidden compatibility aliases currently map old alpha commands to the new surface:
-`dashboard` and `list-services` map to `status`, `route <prompt>` runs a one-off
-routed dispatch, and `mcp --http <port>` maps to `serve`.
+`dashboard` and `list-services` map to `status`, `route <prompt>` is an alias of
+`dispatch`, and `mcp --http <port>` maps to `serve`.
 They are not part of the public vocabulary and may be removed without a major
 version bump.
 
@@ -412,7 +415,7 @@ version bump.
 | `cancel_job` | Stops work started by `dispatch` — a wrong turn, a wrong directory, a superseded run. A job still waiting for a slot stops outright; a running one tears down within about a second (poll `job_status` to see it land), killing the agent CLI and its children. Files it already changed are **not** reverted, and a cancelled run is not counted as a route failure. |
 | `retry_job` | Re-runs a finished job's task from its own record — same prompt (as the delegate saw it), files, working directory, hints and workspace policy. Pass `service` to send the retry to a different route, which is the usual reason to retry: the task was fine and the route was not — the original's model is left behind when the new route does not declare it, reported as `droppedModel`. Returns a new jobId; the original is untouched. |
 | `workspace` | For a job that ran with `workspacePolicy: "copy"` or `"git_worktree"`, the agent's changes live in an isolated workspace and were **never** applied to your project. `action: "diff"` returns the real patch; `"apply"` applies it (refusing when your project has uncommitted changes, since the patch was built against a clean base — `force: true` overrides); `"discard"` deletes the workspace. The full patch is always written to the job directory, so `git apply` by hand is available either way. |
-| `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value. `service` and `models` are validated — an unknown route id is rejected, naming the valid ones — while `hints.model` is forwarded to the picked harness as-is, so a wrong model name fails at the harness instead. Pass `listModels: <route id>` to fetch that `openai_compatible` route's live `GET /models` catalog instead of (or alongside) the summary. |
+| `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value. `service` and `models` are validated — an unknown route id is rejected, naming the valid ones — while `hints.model` is forwarded to the picked harness as-is, so a wrong model name fails at the harness instead. Pass `listModels: <route id>` to get that `openai_compatible` route's model catalog instead of (or alongside) the summary: the route's declared `models:` list when it has one, otherwise a live `GET /models` from the endpoint. |
 
 `workingDir` is effectively required when starting work: if you omit it, the task runs
 in the router server's own process directory instead of your project, and the response
@@ -467,8 +470,8 @@ For fanout (each route that outlives the grace window returns its own `jobId`):
 ```
 
 Checking and listing (`job_status`): `{"jobId": "job-..."}` returns status plus
-`partialOutput` or the final `result`; `{}` (no `jobId`) returns every known background
-dispatch. On `dispatch`, force pure async with `"graceSeconds": 0`, or force a specific
+`partialOutput` or the final `result`; `{}` (no `jobId`) returns the 20 most recent
+background dispatches, newest first, plus an `omitted` count when there are more. On `dispatch`, force pure async with `"graceSeconds": 0`, or force a specific
 backend with a top-level `"service"` (single mode only). Nothing is lost by checking
 late — everything persists under `~/.harness-dispatch/jobs/<jobId>/`.
 
@@ -501,7 +504,6 @@ Endpoints:
 - `GET /v1/usage` — per-route call counts, quota, billing kind, and breaker state only
 - `GET /v1/models` — OpenAI-style model list; each entry's `id` is a route id you can
   pass as `model` in `/v1/chat/completions`
-- `POST /v1/chat/completions`
 
 HTTP uses the bearer token from `harness-dispatch auth show`. The same token protects
 MCP-over-HTTP and `/v1/*`.
@@ -562,15 +564,13 @@ endpoints:
     wire_protocol: openai_chat_completions
 ```
 
-Example Codex harness-native local route:
+Example Codex harness-native local route, as a `clis:` entry (the same shape
+`configure` writes; everything not set here comes from the shipped `codex` defaults):
 
 ```yaml
-services:
-  codex_ollama:
-    enabled: true
-    type: cli
+clis:
+  - name: codex_ollama
     harness: codex
-    command: codex
     model: qwen3-coder:latest
     endpoint_mode: harness_native_endpoint
     endpoint_provider: ollama
@@ -580,23 +580,32 @@ services:
     tier: 3
     weight: 0.75
     cli_capability: 1.0
-    timeout_ms: 900000  # optional; overrides the dispatcher's default (10 min for CLIs)
+    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`)
     capabilities:
       execute: 0.8
       plan: 0.7
       review: 0.7
 ```
 
+The older top-level `services:` format still loads, but it is a separate format:
+a file that uses it has its `clis:`/`endpoints:` ignored with a warning, so do not
+mix the two.
+
 ## Configure
 
-`configure` is the main setup flow:
+`configure` is the main setup flow. It does four things, in order, and prompts for
+nothing except the final registration:
 
-1. Detect installed harnesses.
-2. Verify configured routes without spending quota where possible.
-3. Classify auth and billing so paid or unknown-paid routes are not selected by accident.
-4. Choose routed harnesses, model priority, and safety profile.
-5. Write config YAML.
-6. Connect selected MCP agents or print snippets.
+1. Detect installed harness CLIs on PATH (or load the existing config, when there
+   is one it did not write itself — see the note on re-runs under Install).
+2. Print every route with its billing classification and effective safety
+   profile, and say which routes are blocked until you opt in to paid usage.
+3. Write the config YAML (`--yes`; without it, nothing is written).
+4. Offer to register with each MCP client it finds, or print the snippet
+   (`--no-clients`).
+
+There is no interactive choice of harnesses, model priority or safety profile:
+edit the written file for those.
 
 The current command is conservative: it prints detected routes by default and writes
 only when explicitly asked with `--yes`.
@@ -653,9 +662,9 @@ that boundary.
 
 Provider notes:
 
-- Claude Code `claude -p` is treated date-aware: before June 15, 2026 it is classified
-  as plan usage; from June 15, 2026 it is classified as Agent SDK credits with possible
-  overage.
+- Claude Code `claude -p` is classified as included plan usage. Anthropic announced a
+  separate Agent SDK credit pool for it (2026-06-15) and paused that change before it
+  took effect; the classification will move only if the split actually ships.
 - Codex CLI/SDK uses the official Codex product surface unless a route is explicitly
   configured with an API key, in which case it is API billing.
 - Cursor Agent CLI is classified as included usage with possible on-demand continuation.
