@@ -39,6 +39,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Re-running `configure` after installing a harness no longer needs
+  `--force`.** The natural first-run order — install this tool, configure,
+  find out a harness is needed, install one, configure again — was refused
+  at the last step: "already exists ... --force". And had the first run found
+  anything, the re-run would have loaded that file as authoritative and not
+  detected the new harness at all. `configure` now stamps what it writes
+  with a fingerprint; a re-run that finds its own unedited output regenerates
+  it from a fresh detection, and says so. A file that has been edited, or
+  that configure did not write, is still loaded (so its settings migrate)
+  and still refused without `--force`. Seen on the cold-install walk.
+
 - **`connect` now registers with a Claude Code that has never been opened.**
   A client counted as installed only if its config file existed, and Claude
   Code writes `~/.claude.json` on its first interactive launch — so a user who

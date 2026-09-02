@@ -28,7 +28,7 @@ import { startHttpServer } from "./http/server.js";
 import type { RouteHints, RouterConfig, SafetyProfile, TaskType } from "./types.js";
 import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
-import { configToYaml, type YamlOpts } from "./configure-yaml.js";
+import { configToYaml, isUneditedGenerated, stampGenerated, type YamlOpts } from "./configure-yaml.js";
 import {
   desiredEntry,
   devLaunchCommand,
@@ -120,7 +120,15 @@ async function cmdConfigure(
 ): Promise<number> {
   // configure's --config names where it will WRITE, so a path that does not
   // exist yet is the normal first-run case, not a typo.
-  const config = await loadConfig(configPath, { allowMissing: true });
+  const target = configPath ?? userConfigPath();
+  // A file configure wrote and nobody edited is regenerated from a fresh
+  // detection rather than loaded: loading it would make it authoritative and
+  // hide the harness installed since — the reason the user is re-running.
+  // Anything else on disk is the user's, loaded so its settings migrate, and
+  // guarded below. See stampGenerated for the natural-order story.
+  const existing = existsSync(target) ? await fs.readFile(target, "utf-8") : undefined;
+  const regenerate = existing !== undefined && isUneditedGenerated(existing);
+  const config = await loadConfig(regenerate ? undefined : configPath, { allowMissing: true });
   const routeCount = Object.keys(config.services).length;
 
   if (opts.print) {
@@ -178,7 +186,12 @@ async function cmdConfigure(
     }
   }
 
-  const target = configPath ?? userConfigPath();
+  if (regenerate) {
+    process.stdout.write(
+      `\n${path.resolve(target)} is unedited configure output — ` +
+        `${opts.yes ? "regenerating it from this detection" : "--yes will regenerate it from this detection"}.\n`,
+    );
+  }
   if (!opts.yes) {
     process.stdout.write(
       `\nNo files written. Re-run with --yes to write ${target}, or use --print to inspect YAML.\n`,
@@ -196,7 +209,7 @@ async function cmdConfigure(
   // you to pass --config, which is exactly what disabled it. Overwriting a
   // hand-written config is not recoverable, so it now takes an explicit
   // --force rather than an accident of which flag you happened to use.
-  if (existsSync(target) && !opts.force) {
+  if (existsSync(target) && !opts.force && !regenerate) {
     process.stderr.write(
       `configure: ${target} already exists and would be overwritten.\n` +
         "Use --print to inspect the generated YAML, --config <other-path> to write\n" +
@@ -219,7 +232,7 @@ async function cmdConfigure(
   // The default target lives in the state directory, which a first run has
   // not created yet. Same mode the rest of the state dir gets.
   await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  await fs.writeFile(target, yamlText, { encoding: "utf-8", mode: 0o600 });
+  await fs.writeFile(target, stampGenerated(yamlText), { encoding: "utf-8", mode: 0o600 });
   const absoluteTarget = path.resolve(target);
   process.stdout.write(`Wrote ${absoluteTarget}.\n`);
 
