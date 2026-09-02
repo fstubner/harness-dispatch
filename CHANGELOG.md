@@ -8,6 +8,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- README corrected in nine places found by an audit against the code: the
+  Configure section described a verification step and an interactive
+  choice of harnesses, model priority and safety profile that do not exist;
+  Claude Code billing was still described as date-aware when the code
+  classifies it as plan usage unconditionally; the CLI list omitted the
+  public `dispatch` command while calling `route` the hidden one (it is the
+  alias); the endpoint-mode example used the legacy `services:` format
+  without saying so, which silently drops `clis:` routes when pasted into a
+  modern config; two different default timeouts were stated (60 minutes is
+  right for every MCP and HTTP dispatch); `job_status` with no id was said
+  to return every job (it returns the twenty newest); `configure`'s target
+  omitted that a `./config.yaml` still wins; `usage listModels` was said to
+  fetch live when a declared list is returned as-is; and a duplicated
+  endpoint line.
+
 - **`configure` no longer regenerates away a comment you put above its
   header, and no longer counts a stripped final newline as an edit.** The
   unedited check accepted any comment lines above the fingerprint, so a
