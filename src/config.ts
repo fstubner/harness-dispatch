@@ -1095,6 +1095,7 @@ export async function loadConfig(
     // make `configure` write `detect: true` into every config that merely
     // omitted it, turning a default into a permanent declaration.
     ...(detectRequested !== undefined ? { detect: detectRequested } : {}),
+    detectionRan: detect,
     ...topLevelSettings(raw, warnings),
     ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
