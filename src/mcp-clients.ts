@@ -28,6 +28,15 @@ export interface ClientConfigLocation {
   client: string;
   file: string;
   /**
+   * Commands whose presence on PATH means the client is installed. The config
+   * file alone said nothing: Claude Code creates `~/.claude.json` on its first
+   * interactive launch, so a freshly installed one that had never been opened
+   * looked identical to one that was not there — and `connect` told a user
+   * with `claude` on PATH that no client was found. Seen on the cold-install
+   * walk in acceptance/0.8.0.md.
+   */
+  commands: string[];
+  /**
    * The object servers hang off in THIS client's file. Claude Code and Cursor
    * both use `mcpServers`; VS Code uses `servers`. Carried per client rather
    * than assumed, because assuming it is how a writer corrupts a format it
@@ -63,12 +72,16 @@ export function clientConfigLocations(home: string = homedir()): ClientConfigLoc
       client: "Claude Code",
       file: path.join(home, ".claude.json"),
       serversKey: "mcpServers",
+      commands: ["claude"],
     },
     {
       id: "cursor",
       client: "Cursor",
       file: path.join(home, ".cursor", "mcp.json"),
       serversKey: "mcpServers",
+      // The editor's `cursor` and the agent CLI's `cursor-agent` read the same
+      // file (Cursor CLI docs: MCP config is shared with the editor).
+      commands: ["cursor", "cursor-agent"],
     },
   ];
 }

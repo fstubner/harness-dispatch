@@ -117,3 +117,22 @@ describe("connect --remove without --clients", () => {
     expect(await fs.readFile(claudeFile(), "utf8")).toBe(before);
   });
 });
+
+describe("a freshly installed Claude Code that has never been launched", () => {
+  it("connect --clients claude-code --yes creates the file and registers", async () => {
+    // The cold-install walk: claude on PATH, no ~/.claude.json yet. The user
+    // was told no client was found and handed JSON to paste.
+    await fs.rm(claudeFile(), { force: true });
+    const whichAvailable = await import("../src/dispatchers/shared/which-available.js");
+    vi.spyOn(whichAvailable, "commandAvailable").mockImplementation((cmd: string) => cmd === "claude");
+    const out = await capture(() => main(["connect", "--clients", "claude-code", "--yes"]));
+    expect(out.stdout).not.toContain("No MCP clients found");
+    expect(out.stdout).toContain("one will be created");
+    expect(out.stdout).toMatch(/Wrote Claude Code \(created /);
+    expect(out.code).toBe(0);
+    const written = JSON.parse(await fs.readFile(claudeFile(), "utf8")) as {
+      mcpServers: Record<string, { args: string[] }>;
+    };
+    expect(written.mcpServers["harness-dispatch"]?.args).toContain("--config");
+  });
+});

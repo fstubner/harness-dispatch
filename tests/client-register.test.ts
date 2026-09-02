@@ -39,8 +39,10 @@ async function readJson(file: string): Promise<Record<string, never>> {
   return JSON.parse(await fs.readFile(file, "utf8"));
 }
 
+// `installed: () => false` pins "no client command on PATH", so these run the
+// same on a machine with claude installed as on a bare CI runner.
 const plans = (): ReturnType<typeof planClientWrites> =>
-  planClientWrites(CONFIG, { home, command: COMMAND });
+  planClientWrites(CONFIG, { home, command: COMMAND, installed: () => false });
 
 const planFor = (id: string) => {
   const found = plans().find((p) => p.id === id);
@@ -161,7 +163,11 @@ describe("devLaunchCommand", () => {
       },
     });
 
-    const plan = planClientWrites(CONFIG, { home, command: devLaunchCommand(entry) });
+    const plan = planClientWrites(CONFIG, {
+      home,
+      command: devLaunchCommand(entry),
+      installed: () => false,
+    });
     const claude = plan.find((p) => p.id === "claude-code")!;
     expect(claude.state).toBe("differs");
     // consented: this test exercises the MERGE, not the consent gate — the
@@ -390,5 +396,42 @@ describe("writeJsonAtomic permissions", () => {
       mode & 0o077,
       `mode widened to ${mode.toString(8)} — group/other can now read stored credentials`,
     ).toBe(0);
+  });
+});
+
+describe("a client that is installed but has never written its config file", () => {
+  // Claude Code creates ~/.claude.json on first interactive launch. Before
+  // this, a freshly installed one looked identical to none at all, and
+  // `connect` told a user with `claude` on PATH that no client was found.
+  const onlyClaude = (commands: string[]): boolean => commands.includes("claude");
+  const plansWithClaude = () =>
+    planClientWrites(CONFIG, { home, command: COMMAND, installed: onlyClaude });
+
+  it("is planned as missing-file, while an uninstalled one stays absent", () => {
+    const all = plansWithClaude();
+    expect(all.find((p) => p.id === "claude-code")?.state).toBe("missing-file");
+    expect(all.find((p) => p.id === "cursor")?.state).toBe("absent");
+  });
+
+  it("gets its file created holding only our entry, with no backup to report", async () => {
+    const plan = plansWithClaude().find((p) => p.id === "claude-code")!;
+    const outcome = await writeClientEntry(plan, { stamp: "s" });
+    expect(outcome.action).toBe("written");
+    expect(outcome.backupPath).toBeUndefined();
+    expect(await readJson(claudeFile())).toEqual({
+      mcpServers: { "harness-dispatch": plan.desired },
+    });
+    if (process.platform !== "win32") {
+      expect((await fs.stat(claudeFile())).mode & 0o777).toBe(0o600);
+    }
+    // And a second run sees its own entry.
+    expect(plansWithClaude().find((p) => p.id === "claude-code")?.state).toBe("matches");
+  });
+
+  it("is nothing to remove from, and removal creates no file", async () => {
+    const plan = plansWithClaude().find((p) => p.id === "claude-code")!;
+    const outcome = await removeClientEntry(plan, { stamp: "s" });
+    expect(outcome.action).toBe("unchanged");
+    await expect(fs.stat(claudeFile())).rejects.toThrow();
   });
 });
