@@ -74,7 +74,9 @@ instead; `harness-dispatch connect` does the same registration later on its own,
 and `connect --remove` undoes it. Without
 `--yes` configure previews and writes nothing. `doctor` then checks the whole chain:
 binary, config load, harness detection, auth and billing classification, route
-readiness. `--live` goes further and routes one tiny real prompt, so you see a
+readiness, and for a Codex route asks `codex login status` whether the CLI is
+logged in (the other harnesses have no equivalent this tool has verified, so
+their login state is not checked). `--live` goes further and routes one tiny real prompt, so you see a
 completion before wiring anything into your agent. The live probe never touches paid or
 unknown-billing routes unless you pass `--allow-paid`.
 
