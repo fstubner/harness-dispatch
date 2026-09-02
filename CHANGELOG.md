@@ -6,6 +6,34 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`configure` no longer regenerates away a comment you put above its
+  header, and no longer counts a stripped final newline as an edit.** The
+  unedited check accepted any comment lines above the fingerprint, so a
+  `# note to self` at the top of the file was overwritten without a word;
+  meanwhile an editor that drops the trailing newline made the file count
+  as edited and forced `--force`. Only the exact header may sit above the
+  fingerprint now, and trailing whitespace is ignored when fingerprinting.
+  (Twenty-fifth acceptance pass, finding 4.)
+
+- **`doctor` names a harness on PATH that an authoritative config leaves
+  out.** A config listing its own routes is authoritative, so a harness
+  installed afterwards is simply absent — and `routes` said "1 ready
+  route(s)" with a second CLI installed and no hint; the PATH hint only
+  appeared at zero routes. It now adds "Installed but not in this config:
+  claude — add `detect: true` to <file> to merge them, or a clis: entry".
+  (Finding 5.)
+
+- **`--config` at the boundary.** A directory produced a raw `EISDIR` that
+  named no path; it now says which path is a directory. `--config=` (empty)
+  silently auto-detected and reported the routes as loaded "from" the
+  current directory; it is now the same usage error as a missing value. An
+  empty or routes-free config file was reported as the source of routes
+  that detection had found; doctor's `config` line now says they were
+  auto-detected and that the file defines no routes of its own. (Finding 3.
+  A load failure under `doctor --json` still prints text, not JSON.)
+
 ## [0.9.0] — 2026-09-02
 
 ### Changed (breaking)

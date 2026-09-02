@@ -207,6 +207,55 @@ describe("CLI parser", () => {
     expect(result.code, "a machine without git is a supported configuration").toBe(0);
   });
 
+  describe("--config at the boundary (twenty-fifth pass, finding 3)", () => {
+    it("names the path when --config is a directory", async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-config-dir-"));
+      await expect(capture(() => main(["doctor", "--config", dir]))).rejects.toThrow(
+        new RegExp(`${dir.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}.*is a directory`),
+      );
+    });
+
+    it("refuses an empty --config value instead of silently auto-detecting", async () => {
+      await expect(capture(() => main(["doctor", "--config", ""]))).rejects.toThrow(
+        /--config needs a path/,
+      );
+    });
+
+    it("does not credit an empty config file with the routes detection found", async () => {
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-config-empty-"));
+      const empty = path.join(dir, "config.yaml");
+      await fs.writeFile(empty, "", "utf8");
+      const result = await capture(() => main(["doctor", "--config", empty, "--json"]));
+      const config = (JSON.parse(result.stdout).checks as Array<{ name: string; detail: string }>).find(
+        (c) => c.name === "config",
+      );
+      expect(config?.detail).toContain("auto-detected");
+      expect(config?.detail).toContain("defines no routes of its own");
+      expect(config?.detail).not.toMatch(/ from /);
+    });
+
+    it("names a harness on PATH that an authoritative config leaves out", async () => {
+      // Finding 5: codex-only config, claude installed since, "1 ready
+      // route(s)" and no hint.
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      const whichAvailable = await import("../src/dispatchers/shared/which-available.js");
+      vi.spyOn(whichAvailable, "commandAvailable").mockImplementation(
+        (cmd: string) => cmd === "codex" || cmd === "claude",
+      );
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-config-authoritative-"));
+      const file = path.join(dir, "config.yaml");
+      await fs.writeFile(file, ["clis:", "  - name: codex_cli", "    harness: codex", ""].join("\n"));
+      const result = await capture(() => main(["doctor", "--config", file, "--json"]));
+      const routes = (JSON.parse(result.stdout).checks as Array<{ name: string; detail: string }>).find(
+        (c) => c.name === "routes",
+      );
+      expect(routes?.detail).toContain("Installed but not in this config: claude");
+      expect(routes?.detail).toContain("detect: true");
+      expect(routes?.detail).not.toContain("codex —");
+    });
+  });
+
   describe("harness-login", () => {
     // Seen on the cold-install walk: an installed, never-logged-in Codex
     // passed every doctor check and the first dispatch failed with a raw

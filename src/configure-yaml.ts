@@ -258,28 +258,33 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
  */
 const FINGERPRINT_LINE = /^# harness-dispatch configure: fingerprint=([0-9a-f]{64})$/m;
 
+const HEADER = [
+  "# Written by `harness-dispatch configure`. Re-running configure regenerates this",
+  "# file from a fresh detection for as long as it is unedited; change anything in it",
+  "# and it will refuse to overwrite without --force. The fingerprint is how it tells.",
+].join("\n");
+
 function fingerprint(body: string): string {
-  // Line endings are not an edit: an editor that saves CRLF changed nothing
-  // the loader can see.
-  return createHash("sha256").update(body.replace(/\r\n/g, "\n")).digest("hex");
+  // Line endings and trailing whitespace are not an edit: an editor that
+  // saves CRLF, or strips the final newline, changed nothing the loader can
+  // see. The first version counted a stripped newline as an edit and refused.
+  return createHash("sha256")
+    .update(body.replace(/\r\n/g, "\n").replace(/\s+$/, ""))
+    .digest("hex");
 }
 
 export function stampGenerated(body: string): string {
-  return [
-    "# Written by `harness-dispatch configure`. Re-running configure regenerates this",
-    "# file from a fresh detection for as long as it is unedited; change anything below",
-    "# and it will refuse to overwrite without --force. The fingerprint is how it tells.",
-    `# harness-dispatch configure: fingerprint=${fingerprint(body)}`,
-    body,
-  ].join("\n");
+  return [HEADER, `# harness-dispatch configure: fingerprint=${fingerprint(body)}`, body].join("\n");
 }
 
 export function isUneditedGenerated(text: string): boolean {
   const normalised = text.replace(/\r\n/g, "\n");
   const match = FINGERPRINT_LINE.exec(normalised);
   if (match === null || match.index === undefined) return false;
-  const above = normalised.slice(0, match.index);
-  if (!above.split("\n").every((line) => line === "" || line.startsWith("#"))) return false;
+  // Exactly our header, nothing else: the first version accepted ANY comment
+  // lines above the fingerprint, so a `# note to self` a user put at the top
+  // was regenerated away without a word.
+  if (normalised.slice(0, match.index) !== `${HEADER}\n`) return false;
   const body = normalised.slice(match.index + match[0].length + 1);
   return fingerprint(body) === match[1];
 }

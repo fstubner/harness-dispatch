@@ -924,6 +924,14 @@ export async function loadConfig(
               `auto-detect installed harness CLIs.`,
           );
         }
+      } else if (e.code === "EISDIR") {
+        // A raw `EISDIR: illegal operation on a directory, read` named no
+        // path, so the one thing the user needed — which argument was wrong
+        // — was the one thing missing.
+        throw new Error(
+          `config path ${path} is a directory, not a file. Point --config at the ` +
+            `config.yaml inside it.`,
+        );
       } else if (err instanceof yaml.YAMLException) {
         // A YAML syntax error used to escape as a raw js-yaml stack trace that
         // never named the file it came from.

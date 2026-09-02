@@ -638,6 +638,18 @@ async function cmdDoctor(
     (nodeMajor ?? 0) > 22 ||
     ((nodeMajor ?? 0) === 22 &&
       ((nodeMinor ?? 0) > 22 || ((nodeMinor ?? 0) === 22 && (nodePatch ?? 0) >= 2)));
+  const configuredCommands = new Set(
+    status.routes
+      .map((route) => route.command)
+      .filter((command): command is string => typeof command === "string")
+      .map((command) => path.basename(command).replace(/\.(cmd|exe)$/i, "")),
+  );
+  const unconfiguredHarnesses =
+    runtime.config.detectionRan === false
+      ? Object.values(AUTO_DETECT_COMMANDS).filter(
+          (command) => commandAvailable(command) && !configuredCommands.has(command),
+        )
+      : [];
   const checks: Array<{ name: string; ok: boolean; detail: string }> = [
     {
       name: "node",
@@ -654,9 +666,13 @@ async function cmdDoctor(
       // another used to load different things and neither said so.
       detail:
         `${Object.keys(runtime.config.services).length} configured route(s)` +
-        (configPath !== undefined
-          ? ` from ${path.resolve(configPath)}`
-          : " (no config file found; shipped defaults with auto-detected harnesses)"),
+        (configPath === undefined
+          ? " (no config file found; shipped defaults with auto-detected harnesses)"
+          : runtime.config.detectionRan === false
+            ? ` from ${path.resolve(configPath)}`
+            : // An empty or routes-free file was reported as the source of
+              // routes that detection had found.
+              ` auto-detected — ${path.resolve(configPath)} defines no routes of its own`),
     },
     // This one DOES fail, unlike the advisory git check below.
     //
@@ -772,11 +788,20 @@ async function cmdDoctor(
       // its own leaves a new user with no idea whether the tool is broken or
       // simply has nothing to route to, and no hint what to install.
       detail:
-        status.ready.length > 0
+        (status.ready.length > 0
           ? `${status.ready.length} ready route(s)`
           : `0 ready route(s). Looked for these harness CLIs on PATH: ` +
             `${Object.values(AUTO_DETECT_COMMANDS).join(", ")}. ` +
-            `Install one, or add a route to config.yaml (endpoints: need no CLI).`,
+            `Install one, or add a route to config.yaml (endpoints: need no CLI).`) +
+        // A config that lists its own routes is authoritative, so a harness
+        // installed later is simply absent — and this line said "1 ready
+        // route(s)" with a second CLI on PATH and no hint. The hint about PATH
+        // above only fired at zero routes.
+        (unconfiguredHarnesses.length > 0
+          ? ` Installed but not in this config: ${unconfiguredHarnesses.join(", ")} — add ` +
+            `\`detect: true\` to ${configPath !== undefined ? path.resolve(configPath) : "the config"} ` +
+            `to merge them, or a clis: entry for each.`
+          : ""),
     },
     {
       // Nothing checked this, so an unwritable state directory surfaced only
@@ -1145,7 +1170,10 @@ export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = positionals;
   // `--config` with no value: parseArgs yields boolean true, which reached
   // path.join and threw ERR_INVALID_ARG_TYPE as a raw Node stack trace.
-  if (values.config !== undefined && typeof values.config !== "string") {
+  // `--config=` (empty) is the same mistake with a string type: it resolved to
+  // "", loadConfig treated it as no path, and doctor reported the auto-detected
+  // routes as loaded "from" the current directory.
+  if (values.config !== undefined && (typeof values.config !== "string" || values.config === "")) {
     throw new UsageError("--config needs a path, e.g. --config ./config.yaml");
   }
   const explicitConfigPath = values.config as string | undefined;
