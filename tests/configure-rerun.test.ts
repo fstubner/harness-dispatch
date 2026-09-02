@@ -121,4 +121,12 @@ describe("isUneditedGenerated", () => {
     expect(isUneditedGenerated(stamped.replace("clis: []", "clis: [ ]"))).toBe(false);
     expect(isUneditedGenerated("clis: []\n")).toBe(false);
   });
+
+  it("counts a comment the user put above the header as an edit, and a stripped final newline as none", () => {
+    // Twenty-fifth pass, finding 4: a `# note` on top was regenerated away
+    // silently, while an editor dropping the trailing newline forced --force.
+    const stamped = stampGenerated("clis: []\n");
+    expect(isUneditedGenerated(`# note to self\n${stamped}`)).toBe(false);
+    expect(isUneditedGenerated(stamped.replace(/\n$/, ""))).toBe(true);
+  });
 });
