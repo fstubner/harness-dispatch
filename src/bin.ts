@@ -16,6 +16,7 @@ import { AUTO_DETECT_COMMANDS, loadConfig, resolveConfigPath } from "./config.js
 import { LeaderboardCache } from "./leaderboard.js";
 import { VERSION } from "./version.js";
 import { commandAvailable } from "./dispatchers/shared/which-available.js";
+import { codexLoginState } from "./dispatchers/shared/harness-login.js";
 import { inspectClientEntries } from "./mcp-clients.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
@@ -748,6 +749,37 @@ async function cmdDoctor(
   const blocked = status.skippedRoutes.filter(
     (skip) => skip.code === "paid_blocked" || skip.code === "unknown_billing",
   );
+  // A ready route is one whose CLI is on PATH. That said nothing about whether
+  // the CLI could actually make a request: an installed, never-logged-in Codex
+  // passed routes, billing and safety, and the first dispatch then failed with
+  // a raw OpenAI 401 that never mentioned `codex login`. The cold-install walk
+  // in acceptance/0.8.0.md is where that was seen. The CLI is asked directly
+  // (see harness-login.ts for why not the credential file), and only a
+  // definite "not logged in" fails the check.
+  const codexRoutes = status.routes.filter(
+    (route) => status.ready.includes(route.id) && route.harness === "codex" && route.command,
+  );
+  const loginStates = await Promise.all(
+    codexRoutes.map(async (route) => ({ route, state: await codexLoginState(route.command!) })),
+  );
+  const loggedOut = loginStates.filter((entry) => entry.state === "logged_out");
+  checks.push({
+    name: "harness-login",
+    ok: loggedOut.length === 0,
+    detail:
+      loginStates.length === 0
+        ? "no ready route has a login state this tool knows how to ask for (Codex only, today)"
+        : loggedOut.length > 0
+          ? `${loggedOut.map((entry) => entry.route.id).join(", ")}: codex reports "Not logged in" — ` +
+            "run `codex login` (or `codex login --with-api-key`), or every dispatch to it fails " +
+            "with 401 Unauthorized from OpenAI"
+          : loginStates
+              .map(
+                (entry) =>
+                  `${entry.route.id}: ${entry.state === "logged_in" ? "logged in" : "could not determine (codex login status gave no answer)"}`,
+              )
+              .join("; "),
+  });
   checks.push({
     name: "billing-policy",
     ok: true,

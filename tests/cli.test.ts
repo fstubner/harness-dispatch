@@ -207,6 +207,56 @@ describe("CLI parser", () => {
     expect(result.code, "a machine without git is a supported configuration").toBe(0);
   });
 
+  describe("harness-login", () => {
+    // Seen on the cold-install walk: an installed, never-logged-in Codex
+    // passed every doctor check and the first dispatch failed with a raw
+    // OpenAI 401. commandAvailable is mocked so the route is "ready" on a
+    // runner with no codex; the login answer is mocked because a real one
+    // needs real credentials. harness-login.test.ts covers the real spawn.
+    async function writeCodexConfig(): Promise<string> {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-codex-"));
+      const file = path.join(dir, "config.yaml");
+      await fs.writeFile(file, ["clis:", "  - name: codex_cli", "    harness: codex", ""].join("\n"));
+      return file;
+    }
+    async function doctorWith(state: "logged_in" | "logged_out" | "unknown") {
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      const whichAvailable = await import("../src/dispatchers/shared/which-available.js");
+      vi.spyOn(whichAvailable, "commandAvailable").mockReturnValue(true);
+      const login = await import("../src/dispatchers/shared/harness-login.js");
+      const probe = vi.spyOn(login, "codexLoginState").mockResolvedValue(state);
+      const config = await writeCodexConfig();
+      const result = await capture(() => main(["doctor", "--config", config, "--json"]));
+      const checks = JSON.parse(result.stdout).checks as Array<{
+        name: string;
+        ok: boolean;
+        detail: string;
+      }>;
+      return { result, probe, check: checks.find((c) => c.name === "harness-login") };
+    }
+
+    it("fails, names the route, and says to run codex login when codex is logged out", async () => {
+      const { result, probe, check } = await doctorWith("logged_out");
+      expect(probe).toHaveBeenCalledWith("codex");
+      expect(check?.ok).toBe(false);
+      expect(check?.detail).toContain("codex_cli");
+      expect(check?.detail).toContain("codex login");
+      expect(result.code).toBe(1);
+    });
+
+    it("passes when codex says it is logged in", async () => {
+      const { check } = await doctorWith("logged_in");
+      expect(check?.ok).toBe(true);
+      expect(check?.detail).toContain("logged in");
+    });
+
+    it("does not fail a working install when the CLI gives no usable answer", async () => {
+      const { check } = await doctorWith("unknown");
+      expect(check?.ok).toBe(true);
+      expect(check?.detail).toMatch(/could not determine/);
+    });
+  });
+
   it.each([
     ["--safety", "read_onlyy", /--safety: invalid value/],
     ["--task-type", "excute", /--task-type: invalid value/],

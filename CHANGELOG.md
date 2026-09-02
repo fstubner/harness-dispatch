@@ -39,6 +39,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`doctor` now notices a Codex that is installed but not logged in.** A
+  ready route meant "the CLI is on PATH", so a never-logged-in Codex passed
+  routes, billing and safety, and the first dispatch failed with a raw OpenAI
+  `401 Unauthorized ... Missing bearer` that never mentioned `codex login`.
+  A new `harness-login` check asks `codex login status` and fails with the
+  command to run when it answers "Not logged in". The CLI is asked rather
+  than its credential file read, because Codex accepts a ChatGPT login or an
+  API key and honours its own home directory, and only its own answer is
+  right in every case. Any answer other than a definite "Not logged in" —
+  an older Codex without the subcommand, a spawn failure — is reported as
+  undetermined and does not fail the install. Codex only: the other
+  harnesses have no equivalent subcommand this tool has verified.
+
 - **The installed command did nothing on Linux and macOS.** `npm install -g`
   puts `harness-dispatch` on PATH as a symlink to `dist/bin.js`, and node
   hands that unresolved link path to the program, so a run-if-entrypoint guard
