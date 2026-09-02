@@ -28,6 +28,7 @@
  *    Every one of these defects reported success.
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -538,6 +539,17 @@ describe("a workspace root that is a symlink", () => {
     await fs.mkdir(path.join(elsewhere, "important"), { recursive: true });
     await fs.writeFile(path.join(elsewhere, "important", "thesis.txt"), "mine", "utf8");
     await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+    // git_worktree needs a repo with a commit, or it refuses for THAT reason
+    // and never reaches the guard under test.
+    if (policy === "git_worktree") {
+      const run = (args: string[]) =>
+        execFileSync("git", args, { cwd: project, stdio: "ignore" });
+      run(["init", "-q"]);
+      run(["config", "user.email", "t@t"]);
+      run(["config", "user.name", "t"]);
+      run(["add", "-A"]);
+      run(["commit", "-qm", "init"]);
+    }
 
     const projectWsRoot = workspaceRootFor(project);
     await fs.mkdir(path.dirname(projectWsRoot), { recursive: true });

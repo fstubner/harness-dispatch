@@ -216,7 +216,17 @@ const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
  * Windows is skipped deliberately: `uid` is 0 for every process, Node ignores
  * mode, and `os.tmpdir()` is already per-user there.
  */
-export async function secureProjectRoot(root: string): Promise<void> {
+/**
+ * Check the PARENTS before anything is created.
+ *
+ * Separate from the leaf check because of ORDER: `markProjectRoot` has to
+ * `mkdir` before it can stat the leaf, and a recursive mkdir through a
+ * symlinked parent creates a directory inside whatever the link points at —
+ * so the refusal arrived after we had already written into the victim's tree.
+ * Empty and harmless, but the guard's whole claim is that it refuses BEFORE
+ * touching anything. Verified in CI, which is the only place these run.
+ */
+export async function assertSafeAncestry(root: string): Promise<void> {
   if (process.platform === "win32") return;
   // EVERY SEGMENT WE CREATE, not just the last one.
   //
@@ -259,6 +269,10 @@ export async function secureProjectRoot(root: string): Promise<void> {
       );
     }
   }
+}
+
+export async function secureProjectRoot(root: string): Promise<void> {
+  if (process.platform === "win32") return;
   // lstat, NOT stat.
   //
   // `stat` follows symlinks, so the uid compared was the TARGET's. An
@@ -329,6 +343,7 @@ async function markProjectRoot(root: string): Promise<void> {
     //
     // Hence the explicit chmod below — see secureProjectRoot, which also
     // handles the case this path cannot: a root somebody ELSE owns.
+    await assertSafeAncestry(root);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await secureProjectRoot(root);
   }
