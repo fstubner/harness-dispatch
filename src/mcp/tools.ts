@@ -1,7 +1,7 @@
 /**
  * MCP tool registry for harness-dispatch.
  *
- * The public MCP surface is three tools, each doing exactly one thing:
+ * The public MCP surface is six tools, each doing exactly one thing:
  * `dispatch` starts routed work (single or fanout) and only ever starts —
  * `job_status` checks or lists it, `usage` reads route/quota state. Every
  * dispatch is job-backed from the first moment — dispatch races an inline
@@ -916,7 +916,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Per-route call counts (success/failure), quota remaining, billing kind, and " +
         "circuit-breaker state for this session. Call this before using an unfamiliar " +
         "`hints.model`/`service`/`models` value to see valid route ids and their " +
-        "current models — those fields are not validated and silently ignore unknown names. " +
+        "current models. `service` and `models` ARE validated — an unknown route id is " +
+        "rejected, naming the valid ones — while `hints.model` is forwarded to the picked " +
+        "harness as-is, so a wrong model name fails at the harness rather than here. " +
         "Each route also includes modelHint (where that harness's real model catalog " +
         "is documented or listed live) and, when the operator declared one, models: " +
         "a list of known-good ids. For OpenAI-compatible endpoint routes, pass " +

@@ -28,6 +28,7 @@
  *    Every one of these defects reported success.
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -523,24 +524,66 @@ describe("a workspace root that is a symlink", () => {
    * POSIX-only for the ownership half, but the symlink refusal itself is
    * checkable anywhere Node can make a link.
    */
-  it.skipIf(process.platform === "win32")("is refused rather than followed", async () => {
+  // BOTH policies. The first version of this test passed `policy: "copy"`
+  // only, and the suite stayed green over a live vulnerability: the same
+  // attack against `git_worktree` deleted a victim's directory, because the
+  // guard ordering and the sweep's name check had been applied to one policy
+  // and not the other.
+  it.skipIf(process.platform === "win32").each(["copy", "git_worktree"] as const)(
+    "is refused rather than followed (%s)",
+    async (policy) => {
     const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
-    const project = path.join(root, "linkproj");
-    const elsewhere = path.join(root, "victim-data");
+    const project = path.join(root, `linkproj-${policy}`);
+    const elsewhere = path.join(root, `victim-data-${policy}`);
     await fs.mkdir(project, { recursive: true });
     await fs.mkdir(path.join(elsewhere, "important"), { recursive: true });
     await fs.writeFile(path.join(elsewhere, "important", "thesis.txt"), "mine", "utf8");
     await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+    // git_worktree needs a repo with a commit, or it refuses for THAT reason
+    // and never reaches the guard under test.
+    if (policy === "git_worktree") {
+      const run = (args: string[]) =>
+        execFileSync("git", args, { cwd: project, stdio: "ignore" });
+      run(["init", "-q"]);
+      run(["config", "user.email", "t@t"]);
+      run(["config", "user.name", "t"]);
+      run(["add", "-A"]);
+      run(["commit", "-qm", "init"]);
+    }
 
     const projectWsRoot = workspaceRootFor(project);
     await fs.mkdir(path.dirname(projectWsRoot), { recursive: true });
     await fs.symlink(elsewhere, projectWsRoot, "dir");
 
     await expect(
-      prepareWorkspace({ policy: "copy", workingDir: project, files: [], routeName: "r" }),
+      prepareWorkspace({ policy, workingDir: project, files: [], routeName: "r" }),
     ).rejects.toThrow(/symbolic link/i);
 
     // And nothing was written into, or removed from, what it pointed at.
     expect(await fs.readdir(elsewhere)).toEqual(["important"]);
+    },
+  );
+
+  // The parent segments are equally plantable: `<tmp>/harness-dispatch` and
+  // `<tmp>/harness-dispatch/workspaces` are fixed names under a world-writable
+  // directory. The first guard checked only the leaf, so a link at the BASE
+  // redirected the whole copy into the attacker's tree.
+  it.skipIf(process.platform === "win32")("is refused when a PARENT segment is a link", async () => {
+    const { prepareWorkspace, workspacesBase } = await import("../src/workspaces.js");
+    const project = path.join(root, "baseproj");
+    const elsewhere = path.join(root, "base-victim");
+    await fs.mkdir(project, { recursive: true });
+    await fs.mkdir(elsewhere, { recursive: true });
+    await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+
+    const base = workspacesBase();
+    await fs.rm(base, { recursive: true, force: true });
+    await fs.mkdir(path.dirname(base), { recursive: true });
+    await fs.symlink(elsewhere, base, "dir");
+
+    await expect(
+      prepareWorkspace({ policy: "copy", workingDir: project, files: [], routeName: "r" }),
+    ).rejects.toThrow(/symbolic link/i);
+    expect(await fs.readdir(elsewhere)).toEqual([]);
   });
 });

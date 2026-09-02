@@ -39,6 +39,57 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **SECURITY: the workspace symlink guard covered one of the two isolation
+  policies.** The previous release applied the `lstat` refusal, the
+  guard-before-prune ordering and the sweep's name check to `copy` only.
+  `git_worktree` kept all three defects, so the identical attack still
+  destroyed data — reproduced as two real users: `copy` refused, `git_worktree`
+  deleted the victim's directory and raised the guard's error afterwards. The
+  entry claiming the class was closed was true for one policy and false for the
+  other. The test shipped with it passed `policy: "copy"` only, so the suite
+  stayed green over a live vulnerability; it now runs against both.
+
+- **The same guard only checked the last path segment.** `<tmp>/harness-dispatch`
+  and `<tmp>/harness-dispatch/workspaces` are fixed names under a
+  world-writable directory and were never examined, so a link planted one or
+  two levels up redirected the whole copy into an attacker's tree. Every
+  segment from the workspaces base down is now checked for links and ownership.
+
+- **A rate-limit regression from the previous release.** The filter added to
+  stop false positives discarded any line containing "should", which threw away
+  real limiter messages — a missed 429 means the router keeps hammering an
+  exhausted route. Two other patterns in that filter could never match at all.
+
+- **A free local route is no longer told it can bill you, with a fix that does
+  nothing.** A route with a declared kind and `paid_usage_possible: false` is
+  blocked when its `billing_confidence` is `unknown` — deliberate — but was
+  shown "route can incur paid usage" beside `paid=no` and advised to set a
+  field it already had. It now names the real cause and a remedy that works.
+
+- The `usage` tool description and README told agents that `service` and
+  `models` are unvalidated. Both throw on an unknown route id. The same wrong
+  sentence was corrected in the plugin skill one release earlier and missed
+  here — `scripts/check-claims.mjs` could not see tool descriptions at all, and
+  now does.
+
+- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its
+  bundled fallback when the network fails. It swallowed every exception,
+  returned an empty set, wrote it out and exited 0 — turning a transient outage
+  into a permanent downgrade of the file that ships in the package.
+
+- An env-var reference embedded in a larger value (`base_url:
+  https://${HOST}/v1`) is now stripped from spawned CLI environments. The
+  sanitizer anchored to whole-string matches, so a key inside a longer string
+  stayed visible — the exact leak it was written to close, one string shape
+  over.
+
+- `OPERATIONS.md` described streamed fanout wrongly (its arms DO create jobs,
+  and are not aborted on disconnect), `safety.ts` claimed every shipped harness
+  defines all three safety profiles (`cursor_cli` declares one),
+  `ux-walkthrough.md` called `discard` the only destructive operation (the
+  retention sweep is the one that deleted files), and two module headers said
+  three tools where six are registered.
+
 - **SECURITY: a `copy` dispatch could delete files outside its workspace.**
   The ownership guard used `stat`, which follows symlinks, so it compared the
   uid of whatever a link POINTED AT rather than the link's own — and on a

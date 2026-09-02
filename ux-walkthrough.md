@@ -108,8 +108,10 @@ the preamble as unavailable, not silently omitted.
 
 ### Flow 6 — Keeping isolated work (agent)
 
-The second half of an isolated dispatch, and the only destructive operation in
-the product. It had no flow here until 2026-08-30, and three separate defects
+The second half of an isolated dispatch, and the destructive operation a USER
+invokes. (It is not the only destructive one: workspace retention sweeps aged
+directories on every dispatch, and that sweep — not `discard` — is the path
+that deleted a user's files in the 2026-09-02 security finding.) It had no flow here until 2026-08-30, and three separate defects
 that destroy or hide a user's work lived in it — a walkthrough-driven pass
 would have exercised none of them.
 

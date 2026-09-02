@@ -50,7 +50,13 @@ export function effectiveSafetyProfile(
   // stricter request — the safe direction: a route that cannot prove it
   // constrains anything is treated as constraining nothing.
   //
-  // The shipped harnesses are unaffected; they define all three profiles.
+  // NOT true of every shipped harness, and this comment said it was:
+  // `cursor_cli` declares `safety:` with `read_only` only, deliberately (the
+  // other profiles run print mode with no extra flags). So the gap check
+  // fires on a SHIPPED route for two of the three profiles, reporting
+  // `full_auto` — the safe direction, and the reason it is not a defect, but
+  // an operator reading "the shipped harnesses are unaffected" would not
+  // expect it and could not explain what they were seeing.
   if (svc.protocol?.safety !== undefined) {
     const request = requestedSafetyProfile(svc, requested);
     if (svc.protocol.safety[request] === undefined) return "full_auto";

@@ -43,9 +43,20 @@ export function collectApiKeyEnvVars(config: RouterConfig): ReadonlySet<string> 
   // (recorded during interpolation) is the only place that mapping survives,
   // and without it a configured Groq/Gemini key stayed visible to every
   // spawned CLI.
+  // EVERY reference in the string, not a whole-string match.
+  //
+  // `${VAR}` is supported anywhere in a value — `base_url: https://${HOST}/v1`
+  // is a documented shape — and `envRefs` stores the ORIGINAL string as its
+  // key. Anchoring to `^...$` therefore matched only values that are nothing
+  // but a reference, so a key embedded in a larger string was never collected
+  // and stayed visible to every spawned CLI. That is precisely the leak this
+  // sanitizer was written for, one string shape over.
+  const REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   for (const ref of config.envRefs?.values() ?? []) {
-    const name = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(ref)?.[1];
-    if (name) vars.add(name);
+    for (const match of ref.matchAll(REF_RE)) {
+      const name = match[1];
+      if (name) vars.add(name);
+    }
   }
   return vars;
 }

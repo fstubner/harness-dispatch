@@ -57,8 +57,18 @@ const HTTP_429_RE =
  *
  * Checked per line, so an assertion elsewhere in a long transcript cannot mask
  * a genuine 429 on its own line.
+ *
+ * `should` was in this list and had to come out: it discards
+ * "429 received; the request should be retried", a REAL limiter message that
+ * matched before this filter existed. A guard against false positives that
+ * creates false negatives on the same surface is worse than the problem — a
+ * missed 429 means the router keeps hammering an exhausted route.
+ *
+ * `it(` and `describe(` are written without a trailing ``, which could never
+ * match: `(` followed by a quote is not a word boundary, so both alternatives
+ * were dead while the docblock named them as covered.
  */
-const ASSERTION_CONTEXT_RE = /\b(?:assert\w*|expect\w*|should|test case|it\(|describe\()\b/i;
+const ASSERTION_CONTEXT_RE = /\bassert\w*|\bexpect\w*|\btest case\b|\bit\(|\bdescribe\(/i;
 
 /** Does any line report a 429 without reading as a test assertion? */
 function mentions429(text: string): boolean {
