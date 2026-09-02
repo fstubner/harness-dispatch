@@ -39,6 +39,59 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **SECURITY: a `copy` dispatch could delete files outside its workspace.**
+  The ownership guard used `stat`, which follows symlinks, so it compared the
+  uid of whatever a link POINTED AT rather than the link's own — and on a
+  shared machine the workspace path is predictable, so another local user can
+  plant one. Worse, the retention sweep that deletes aged workspaces ran
+  BEFORE the guard and had no ownership, marker or name check of its own.
+  Reproduced end to end in a container: a victim's directory chmod'd, the
+  project copied into it, and their files removed. All three now fixed —
+  `lstat` with symlinks refused outright, the guard runs before anything
+  destructive, and the sweep only deletes directories matching the name shape
+  this tool generates. The previous release's entry claiming a foreign-owned
+  root was "refused outright" was false against exactly this attack.
+
+- **Non-ASCII output was being corrupted.** Every stdout chunk was decoded on
+  its own, so a character split across two reads became replacement
+  characters — accented text, CJK, emoji, box-drawing. This is the path every
+  job uses, so it reached partial output, saved logs and delivered results,
+  and was invisible to anyone working in English.
+
+- **An aborted streaming request now stops the run.** Nothing connected the
+  client disconnect to the dispatch, so an abandoned stream ran to completion,
+  spending quota — and being the one path with no job record, it could not be
+  cancelled either. On a CLI route that meant an agent still editing files for
+  a caller that had gone.
+
+- **HTTP fanout with no eligible route now refuses** instead of answering 200
+  with an empty list. CI and cron read 200 as success; the MCP surface already
+  refused the identical request by name.
+
+- A configured `timeout_ms` now covers reading an endpoint's response body,
+  not just its headers — the same defect as the leaderboard timeout fixed last
+  release, in the path the router uses for its primary route.
+
+- Endpoint credentials can no longer leak through streaming error text: undici
+  embeds the request URL, and this branch returned it unscrubbed while its
+  sibling scrubbed it deliberately.
+
+- A rate-limit false positive no longer trips the breaker on text ABOUT a 429
+  — a line number, or a test assertion the delegate ran. One flag blocks a
+  route for 300 seconds and records a limit that never happened.
+
+- Config hot-reload now notices a config whose timestamp moves BACKWARDS
+  (restored from a backup, `cp -p`, extracted from an archive), and documents
+  the two cases where it does nothing at all.
+
+- The MCP snippet `configure` prints is now the entry `connect` actually
+  writes. Pasting the documented snippet then running `connect` was answered
+  "has an entry we did not write" — the tool called its own output
+  hand-edited and refused to update or remove it.
+
+- The chained-context omission notice named the wrong jobs when a job id
+  repeated, listing ones whose output was directly above it.
+
 - **An existing `copy` workspace directory is now actually secured.** The
   previous release set 0700 with `mkdir`'s `mode` option, which applies only to
   directories it CREATES — so everyone who had used `copy` before kept a

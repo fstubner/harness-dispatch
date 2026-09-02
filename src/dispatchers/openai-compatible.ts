@@ -557,8 +557,16 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         durationMs: Date.now() - start,
       };
     }
-    clearTimeout(timer);
-
+    // NOT cleared here — the timer must span the body read below.
+    //
+    // Clearing on headers left `res.text()` unbounded, so a route configured
+    // with `timeout_ms: 120000` could sit far past it on a stalled body, with
+    // only undici's 300s inactivity default as a backstop. This is the
+    // BUFFERED path, which the router uses for its primary route, so the
+    // configured timeout was the one number a caller could set and the one
+    // the slow case ignored. Structurally identical to the leaderboard
+    // timeout fixed in the previous release; the streaming sibling below
+    // already spans its own read.
     const responseHeaders = headersToObject(res.headers);
     const durationMs = Date.now() - start;
 
@@ -574,6 +582,8 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       rawBody = await res.text();
     } catch (err) {
       bodyReadError = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(timer);
     }
     const parsedBody = this.#parseBody(rawBody);
 
@@ -807,7 +817,18 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       }
     } catch (err) {
       clearTimeout(timer);
-      const errMsg = err instanceof Error ? err.message : String(err);
+      // Scrubbed, like every other error leaving this dispatcher.
+      //
+      // undici embeds the request URL in its failure messages, so a base_url
+      // carrying userinfo or an api key in the query string ended up verbatim
+      // in `result.error` — and from there in job status, stderr.log and
+      // dispatches.jsonl. The fetch-failure sibling routes through
+      // describeFetchFailure precisely to avoid that; this branch was the one
+      // that did not.
+      const errMsg = scrubEndpointSecrets(
+        err instanceof Error ? err.message : String(err),
+        this.baseUrl ?? "",
+      );
       yield {
         type: "completion",
         result: {

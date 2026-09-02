@@ -269,6 +269,27 @@ async function handleChatCompletions(
                 ),
           )
         : undefined;
+    // Refuse BEFORE writeHead, while a real status code is still available.
+    //
+    // The non-streaming branch has the same check; this one is here rather
+    // than beside it because once the 200 and the SSE headers are out, the
+    // only way to report a refusal is an error frame inside a successful
+    // stream — which is exactly the "vacuously true" shape being fixed.
+    if (preSelected !== undefined && preSelected.routes.length === 0) {
+      const why = preSelected.skippedRoutes.map((s) => `${s.route} (${s.code}): ${s.message}`).join("; ");
+      sendJson(res, 400, {
+        error: {
+          message:
+            `No fanout route can run this request${why ? ` — ${why}` : ""}. ` +
+            `Check /v1/usage for route readiness, or adjust models/safetyProfile/routePolicy.`,
+          type: "invalid_request_error",
+        },
+        // Structured as well as prose: a caller that was reading
+        // `skippedRoutes` off the old 200 keeps its machine-readable reason.
+        harness_dispatch: { mode: "fanout", skippedRoutes: preSelected.skippedRoutes },
+      });
+      return;
+    }
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
@@ -307,11 +328,29 @@ async function handleChatCompletions(
       const answer = createAnswerStream();
       let succeeded = false;
       let pendingFailure: { error: { message: string; route: string } } | undefined;
+      // Stop the run when the caller hangs up.
+      //
+      // Nothing connected the client's disconnect to the dispatch, so an
+      // aborted stream left the harness running to completion — measured
+      // still producing output twelve seconds after the client went away.
+      // This is the ONE dispatch path with no job record, so there is also no
+      // `jobId` to cancel it with: on a CLI route that means an agent with
+      // file access still working in the user's directory for a caller that
+      // no longer exists. OPERATIONS.md claimed "the run is lost with the
+      // connection"; it was not lost, it was unsupervised.
+      //
+      // `close` fires on normal completion too, hence the `writableEnded`
+      // guard — aborting a finished response would cancel nothing but would
+      // make every clean stream look like a cancellation in the logs.
+      const clientGone = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) clientGone.abort();
+      });
       for await (const { event, decision } of state.router.stream(
         parsed.prompt,
         parsed.files,
         parsed.workingDir,
-        { hints: parsed.hints, maxFallbacks: 2 },
+        { hints: parsed.hints, maxFallbacks: 2, signal: clientGone.signal },
       )) {
         const text = answer.next(event);
         if (text !== undefined) {
@@ -366,6 +405,28 @@ async function handleChatCompletions(
         ? parsed.models
         : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
     const selected = eligibleRoutes(routes);
+    // An empty candidate set is a REFUSAL, not an empty success.
+    //
+    // This answered 200 with `"[]"` as the content — vacuously true over zero
+    // arms, on the surface PRODUCT.md points CI and cron at, which read 200 as
+    // "it worked". MCP already refuses the identical input by name. The
+    // no-`models` sub-case of this class was closed earlier; the
+    // empty-ELIGIBLE-SET case beside it was not, which is the same defect one
+    // branch over. Same wording as the MCP path, so the two surfaces answer
+    // one question one way.
+    if (selected.routes.length === 0) {
+      const why = selected.skippedRoutes.map((s) => `${s.route} (${s.code}): ${s.message}`).join("; ");
+      sendJson(res, 400, {
+        error: {
+          message:
+            `No fanout route can run this request${why ? ` — ${why}` : ""}. ` +
+            `Check /v1/usage for route readiness, or adjust models/safetyProfile/routePolicy.`,
+          type: "invalid_request_error",
+        },
+        harness_dispatch: { mode: "fanout", skippedRoutes: selected.skippedRoutes },
+      });
+      return;
+    }
     const rows = await runFanoutArms(holder, selected.routes, parsed);
     sendJson(
       res,

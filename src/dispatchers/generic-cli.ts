@@ -34,13 +34,41 @@ const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 /**
  * "429" only counts next to HTTP context. A bare includes("429") flagged any
  * failed run whose transcript mentioned the number at all — a port, a line
- * number, a test count — and one flag trips the breaker with NO threshold,
- * blocking the route for 300s and recording `rate_limited` in the counts the
- * orchestrator is told to trust. The phrase list below covers limiters that
+ * number, a test count. That claim was made once and was still false: an
+ * acceptance pass measured "Error on line 429 of the config" and two test
+ * assertions all flagging, because the gap allowed arbitrary WORDS between
+ * the keyword and the number. It now allows only separators, and a line that
+ * reads as a test assertion is excluded outright. One flag trips the breaker
+ * with NO threshold, blocking the route for 300s and recording `rate_limited`
+ * in the counts the orchestrator is told to trust. The phrase list below covers limiters that
  * spell it out; this pattern covers the ones that only send the status code.
  */
 const HTTP_429_RE =
-  /\b(?:http|status(?:[_\s]?code)?|error|code)\b[^\d\n]{0,12}429\b|\b429\b[\s:-]{0,3}too many requests/i;
+  /\b(?:http|status(?:[_\s]?code)?|error(?:[_\s]?code)?|code)\b["'\s:=_,-]{0,4}429\b|\b429\b[\s:-]{0,3}too many requests/i;
+
+/**
+ * Text that is TALKING ABOUT a 429 rather than reporting one.
+ *
+ * The pattern above still matched an assertion — "expected error code 429 but
+ * got 200", "assertion failed: status code 429 expected" — which is a test
+ * suite the delegate RAN, not a limiter the delegate HIT. Flagging it trips
+ * the breaker with no threshold and blocks the route for 300 seconds, and
+ * records a rate limit in the counts an orchestrator is told to trust.
+ *
+ * Checked per line, so an assertion elsewhere in a long transcript cannot mask
+ * a genuine 429 on its own line.
+ */
+const ASSERTION_CONTEXT_RE = /\b(?:assert\w*|expect\w*|should|test case|it\(|describe\()\b/i;
+
+/** Does any line report a 429 without reading as a test assertion? */
+function mentions429(text: string): boolean {
+  for (const line of text.split("\n")) {
+    if (!HTTP_429_RE.test(line)) continue;
+    if (ASSERTION_CONTEXT_RE.test(line)) continue;
+    return true;
+  }
+  return false;
+}
 
 /**
  * Only the TAIL of each stream is scanned (per stream, before joining).
@@ -68,7 +96,7 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
     // 2026 10:16 PM.") — none of the phrases above matched it, so a real
     // Codex exhaustion was silently NOT flagged as rate-limited.
     lowered.includes("usage limit") ||
-    HTTP_429_RE.test(text);
+    mentions429(text);
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
   const retryAfter = match?.[1] ? Number.parseFloat(match[1]) : null;

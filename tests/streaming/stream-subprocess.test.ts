@@ -276,3 +276,49 @@ describe("drainSubprocessStream", () => {
     expect(res.timedOut).toBe(false);
   });
 });
+
+describe("multi-byte characters split across reads", () => {
+  /**
+   * Each `data` buffer was decoded on its own with `buf.toString("utf8")`, so
+   * a character straddling two reads became replacement characters.
+   * Reproduced: "price: €" split inside the euro sign arrived as
+   * "price: ���".
+   *
+   * This is the path every MCP job uses — partialOutput, stdout.log,
+   * result.md — so accented text, CJK, emoji and box-drawing were corrupted in
+   * delivered work product. The buffered sibling concatenates before decoding
+   * and was always correct, which is why only the path nothing but tests
+   * exercise looked right.
+   */
+  async function collect(script: string): Promise<string> {
+    let out = "";
+    for await (const ev of streamSubprocess(process.execPath, ["-e", script], {})) {
+      if ("stream" in ev && ev.stream === "stdout") out += ev.chunk;
+    }
+    return out;
+  }
+
+  it("reassembles a character split across two writes", async () => {
+    const script = [
+      'const b = Buffer.from("price: \u20ac done", "utf8");',
+      'const cut = b.indexOf(0xe2) + 1;',
+      'process.stdout.write(b.subarray(0, cut));',
+      'setTimeout(() => process.stdout.write(b.subarray(cut)), 60);',
+    ].join("\n");
+    expect(await collect(script)).toBe("price: \u20ac done");
+  }, 20_000);
+
+  it("handles a 4-byte emoji split across three writes", async () => {
+    const script = [
+      'const b = Buffer.from("a\u{1F600}b", "utf8");',
+      'process.stdout.write(b.subarray(0, 2));',
+      'setTimeout(() => process.stdout.write(b.subarray(2, 4)), 40);',
+      'setTimeout(() => process.stdout.write(b.subarray(4)), 80);',
+    ].join("\n");
+    expect(await collect(script)).toBe("a\u{1F600}b");
+  }, 20_000);
+
+  it("leaves plain ASCII exactly as it was", async () => {
+    expect(await collect('process.stdout.write("hello world")')).toBe("hello world");
+  }, 20_000);
+});

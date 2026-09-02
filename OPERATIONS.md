@@ -132,7 +132,10 @@ is not a decision a restart should make.
 
 **A streamed request is interrupted.** `POST /v1/chat/completions` with
 `stream: true` creates no job record, so there is no `jobId` and nothing to
-recover — the run is lost with the connection. Every other dispatch path
+recover. The run is now STOPPED when the client disconnects — it used to keep
+going to completion, spending quota with no way to cancel it, because nothing
+connected the disconnect to the dispatch. Either way its output is gone with
+the connection. Every other dispatch path
 survives a client timeout or a server restart. This is a real gap rather than a
 design choice: streaming is the mode where a long run is most likely to be
 interrupted, and it is the one mode with no record. Prefer the non-streaming

@@ -791,3 +791,52 @@ describe("MCP sessions that never come into existence", () => {
     }
   });
 });
+
+describe("fanout with no eligible route", () => {
+  /**
+   * This answered HTTP 200 with `"[]"` as the content — vacuously true over
+   * zero arms, on the surface PRODUCT.md points CI and cron at, which read 200
+   * as success. MCP already refuses the identical input by name. The
+   * no-`models` sub-case of this class was closed earlier; the
+   * empty-ELIGIBLE-SET case beside it was not.
+   */
+  async function fanoutAt(stream: boolean): Promise<{ status: number; body: string }> {
+    const fake = await startFakeOpenAi();
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        // Real routes that are all INELIGIBLE — the empty-eligible-set case.
+        // An unknown NAME is a different thing and is already rejected
+        // earlier, by name, on both branches.
+        body: JSON.stringify({
+          prompt: "hi",
+          workingDir: process.cwd(),
+          stream,
+          mode: "fanout",
+          hints: { routePolicy: "blocked" },
+        }),
+      });
+      return { status: res.status, body: await res.text() };
+    } finally {
+      await handle.close();
+      await fake.close();
+    }
+  }
+
+  it("refuses instead of reporting an empty success", async () => {
+    const res = await fanoutAt(false);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatch(/No fanout route can run this request/);
+  });
+
+  it("refuses on the streaming branch too, before the 200 goes out", async () => {
+    // Once SSE headers are sent the only way to report a refusal is an error
+    // frame inside a successful stream — which is the shape being fixed.
+    const res = await fanoutAt(true);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatch(/No fanout route can run this request/);
+  });
+});

@@ -107,7 +107,7 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
   const sections: string[] = [];
   let budget = MAX_CONTEXT_CHARS;
 
-  for (const jobId of contextJobs) {
+  for (const [index, jobId] of contextJobs.entries()) {
     let section: string;
     try {
       assertValidJobId(jobId);
@@ -151,7 +151,16 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
       // an incomplete picture and never know." A job dropped for want of
       // budget is exactly that case, and it is worse than an unknown one,
       // because the caller explicitly asked for it.
-      const dropped = contextJobs.slice(contextJobs.indexOf(jobId) + 1);
+      // Slice from the LOOP's position, not `indexOf`.
+      //
+      // `indexOf` returns the FIRST occurrence, so a repeated jobId made the
+      // notice describe the wrong point in the list: with [j1,j2,j1,j3,j4] it
+      // named four jobs omitted — including j1 and j2, whose output was
+      // rendered directly above it — and told the delegate to fetch them.
+      // Only j3 and j4 were actually dropped. A duplicate id is a plausible
+      // thing for an orchestrator to pass, and the notice was added in this
+      // same release, so this is that fix being wrong one case over.
+      const dropped = contextJobs.slice(index + 1);
       if (dropped.length > 0) {
         sections.push(
           `### ${dropped.length} earlier job(s) omitted` +

@@ -78,11 +78,15 @@ Two things cancelling does NOT do, and both matter before you rely on it:
 
 - Call `usage` first when unsure: it lists valid route ids, their default
   models, per-session call counts, quota, and breaker state.
-- `hints.model` (and the top-level `service`) are NOT validated — an unknown
-  name is silently ignored and routing proceeds without it.
+- `hints.model` is NOT validated — an unknown name is forwarded to the picked
+  harness as-is. `service` IS validated: an unknown route id is REJECTED with
+  `Unknown service: <name>` and the list of valid ids.
+- Route ids carry their suffix — `codex_cli`, not `codex`. This page used to
+  say `service` was unvalidated and then gave `service: "codex"` as its worked
+  example, so following it produced the very error it said could not happen.
 - Omit `service` to let the router pick by per-task capability scores;
   pass it only when you specifically want one harness (e.g. `service:
-  "codex"` with `hints.model: "gpt-5.6-sol"` for a hard refactor).
+  "codex_cli"` with `hints.model: "gpt-5.6-sol"` for a hard refactor).
 
 ## Fanout (multiple independent opinions)
 
