@@ -3,7 +3,7 @@
  * harness-dispatch CLI entrypoint.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1183,9 +1183,25 @@ function finish(code: number): void {
   bail.unref();
 }
 
+// Run main() only when this file is the process entrypoint, not when a test
+// imports it. `argv[1]` is the path the user invoked, which is NOT this file
+// when npm installed the command as a symlink (`/usr/local/bin/harness-dispatch`
+// on Linux and macOS): node does not resolve it, so a name check alone
+// silently ran nothing there and exited 0 — every documented command was a
+// no-op for every non-Windows `npm install -g` user through 0.8.0. Windows
+// never hit it because npm's .cmd shim passes the real dist/bin.js path.
 const entrypoint =
-  typeof process !== "undefined" && Array.isArray(process.argv) ? process.argv[1] : "";
-if (entrypoint && (entrypoint.endsWith("bin.ts") || entrypoint.endsWith("bin.js"))) {
+  typeof process !== "undefined" && Array.isArray(process.argv) ? (process.argv[1] ?? "") : "";
+function isThisFile(invoked: string): boolean {
+  if (!invoked) return false;
+  if (invoked.endsWith("bin.ts") || invoked.endsWith("bin.js")) return true;
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+if (isThisFile(entrypoint)) {
   void main(process.argv.slice(2))
     .then((code) => {
       finish(code);

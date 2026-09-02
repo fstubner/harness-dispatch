@@ -39,6 +39,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The installed command did nothing on Linux and macOS.** `npm install -g`
+  puts `harness-dispatch` on PATH as a symlink to `dist/bin.js`, and node
+  hands that unresolved link path to the program, so a run-if-entrypoint guard
+  that only looked for a filename ending in `bin.js` decided it was being
+  imported, ran nothing, and exited 0. Every documented command — `configure`,
+  `doctor`, `connect`, `dispatch`, even `--help` — printed nothing and reported
+  success on every non-Windows `npm install -g` or `npx` since the first
+  release. Windows was unaffected only because npm's `.cmd` shim passes the
+  real file path. The guard now also accepts an invoked path that resolves to
+  this file. Found by walking the README's three install steps in a clean
+  container, which nothing before had done: every prior walk ran `node
+  dist/bin.js` on this Windows machine.
+
 - **SECURITY: workspace paths are now built and verified rather than checked
   and trusted.** Four consecutive releases patched a guard that inspected a
   path STRING and then let every later write re-resolve it, and each patch was
