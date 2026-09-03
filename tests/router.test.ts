@@ -263,6 +263,25 @@ class StubDispatcher implements Dispatcher {
     return this.nextResult;
   }
 
+
+  /**
+   * Present, and throws.
+   *
+   * `Dispatcher` requires it, and this stub claimed to implement the
+   * interface without it for as long as nothing typechecked the tests. A
+   * throwing body is deliberately stronger than absence: the buffered entry
+   * points must reach a dispatcher through `dispatch()`, because
+   * OpenAICompatibleDispatcher's `dispatch()` sends `stream: false` on the
+   * wire, and any test that accidentally routes a buffered call through
+   * streaming now fails loudly here instead of passing quietly.
+   */
+  // eslint-disable-next-line require-yield
+  async *stream(): AsyncIterable<import("../src/types.js").DispatcherEvent> {
+    throw new Error(
+      "StubDispatcher.stream() was called — a buffered entry point must use dispatch()",
+    );
+  }
+
   async checkQuota(): Promise<never> {
     throw new Error("not implemented for tests");
   }
@@ -1621,10 +1640,7 @@ describe("the buffered entry points still call dispatch(), not stream()", () => 
   it("route() reaches a dispatcher that has no stream() at all", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
-    expect(
-      (alphaD as unknown as { stream?: unknown }).stream,
-      "the stub grew a stream(), so this test no longer proves anything",
-    ).toBeUndefined();
+    // The stub's stream() throws, so reaching it fails the dispatch outright.
     const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
     const { result } = await router.route("hi", [], "/tmp");
     expect(result.success).toBe(true);

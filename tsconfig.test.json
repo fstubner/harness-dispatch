@@ -1,0 +1,30 @@
+{
+  // Typechecks the TESTS, which the build config cannot: it sets `rootDir:
+  // src` so it can emit, and a test file outside that root is an error there.
+  //
+  // Without this, `implements Dispatcher` in a test stub was never checked
+  // against the interface — a stub missing the required `stream()` compiled
+  // fine for as long as nothing called it. Two changes have now been caught
+  // only at runtime for want of this file: a stub that would have crashed the
+  // moment the router stopped preferring `dispatch()`, and an import left
+  // pointing at a module that no longer re-exported the symbol.
+  //
+  // noEmit, so this is purely a check; vitest transpiles the tests itself.
+  //
+  // NOT yet part of `npm run check`: it reports 52 pre-existing errors across
+  // twelve files (possibly-undefined access, wrong arity, a few third-party
+  // shapes under exactOptionalPropertyTypes). Run `npm run typecheck:tests`
+  // to see them. Clearing that list and adding this to the gate is the next
+  // step; wiring it in now would just break the build for everyone.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    // A test may legitimately leave an argument unused when it is pinning a
+    // callback's shape; the src rule stays strict.
+    "noUnusedParameters": false
+  },
+  "include": ["src/**/*", "tests/**/*"],
+  // The base excludes `tests`; that has to be overridden, not just added to.
+  "exclude": ["node_modules", "dist"]
+}

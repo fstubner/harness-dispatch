@@ -177,6 +177,25 @@ class Stub implements Dispatcher {
   async dispatch(): Promise<DispatchResult> {
     return { output: "", service: this.id, success: true } as DispatchResult;
   }
+
+  /**
+   * Present, and throws.
+   *
+   * `Dispatcher` requires it, and this stub claimed to implement the
+   * interface without it for as long as nothing typechecked the tests. A
+   * throwing body is deliberately stronger than absence: the buffered entry
+   * points must reach a dispatcher through `dispatch()`, because
+   * OpenAICompatibleDispatcher's `dispatch()` sends `stream: false` on the
+   * wire, and any test that accidentally routes a buffered call through
+   * streaming now fails loudly here instead of passing quietly.
+   */
+  // eslint-disable-next-line require-yield
+  async *stream(): AsyncIterable<import("../src/types.js").DispatcherEvent> {
+    throw new Error(
+      "Stub.stream() was called — a buffered entry point must use dispatch()",
+    );
+  }
+
   async checkQuota(): Promise<never> {
     throw new Error("n/a");
   }

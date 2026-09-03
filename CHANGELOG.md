@@ -8,6 +8,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The test suite's `implements Dispatcher` claims are true now, and there
+  is a way to check them.** `tsconfig.json` sets `rootDir: src` so it can
+  emit, which means a test file cannot be in the same program — so the tests
+  were never typechecked, and four stub classes declared they implemented an
+  interface while omitting a required method. That is not academic: it has
+  now cost two runtime failures that a compiler would have caught instantly,
+  one of them a stub that would have crashed the moment the router stopped
+  preferring the buffered path. The stubs implement it, with a body that
+  throws — stronger than absence, because a buffered entry point that
+  accidentally streams now fails loudly instead of passing quietly. A new
+  `tsconfig.test.json` typechecks tests against src; `npm run typecheck:tests`
+  runs it. It reports 52 remaining pre-existing errors and is deliberately
+  not in `npm run check` until they are cleared.
+
 - **"A shipped harness preset" now has a module.** It was a protocol block
   in YAML, loaded and parsed inside `config.ts`, interpreted by the generic
   CLI dispatcher, read again by the dispatcher factory, and asserted by four
