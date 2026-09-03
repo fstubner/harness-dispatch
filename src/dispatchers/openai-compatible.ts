@@ -510,18 +510,40 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
    * Kept as a fast-path (no incremental parsing overhead) and to preserve
    * existing mocked-fetch tests.
    */
-  override async dispatch(
+  /**
+   * Everything both request paths do before they diverge, in one place.
+   *
+   * The two were written out twice and stayed in step by hand: the URL, the
+   * headers, the timeout timer, the abort wiring, and the mapping of a thrown
+   * fetch into a failure. That is not theoretical drift — a credential leak
+   * was fixed in one of the two body-built error messages and missed in the
+   * other until a test went looking, and this file's own header records the
+   * same shape happening before.
+   *
+   * `streaming` stays a parameter rather than being collapsed away, because
+   * it is the one thing that genuinely differs: `dispatch()` sends
+   * `stream: false` and asks for JSON, and flipping that would change the
+   * request every buffered endpoint call puts on the wire.
+   *
+   * The timer is handed back UNCLEARED on purpose — it has to span the body
+   * read that follows, which is where a half-dead endpoint stalls. The caller
+   * clears it.
+   */
+  async #openRequest(
     prompt: string,
     files: string[],
-    _workingDir: string,
-    opts: DispatchOpts = {},
-  ): Promise<DispatchResult> {
+    opts: DispatchOpts,
+    streaming: boolean,
+  ): Promise<
+    | { ok: true; res: Response; timer: ReturnType<typeof setTimeout>; timeoutMs: number; start: number }
+    | { ok: false; failure: DispatchResult; start: number }
+  > {
     const start = Date.now();
     const fullPrompt = await buildPromptWithFiles(prompt, files);
     const url = this.#url();
     const model = opts.modelOverride ?? this.model;
-    const body = this.#body(model, fullPrompt, false);
-    const headers = this.#headers("application/json");
+    const body = this.#body(model, fullPrompt, streaming);
+    const headers = this.#headers(streaming ? "text/event-stream" : "application/json");
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const controller = new AbortController();
@@ -535,27 +557,42 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
     }
 
-    let res: Response;
     try {
-      res = await fetch(url, {
+      const res = await fetch(url, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      return { ok: true, res, timer, timeoutMs, start };
     } catch (err) {
       clearTimeout(timer);
       const aborted = (err as { name?: string } | null)?.name === "AbortError";
       return {
-        output: "",
-        service: this.id,
-        success: false,
-        error: aborted
+        ok: false,
+        start,
+        failure: {
+          output: "",
+          service: this.id,
+          success: false,
+          error: aborted
             ? `Timed out after ${timeoutMs}ms`
             : describeFetchFailure(err, this.baseUrl ?? ""),
-        durationMs: Date.now() - start,
+          durationMs: Date.now() - start,
+        },
       };
     }
+  }
+
+  override async dispatch(
+    prompt: string,
+    files: string[],
+    _workingDir: string,
+    opts: DispatchOpts = {},
+  ): Promise<DispatchResult> {
+    const opened = await this.#openRequest(prompt, files, opts, false);
+    if (!opened.ok) return opened.failure;
+    const { res, timer, start } = opened;
     // NOT cleared here — the timer must span the body read below.
     //
     // Clearing on headers left `res.text()` unbounded, so a route configured
@@ -669,50 +706,12 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     _workingDir: string,
     opts: DispatchOpts,
   ): AsyncGenerator<DispatcherEvent> {
-    const start = Date.now();
-    const fullPrompt = await buildPromptWithFiles(prompt, files);
-    const url = this.#url();
-    const model = opts.modelOverride ?? this.model;
-    const body = this.#body(model, fullPrompt, true);
-    const headers = this.#headers("text/event-stream");
-
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref?.();
-    // A cancellation aborts the in-flight request the same way the timeout
-    // does, so a cancelled endpoint call stops paying for tokens it will
-    // never read.
-    if (opts?.signal) {
-      if (opts.signal.aborted) controller.abort();
-      else opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
-    }
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      const aborted = (err as { name?: string } | null)?.name === "AbortError";
-      yield {
-        type: "completion",
-        result: {
-          output: "",
-          service: this.id,
-          success: false,
-          error: aborted
-            ? `Timed out after ${timeoutMs}ms`
-            : describeFetchFailure(err, this.baseUrl ?? ""),
-          durationMs: Date.now() - start,
-        },
-      };
+    const opened = await this.#openRequest(prompt, files, opts, true);
+    if (!opened.ok) {
+      yield { type: "completion", result: opened.failure };
       return;
     }
+    const { res, timer, start } = opened;
 
     const responseHeaders = headersToObject(res.headers);
 

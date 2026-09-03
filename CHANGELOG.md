@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- The endpoint dispatcher's two request paths share one prologue. The URL,
+  headers, timeout timer, abort wiring and fetch-error mapping were written
+  out twice and kept in step by hand — which is not a theoretical risk here:
+  the credential leak fixed in the entry above existed in both copies, and
+  the file's own header records the same shape happening before. What stays
+  a parameter is the one thing that genuinely differs, the `stream` flag and
+  its Accept header, now pinned by tests asserting what each path puts on
+  the wire. Collapsing that too is what "just drain the stream" would do,
+  and it would change every buffered endpoint request against a third-party
+  gateway.
+
 - **SECURITY: an endpoint that echoed your API key back in its error body
   had it passed straight through to the caller and into
   `logs/dispatches.jsonl`.** Both request paths build `HTTP <status>:
