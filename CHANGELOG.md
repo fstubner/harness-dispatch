@@ -8,6 +8,23 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Housekeeping the audit listed and nothing had got to: CI built the whole
+  project twice on every leg of every run (the explicit step plus the one
+  inside `npm test`); `doctor` ran its state-directory probe twice, creating
+  and deleting a file each time, to fill two fields from the same answer; an
+  alias renamed a function to itself; and 28 blank lines left behind by
+  earlier extractions are gone.
+
+- Four assertions that could not fail for the reason their test claimed.
+  `job_status` on an unknown job asserted only that *something* threw, which
+  a schema rejection also satisfies — so "a well-formed id for a job that is
+  gone" was untested. The traversal and near-miss-action refusals had the
+  same hole: both passed on "No such job", which every id in that file
+  produces, leaving the thing under test unchecked. And a parser test
+  asserted only that a normal OpenAI body did not throw, which is equally
+  true of a parser that dropped the request on the floor; it now checks the
+  request survived.
+
 - The endpoint dispatcher's two request paths share one prologue. The URL,
   headers, timeout timer, abort wiring and fetch-error mapping were written
   out twice and kept in step by hand — which is not a theoretical risk here:

@@ -31,13 +31,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Build BEFORE tests: tests/smoke-agents.test.ts imports
-      # scripts/smoke-agents.mjs, which imports from dist/ — on a fresh
-      # checkout the suite fails without a prior build (caught by the very
-      # first cross-platform run of this workflow).
-      - name: Build
-        run: npm run build
-
+      # No separate build step: `npm run check` runs `npm test`, which is
+      # `npm run build && vitest run`, so the build happens before anything
+      # imports dist/ — which tests/smoke-agents.test.ts does, and which is
+      # why an explicit build was added here in the first place. Having both
+      # built the whole project twice on every leg of every run.
       - name: Typecheck and test
         run: npm run check
 
