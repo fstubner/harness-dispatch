@@ -16,7 +16,10 @@
 import { promises as fs } from "node:fs";
 
 import { loadConfig } from "../config.js";
-import { setJobRetentionDays } from "../jobs.js";
+// From the module that DEFINES it, not the barrel that re-exports it.
+// Importing it from ../jobs.js closed a cycle (jobs -> this file -> jobs)
+// which jobs.ts then had to dodge with a dynamic import at runtime.
+import { setJobRetentionDays } from "../jobs/store.js";
 import { LeaderboardCache } from "../leaderboard.js";
 import { QuotaCache } from "../quota.js";
 import { Router } from "../router.js";

@@ -8,6 +8,23 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The job store is five modules instead of one 1,600-line file**, and two
+  runtime imports that existed to dodge an import cycle are gone. The cycle
+  was real but avoidable: `config-hot-reload.ts` imported
+  `setJobRetentionDays` from the `jobs.ts` barrel rather than from
+  `jobs/store.ts`, where it is defined. Pointing it at the definition removed
+  the cycle, and the second dynamic import was guarding a cycle that never
+  existed. `jobs.ts` is now a 32-line barrel, so every consumer keeps its
+  import path.
+
+  The move surfaced a defect worth naming: `resolveRunnerPath()` resolves
+  against its own module's location, so moving it one directory deeper made
+  both its candidates miss. Returning nothing is not an error there — it is
+  the signal to run the job **in-process**, so every dispatch quietly stopped
+  being detached and the concurrency cap stopped applying, with nothing
+  failing until the job-concurrency tests ran. Fixed, with the trap written
+  down at the function.
+
 - **The tests are typechecked, and the gate enforces it.** Clearing the 125
   errors that surfaced turned up two things a reader would have taken at face
   value. `RetryOutcome` never declared `droppedModel` — a field `retry_job`
