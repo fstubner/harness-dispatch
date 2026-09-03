@@ -8,6 +8,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Two rules that a user depends on were passing while broken.** An audit
+  broke fifteen guards on purpose to see which the suite would catch; these
+  are the two that got through. First, "a per-call `timeoutMs` beats the
+  service's configured default" is written out four times in `router.ts`,
+  once per entry point, and only the `route()` copy was tested — while
+  background jobs and every HTTP request go through `stream()`/`streamTo()`,
+  so the copies that carry real traffic were unpinned. Second, the HTTP
+  bearer check was only ever tested with the header MISSING: a server that
+  accepted any `Bearer` value at all passed every test in its own file, and
+  token rotation on a running server was never exercised. Both now have
+  table-driven tests covering every entry point and every authenticated
+  route, including a wrong token of the same length, an empty one, and one
+  without the scheme. No behaviour changed; the tests are what changed.
+
 - README corrected in nine places found by an audit against the code: the
   Configure section described a verification step and an interactive
   choice of harnesses, model priority and safety profile that do not exist;
