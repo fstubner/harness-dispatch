@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`doctor` names a route that has never once succeeded.** The circuit
+  breaker is about RECENT failure and forgets after its cooldown, so a route
+  that is simply dead — a host that no longer resolves, a revoked key — keeps
+  being selected, keeps failing, and keeps falling back, indefinitely. On the
+  maintainer's own machine a local endpoint sat at 8 calls and 0 successes
+  while being the preferred route for `review`, so every review dispatch paid
+  for one doomed attempt first. The counts were in `usage` all along, and
+  nobody reads `usage` when things merely feel slow. Advisory, never a
+  failure: a route needs at least five calls before it is judged, because a
+  laptop that was asleep is not a broken endpoint.
+
 - Three of the six MCP tools were asserted to exist and never invoked.
   `cancel_job`, `retry_job` and `workspace` had tests for the functions
   underneath but nothing exercising the layer that parses a caller's

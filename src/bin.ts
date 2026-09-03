@@ -839,6 +839,45 @@ async function cmdDoctor(
     codexRoutes.map(async (route) => ({ route, state: await codexLoginState(route.command!) })),
   );
   const loggedOut = loginStates.filter((entry) => entry.state === "logged_out");
+  // A route that has NEVER succeeded is worth saying out loud.
+  //
+  // The breaker is about recent failure and forgets after its cooldown, so a
+  // route that is simply dead — a host that no longer resolves, a key that was
+  // revoked — keeps being selected, failing, and falling back, forever. On the
+  // maintainer's own machine a local endpoint sat at 8 calls and 0 successes
+  // while being tier-3-preferred for `review`, so every review dispatch paid
+  // for one doomed attempt before falling back. Nothing reported it: `usage`
+  // showed the counts and nobody reads `usage` when things merely feel slow.
+  //
+  // Advisory, never a failure: a fresh install has no calls at all, and a
+  // route can legitimately fail its first few (a laptop that was asleep). The
+  // threshold is about having enough evidence to be worth mentioning, not
+  // about being sure.
+  const NEVER_SUCCEEDED_MIN_CALLS = 5;
+  const deadRoutes = status.routes
+    .filter((route) => status.ready.includes(route.id))
+    .map((route) => ({
+      id: route.id,
+      calls: route.quota.localCallCount ?? 0,
+      successes: route.quota.localSuccessCount ?? 0,
+    }))
+    .filter((r) => r.calls >= NEVER_SUCCEEDED_MIN_CALLS && r.successes === 0);
+  checks.push({
+    name: "route-health",
+    ok: true,
+    detail:
+      deadRoutes.length === 0
+        ? "no ready route has failed every call it has been given"
+        : deadRoutes
+            .map(
+              (r) =>
+                `${r.id} has never succeeded (${r.calls} calls, 0 successes) — it is still ` +
+                `being selected and failing, so every dispatch it wins costs an attempt ` +
+                `before falling back. Check the endpoint or credential, or disable it.`,
+            )
+            .join(" | "),
+  });
+
   checks.push({
     name: "harness-login",
     ok: loggedOut.length === 0,

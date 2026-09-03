@@ -256,6 +256,53 @@ describe("CLI parser", () => {
     });
   });
 
+  describe("route-health", () => {
+    // A route that has never succeeded keeps being selected and keeps failing:
+    // the breaker forgets after its cooldown, so a genuinely dead endpoint
+    // costs one doomed attempt on every dispatch it wins. Seen on the
+    // maintainer's machine at 8 calls and 0 successes while being preferred
+    // for review work.
+    async function doctorWithCounts(calls: number, successes: number) {
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      // The counts reach doctor through fullStatus(), which is what a real
+      // run reads back off disk; stubbing there keeps the test on the same
+      // path rather than reaching into the cache's internals.
+      vi.spyOn(QuotaCache.prototype, "fullStatus").mockResolvedValue({
+        local: {
+          used: null,
+          limit: null,
+          remaining: null,
+          resetAt: null,
+          source: "unknown",
+          localCallCount: calls,
+          localSuccessCount: successes,
+        },
+      } as unknown as Awaited<ReturnType<QuotaCache["fullStatus"]>>);
+      const config = await writeConfig();
+      const result = await capture(() => main(["doctor", "--config", config, "--json"]));
+      const checks = JSON.parse(result.stdout).checks as Array<{ name: string; detail: string; ok: boolean }>;
+      return checks.find((c) => c.name === "route-health");
+    }
+
+    it("names a route that has failed every call it was given", async () => {
+      const check = await doctorWithCounts(8, 0);
+      expect(check?.detail).toMatch(/has never succeeded \(8 calls, 0 successes\)/);
+      // Advisory: a dead route is worth saying, not worth failing an install
+      // that is otherwise fine.
+      expect(check?.ok, "a dead route failed the whole doctor run").toBe(true);
+    });
+
+    it("stays quiet while a route has too few calls to judge", async () => {
+      const check = await doctorWithCounts(2, 0);
+      expect(check?.detail).toMatch(/no ready route has failed every call/);
+    });
+
+    it("stays quiet for a route that has succeeded at least once", async () => {
+      const check = await doctorWithCounts(20, 1);
+      expect(check?.detail).toMatch(/no ready route has failed every call/);
+    });
+  });
+
   describe("harness-login", () => {
     // Seen on the cold-install walk: an installed, never-logged-in Codex
     // passed every doctor check and the first dispatch failed with a raw
