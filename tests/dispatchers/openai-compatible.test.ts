@@ -68,6 +68,82 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+describe("a credential never reaches the caller's error text", () => {
+  // Scrubbing was proven at the unit (redact-endpoint.test.ts) and never from
+  // the dispatcher — and the dispatcher is where a leak would actually happen,
+  // because undici embeds the request URL in the errors it throws and that
+  // string reaches the terminal AND logs/dispatches.jsonl. Deleting the scrub
+  // left this file entirely green.
+  //
+  // Two shapes, because they leak differently: a key in the URL's query, and
+  // a key in userinfo. Both are documented ways to point this tool at an
+  // endpoint.
+
+  const SECRET = "sk-test-abc";
+
+  it("keeps a query-string key out of a thrown network error", async () => {
+    const url = `https://api.example.com/v1?key=${SECRET}`;
+    // undici puts the request URL into the message it throws.
+    fetchMock.mockRejectedValue(new Error(`fetch failed for ${url}`));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc({ baseUrl: url }));
+    const res = await d.dispatch("hi", [], "");
+
+    expect(res.success).toBe(false);
+    expect(res.error ?? "", "the API key was returned to the caller").not.toContain(SECRET);
+  });
+
+  it("keeps a userinfo credential out of a thrown network error", async () => {
+    const url = `https://user:${SECRET}@api.example.com/v1`;
+    fetchMock.mockRejectedValue(new Error(`connect ECONNREFUSED ${url}`));
+
+    const d = new OpenAICompatibleDispatcher(baseSvc({ baseUrl: url }));
+    const res = await d.dispatch("hi", [], "");
+
+    expect(res.success).toBe(false);
+    expect(res.error ?? "", "the userinfo credential was returned to the caller").not.toContain(
+      SECRET,
+    );
+  });
+
+  it("keeps it out of the STREAMING path's non-2xx error too", async () => {
+    // Same defect, one branch over — the shape this codebase keeps repeating.
+    // dispatch() and stream() build the identical `HTTP <status>: <message>`
+    // from the response body, so a fix to one that missed the other would
+    // leave the leak live for every streaming caller.
+    const url = `https://api.example.com/v1?key=${SECRET}`;
+    fetchMock.mockResolvedValue(
+      mockJsonResponse({ error: { message: `bad request for ${url}` } }, { status: 400 }),
+    );
+
+    const d = new OpenAICompatibleDispatcher(baseSvc({ baseUrl: url }));
+    let error = "";
+    for await (const event of d.stream("hi", [], "")) {
+      if (event.type === "completion") error = event.result.error ?? "";
+    }
+
+    expect(error).toMatch(/HTTP 400/);
+    expect(error, "the streaming path returned the credential").not.toContain(SECRET);
+  });
+
+  it("keeps a credential out of an error built from a non-2xx body", async () => {
+    // The other way it escapes: the endpoint echoes the URL back in its own
+    // error body, which this tool then quotes.
+    const url = `https://api.example.com/v1?key=${SECRET}`;
+    fetchMock.mockResolvedValue(
+      mockJsonResponse({ error: { message: `bad request for ${url}` } }, { status: 400 }),
+    );
+
+    const d = new OpenAICompatibleDispatcher(baseSvc({ baseUrl: url }));
+    const res = await d.dispatch("hi", [], "");
+
+    expect(res.success).toBe(false);
+    expect(res.error ?? "", "a credential echoed by the endpoint was passed straight through").not.toContain(
+      SECRET,
+    );
+  });
+});
+
 describe("OpenAICompatibleDispatcher", () => {
   it("POSTs to <baseUrl>/v1/chat/completions with Bearer auth and expected body", async () => {
     fetchMock.mockResolvedValue(mockJsonResponse(chatCompletion("hello there")));
