@@ -8,6 +8,27 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **An empty `HARNESS_DISPATCH_STATE_DIR` sent every state path to the
+  current directory.** The lookup used `??`, which treats an empty string as
+  a real value — and an empty value is what a launcher or shell produces
+  when it forwards a variable that is not set. The state root became `""`,
+  so config, jobs, breaker state, quota counters and logs all resolved
+  against wherever the process happened to start: the cwd-dependent bug this
+  module's own comment says was fixed. A relative value is now anchored too,
+  so a job runner spawned with a different working directory cannot read a
+  different state root than the server that spawned it.
+
+- **`doctor` no longer reports a Codex that is installed but not logged in
+  as logged in** when its CLI prints usage text and exits 0, which is what a
+  build without the `login status` subcommand does. Exit code and output
+  must now agree. Also, the login probe's synchronous spawn-failure path
+  bypassed its own settled guard.
+
+- `doctor`'s `config` line now distinguishes a file that defines no routes
+  from one that defines routes AND asks for detection with `detect: true`.
+  It reported the former for both, which reads as though the file were being
+  ignored.
+
 - **The plugin's `/setup` command no longer walks users into a config that
   removes every CLI harness.** It told them to write `disabled:`,
   `overrides:` and `endpoints:` together — and a config carrying

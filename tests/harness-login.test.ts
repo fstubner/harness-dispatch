@@ -33,6 +33,23 @@ describe("codexLoginState", () => {
     expect(await codexLoginState(fakeCodex("out", "Not logged in", 1))).toBe("logged_out");
   });
 
+  it("does not read a successful exit as logged in when the output never says so", async () => {
+    // A Codex build without the `login status` subcommand can print its usage
+    // text and exit 0. Trusting the exit code alone reported an install that
+    // had never been authenticated as logged in — the false positive this
+    // module's header claims to handle, which then hides the `codex login`
+    // advice doctor exists to give.
+    expect(await codexLoginState(fakeCodex("usage0", "Usage: codex login [OPTIONS]", 0))).toBe(
+      "unknown",
+    );
+  });
+
+  it("reads a successful exit that says so as logged in", async () => {
+    expect(await codexLoginState(fakeCodex("apikey", "Logged in using an API key", 0))).toBe(
+      "logged_in",
+    );
+  });
+
   it("reads a non-zero exit with any other text as unknown, never as logged out", async () => {
     // An older codex without `login status` fails with a usage error. That
     // must not fail a working install.

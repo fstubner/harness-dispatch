@@ -41,7 +41,7 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
         windowsHide: true,
       });
     } catch {
-      resolve("unknown");
+      finish("unknown");
       return;
     }
     const timer = setTimeout(() => {
@@ -58,7 +58,12 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
     });
     child.on("error", () => finish("unknown"));
     child.on("close", (code) => {
-      if (code === 0) finish("logged_in");
+      // Exit 0 alone is not enough. A Codex build without the `login status`
+      // subcommand can print its usage text and exit 0, which read as
+      // "logged in" for an install that has never been authenticated — the
+      // exact false positive this file's header says is handled. Both halves
+      // must agree: a successful exit AND text that says so.
+      if (code === 0 && /logged in/i.test(output)) finish("logged_in");
       else if (/not logged in/i.test(output)) finish("logged_out");
       else finish("unknown");
     });

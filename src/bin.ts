@@ -670,9 +670,13 @@ async function cmdDoctor(
           ? " (no config file found; shipped defaults with auto-detected harnesses)"
           : runtime.config.detectionRan === false
             ? ` from ${path.resolve(configPath)}`
-            : // An empty or routes-free file was reported as the source of
-              // routes that detection had found.
-              ` auto-detected — ${path.resolve(configPath)} defines no routes of its own`),
+            : // Detection ran. Two different reasons, and saying the wrong one
+              // is confusing: a file may define no routes at all, or it may
+              // define some AND ask for detection with `detect: true`. The
+              // first version reported the former for both.
+              (runtime.config.detect === true
+                ? ` from ${path.resolve(configPath)} plus auto-detected harnesses (detect: true)`
+                : ` auto-detected — ${path.resolve(configPath)} defines no routes of its own`)),
     },
     // This one DOES fail, unlike the advisory git check below.
     //
