@@ -985,3 +985,69 @@ describe("credentials never travel back in an endpoint's own text", () => {
     expect(err).not.toContain(HDR_KEY);
   });
 });
+
+describe("credentials in a mid-stream error event", () => {
+  // The fifth leaking branch, and the one that matters most in practice: a
+  // 200 + text/event-stream carrying an error object is exactly how an
+  // OpenAI-compatible gateway and Anthropic both report an auth failure once
+  // the stream has opened, and jobs only ever stream.
+  //
+  // The previous fix scrubbed `describeUnusableBody` but left the endpoint's
+  // own `streamError` message beside it untouched:
+  //   error: streamError ?? this.#safe(describeUnusableBody(rawSeen))
+  // — the scrub sat on the fallback, not on the value that actually arrives.
+  // Its commit message claimed the whole class was closed. A verification
+  // pass reproduced both credentials in the clear against the built artifact.
+  const URL_KEY = "URLKEY_cccccccccccc";
+  const HDR_KEY = "HDRKEY_dddddddddddd";
+
+  async function streamedError(svc: ServiceConfig, raw: string): Promise<string> {
+    fetchMock.mockResolvedValue(sseResponse(raw));
+    const d = new OpenAICompatibleDispatcher(svc);
+    const events: Array<{ type: string; result?: { error?: string } }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+    return events.find((e) => e.type === "completion")?.result?.error ?? "";
+  }
+
+  const leaky = `invalid api key: Bearer ${HDR_KEY} for https://api.secret-host.example.com/v1?key=${URL_KEY}`;
+
+  it("scrubs an openai_chat_completions mid-stream error", async () => {
+    const err = await streamedError(
+      baseSvc({
+        baseUrl: `https://api.secret-host.example.com/v1?key=${URL_KEY}`,
+        apiKey: HDR_KEY,
+      }),
+      `data: ${JSON.stringify({ error: { message: leaky } })}\n\ndata: [DONE]\n\n`,
+    );
+    expect(err).not.toContain(HDR_KEY);
+    expect(err).not.toContain(URL_KEY);
+    expect(err).not.toContain("api.secret-host.example.com");
+  });
+
+  it("scrubs an anthropic_messages mid-stream error", async () => {
+    const err = await streamedError(
+      anthropicSvc({
+        baseUrl: `https://api.secret-host.example.com/v1?key=${URL_KEY}`,
+        apiKey: HDR_KEY,
+      }),
+      `event: error\ndata: ${JSON.stringify({ type: "error", error: { message: leaky } })}\n\n`,
+    );
+    expect(err).not.toContain(HDR_KEY);
+    expect(err).not.toContain(URL_KEY);
+    expect(err).not.toContain("api.secret-host.example.com");
+  });
+
+  it("scrubs the api key from a fetch failure", async () => {
+    // describeFetchFailure has always scrubbed the URL; it was never given the
+    // key, which is the credential that is not in the URL.
+    fetchMock.mockRejectedValue(
+      new Error(`connect failed using Bearer ${HDR_KEY}`),
+    );
+    const d = new OpenAICompatibleDispatcher(
+      baseSvc({ baseUrl: "https://api.secret-host.example.com/v1", apiKey: HDR_KEY }),
+    );
+    const res = await d.dispatch("go", [], "");
+    expect(res.success).toBe(false);
+    expect(res.error ?? "").not.toContain(HDR_KEY);
+  });
+});
