@@ -442,8 +442,19 @@ async function watchUntilTerminal(jobDir: string): Promise<void> {
  * dispatches to one route, 13 running concurrently, 10 of the 20 failing, one
  * killed outright by a Rust OOM inside Codex. Agent CLIs each carry a model
  * runtime; the binding constraint is memory, not cores, so this does NOT
- * scale with CPU count. Override with `max_concurrent_runs:` in config.yaml
- * (0 disables the bound).
+ * scale with CPU count. Override with `max_concurrent_runs:` in config.yaml.
+ *
+ * `0` does more than lift the cap: it takes the whole slot queue and
+ * supervisor pool out of the path, so every job gets its own detached runner
+ * process. Measured under load: 8 concurrent dispatches became 8 runner
+ * processes at ~76 MB each, which is the per-job wrapper cost the pool was
+ * introduced to remove. That is the opposite of harmless on the memory-bound
+ * machine this cap exists for, so `0` is for a machine with room to spare and
+ * a reason, not a way to "turn off a limit". Routing the unbounded case
+ * through the pool instead would be better and is not done here: the pool
+ * sizes itself by dividing the limit, so an infinite one provisions zero
+ * supervisors, and getting that right needs its own load run rather than a
+ * guess.
  */
 const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 

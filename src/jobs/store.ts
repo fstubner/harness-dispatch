@@ -57,9 +57,17 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
     ...status,
     status: "orphaned",
     success: false,
+    // Says what is KNOWN, not which process died. This used to read "The
+    // dispatch server that started this job exited" — and a load test killed
+    // a single supervisor while the server stayed up and serving, producing
+    // that message verbatim. The status file this is derived from records a
+    // heartbeat and nothing about who was holding it, so naming a culprit was
+    // always a guess, and it sent anyone debugging to the wrong process.
     error:
-      "The dispatch server that started this job exited before the run finished — " +
-      "the background run died with it. Re-dispatch the task; this job will never complete.",
+      "This job stopped reporting progress and the process running it is gone — " +
+      "either the run crashed or whatever was supervising it died. Nothing will " +
+      "advance it now. Its partial output is on disk; `retry_job` re-runs the same " +
+      "task, or re-dispatch it.",
   };
 }
 

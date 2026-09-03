@@ -91,7 +91,16 @@ describe("orphaned job detection", () => {
     const job = await getAsyncJob(jobId);
     expect(job.status.status).toBe("orphaned");
     expect(job.status.success).toBe(false);
-    expect(job.status.error).toMatch(/exited before the run finished/);
+    // Says what is known, and does NOT name a culprit: a load test killed one
+    // supervisor while the server stayed up and serving, and the old wording
+    // ("the dispatch server ... exited") pointed the reader at the wrong
+    // process. The status file records a heartbeat, not who held it.
+    expect(job.status.error).toMatch(/stopped reporting progress/);
+    expect(job.status.error).toMatch(/retry_job/);
+    expect(
+      job.status.error,
+      "the message names a process it cannot know died",
+    ).not.toMatch(/dispatch server .* exited/);
     // Terminal: no poll guidance for a job that will never complete.
     expect(job.status.instructions).toBeUndefined();
 
