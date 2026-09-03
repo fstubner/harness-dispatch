@@ -502,39 +502,33 @@ function workspaceMaxAgeMs(): number {
 }
 
 /**
- * Every isolated (copy/git_worktree) dispatch leaves its workspace on disk
- * on purpose — the caller may still want to inspect changedFiles/diffSummary
- * after the tool call returns, so finish() never deletes anything itself.
- * Without SOME reclamation, that's unbounded growth (and for git_worktree,
- * .git/worktrees bloat that can eventually slow or break `git worktree add`
- * itself). Prune anything past the retention window each time a new one is
- * about to be created — self-limiting, no separate scheduler needed. Best
- * effort: a prune failure must never block or fail the actual dispatch.
+ * Delete this project's aged run directories, whatever policy made them.
+ *
+ * There were two of these, one per policy, ~55 lines each and identical but
+ * for whether a git root was required. That duplication is the direct cause of
+ * the symlink-guard class needing four releases to close: the `lstat` refusal,
+ * the secure-before-prune ordering and this sweep's own name check were each
+ * applied to the copy copy, shipped as "fixed", and found still exploitable
+ * through the worktree copy by the next review. The comment left behind said
+ * "two policies, one hazard: whenever one of these gets a guard, check the
+ * other in the same edit" — a process rule standing in for a shared function.
+ * This is the shared function.
+ *
+ * `gitRoot` is optional because only a project under git has worktrees to
+ * unregister; the filesystem sweep is the same either way.
  */
-/**
- * `copyProjectGitRoot` is the repository the copy dispatch is running against,
- * when there is one. Both policies share a workspaces root since 0.7.0, so a
- * copy dispatch's prune can encounter a stale git_worktree workspace — and an
- * `rm -rf` on one of those leaves the directory gone from disk while git still
- * lists the worktree, marked prunable, with `.git/worktrees/<name>` behind it.
- * The code's own retention comment warns that accumulating those "can
- * eventually slow or break `git worktree add` itself". Before 0.7.0 the two
- * roots were separate and this could not happen.
- */
-async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: string): Promise<void> {
+async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
   const maxAgeMs = workspaceMaxAgeMs();
   // Before the early return below: a project dispatching for the FIRST time
   // has no root of its own to sweep, and that is exactly the caller most
   // likely to be running on a machine full of other projects' leftovers.
-  // The base is derived from `root`, NOT from workspacesBase().
   //
-  // `root` is now the VERIFIED, fully-resolved path, while `workspacesBase()`
-  // returns the DECLARED one. On any machine where the two differ — every
-  // macOS box, since `os.tmpdir()` resolves through `/private` — the
-  // "exclude our own root" comparison inside this sweep compared strings from
-  // two different spaces, failed to match, and deleted the directory the
-  // dispatch had just created. Caught in a container running the macOS path
-  // shape; it would have been a total failure of `copy` on macOS.
+  // The base is derived from `root`, NOT from workspacesBase(). `root` is the
+  // VERIFIED, fully-resolved path while `workspacesBase()` returns the
+  // DECLARED one, and on any machine where the two differ — every macOS box,
+  // since `os.tmpdir()` resolves through `/private` — the "exclude our own
+  // root" comparison below compared strings from two different spaces, failed
+  // to match, and deleted the directory the dispatch had just created.
   await pruneAbandonedProjectRoots(path.dirname(root), root);
   let entries;
   try {
@@ -557,15 +551,15 @@ async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: strin
     // rather than the absence of a reason to stop. `RUN_DIR_RE` is the exact
     // shape `workspaceRunId` generates.
     if (!RUN_DIR_RE.test(entry.name)) continue;
-    const full = path.join(root, entry.name);
+    const workspaceRoot = path.join(root, entry.name);
     try {
-      const info = await stat(full);
+      const info = await stat(workspaceRoot);
       if (now - info.mtimeMs <= maxAgeMs) continue;
-      // A `worktree` child is the tell that this belongs to the other policy.
-      const worktreeRoot = path.join(full, "worktree");
-      if (copyProjectGitRoot !== undefined && existsSync(worktreeRoot)) {
+      // A `worktree` child is the tell that git still has this registered.
+      const worktreeRoot = path.join(workspaceRoot, "worktree");
+      if (gitRoot !== undefined && existsSync(worktreeRoot)) {
         try {
-          await git(["worktree", "remove", "--force", worktreeRoot], copyProjectGitRoot);
+          await git(["worktree", "remove", "--force", worktreeRoot], gitRoot);
           removedWorktree = true;
         } catch {
           // Registered against a different repo, or already gone: the
@@ -573,14 +567,48 @@ async function pruneStaleCopyWorkspaces(root: string, copyProjectGitRoot?: strin
           // afterwards clears whatever metadata this repo can see.
         }
       }
-      await rm(full, { recursive: true, force: true });
+      await rm(workspaceRoot, { recursive: true, force: true });
     } catch {
       // best effort — a locked/already-gone/permission-denied entry is skipped
     }
   }
-  if (removedWorktree && copyProjectGitRoot !== undefined) {
-    await git(["worktree", "prune"], copyProjectGitRoot).catch(() => undefined);
+  if (removedWorktree && gitRoot !== undefined) {
+    await git(["worktree", "prune"], gitRoot).catch(() => undefined);
   }
+}
+
+/**
+ * Create this run's directory, with every guard the path needs, in the order
+ * they have to happen.
+ *
+ * SECURE BEFORE PRUNING. The order was once the other way round, and the guard
+ * could not protect the one operation that deletes: the sweep ran first and
+ * `rm -rf`d every aged subdirectory of a root nothing had yet looked at. With
+ * a symlink planted at that path, the victim's own directory was swept —
+ * reproduced end to end, as two real users.
+ *
+ * Both policies ran this same five-step sequence from their own copy. Each
+ * step is here once now, so a guard cannot be added to one policy and missed
+ * on the other, which is how the class stayed open across four releases.
+ */
+async function secureRunDirectory(
+  projectRoot: string,
+  routeName: string,
+  gitRoot?: string,
+): Promise<string> {
+  // markProjectRoot creates and secures the root and RETURNS the verified
+  // path: everything below uses that, never the string computed by the
+  // caller. Re-deriving the string is what let a swapped directory redirect
+  // the copy after the check had passed.
+  const verifiedRoot = await markProjectRoot(projectRoot);
+  await pruneStaleRuns(verifiedRoot, gitRoot);
+  const workspaceRoot = path.join(verifiedRoot, workspaceRunId(routeName));
+  // Created here, non-recursively, and verified — rather than left to a later
+  // recursive mkdir. This run's directory is the segment an attacker would
+  // swap between the prune and the write that follows.
+  await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
+  await assertStillOurs(workspaceRoot);
+  return workspaceRoot;
 }
 
 /**
@@ -659,60 +687,6 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
   }
 }
 
-async function pruneStaleGitWorktrees(gitRoot: string, root: string): Promise<void> {
-  const maxAgeMs = workspaceMaxAgeMs();
-  // Same reclamation the copy path does, for a machine that only ever
-  // dispatches under git_worktree. Abandoned worktree roots are left alone by
-  // that sweep either way — see pruneAbandonedProjectRoots.
-  // The base is derived from `root`, NOT from workspacesBase().
-  //
-  // `root` is now the VERIFIED, fully-resolved path, while `workspacesBase()`
-  // returns the DECLARED one. On any machine where the two differ — every
-  // macOS box, since `os.tmpdir()` resolves through `/private` — the
-  // "exclude our own root" comparison inside this sweep compared strings from
-  // two different spaces, failed to match, and deleted the directory the
-  // dispatch had just created. Caught in a container running the macOS path
-  // shape; it would have been a total failure of `copy` on macOS.
-  await pruneAbandonedProjectRoots(path.dirname(root), root);
-  let entries;
-  try {
-    entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  const now = Date.now();
-  let removedAny = false;
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    // Only directories WE named — the same guard the copy sweep and
-    // pruneStaleJobs use. This loop `rm -rf`s recursively and had no name,
-    // marker or ownership check of any kind.
-    if (!RUN_DIR_RE.test(entry.name)) continue;
-    const workspaceRoot = path.join(root, entry.name);
-    try {
-      const info = await stat(workspaceRoot);
-      if (now - info.mtimeMs <= maxAgeMs) continue;
-      const worktreeRoot = path.join(workspaceRoot, "worktree");
-      try {
-        await git(["worktree", "remove", "--force", worktreeRoot], gitRoot);
-        removedAny = true;
-      } catch {
-        // Worktree already gone/never registered — fall through to the
-        // filesystem cleanup below either way.
-      }
-      await rm(workspaceRoot, { recursive: true, force: true });
-    } catch {
-      // best effort
-    }
-  }
-  if (removedAny) {
-    try {
-      await git(["worktree", "prune"], gitRoot);
-    } catch {
-      // best effort
-    }
-  }
-}
 
 function shouldExclude(relPath: string, direntName: string): boolean {
   if (EXCLUDED_DIRS.has(direntName)) return true;
@@ -1052,25 +1026,7 @@ async function prepareCopyWorkspace(
   const projectGitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir)
     .then((out) => out || undefined)
     .catch(() => undefined);
-  // SECURE BEFORE PRUNING. The order was the other way round, and the guard
-  // could not protect the one operation that deletes: `pruneStaleCopyWorkspaces`
-  // ran first and `rm -rf`d every aged subdirectory of `root` — a root the
-  // guard had not yet looked at. With a symlink planted at that path, the
-  // victim's own directory was swept. Reproduced end to end.
-  //
-  // `markProjectRoot` is what creates and secures the root, so calling it
-  // first means the prune can only ever run against a directory that exists,
-  // is not a link, and belongs to this user.
-  // Everything below uses the VERIFIED path, not the string computed above.
-  // Re-deriving the string is what let a swapped directory redirect the copy.
-  const verifiedRoot = await markProjectRoot(root);
-  await pruneStaleCopyWorkspaces(verifiedRoot, projectGitRoot);
-  const workspaceRoot = path.join(verifiedRoot, workspaceRunId(routeName));
-  // Created here, and verified, rather than left to copyTree's recursive
-  // mkdir — the run directory is the segment an attacker would swap between
-  // the prune and the copy.
-  await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
-  await assertStillOurs(workspaceRoot);
+  const workspaceRoot = await secureRunDirectory(root, routeName, projectGitRoot);
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
   const vanishedFiles: string[] = [];
@@ -1193,27 +1149,8 @@ async function prepareGitWorktreeWorkspace(
   );
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
   const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
-  // SECURE BEFORE PRUNING, exactly as the copy path does.
-  //
-  // This ordering fix and the name check inside the sweep were applied to
-  // `copy` only, so the identical attack still worked here: same predictable
-  // path, same delete-before-validate. Reproduced as two real users — with a
-  // symlink planted at the root, the copy policy refused and the worktree
-  // policy DELETED the victim's directory, then raised the guard's error
-  // afterwards. The release that fixed `copy` claimed the class was closed.
-  //
-  // Two policies, one hazard: whenever one of these gets a guard, check the
-  // other in the same edit.
-  // Same as the copy path: use the VERIFIED root from here down.
-  const verifiedGitRoot = await markProjectRoot(gitWorkspaceRoot);
-  await pruneStaleGitWorktrees(gitRoot, verifiedGitRoot);
-  const workspaceRoot = path.join(verifiedGitRoot, workspaceRunId(routeName));
+  const workspaceRoot = await secureRunDirectory(gitWorkspaceRoot, routeName, gitRoot);
   const worktreeRoot = path.join(workspaceRoot, "worktree");
-  // Non-recursive, then verified: this run's directory holds the worktree
-  // checkout, i.e. the project's source, and it is the segment an attacker
-  // would swap between the prune and `git worktree add`.
-  await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
-  await assertStillOurs(workspaceRoot);
   // A repository with no commits yet is an ordinary state, not a fault, and
   // `git worktree add` has nothing to branch from in it.
   const baseCommit = await git(["rev-parse", "HEAD"], gitRoot).catch(() => {

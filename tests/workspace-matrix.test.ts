@@ -187,6 +187,27 @@ const cases = POLICIES.flatMap((policy) =>
   LOCATIONS.flatMap((location) => KINDS.map((kind) => ({ policy, location, kind }))),
 );
 
+/**
+ * A directory link, made the way the platform allows.
+ *
+ * Unprivileged Windows refuses a "dir" symlink with EPERM, which is why the
+ * guard tests below used to skip there — on the one platform whose junctions
+ * need no privilege at all, and where the attack was originally measured. A
+ * junction is a reparse point that `lstat().isSymbolicLink()` reports as true,
+ * so the code under test sees exactly what it sees on POSIX. Verified on this
+ * machine: junction created without elevation, isSymbolicLink() true, while
+ * `symlink(..., "dir")` fails EPERM.
+ *
+ * Junction targets must be absolute, hence the resolve.
+ */
+async function linkDir(target: string, linkPath: string): Promise<void> {
+  await fs.symlink(
+    path.resolve(target),
+    linkPath,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+
 describe("isolated workspace lifecycle — every policy x location x change kind", () => {
   it.each(cases)("$policy, $location, $kind", async ({ policy, location, kind }) => {
     const repo = await makeRepo();
@@ -529,7 +550,7 @@ describe("a workspace root that is a symlink", () => {
   // attack against `git_worktree` deleted a victim's directory, because the
   // guard ordering and the sweep's name check had been applied to one policy
   // and not the other.
-  it.skipIf(process.platform === "win32").each(["copy", "git_worktree"] as const)(
+  it.each(["copy", "git_worktree"] as const)(
     "is refused rather than followed (%s)",
     async (policy) => {
     const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
@@ -553,7 +574,7 @@ describe("a workspace root that is a symlink", () => {
 
     const projectWsRoot = workspaceRootFor(project);
     await fs.mkdir(path.dirname(projectWsRoot), { recursive: true });
-    await fs.symlink(elsewhere, projectWsRoot, "dir");
+    await linkDir(elsewhere, projectWsRoot);
 
     await expect(
       prepareWorkspace({ policy, workingDir: project, files: [], routeName: "r" }),
@@ -563,6 +584,89 @@ describe("a workspace root that is a symlink", () => {
     expect(await fs.readdir(elsewhere)).toEqual(["important"]);
     },
   );
+
+  // THE SWEEP ONLY DELETES WHAT IS OLD, WHICH IS WHY NOTHING CAUGHT THESE.
+  //
+  // Two guards on the destructive path had no test that needed them: the
+  // name check that limits deletion to directories this tool generated, and
+  // the ordering that verifies the root before anything is removed. Removing
+  // either left the whole suite green. Both are only reachable past the
+  // retention window, and no test aged anything, so the delete never ran and
+  // the guards were never asked. These age a directory deliberately.
+  const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+
+  async function age(dir: string): Promise<void> {
+    const when = new Date(Date.now() - TWO_DAYS_MS);
+    await fs.utimes(dir, when, when);
+  }
+
+  it("sweeps its own aged run directories but nothing else in the same root", async () => {
+    const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
+    const project = path.join(root, "sweepproj");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+
+    // Prime the root so it exists and carries our marker.
+    const first = await prepareWorkspace({
+      routeName: "r",
+      policy: "copy",
+      workingDir: project,
+      files: [],
+    });
+    const wsRoot = workspaceRootFor(project);
+
+    // One aged directory we DID name, and one aged directory we did not —
+    // the shape an attacker or an unrelated tool would leave in a world-
+    // writable temp area.
+    const ours = first.workspaceRoot!;
+    const notOurs = path.join(wsRoot, "someone-elses-data");
+    await fs.mkdir(notOurs, { recursive: true });
+    await fs.writeFile(path.join(notOurs, "thesis.txt"), "mine", "utf8");
+    await age(ours);
+    await age(notOurs);
+
+    // A second dispatch drives the sweep.
+    await prepareWorkspace({ routeName: "r", policy: "copy", workingDir: project, files: [] });
+
+    expect(existsSync(ours), "the aged run directory we created was not reclaimed").toBe(false);
+    expect(
+      existsSync(path.join(notOurs, "thesis.txt")),
+      "the sweep deleted a directory this tool never created",
+    ).toBe(true);
+  });
+
+  it("verifies the root before the sweep can delete anything under it", async () => {
+    // The ordering bug, with the one ingredient the earlier test lacked: the
+    // victim's content is AGED, so a sweep that runs before the guard would
+    // actually remove it rather than skipping it as too new. Measured as two
+    // real users before the guard existed; this is the single-user shape of
+    // the same thing.
+    const { prepareWorkspace, workspaceRootFor } = await import("../src/workspaces.js");
+    const project = path.join(root, "orderproj");
+    const victim = path.join(root, "order-victim");
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(path.join(project, "a.txt"), "code", "utf8");
+    // Named like one of ours, so ONLY the ordering — not the name check —
+    // decides whether it survives.
+    const bait = path.join(victim, "2026-01-01T00-00-00-000Z-1-r-deadbeef");
+    await fs.mkdir(bait, { recursive: true });
+    await fs.writeFile(path.join(bait, "thesis.txt"), "mine", "utf8");
+    await age(bait);
+    await age(victim);
+
+    const projectWsRoot = workspaceRootFor(project);
+    await fs.mkdir(path.dirname(projectWsRoot), { recursive: true });
+    await linkDir(victim, projectWsRoot);
+
+    await expect(
+      prepareWorkspace({ routeName: "r", policy: "copy", workingDir: project, files: [] }),
+    ).rejects.toThrow(/symbolic link/i);
+
+    expect(
+      existsSync(path.join(bait, "thesis.txt")),
+      "the sweep ran before the guard and destroyed the victim's aged files",
+    ).toBe(true);
+  });
 
   // WHAT THE ANCHOR RULE ACTUALLY IS, pinned in both directions.
   //
@@ -579,7 +683,7 @@ describe("a workspace root that is a symlink", () => {
   // direction that used to be wrong: an earlier version of this test asserted
   // that ANY link at the base was refused, which would have made the macOS
   // path shape a failure.
-  it.skipIf(process.platform === "win32")(
+  it(
     "allows an anchor reached through a link to a directory we own",
     async () => {
       const { prepareWorkspace, workspacesBase } = await import("../src/workspaces.js");
@@ -592,7 +696,7 @@ describe("a workspace root that is a symlink", () => {
       const base = workspacesBase();
       await fs.rm(base, { recursive: true, force: true });
       await fs.mkdir(path.dirname(base), { recursive: true });
-      await fs.symlink(realBase, base, "dir");
+      await linkDir(realBase, base);
 
       const prepared = await prepareWorkspace({
         policy: "copy",

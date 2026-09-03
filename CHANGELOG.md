@@ -8,6 +8,29 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The two workspace policies no longer keep separate copies of the guards
+  that protect a recursive delete**, and those guards are now tested on
+  Windows, where the attack they exist for was originally measured. `copy`
+  and `git_worktree` each had their own prune function and their own
+  create-and-verify sequence, ~55 and ~30 lines, identical but for a git
+  root. That duplication is why the symlink class took four releases to
+  close: each fix landed in one copy, shipped as done, and the next review
+  found the other still exploitable. The comment left behind said "whenever
+  one of these gets a guard, check the other in the same edit" — a process
+  rule standing in for a shared function, which now exists.
+
+  The tests that cover those guards were skipped on Windows because an
+  unprivileged `symlink(..., "dir")` fails there. A junction does not, and
+  `lstat` reports one as a symbolic link, so the code under test sees what
+  it sees on POSIX. Two of the six skips are gone.
+
+  Three deliberate breakages that the suite previously did NOT catch — the
+  sweep's name check removed, the verify-before-prune ordering reversed, and
+  the symlink refusal removed — now each fail their own test. The gap was
+  that the destructive path only runs past the 24-hour retention window and
+  no test aged anything, so the delete never happened and the guards were
+  never asked. Two new tests age a directory on purpose.
+
 - **A patch-building path no input could reach has been removed, along with
   the ~800-line test suite guarding it.** When a `copy` job had no recorded
   changed-file list, the patch was built by diffing the whole original
