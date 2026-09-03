@@ -1130,7 +1130,13 @@ describe("MCP tools — job_status", () => {
   it("errors on an unknown jobId rather than returning a blank status", async () => {
     const holder = buildHolder({ a: makeService("a") }, { a: new FakeDispatcher("a") });
     // fixture-shapes-ok: a malformed id is the input under test here.
-    await expect(invokeTool("job_status", { jobId: "job-does-not-exist" }, { holder })).rejects.toThrow(); // fixture-shapes-ok
+    // The MESSAGE is the point, not merely that something threw: a bare
+    // `.toThrow()` also passes when the id is rejected by the schema for
+    // being the wrong shape, which would leave "what happens to a
+    // well-formed id for a job that is gone" untested.
+    await expect(
+      invokeTool("job_status", { jobId: "job-1700000000009-99999999" }, { holder }),
+    ).rejects.toThrow(/No such job: job-1700000000009-99999999/); // fixture-shapes-ok
   });
 });
 
@@ -1266,9 +1272,12 @@ describe("the tools that only TOOL_NAMES was asserting", () => {
     );
     // A traversal attempt: the id is the only thing between a caller and
     // `path.join(jobsRoot(), jobId)`.
+    // Rejected by the SCHEMA, before any path is built from it. A bare
+    // `.toThrow()` would also pass if the id reached the filesystem and threw
+    // ENOENT there, which is the outcome this test exists to rule out.
     await expect(
       invokeTool("cancel_job", { jobId: "../../etc" }, { holder }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/jobId|invalid|expected/i);
   });
 
   it("workspace explains a job it cannot find, rather than an empty diff", async () => {
@@ -1296,7 +1305,11 @@ describe("the tools that only TOOL_NAMES was asserting", () => {
         { jobId: "job-1700000000002-bbbbbbbb", action: "delete" },
         { holder },
       ),
-    ).rejects.toThrow();
+      // Named so the refusal is provably about the ACTION. Without this the
+      // test passes on "No such job", which every id in this file produces —
+      // and the near-miss action would go unchecked on the one verb that
+      // deletes.
+    ).rejects.toThrow(/action|discard|invalid|expected/i);
   });
 
   it("retry_job resolves the job before the route, so a stranger is named first", async () => {

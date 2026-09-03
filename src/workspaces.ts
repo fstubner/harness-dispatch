@@ -491,7 +491,6 @@ function pathKey(dir: string): string {
   return createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 8);
 }
 
-const gitWorkspaceRootFor = workspaceRootFor;
 
 const DEFAULT_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -1148,7 +1147,7 @@ async function prepareGitWorktreeWorkspace(
     },
   );
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
-  const gitWorkspaceRoot = gitWorkspaceRootFor(gitRoot);
+  const gitWorkspaceRoot = workspaceRootFor(gitRoot);
   const workspaceRoot = await secureRunDirectory(gitWorkspaceRoot, routeName, gitRoot);
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   // A repository with no commits yet is an ordinary state, not a fault, and

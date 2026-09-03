@@ -665,7 +665,6 @@ export function spawnDetachedRunner(runnerPath: string, jobDir: string, configPa
 }
 
 
-
 /**
  * Why a detached runner would fail to bootstrap from this config path, if it
  * would. `undefined` means the file loads (or there is none, which is the

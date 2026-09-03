@@ -811,8 +811,9 @@ async function cmdDoctor(
       // run finished" — a false cause, 90s after the work had actually
       // succeeded.
       name: "state-dir",
-      ok: stateDirWritable().ok,
-      detail: stateDirWritable().detail,
+      // Called ONCE: each call creates and deletes a probe file, and this
+      // asked the same question twice to fill two fields.
+      ...stateDirWritable(),
     },
     {
       name: "http-auth",

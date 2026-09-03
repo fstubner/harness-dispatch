@@ -49,7 +49,6 @@ export interface StartHttpOptions extends BuildMcpOptions {
 }
 
 
-
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
   const text = JSON.stringify(body, null, 2);
   res.writeHead(statusCode, {
@@ -72,13 +71,6 @@ function isLoopbackHost(host: string): boolean {
   // included — it means "bind all interfaces," the opposite of loopback.
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
-
-
-
-
-
-
-
 
 
 /**

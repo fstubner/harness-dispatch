@@ -86,13 +86,9 @@ import type { RouterConfig, ServiceConfig, TaskType } from "./types.js";
 // ---------------------------------------------------------------------------
 
 
-
 // NOTE: everything the module-load-time `CLI_DEFAULTS = loadDefaultHarnesses()`
 // call below touches must be declared ABOVE it (or be a hoisted function) —
 // a `const` declared later in the file hits the temporal dead zone at load.
-
-
-
 
 
 // Default route id auto-detect assigns for each harness — distinct from the
@@ -125,13 +121,6 @@ const AUTO_DETECT_NAME: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Env var interpolation (${VAR_NAME})
 // ---------------------------------------------------------------------------
-
-
-
-
-
-
-
 
 
 function endpointFields(
@@ -198,11 +187,6 @@ function topLevelSettings(
 }
 
 
-
-
-
-
-
 /**
  * `effective_safety` as either one profile or a per-request map.
  *
@@ -247,9 +231,6 @@ function escalateOnFrom(raw: unknown): TaskType[] {
   }
   return out.length > 0 ? out : ["plan", "review"];
 }
-
-
-
 
 
 // ---------------------------------------------------------------------------

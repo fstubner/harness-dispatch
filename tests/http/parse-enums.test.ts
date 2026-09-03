@@ -125,23 +125,28 @@ describe("HTTP near-miss top-level keys are rejected, not dropped", () => {
   it("does not reject OpenAI's own fields, or anything unrelated", () => {
     // The cost of getting this wrong is refusing a legitimate request, so the
     // rule has to stay narrow enough to leave the protocol's own body alone.
-    expect(() =>
-      parseChatRequest({
-        ...base,
-        model: "gpt-4",
-        stream: false,
-        temperature: 0.7,
-        top_p: 1,
-        n: 1,
-        stop: null,
-        user: "someone",
-        max_tokens: 100,
-        presence_penalty: 0,
-        frequency_penalty: 0,
-        seed: 7,
-        response_format: { type: "text" },
-        metadata: { anything: true },
-      }),
-    ).not.toThrow();
+    // Asserting the RESULT, not merely the absence of a throw: "it did not
+    // reject" is also true of a parser that quietly dropped the request on the
+    // floor, and what this test is really about is that a normal OpenAI body
+    // still arrives intact.
+    const parsed = parseChatRequest({
+      ...base,
+      model: "gpt-4",
+      stream: false,
+      temperature: 0.7,
+      top_p: 1,
+      n: 1,
+      stop: null,
+      user: "someone",
+      max_tokens: 100,
+      presence_penalty: 0,
+      frequency_penalty: 0,
+      seed: 7,
+      response_format: { type: "text" },
+      metadata: { anything: true },
+    });
+
+    expect(parsed.prompt, "the prompt was lost while tolerating OpenAI's fields").toBeTruthy();
+    expect(parsed.stream).toBe(false);
   });
 });
