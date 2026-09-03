@@ -1601,6 +1601,46 @@ describe("Router.route", () => {
 // fifth entry point without a row here is visibly incomplete, and that a fix
 // applied to one copy cannot pass while the others still have the bug. Collapsing
 // the four implementations (the real fix) should collapse this table with them.
+// `route()` and `routeTo()` are drained from the same loop `stream()` uses, but
+// they must still reach the dispatcher through `dispatch()`, not `stream()`.
+// This is not a preference: OpenAICompatibleDispatcher overrides `dispatch()`
+// with a one-shot POST that sets `stream: false` on the wire. Routing buffered
+// calls through `stream()` — which is what collapsing the transport as well as
+// the loop would do — silently flips that request for every endpoint route
+// against third-party gateways. StubDispatcher implements ONLY `dispatch`, so
+// if that ever changes these fail rather than quietly altering live traffic.
+describe("the buffered entry points still call dispatch(), not stream()", () => {
+  let quota: QuotaCache;
+  let leaderboard: LeaderboardCache;
+
+  beforeEach(() => {
+    quota = new QuotaCache();
+    leaderboard = new LeaderboardCache();
+  });
+
+  it("route() reaches a dispatcher that has no stream() at all", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    expect(
+      (alphaD as unknown as { stream?: unknown }).stream,
+      "the stub grew a stream(), so this test no longer proves anything",
+    ).toBeUndefined();
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const { result } = await router.route("hi", [], "/tmp");
+    expect(result.success).toBe(true);
+    expect(alphaD.calls).toHaveLength(1);
+  });
+
+  it("routeTo() does the same", async () => {
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const { result } = await router.routeTo("alpha", "hi", [], "/tmp");
+    expect(result.success).toBe(true);
+    expect(alphaD.calls).toHaveLength(1);
+  });
+});
+
 describe("timeout precedence holds on every entry point, not just route()", () => {
   let quota: QuotaCache;
   let leaderboard: LeaderboardCache;
