@@ -545,7 +545,6 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       });
     } catch (err) {
       clearTimeout(timer);
-      const errMsg = err instanceof Error ? err.message : String(err);
       const aborted = (err as { name?: string } | null)?.name === "AbortError";
       return {
         output: "",
@@ -689,7 +688,6 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       });
     } catch (err) {
       clearTimeout(timer);
-      const errMsg = err instanceof Error ? err.message : String(err);
       const aborted = (err as { name?: string } | null)?.name === "AbortError";
       yield {
         type: "completion",

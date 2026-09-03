@@ -35,7 +35,6 @@ import type {
 } from "../types.js";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
@@ -58,14 +57,9 @@ import {
   workspaceInputShape,
   DEFAULT_GRACE_SECONDS,
   dispatchInputShape,
-  JOB_ID_RE,
   jobStatusInputShape,
-  MAX_CONTEXT_FILES,
-  MAX_CONTEXT_JOBS,
   publicHintsSchema,
-  safetyProfileSchema,
   usageInputShape,
-  workspacePolicySchema,
 } from "./tool-schemas.js";
 
 

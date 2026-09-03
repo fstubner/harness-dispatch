@@ -17,7 +17,7 @@
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 
-import type { RouteHints, WorkspacePolicy } from "../types.js";
+import type { RouteHints } from "../types.js";
 import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";

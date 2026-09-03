@@ -20,14 +20,11 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import which from "which";
 
-import {
-  normalizeSafetyProfile,
-} from "./safety.js";
 import { inferredPaidUsagePossible } from "./billing.js";
 import {
-  authSourceFrom, billingKindFrom, bool, confidenceFrom, endpointModeFrom,
+  authSourceFrom, billingKindFrom, bool, endpointModeFrom,
   endpointProviderFrom, inferEndpointProvider, int, num, providerFrom, str,
-  surfaceFrom, thinkingFrom, wireProtocolFrom, workspacePolicyFrom,
+  surfaceFrom, wireProtocolFrom,
 } from "./config/coercions.js";
 import {
   warnDuplicateRouteNames,
@@ -77,21 +74,14 @@ const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
 };
 import type {
   AuthSource,
-  BillingConfidence,
   BillingKind,
   BillingProvider,
   BillingSurface,
-  CliEventRule,
   CliProtocolConfig,
-  EndpointMode,
-  EndpointProvider,
   RouterConfig,
   SafetyProfile,
   ServiceConfig,
   TaskType,
-  ThinkingLevel,
-  WireProtocol,
-  WorkspacePolicy,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -106,7 +96,6 @@ import type {
 // doesn't matter to JS).
 // ---------------------------------------------------------------------------
 
-const SAFETY_PROFILES: readonly SafetyProfile[] = ["read_only", "workspace_edit", "full_auto"];
 
 
 // NOTE: everything the module-load-time `CLI_DEFAULTS = loadDefaultHarnesses()`

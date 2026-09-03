@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs, readFileSync, statSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { stateRoot } from "./state-dir.js";

@@ -8,6 +8,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Dead imports and locals can no longer accumulate unnoticed.** The
+  compiler was not asked about them, and 38 had built up across twelve
+  files: three whole import declarations nothing read, a function nobody
+  called, a parameter threaded through a signature after the code that used
+  it was fixed, and two catch blocks computing a message they discarded.
+  Individually harmless; in bulk they are what makes a reader unable to tell
+  what is load-bearing. All 38 removed, and `noUnusedLocals` /
+  `noUnusedParameters` are now on, so the next one fails the build rather
+  than joining the pile.
+
 - **The router had two implementations of every dispatch path, and its own
   header said otherwise.** `route()`/`routeTo()` and `stream()`/`streamTo()`
   were separate selection-and-fallback loops, with a second copy of the

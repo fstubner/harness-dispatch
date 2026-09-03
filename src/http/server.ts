@@ -17,10 +17,7 @@ import { buildStatus, buildUsage } from "../status.js";
 import { VERSION } from "../version.js";
 import type { RouteHints, RouteSkip } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
-import type { Router } from "../router.js";
-import { explicitOptsFromHints } from "../router.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { workingDirWarning } from "../working-dir.js";
 import { getAsyncJob, orphanStrandedSlotQueue, startAsyncJobTracked } from "../jobs.js";
 import {
   BadRequestError,

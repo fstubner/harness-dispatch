@@ -19,7 +19,6 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import type { RuntimeHolder } from "./mcp/config-hot-reload.js";
 import { declaresModel } from "./router.js";
 import type {
   DispatchResult,
@@ -28,7 +27,6 @@ import type {
   RouterConfig,
   RoutingDecision,
   ServiceConfig,
-  WorkspacePolicy,
 } from "./types.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "./working-dir.js";
 import { acquireWorkspaceLock } from "./workspace-lock.js";
@@ -45,14 +43,12 @@ import {
   cancelReason,
   cancelRequested,
   requestCancel,
-  JOB_ID_RE,
   jobsRoot,
   newJobId,
   ORPHAN_THRESHOLD_MS,
   pollInstructions,
   pruneStaleJobs,
   readJson,
-  safeBaseName,
   setJobRetentionDays,
   snapshotFiles,
   SUGGESTED_POLL_SECONDS,
@@ -75,7 +71,6 @@ import type {
 export { buildContextPreamble };
 export { setJobRetentionDays };
 export type { JobDeps, JobManifest, JobResultPayload, JobStatus, StartedJob, StartJobInput };
-import { stateRoot } from "./state-dir.js";
 
 
 

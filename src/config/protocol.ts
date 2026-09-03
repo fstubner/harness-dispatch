@@ -18,7 +18,7 @@ import type {
   EndpointProvider,
   SafetyProfile,
 } from "../types.js";
-import { bool, num, str } from "./coercions.js";
+import { str } from "./coercions.js";
 
 const SAFETY_PROFILES: readonly SafetyProfile[] = ["read_only", "workspace_edit", "full_auto"];
 
