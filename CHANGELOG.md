@@ -58,20 +58,44 @@ pre-1.0, so minor versions can carry behaviour changes.
   is written — came back verbatim whenever the endpoint quoted the request
   URL in its own 4xx body. Found by writing the test the audit said was
   missing: scrubbing had been proven at the unit and never once from the
-  dispatcher, which is the only place it can actually leak. Both paths are
-  scrubbed and separately pinned, because fixing one of a pair and missing
-  the other is this file's own recurring failure.
+  dispatcher, which is the only place it can actually leak.
+
+  It took three attempts to close, and the first two both shipped a claim
+  wider than their code. The `HTTP <status>` pair was fixed first and
+  declared the class closed; the two `describeUnusableBody` paths beside it
+  — a 200 carrying an HTML error page, which is what a gateway returns —
+  still quoted 300 raw characters of the body back. Fixing those came with
+  an assertion that every branch was covered; the mid-stream SSE `error`
+  event was not, and that is the likeliest shape of all of them, because a
+  200 with `text/event-stream` carrying an error object is how these
+  endpoints report an auth failure once the stream is open, and jobs only
+  ever stream.
+
+  Separately, the scrubber only ever removed credential-bearing parts of the
+  base URL. Every endpoint in this project's own config authenticates with an
+  `Authorization` or `x-api-key` header, so the configured key was not in the
+  URL at all and survived on every path, including the two fixed first.
+
+  All seven branches that can return an endpoint's own text now scrub, each
+  is pinned by its own test, and the code comment enumerates them rather than
+  asserting completeness — an enumeration can be checked against the file and
+  a claim of completeness is what failed twice here.
 
 - **The CLI dispatcher is now tested against a real process, not only
-  through a mock.** `stream-subprocess.ts` carries a branch in PRODUCTION
-  that detects a vitest mock on `runSubprocess` and synthesises one stdout
-  chunk from a buffered result — so every dispatcher suite proved how a
-  command line is built and how a finished blob is read, and none of them
-  reached the streaming path that actually runs. Four behaviours had no test
-  at all: a JSONL event split across two reads, a timeout that really kills
-  the child, an abort reaching a running process, and stdout arriving as
-  events during the run rather than one lump at the end. All four now run
-  against `node -e`. Forcing the buffered adapter fails two of them by name.
+  through a mock — and production no longer contains the mock detector.**
+  `stream-subprocess.ts` carried a branch in PRODUCTION that detected a
+  vitest mock on `runSubprocess` and synthesised one stdout chunk from a
+  buffered result, under a comment claiming this still exercised the
+  streaming path. It exercised it nowhere: every dispatcher suite mocked
+  `runSubprocess`, so every dispatcher suite ran the adapter. Four behaviours
+  had no test at all: a JSONL event split across two reads, a timeout that
+  really kills the child, an abort reaching a running process, and stdout
+  arriving as events during the run rather than one lump at the end. All four
+  now run against `node -e`.
+
+  The adapter has since moved into the test suite, where a suite that wants
+  it opts in by mocking the function the dispatchers actually call. Nothing
+  in `src/` now branches on being under test.
 
 - **`doctor` names a route that has never once succeeded.** The circuit
   breaker is about RECENT failure and forgets after its cooldown, so a route
@@ -109,6 +133,10 @@ pre-1.0, so minor versions can carry behaviour changes.
   represented as `null` rather than `0` or `Infinity`, because both of those
   were wrong somewhere: `0` read as "bypass everything", and `Infinity` broke
   pool sizing, which divides by the limit and so asked for zero supervisors.
+
+  The README and the source comment went on describing the old behaviour for
+  a further nine commits, steering users away from the setting for a reason
+  that had stopped being true. Both now say what the code does.
 
 - The contract every shipped harness owes — a missing CLI, a non-zero exit, a
   model override, a timeout, id and availability — is asserted once per

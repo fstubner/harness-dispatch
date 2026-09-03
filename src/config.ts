@@ -123,6 +123,32 @@ const AUTO_DETECT_NAME: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 
+/**
+ * Blank out credential VALUES in a YAML parser's error text.
+ *
+ * js-yaml quotes the source lines around a syntax error. Those lines are the
+ * user's config, so a parse failure anywhere near an `api_key:` put that key
+ * into the error — and this error does not stay in the terminal. It becomes
+ * `config.reloadError`, then `stateWarnings`, which is read by `status`, by
+ * `doctor`, by the HTTP status route and by the `harness-dispatch://status`
+ * MCP resource that an orchestrating agent can fetch.
+ *
+ * The value cannot be scrubbed by comparison here — the file did not parse, so
+ * there is no configured value to compare against. Matching the KEY NAME is
+ * what is available, which is why this is a pattern and not a lookup.
+ *
+ * js-yaml truncates its snippet lines at roughly 50 characters, so a realistic
+ * 32-character key was already arriving as a prefix rather than in full. A
+ * partial credential in an agent-readable resource is still a disclosure, and
+ * a short key was arriving whole.
+ */
+function redactSecretLines(message: string): string {
+  return message.replace(
+    /^(\s*(?:\d+\s*\|)?\s*(?:-\s*)?["']?(?:\w*(?:api[_-]?key|secret|token|password|passwd|authorization)\w*)["']?\s*:\s*)(\S.*)$/gim,
+    (_m, prefix: string) => `${prefix}<redacted>`,
+  );
+}
+
 function endpointFields(
   raw: Record<string, unknown>,
   type: ServiceConfig["type"],
@@ -834,7 +860,9 @@ export async function loadConfig(
       } else if (err instanceof yaml.YAMLException) {
         // A YAML syntax error used to escape as a raw js-yaml stack trace that
         // never named the file it came from.
-        throw new Error(`config file ${path} is not valid YAML: ${err.message}`);
+        throw new Error(
+          `config file ${path} is not valid YAML: ${redactSecretLines(err.message)}`,
+        );
       } else {
         throw err;
       }
