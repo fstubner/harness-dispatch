@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
 import type { DispatcherEvent, ServiceConfig } from "../../src/types.js";
-import { PROTOCOL_PRESETS } from "../../src/config.js";
+import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
 const ANTIGRAVITY_PROTOCOL = PROTOCOL_PRESETS.antigravity_cli!;
 const CLAUDE_CODE_PROTOCOL = PROTOCOL_PRESETS.claude_code!;

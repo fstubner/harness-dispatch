@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServiceConfig } from "../../src/types.js";
-import { PROTOCOL_PRESETS } from "../../src/config.js";
+import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
 const ANTIGRAVITY_PROTOCOL = PROTOCOL_PRESETS.antigravity_cli!;
 

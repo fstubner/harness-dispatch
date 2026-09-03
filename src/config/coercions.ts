@@ -196,3 +196,12 @@ export function inferEndpointProvider(baseUrl: string | undefined): EndpointProv
   if (lower.includes("lmstudio") || lower.includes("lm-studio")) return "lmstudio";
   return "custom";
 }
+
+export function capsFrom(raw: unknown): { execute: number; plan: number; review: number } {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    execute: num(r.execute, 1.0),
+    plan: num(r.plan, 1.0),
+    review: num(r.review, 1.0),
+  };
+}

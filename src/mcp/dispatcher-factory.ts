@@ -13,7 +13,7 @@
 import { GenericCliDispatcher } from "../dispatchers/generic-cli.js";
 import { OpenAICompatibleDispatcher } from "../dispatchers/openai-compatible.js";
 import type { Dispatcher } from "../dispatchers/base.js";
-import { PROTOCOL_PRESETS } from "../config.js";
+import { PROTOCOL_PRESETS } from "../harness-presets.js";
 import type { RouterConfig, ServiceConfig } from "../types.js";
 
 /**

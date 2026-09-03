@@ -4,7 +4,7 @@ import type {
   RunSubprocessOpts,
 } from "../../src/dispatchers/shared/subprocess.js";
 import type { ServiceConfig } from "../../src/types.js";
-import { PROTOCOL_PRESETS } from "../../src/config.js";
+import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
 const CLAUDE_CODE_PROTOCOL = PROTOCOL_PRESETS.claude_code!;
 

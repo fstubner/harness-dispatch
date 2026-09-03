@@ -8,6 +8,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **"A shipped harness preset" now has a module.** It was a protocol block
+  in YAML, loaded and parsed inside `config.ts`, interpreted by the generic
+  CLI dispatcher, read again by the dispatcher factory, and asserted by four
+  per-harness test files — so every change to a built-in harness touched all
+  of them. A co-change check over 300 commits reported exactly that: ten
+  files moving together across six directories, one concept with nowhere to
+  live. `src/harness-presets.ts` is where it lives now, and every importer
+  names it. `config.ts` is 184 lines smaller and no longer parses the
+  shipped file it also consumes.
+
 - **The leaderboard fetch stopped introducing itself as version 0.4.** Its
   `User-Agent` was a hardcoded string, still saying 0.4 at 0.9 — so the one
   host this tool ever contacts had been told a version that was wrong for
