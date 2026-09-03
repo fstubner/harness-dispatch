@@ -132,6 +132,30 @@ describe("shared route keys are honoured by every entry shape", () => {
     expect(missing, `shared resolver keys with no parity case: ${missing.join(", ")}`).toEqual([]);
   });
 
+  it("a route inherits its harness's SHIPPED values through the same table", async () => {
+    // The fourth consumer of the shared contract, and the one that was still
+    // hand-writing its own list. It had already drifted: `thinking_level` on
+    // a shipped harness entry was parsed by nobody, while the table reads
+    // `d.thinkingLevel` as the fallback for every user route of that harness.
+    // A user entry that declares only its name and harness must pick up
+    // everything config.default.yaml declares for that harness, or the
+    // defaults layer and the layer that reads it have diverged again.
+    const file = path.join(dir, "inherits.yaml");
+    await fs.writeFile(
+      file,
+      ["clis:", "  - name: probe", "    harness: cursor", ""].join("\n"),
+      "utf8",
+    );
+    const cfg = await loadConfig(file, { whichFn: async () => null });
+    const svc = cfg.services["probe"];
+    expect(svc, "the probe route was dropped entirely").toBeDefined();
+    // Every shared key config.default.yaml actually sets on cursor_cli.
+    expect(svc!.leaderboardModel, "leaderboard_model was not inherited").toBe("claude-sonnet-4-6");
+    expect(svc!.maxOutputTokens, "max_output_tokens was not inherited").toBe(64000);
+    expect(svc!.maxInputTokens, "max_input_tokens was not inherited").toBe(1000000);
+    expect(svc!.modelHint, "model_hint was not inherited").toMatch(/cursor\.com\/docs\/models/);
+  });
+
   it("every shared key under test is in KNOWN_ROUTE_KEYS", async () => {
     // Otherwise the unknown-key warning would fire on a key this test proves
     // is legitimate — the two mechanisms have to agree on the legal surface.
