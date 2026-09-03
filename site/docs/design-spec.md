@@ -15,7 +15,7 @@ the site is checked against this file, not against taste-per-iteration.
    (#dedcd0), near-black ink (#16160f). Tool-call blocks are flat with a
    2px left rule — no cards, no shadows.
 4. **Accent placement**: rust (#b8410f) for tool names and primary CTAs only.
-   Green (#3f7a53) solely for success glyphs/rows. Amber (#8a7050) solely for
+   Green (#3f7a53) solely for success glyphs/rows. Amber (#7f6446, the `--busy` token) solely for
    in-progress.
 5. **Signature move**: the hero is an interactive agent transcript — a
    realistic chat with collapsed tool-call lines that expand to show the real
@@ -59,7 +59,11 @@ User asks for a backoff refactor + SLA check + test review. Agent:
 - `site/src/components/ToolCall.astro` — the ONLY place a tool-call line is
   rendered; rules 2/3/5/6 are enforced here structurally.
 - `site/src/styles/tokens.css` — the ONLY place colors/spacing/type live.
-- `pages.yml` builds `site/` and deploys `site/dist`.
+- `pages.yml` builds `site/` and deploys `site/dist` — but it is
+  `workflow_dispatch` only, so it has never run: the site is NOT live, and
+  `https://fstubner.github.io/harness-dispatch/` returns 404. Run the workflow
+  by hand to publish it, and point `package.json`'s `homepage` back at that URL
+  once it answers.
 - The pre-Astro `docs/index.html` + `docs/styles.css` have since been removed;
   `site/` is the only source of the page now. claims-check-ignore
 
@@ -67,4 +71,4 @@ User asks for a backoff refactor + SLA check + test review. Agent:
 accuracy-corrected at the time) claims-check-ignore
 
 Hero (transcript) → How it works (routing/billing/safety/quota) → Setup →
-Surface (dispatch/job_status/usage + resources + REST) → FAQ → CTA/footer.
+Surface (all six MCP tools + both resources + REST) → FAQ → CTA/footer.

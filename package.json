@@ -15,7 +15,7 @@
   ],
   "license": "MIT",
   "author": "Felix Stubner",
-  "homepage": "https://fstubner.github.io/harness-dispatch/",
+  "homepage": "https://github.com/fstubner/harness-dispatch#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

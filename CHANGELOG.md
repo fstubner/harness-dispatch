@@ -8,6 +8,23 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The landing page no longer describes a different product.** It listed
+  three MCP tools where six are registered and one resource where there are
+  two; its setup block ran `configure` without `--yes`, which writes
+  nothing, and then showed `doctor --live` output using three strings the
+  tool has never printed; its MCP snippet omitted `--config`, the form the
+  tool itself warns silently falls back to shipped defaults and ignores your
+  config file; it claimed "the one outbound call is a public leaderboard
+  GET" when that fetch is opt-in and off by default; and its worked example
+  showed a job id the API cannot produce. The sample output is now copied
+  from a real run.
+
+- `package.json`'s `homepage` pointed at a GitHub Pages URL that returns
+  404 — the deploy workflow is manual-only and has never been run — so the
+  link npm shows on the package page was broken. It now points at the
+  README. The site's own spec records that the page is not live and what to
+  do about it.
+
 - **An abandoned job no longer blames the wrong process.** Its error read
   "The dispatch server that started this job exited before the run finished",
   and a load test produced that message verbatim while the server was up and
