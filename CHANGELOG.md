@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The shipped harness defaults are read through the same field table as
+  everything else**, closing a silent drop that was already live. Route
+  settings resolve through one shared table so that a key works on `clis:`,
+  `endpoints:` and the legacy `services:` at once — but the parser for the
+  shipped defaults still hand-wrote its own list, and had drifted:
+  `thinking_level` on a built-in harness entry was parsed by nobody, while
+  the table reads that very field as the fallback for every user route of
+  that harness. Exactly the silent-drop shape the table exists to retire,
+  one layer underneath it. A row added to the table now reaches the defaults
+  layer too, instead of needing to be remembered in a fourth place.
+
 - **The two workspace policies no longer keep separate copies of the guards
   that protect a recursive delete**, and those guards are now tested on
   Windows, where the attack they exist for was originally measured. `copy`

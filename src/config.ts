@@ -33,9 +33,9 @@ import {
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
 } from "./config/validation.js";
-import { parseProtocolFields, protocolFrom, stringArrayFrom } from "./config/protocol.js";
+import { parseProtocolFields, protocolFrom } from "./config/protocol.js";
 import {
-  effectiveSafetyFrom,
+  
   resolveSharedRouteFields,
 } from "./config/route-fields.js";
 import { ENV_VAR_RE, interpolateTree } from "./config/env-interpolation.js";
@@ -1200,31 +1200,29 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
   return [
     harness,
     {
+      // The shipped defaults are the FOURTH consumer of the shared field
+      // contract, and were the one still hand-writing its own list. It had
+      // already drifted: `thinking_level` on a shipped harness entry was
+      // dropped on the floor, while route-fields.ts reads `d.thinkingLevel`
+      // as the fallback for every user route of that harness — the exact
+      // silent-drop shape the table exists to retire, one layer down.
+      // Resolving through the table means a row added there works here too,
+      // instead of needing to be remembered in a second place.
+      ...resolveSharedRouteFields(raw),
+      // This shape's own required identity fields, after the spread so they
+      // win: the table cannot supply them, and `leaderboardModel` is a
+      // required string here while the table leaves it optional.
       command: str(raw.command) ?? "",
       harness,
       leaderboardModel: str(raw.leaderboard_model) ?? "",
       cliCapability: num(raw.cli_capability, 1.0),
       tier: int(raw.tier, 1),
       capabilities: capsFrom(raw.capabilities),
-      ...(typeof raw.max_output_tokens === "number" ? { maxOutputTokens: raw.max_output_tokens } : {}),
-      ...(typeof raw.max_input_tokens === "number" ? { maxInputTokens: raw.max_input_tokens } : {}),
       provider: providerFrom(raw.provider) ?? "custom",
       surface: surfaceFrom(raw.surface) ?? "custom",
       authSource: authSourceFrom(raw.auth_source) ?? "unknown",
       ...(billingKind !== undefined ? { billingKind } : {}),
       ...(typeof raw.paid_usage_possible === "boolean" ? { paidUsagePossible: raw.paid_usage_possible } : {}),
-      ...(() => {
-        const effectiveSafety = effectiveSafetyFrom(raw.effective_safety);
-        return effectiveSafety !== undefined ? { effectiveSafety } : {};
-      })(),
-      ...(() => {
-        const models = stringArrayFrom(raw.models);
-        return models !== undefined ? { models } : {};
-      })(),
-      ...(() => {
-        const modelHint = str(raw.model_hint);
-        return modelHint !== undefined ? { modelHint } : {};
-      })(),
       ...(protocol !== undefined ? { protocol } : {}),
     },
   ];
