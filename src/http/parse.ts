@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 import type { RouteHints } from "../types.js";
 import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
-import { MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
+import { MAX_CONTEXT_FILES, MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
 
 /** Raised for anything the caller can fix; mapped to HTTP 400 by the server. */
 export class PayloadTooLargeError extends Error {}
@@ -70,8 +70,15 @@ export const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
  */
 export class BadRequestError extends Error {}
 
-/** Mirrors MAX_CONTEXT_FILES in mcp/tools.ts — the two surfaces must agree. */
-export const MAX_CONTEXT_FILES_HTTP = 64;
+/**
+ * The MCP surface's own limit, imported rather than copied.
+ *
+ * This was a second `= 64` under a comment saying "mirrors MAX_CONTEXT_FILES
+ * in mcp/tools.ts — the two surfaces must agree". The constant does not live
+ * in that file, and a comment cannot make two numbers agree; the module next
+ * door was already importing MAX_TIMEOUT_MS from the same place.
+ */
+export const MAX_CONTEXT_FILES_HTTP = MAX_CONTEXT_FILES;
 
 export async function readJson(
   req: IncomingMessage,

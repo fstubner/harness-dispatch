@@ -8,6 +8,33 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The leaderboard fetch stopped introducing itself as version 0.4.** Its
+  `User-Agent` was a hardcoded string, still saying 0.4 at 0.9 — so the one
+  host this tool ever contacts had been told a version that was wrong for
+  five releases. It is built from `VERSION` now. The reason it survived is
+  worth recording: a test asserted the literal `"harness-dispatch/0.4 …"`,
+  so the suite was holding the stale claim in place rather than catching it.
+  That assertion now compares against the real version.
+
+- A note returned to the CALLER carried a git commit hash
+  (`… this was per-process until 304a1b5`), which means nothing to anyone
+  reading a dispatch response. Removed, along with a second hash in a
+  comment and a reference to a line number in a file the symbol had since
+  moved out of.
+
+- The HTTP surface's context-file limit is imported from the MCP surface
+  rather than copied. It was a second `= 64` under a comment reading
+  "mirrors MAX_CONTEXT_FILES in mcp/tools.ts — the two surfaces must
+  agree": the constant does not live in that file, and a comment cannot
+  make two numbers agree. The module was already importing its sibling
+  constant from the right place.
+
+- `explicitOptsFromHints` is gone. It was exported for nobody: it existed
+  because the HTTP fanout path built dispatch options by naming fields
+  inline and dropped two, and that path now enforces route policy earlier
+  and passes hints wholesale — which is what the deleted function's own
+  docblock argued for.
+
 - **The landing page no longer describes a different product.** It listed
   three MCP tools where six are registered and one resource where there are
   two; its setup block ran `configure` without `--yes`, which writes

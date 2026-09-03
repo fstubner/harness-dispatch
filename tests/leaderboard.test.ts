@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 import path from "node:path";
+import { VERSION } from "../src/version.js";
 
 import {
   ELO_NORM_MAX,
@@ -54,7 +55,11 @@ function makeFetchMock(init: MockResponseInit) {
       opts?.headers instanceof Headers
         ? opts.headers.get("User-Agent")
         : (opts?.headers as Record<string, string> | undefined)?.["User-Agent"];
-    expect(ua).toBe("harness-dispatch/0.4 (leaderboard quality scoring)");
+    // Asserted against the REAL version, not a literal. This line used to read
+    // `toBe("harness-dispatch/0.4 ...")`, which is why the header still said 0.4
+    // at 0.9: the test was holding the stale claim in place, so the one host
+    // this tool ever contacts was told a version wrong by five releases.
+    expect(ua).toBe(`harness-dispatch/${VERSION} (leaderboard quality scoring)`);
     expect(String(input)).toBe(LEADERBOARD_URL);
 
     if (init.throwError) {

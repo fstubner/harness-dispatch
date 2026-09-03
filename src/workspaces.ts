@@ -1009,7 +1009,7 @@ async function prepareSharedWorkspace(
         securityBoundary: "none",
         notes:
           policy === "shared_locked"
-            ? ["Write-capable shared workspace dispatches are serialized across ALL processes (see workspace-lock.ts; this was per-process until 304a1b5)."]
+            ? ["Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."]
             : ["Shared workspace dispatches run directly in the caller's working directory."],
       });
     },

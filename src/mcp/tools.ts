@@ -63,16 +63,8 @@ import {
 } from "./tool-schemas.js";
 
 
-
-
-
-
-
-
-
-
 /**
- * Exactly the shape jobs.ts:679 generates: `job-${Date.now()}-${8 hex}`.
+ * Exactly the shape `newJobId()` generates: `job-${Date.now()}-${8 hex}`.
  *
  * The schema was a bare z.string() and getAsyncJob does
  * `path.join(jobsRoot(), jobId)` with no validation, so a caller could read
