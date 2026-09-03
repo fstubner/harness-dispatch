@@ -174,36 +174,6 @@ export interface ExplicitDispatchOpts {
   defaultTimeoutMs?: number;
 }
 
-/**
- * Every hint that means something to an explicitly-chosen route, in one place.
- *
- * The HTTP fanout path built these options by naming three fields inline and
- * missed two: `routePolicy` never reached `routeTo`, so
- * `{"mode":"fanout","hints":{"routePolicy":"blocked"}}` — documented as
- * "dry-run: block everything" — returned 200 having run a live agent in the
- * caller's working tree, and `local_only` let a metered route run. `timeoutMs`
- * was dropped the same way, so the bound the release notes describe never
- * reached the child in fanout mode. Single mode enforced both correctly, so
- * one surface disagreed with itself.
- *
- * Picking fields by name is what allowed that: nothing fails when a new hint
- * is added and a call site is not updated. Adding one here reaches every
- * caller, and `ExplicitDispatchOpts` is the compiler's list of what belongs.
- *
- * `model` is deliberately absent — fanout selects routes with `models`, and
- * each arm runs its own. `preferLargeContext` and `service` only steer which
- * route is PICKED, which an explicit route has already decided.
- */
-export function explicitOptsFromHints(hints: RouteHints): ExplicitDispatchOpts {
-  return {
-    ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
-    ...(hints.workspacePolicy !== undefined ? { workspacePolicy: hints.workspacePolicy } : {}),
-    ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
-    ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
-    ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
-  };
-}
-
 function resolveModel(svc: ServiceConfig, taskType: TaskType): string | undefined {
   if (svc.escalateModel && svc.escalateOn.includes(taskType)) {
     return svc.escalateModel;

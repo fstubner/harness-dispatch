@@ -11,6 +11,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { VERSION } from "./version.js";
 import path from "node:path";
 
 import { stateRoot } from "./state-dir.js";
@@ -50,7 +51,10 @@ export const QUALITY_MAX = 1.0;
 export const QUALITY_DEFAULT = 0.85;
 
 // User-Agent required — API returns 403 without it
-const USER_AGENT = "harness-dispatch/0.4 (leaderboard quality scoring)";
+// Built from VERSION rather than pinned: this was hardcoded at "0.4" and
+// still said so at 0.9, so the one host this tool ever contacts was told a
+// version that had been wrong for five releases.
+const USER_AGENT = `harness-dispatch/${VERSION} (leaderboard quality scoring)`;
 
 // ---------------------------------------------------------------------------
 // Benchmark file resolution

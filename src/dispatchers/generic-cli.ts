@@ -975,7 +975,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
       streamedNothing ??
       (rawErrorFallback || `Exit code ${exitCode}`);
     // Scan BOTH streams, not just whichever one errorDetail resolved to.
-    // e78c87a narrowed this to detectRateLimit(errorDetail) while adding
+    // This was narrowed to detectRateLimit(errorDetail) while adding
     // structured-error support, so a 429 on the stream that lost the
     // errorDetail race stopped being detected — for jsonl_stream that means a
     // rate limit on stderr while stdout carries the event payload. The
