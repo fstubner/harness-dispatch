@@ -68,6 +68,50 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+describe("the two request paths put different things on the wire, on purpose", () => {
+  // The property that rules out the obvious refactor. Both paths now share one
+  // prologue, and the single thing it takes as a parameter is the difference
+  // that matters: `dispatch()` must keep sending `stream: false` and asking
+  // for JSON. Collapsing that — which is what "just drain the stream" would
+  // do — silently changes the request every buffered endpoint call makes
+  // against a third-party gateway.
+
+  it("dispatch() asks for a non-streaming JSON response", async () => {
+    fetchMock.mockResolvedValue(mockJsonResponse(chatCompletion("ok")));
+
+    await new OpenAICompatibleDispatcher(baseSvc()).dispatch("hi", [], "");
+
+    const [, init] = fetchMock.mock.calls[0] as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+    const body = JSON.parse(String(init.body)) as { stream?: unknown };
+    expect(body.stream, "the buffered path started streaming on the wire").toBe(false);
+    expect(init.headers["Accept"]).toBe("application/json");
+  });
+
+  it("stream() asks for an event stream", async () => {
+    fetchMock.mockResolvedValue(
+      new Response("data: [DONE]", {
+        status: 200,
+        headers: new Headers({ "content-type": "text/event-stream" }),
+      }),
+    );
+
+    for await (const _ of new OpenAICompatibleDispatcher(baseSvc()).stream("hi", [], "")) {
+      // drain
+    }
+
+    const [, init] = fetchMock.mock.calls[0] as [
+      string,
+      RequestInit & { headers: Record<string, string> },
+    ];
+    const body = JSON.parse(String(init.body)) as { stream?: unknown };
+    expect(body.stream).toBe(true);
+    expect(init.headers["Accept"]).toBe("text/event-stream");
+  });
+});
+
 describe("a credential never reaches the caller's error text", () => {
   // Scrubbing was proven at the unit (redact-endpoint.test.ts) and never from
   // the dispatcher — and the dispatcher is where a leak would actually happen,
