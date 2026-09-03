@@ -8,6 +8,25 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **An abandoned job no longer blames the wrong process.** Its error read
+  "The dispatch server that started this job exited before the run finished",
+  and a load test produced that message verbatim while the server was up and
+  still serving requests — one supervisor had been killed. The status file
+  this is derived from records a heartbeat and nothing about who was holding
+  it, so naming a culprit was always a guess, and it sent anyone debugging to
+  the wrong process. It now says what is known: the job stopped reporting,
+  the process running it is gone, the partial output is on disk, and
+  `retry_job` re-runs the same task.
+
+- `max_concurrent_runs: 0` is documented as what it is. README said it
+  "removes the bound"; measured under load, it also takes the supervisor
+  pool out of the path, so every job gets its own runner process at ~76 MB —
+  the per-job cost the pool exists to remove, on the memory-bound machine
+  the cap exists for. Routing the unbounded case through the pool would be
+  better and is not done here: the pool sizes itself by dividing the limit,
+  so an infinite one provisions zero supervisors, and getting that right
+  needs its own load run rather than a guess.
+
 - **The shipped harness defaults are read through the same field table as
   everything else**, closing a silent drop that was already live. Route
   settings resolve through one shared table so that a key works on `clis:`,
