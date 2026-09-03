@@ -192,7 +192,7 @@ describe("Router.stream", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 

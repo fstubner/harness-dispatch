@@ -1461,6 +1461,16 @@ export interface RetryOutcome {
   retryOf: string;
   service?: string;
   reusedFrom: { prompt: boolean; files: number; workingDir: string };
+  /**
+   * The original's model, when the retry's route does not declare it.
+   *
+   * `retryJob` has always SET this and the MCP tool description has always
+   * documented it, but the interface never listed it — the object is built
+   * with a conditional spread, which TypeScript does not excess-property
+   * check. So a typed caller could not see a field that ships, and the tests
+   * asserting it only compiled because the tests were not typechecked.
+   */
+  droppedModel?: string;
   message: string;
 }
 

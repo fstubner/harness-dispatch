@@ -35,8 +35,26 @@ async function writeJson(file: string, value: unknown): Promise<void> {
   await fs.writeFile(file, JSON.stringify(value, null, 2), "utf8");
 }
 
-async function readJson(file: string): Promise<Record<string, never>> {
-  return JSON.parse(await fs.readFile(file, "utf8"));
+/** One MCP client's config file, as these tests read it back. */
+interface ClientFile {
+  mcpServers?: Record<
+    string,
+    {
+      command?: string;
+      args?: string[];
+      env?: Record<string, string>;
+      /** A client may carry fields this tool does not set (`cwd`, its own keys). */
+      [key: string]: unknown;
+    }
+  >;
+  [key: string]: unknown;
+}
+
+// Was `Promise<Record<string, never>>`, which types every property access as
+// `never` — so the assertions below could say anything at all and still
+// "typecheck", back when the tests were not typechecked.
+async function readJson(file: string): Promise<ClientFile> {
+  return JSON.parse(await fs.readFile(file, "utf8")) as ClientFile;
 }
 
 // `installed: () => false` pins "no client command on PATH", so these run the
@@ -174,10 +192,10 @@ describe("devLaunchCommand", () => {
     // interactive prompt is what supplies consent in real use.
     await writeClientEntry(claude, { stamp: "s", consented: true });
 
-    const written = (await readJson(claudeFile())).mcpServers[ENTRY_KEY];
+    const written = (await readJson(claudeFile())).mcpServers![ENTRY_KEY]!;
     expect(written.command).toBe("node");
-    expect(written.args[0]).toBe(path.resolve(entry));
-    expect(written.args).toContain("--config");
+    expect(written.args![0]).toBe(path.resolve(entry));
+    expect(written.args!).toContain("--config");
     // `cwd` is not a field we set, so it survives — same rule that keeps `env`.
     expect(written.cwd).toBe("H:\\checkout");
   });
@@ -206,13 +224,13 @@ describe("writeClientEntry", () => {
 
     const after = await readJson(claudeFile());
     expect(after).toMatchObject({ someOtherThing: { keep: true } });
-    expect(after.mcpServers.github).toEqual({
+    expect(after.mcpServers!.github).toEqual({
       command: "gh-mcp",
       args: [],
       env: { TOKEN: "secret" },
     });
-    expect(after.mcpServers[ENTRY_KEY].env).toEqual({ KEY: "mine" });
-    expect(after.mcpServers[ENTRY_KEY].command).toBe("harness-dispatch");
+    expect(after.mcpServers![ENTRY_KEY]!.env).toEqual({ KEY: "mine" });
+    expect(after.mcpServers![ENTRY_KEY]!.command).toBe("harness-dispatch");
   });
 
   it("writes an absolute --config path", async () => {
@@ -221,7 +239,7 @@ describe("writeClientEntry", () => {
     // both appear to work. That is what made the real bug survive.
     await writeJson(claudeFile(), { mcpServers: {} });
     await writeClientEntry(planFor("claude-code"), { stamp: "s" });
-    const args = (await readJson(claudeFile())).mcpServers[ENTRY_KEY].args as string[];
+    const args = (await readJson(claudeFile())).mcpServers![ENTRY_KEY]!.args as string[];
     expect(args).toContain("--config");
     expect(path.isAbsolute(args[args.indexOf("--config") + 1]!)).toBe(true);
   });
@@ -299,8 +317,8 @@ describe("removeClientEntry", () => {
     expect(outcome.action).toBe("written");
 
     const after = await readJson(claudeFile());
-    expect(after.mcpServers[ENTRY_KEY]).toBeUndefined();
-    expect(after.mcpServers.github).toEqual({ command: "gh-mcp", args: [] });
+    expect(after.mcpServers![ENTRY_KEY]).toBeUndefined();
+    expect(after.mcpServers!.github).toEqual({ command: "gh-mcp", args: [] });
     expect(after.other).toBe(1);
   });
 
@@ -311,12 +329,12 @@ describe("removeClientEntry", () => {
     const outcome = await removeClientEntry(planFor("cursor"), { stamp: "s" });
     expect(outcome.action).toBe("skipped");
     expect(outcome.reason).toContain("by hand");
-    expect((await readJson(cursorFile())).mcpServers[ENTRY_KEY]).toBeDefined();
+    expect((await readJson(cursorFile())).mcpServers![ENTRY_KEY]).toBeDefined();
 
     // ...unless asked explicitly.
     const forced = await removeClientEntry(planFor("cursor"), { stamp: "s", force: true });
     expect(forced.action).toBe("written");
-    expect((await readJson(cursorFile())).mcpServers[ENTRY_KEY]).toBeUndefined();
+    expect((await readJson(cursorFile())).mcpServers![ENTRY_KEY]).toBeUndefined();
   });
 
   it("is a no-op when there is nothing of ours to remove", async () => {
@@ -339,7 +357,7 @@ describe("writeClientEntry consent", () => {
     const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
     expect(outcome.action).toBe("skipped");
     expect(outcome.reason).toContain("by hand");
-    expect((await readJson(claudeFile())).mcpServers[ENTRY_KEY].args).toEqual([
+    expect((await readJson(claudeFile())).mcpServers![ENTRY_KEY]!.args).toEqual([
       "/my/own/build.js",
     ]);
   });
@@ -355,7 +373,7 @@ describe("writeClientEntry consent", () => {
       consented: true,
     });
     expect(outcome.action).toBe("written");
-    expect((await readJson(claudeFile())).mcpServers[ENTRY_KEY].command).toBe(
+    expect((await readJson(claudeFile())).mcpServers![ENTRY_KEY]!.command).toBe(
       "harness-dispatch",
     );
   });

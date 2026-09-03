@@ -82,7 +82,7 @@ describe("admission arithmetic", () => {
       endpoint: { name: "endpoint", type: "openai_compatible" },
       pinned: { name: "pinned", type: "cli", resourceWeight: 0.5 },
     },
-  } as never;
+  } as unknown as import("../src/types.js").RouterConfig;
 
   const job = (over: Record<string, unknown> = {}) =>
     ({
@@ -94,7 +94,7 @@ describe("admission arithmetic", () => {
         jobDir: "/tmp/x",
         ...over,
       },
-    }) as never;
+    }) as unknown as { status: import("../src/jobs/types.js").JobStatus };
 
   it("prices a CLI route as a whole process and an endpoint as a fraction", async () => {
     const { resourceWeightFor } = await import("../src/jobs.js");

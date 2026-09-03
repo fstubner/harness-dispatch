@@ -307,7 +307,7 @@ describe("an immediate trip is a failure too", () => {
    *   {"tripped":true,"failures":0,"cooldownRemainingSec":30}
    */
   it("counts the failure it tripped on", () => {
-    const b = new CircuitBreaker("r");
+    const b = new CircuitBreaker();
     b.trip(30);
     const s = b.status();
     expect(s.tripped).toBe(true);
@@ -315,7 +315,7 @@ describe("an immediate trip is a failure too", () => {
   });
 
   it("still clears on success", () => {
-    const b = new CircuitBreaker("r");
+    const b = new CircuitBreaker();
     b.trip(30);
     b.recordSuccess();
     expect(b.status().failures).toBe(0);

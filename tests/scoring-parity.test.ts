@@ -417,7 +417,7 @@ function buildContext(fixture: Fixture): {
   quota: QuotaCache;
   leaderboard: LeaderboardCache;
 } {
-  const quota = new QuotaCache();
+  const quota = new QuotaCache({});
   const leaderboard = new LeaderboardCache();
   for (const m of fixture.models) {
     (leaderboard as unknown as {

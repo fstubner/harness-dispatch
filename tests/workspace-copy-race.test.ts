@@ -16,7 +16,7 @@
  * the thing this repo treats as worse than no test at all.
  */
 
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 

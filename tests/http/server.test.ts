@@ -441,7 +441,7 @@ describe("HTTP server", () => {
     expect(statusJson.routes[0]!.id).toBe("local");
     expect(statusJson.routes[0]).toHaveProperty("billing");
     expect(statusJson.routes[0]).toHaveProperty("endpoint");
-    expect(statusJson.routes[0].endpoint).toEqual(
+    expect(statusJson.routes[0]!.endpoint).toEqual(
       expect.objectContaining({
         mode: "direct_openai_compatible",
         provider: "custom",
@@ -730,7 +730,7 @@ describe("HTTP server", () => {
       },
     );
     const client = new Client({ name: "http-test", version: "test" }, { capabilities: {} });
-    await client.connect(transport);
+    await client.connect(transport as unknown as Parameters<typeof client.connect>[0]);
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(["dispatch", "job_status", "cancel_job", "retry_job", "workspace", "usage"]);
@@ -763,8 +763,8 @@ describe("HTTP server", () => {
 
     const clientA = new Client({ name: "http-test-a", version: "test" }, { capabilities: {} });
     const clientB = new Client({ name: "http-test-b", version: "test" }, { capabilities: {} });
-    await clientA.connect(makeClient());
-    await clientB.connect(makeClient());
+    await clientA.connect(makeClient() as unknown as Parameters<typeof clientA.connect>[0]);
+    await clientB.connect(makeClient() as unknown as Parameters<typeof clientA.connect>[0]);
     try {
       const [toolsA, toolsB] = await Promise.all([
         clientA.listTools(),

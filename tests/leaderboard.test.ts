@@ -334,7 +334,7 @@ describe("the fetch timeout covers the response body", () => {
 
     const cache = new LeaderboardCache("/nonexistent/path/benchmarks.json", { enabled: true });
     const started = Date.now();
-    const { qualityScore } = await cache.getQualityScore("some-model");
+    const { qualityScore } = await cache.getQualityScore("some-model", undefined);
 
     expect(headersOnly).toHaveBeenCalled();
     // It gave up and fell back rather than never returning.
