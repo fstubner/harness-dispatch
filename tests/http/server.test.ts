@@ -161,6 +161,92 @@ describe("HTTP server", () => {
     await Promise.all(fakes.splice(0).map((fake) => fake.close()));
   });
 
+  // Every authenticated route, with a token that is WRONG rather than absent.
+  //
+  // The suite only ever omitted the header, and an audit proved what that
+  // costs: replacing the constant-time comparison in `isAuthorized` with
+  // "accept any Bearer value" left all 35 tests in this file green. Only
+  // auth.test.ts caught it — at the unit, one layer below the server that
+  // actually decides. A wrong token is also the realistic case: a stale token
+  // in a script, or an attacker guessing, never a missing header.
+  //
+  // Table-driven so a new authenticated route is one row rather than a
+  // forgotten case; `/health` is deliberately absent, being the one endpoint
+  // that answers unauthenticated by design.
+  const AUTHENTICATED_ROUTES: Array<{ path: string; method: string; body?: string }> = [
+    { path: "/v1/status", method: "GET" },
+    { path: "/v1/usage", method: "GET" },
+    { path: "/v1/models", method: "GET" },
+    {
+      path: "/v1/chat/completions",
+      method: "POST",
+      body: JSON.stringify({ model: "fake", messages: [{ role: "user", content: "hi" }] }),
+    },
+    { path: "/mcp", method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) },
+  ];
+
+  it.each(AUTHENTICATED_ROUTES.map((r) => [`${r.method} ${r.path}`, r] as const))(
+    "%s rejects a WRONG bearer token, not just a missing one",
+    async (_label, route) => {
+      const fake = await startFakeOpenAi();
+      fakes.push(fake);
+      const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      handles.push(handle);
+
+      const send = (authorization: string | undefined): Promise<Response> =>
+        fetch(`http://127.0.0.1:${handle.port}${route.path}`, {
+          method: route.method,
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+          ...(route.body === undefined ? {} : { body: route.body }),
+        });
+
+      // Same length as the real token, so a comparison that only checks length
+      // cannot pass this either.
+      expect((await send("Bearer secrez")).status, "a wrong token was accepted").toBe(401);
+      expect((await send("Bearer ")).status, "an empty token was accepted").toBe(401);
+      expect((await send("secret")).status, "a bare token without the scheme was accepted").toBe(401);
+      expect((await send(undefined)).status, "a missing header was accepted").toBe(401);
+      // And the correct one is not rejected by whatever refuses the rest.
+      expect((await send("Bearer secret")).status, "the correct token was refused").not.toBe(401);
+    },
+  );
+
+  it("stops accepting the old token once the token file is rotated", async () => {
+    // `activeToken()` re-reads the token file when its mtime moves, so that
+    // `harness-dispatch auth rotate` takes effect on a running server. Every
+    // other test in this file passes an explicit `token`, which pins it for
+    // the server's life and leaves this path unexecuted.
+    const { promises: fsp } = await import("node:fs");
+    const auth = await import("../../src/auth.js");
+    const first = await auth.ensureHttpToken();
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    // No `token` option: the server reads the file, which is what rotation needs.
+    const handle = await startHttpServer({ configPath: config });
+    handles.push(handle);
+
+    const status = (token: string): Promise<number> =>
+      fetch(`http://127.0.0.1:${handle.port}/v1/status`, {
+        headers: { authorization: `Bearer ${token}` },
+      }).then((r) => r.status);
+
+    expect(await status(first), "the token on disk was refused").not.toBe(401);
+
+    const rotated = await auth.rotateHttpToken();
+    expect(rotated).not.toBe(first);
+    // mtime has a coarse resolution on some filesystems; make the move visible.
+    await fsp.utimes(auth.tokenPath(), new Date(), new Date(Date.now() + 1000));
+
+    expect(await status(first), "the OLD token still worked after rotation").toBe(401);
+    expect(await status(rotated), "the NEW token was refused after rotation").not.toBe(401);
+  });
+
   it("requires bearer auth for status", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);
