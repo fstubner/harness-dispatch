@@ -25,7 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { eolDigest, EXCLUDED_DIRS, GIT_ENV, isUnderOrEqual, workspacesBase } from "./workspaces.js";
+import { eolDigest, GIT_ENV, isUnderOrEqual, workspacesBase } from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -258,43 +258,24 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     return buildCopyPatchFromChanges(run, root, run.changedFiles);
   }
 
-  // Fallback for a job recorded before changedFiles existed. Kept rather than
-  // refusing so an upgrade cannot strand an in-flight job; those records age
-  // out with the workspace inside a day.
+  // A job recorded before `changedFiles` existed cannot be patched safely, and
+  // can no longer exist: the field has been written since 2026-07-13 and an
+  // isolated workspace is pruned after a day, so any run without it is older
+  // than its own workspace. This used to fall back to `git diff --no-index`
+  // over the whole directory pair, with ~170 lines of path normalisation and
+  // section filtering to undo the damage that comparison does — machinery that
+  // no input could reach any more, whose own comment still described the copy
+  // as living inside the project, which stopped being true in 0.7.0.
   //
-  // The paths are handed to git in POSIX form deliberately. Given a Windows
-  // path, git quotes the whole filename and escapes the separators as `\\`,
-  // so the emitted header reads `"a/C:\\Users\\..."` — and any attempt to
-  // normalise that afterwards has to understand C-string escaping. Passing
-  // forward slashes means git emits a plain unquoted path that simple prefix
-  // stripping can handle.
-  const origPosix = toPosix(run.originalWorkingDir);
-  const isoPosix = toPosix(root);
-  // --no-renames, and it is load-bearing rather than cosmetic.
-  //
-  // The copy lives INSIDE the project, so a file the agent CREATED appears on
-  // both sides of the comparison with identical content: once as
-  // `.harness-dispatch/.../workspace/notes.txt` while git scans the project,
-  // and once as `notes.txt` inside the copy. Rename detection paired the two
-  // and emitted NOTHING AT ALL for that file — no deletion, no addition — so
-  // the patch came back empty, `apply` reported "the agent changed nothing"
-  // beside its own list saying the file was added, and `discard` then deleted
-  // the only copy of the work. A MODIFIED file was unaffected, which is why
-  // this survived three releases of the feature.
-  //
-  // Disabling rename detection emits the deletion and the addition separately;
-  // dropSectionsUnder was already written to strip the former and keep the
-  // latter. Nothing else here wants renames: a patch that says "rename" only
-  // applies cleanly if the source path is where the patch thinks it is, and on
-  // this comparison it never is.
-  const raw = await gitDiff(
-    ["diff", "--no-index", "--no-renames", "--binary", "--", origPosix, isoPosix],
-    path.dirname(run.originalWorkingDir),
+  // Refusing matches what the `git_worktree` branch above already does for its
+  // own equivalent case, and is the safe direction: the alternative is emitting
+  // a patch from an untested path.
+  throw new Error(
+    "This copy job predates changed-file recording, so a safe patch cannot be " +
+      "produced — diffing the whole directory pair could report files the copy " +
+      "never included as deletions. Inspect it by hand at " +
+      `${root}, or re-run the dispatch.`,
   );
-  // Order matters: the workspace itself is filtered out on ABSOLUTE paths,
-  // before normalisation collapses them.
-  const withoutWorkspace = dropSectionsUnder(raw, toPosix(run.workspaceRoot ?? ""));
-  return dropExcludedSections(normaliseNoIndexPaths(withoutWorkspace, origPosix, isoPosix));
 }
 
 /** git's own name for "this side does not exist", accepted on Windows too. */
@@ -570,136 +551,8 @@ async function changesNotInProject(
   return missing;
 }
 
-/**
- * Drop patch sections for files inside the workspace directory itself.
- *
- * A `copy` workspace lives INSIDE the project (.harness-dispatch/workspaces/),
- * so `git diff --no-index <project> <copy>` walks into the copy while
- * scanning the project and reports the copy's own files as project files.
- * Normalisation then rewrites those paths — they contain the isolated root as
- * a substring — down to the same names as the real ones, producing a patch
- * with two conflicting sections per file: a spurious deletion of the copy's
- * version, and the genuine edit.
- *
- * Observed live: `app.js` appeared twice, once "deleted file mode" and once
- * modified. Applying that would have deleted the file it was meant to update.
- * It never showed up in unit tests because the fixtures put the copy outside
- * the project, which is not where the product puts it.
- */
-function dropSectionsUnder(patch: string, absRoot: string): string {
-  if (!patch || !absRoot) return patch;
-  const lines = patch.split("\n");
-
-  // Section-wise, because the leaked entries cannot be told from legitimate
-  // ones by their header alone. A file the agent ADDED and a copy-of-the-copy
-  // artefact both carry the isolated root on BOTH sides of `diff --git` — the
-  // difference is direction. The artefacts are always deletions (the file
-  // exists under the workspace while scanning the project, and has no
-  // counterpart inside the copy, which excludes its own workspace directory),
-  // and a real addition is always `--- /dev/null`. Filtering on the header
-  // alone dropped every genuine change too, and produced an empty patch.
-  const sections: string[][] = [];
-  let current: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith("diff --git ") && current.length > 0) {
-      sections.push(current);
-      current = [];
-    }
-    current.push(line);
-  }
-  if (current.length > 0) sections.push(current);
-
-  const kept = sections.filter((section) => {
-    const header = section[0] ?? "";
-    if (!header.startsWith("diff --git ")) return true;
-    const underWorkspace = header.includes(`${absRoot}/`);
-    if (!underWorkspace) return true;
-    const isDeletion = section.some((l) => l.startsWith("+++ /dev/null"));
-    return !isDeletion;
-  });
-  return kept.map((s) => s.join("\n")).join("\n");
-}
-
-/**
- * Remove patch sections for paths the COPY never contained.
- *
- * copyTree skips .git, node_modules and friends, so a plain directory diff
- * reports every one of those files as deleted — and applying that patch would
- * delete the user's repository. The exclusion set is imported from
- * workspaces.ts rather than restated here: two lists would drift, and the
- * failure mode of drifting is destroying a .git directory.
- *
- * Only the `copy` policy needs this. A worktree diff is bounded by a real
- * commit, so it never sees these paths at all.
- */
-function dropExcludedSections(patch: string): string {
-  if (!patch) return patch;
-  const out: string[] = [];
-  let skipping = false;
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      const rel = /^diff --git a\/(\S+)/.exec(line)?.[1] ?? "";
-      const top = rel.split("/")[0] ?? "";
-      skipping = EXCLUDED_DIRS.has(top);
-    }
-    if (!skipping) out.push(line);
-  }
-  return out.join("\n");
-}
-
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-/**
- * Rewrite `git diff --no-index` headers so the patch is repo-relative.
- *
- * --no-index emits the absolute paths it was given (`--- a/C:/long/path/...`),
- * which applies nowhere but this machine. Rewriting them to a/<rel> and
- * b/<rel> makes the patch portable and applicable with -p1, which is what
- * every other git patch in the world expects.
- */
-export function normaliseNoIndexPaths(patch: string, origRoot: string, isoRoot: string): string {
-  if (!patch) return patch;
-  // Longest first: when one root is a prefix of the other, stripping the
-  // shorter one first would leave a fragment of the longer behind.
-  const roots = [origRoot, isoRoot].sort((a, b) => b.length - a.length);
-  // HEADER LINES ONLY, and "header" is decided by POSITION, not by prefix.
-  //
-  // This used to run over every line in the patch, including `+` and `-`
-  // content, so a file that mentioned its own absolute path had that path
-  // deleted from its text on the way through: a delegate wrote
-  // `const dataDir = "C:/…/hd-acc/data"` and the project received
-  // `const dataDir = "data"`, reported as a clean apply. Env files, tsconfig
-  // paths, docker volumes and fixtures all routinely contain the project path.
-  //
-  // Matching on prefixes alone is not enough either: an ADDED line whose own
-  // text starts with "++ " arrives as "+++ ", and a `git diff` of a patch file
-  // is not a hypothetical in this repo. Everything from `@@` to the next
-  // section is content, full stop.
-  let inHunk = false;
-  return patch
-    .split("\n")
-    .map((line) => {
-      if (line.startsWith("diff --git ")) inHunk = false;
-      else if (line.startsWith("@@")) inHunk = true;
-      if (inHunk) return line;
-      let out = line;
-      for (const r of roots) {
-        // The a/ and b/ prefixes are rebuilt explicitly rather than left to a
-        // blanket strip, because a POSIX root already starts with "/": git
-        // emits `a//tmp/proj/app.js`, and removing "/tmp/proj/" from that
-        // leaves "aapp.js" — the prefix eaten, the patch unusable. A Windows
-        // root starts with a drive letter, so the blanket version worked
-        // there and this only failed on POSIX, in CI.
-        out = out.split(`a${r}/`).join("a/").split(`b${r}/`).join("b/");
-        out = out.split(`a/${r}/`).join("a/").split(`b/${r}/`).join("b/");
-        // Anything left over (e.g. a bare path in a "similarity index" line).
-        out = out.split(`${r}/`).join("");
-      }
-      return out;
-    })
-    .join("\n");
 }
 
 export interface PatchResult {

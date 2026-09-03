@@ -8,6 +8,22 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A patch-building path no input could reach has been removed, along with
+  the ~800-line test suite guarding it.** When a `copy` job had no recorded
+  changed-file list, the patch was built by diffing the whole original
+  directory against the whole workspace — a comparison that reports every
+  excluded directory as deleted, so ~170 lines of path normalisation and
+  section filtering existed to make its output safe to apply. The field it
+  falls back from has been recorded since 2026-07-13 and an isolated
+  workspace is pruned after a day, so no run reaching this code could still
+  exist; its own comment still described the copy as living inside the
+  project, which stopped being true in 0.7.0. Such a job is now refused with
+  the path to its workspace, matching what the `git_worktree` branch beside
+  it already did. Two tests that had been passing only because their fixture
+  omitted the field now run against the current path, and one of them turns
+  out to pin something real: discard refuses to destroy unapplied work, a
+  guard the old fixture never triggered.
+
 - **Dead imports and locals can no longer accumulate unnoticed.** The
   compiler was not asked about them, and 38 had built up across twelve
   files: three whole import declarations nothing read, a function nobody
