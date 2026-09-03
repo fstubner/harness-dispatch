@@ -8,6 +8,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The plugin's `/setup` command no longer walks users into a config that
+  removes every CLI harness.** It told them to write `disabled:`,
+  `overrides:` and `endpoints:` together — and a config carrying
+  `endpoints:` is authoritative, so detection switches off, the two tuning
+  keys apply to nothing, and Claude Code, Codex, Cursor and Antigravity all
+  vanish from the route table. That is not hypothetical: the maintainer's
+  own config had this shape, and no dispatch on that machine could reach a
+  CLI harness for four days after 0.9.0 shipped the authoritative rule. The
+  command now states the rule up front, points at `configure --yes` first,
+  offers two valid shapes (`detect: true` plus `endpoints:`, or a fully
+  explicit `clis:`), and ends by reading the two `doctor` lines that report
+  the mistake. Also corrected in the plugin: the "not yet published" note
+  (0.9.0 is on npm), the config-resolution order (it omitted `./config.yaml`
+  and the state-dir variable), the claim that `hints.model` is unvalidated,
+  and the command list, which omitted `/setup`.
 - **Two rules that a user depends on were passing while broken.** An audit
   broke fifteen guards on purpose to see which the suite would catch; these
   are the two that got through. First, "a per-call `timeoutMs` beats the

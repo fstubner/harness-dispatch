@@ -78,9 +78,13 @@ Two things cancelling does NOT do, and both matter before you rely on it:
 
 - Call `usage` first when unsure: it lists valid route ids, their default
   models, per-session call counts, quota, and breaker state.
-- `hints.model` is NOT validated — an unknown name is forwarded to the picked
-  harness as-is. `service` IS validated: an unknown route id is REJECTED with
-  `Unknown service: <name>` and the list of valid ids.
+- `hints.model` is not validated against the harness's own catalog — an unknown
+  name is forwarded to the picked harness as-is and fails there. Two values are
+  handled before that: an empty or whitespace-only string is refused by the
+  schema, and one naming a configured route steers routing rather than being
+  forwarded, reported back as `routing.modelHintDropped`. `service` IS
+  validated: an unknown route id is REJECTED with `Unknown service: <name>` and
+  the list of valid ids.
 - Route ids carry their suffix — `codex_cli`, not `codex`. This page used to
   say `service` was unvalidated and then gave `service: "codex"` as its worked
   example, so following it produced the very error it said could not happen.
