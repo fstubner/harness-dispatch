@@ -1,7 +1,7 @@
 /**
  * Router unit tests.
  *
- * Mocks the CircuitBreaker, QuotaCache, LeaderboardCache, and Dispatcher
+ * Mocks the QuotaCache, LeaderboardCache, and Dispatcher
  * modules — this test suite focuses on router scoring + dispatch logic,
  * not on those dependencies.
  */
@@ -134,8 +134,7 @@ import { nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
 import { buildRouteBilling } from "../src/billing.js";
 import { QuotaCache } from "../src/quota.js";
 import { LeaderboardCache } from "../src/leaderboard.js";
-import { CircuitBreaker } from "../src/circuit-breaker.js";
-import type { DispatchResult, RouterConfig, ServiceConfig, TaskType } from "../src/types.js";
+import type { DispatchResult, RouterConfig, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 
 /**
@@ -337,7 +336,7 @@ describe("Router.pickService", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -814,7 +813,7 @@ describe("Router.pickService", () => {
     expect(
       penaltyFor({
         provider: "anthropic",
-        surface: "vendor_cli",
+        surface: "codex_cli",
         authSource: "oauth_session",
         billingKind: "included_plan_usage",
       }),
@@ -838,7 +837,7 @@ describe("Router.pickService", () => {
       type: "openai_compatible",
       baseUrl: "https://api.example.com/v1",
       provider: "anthropic",
-      surface: "vendor_cli",
+      surface: "codex_cli",
       authSource: "oauth_session",
       billingKind: "included_plan_usage",
     });
@@ -868,7 +867,7 @@ describe("Router.pickService", () => {
       name: "frontier",
       tier: 1,
       provider: "anthropic",
-      surface: "vendor_cli",
+      surface: "codex_cli",
       authSource: "oauth_session",
       billingKind: "included_plan_usage",
     });
@@ -958,7 +957,7 @@ describe("Router.pickService", () => {
       name: "frontier",
       tier: 1,
       provider: "anthropic",
-      surface: "vendor_cli",
+      surface: "codex_cli",
       authSource: "oauth_session",
       billingKind: "included_plan_usage",
     });
@@ -972,7 +971,7 @@ describe("Router.pickService", () => {
       // meaning "no local route is eligible" that leaves those at their
       // defaults is testing the opposite of what it says.
       provider: "anthropic",
-      surface: "vendor_cli",
+      surface: "codex_cli",
       authSource: "oauth_session",
       billingKind: "included_plan_usage",
     });
@@ -1007,7 +1006,7 @@ describe("Router.route", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -1633,7 +1632,7 @@ describe("the buffered entry points still call dispatch(), not stream()", () => 
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -1662,7 +1661,7 @@ describe("timeout precedence holds on every entry point, not just route()", () =
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -1768,7 +1767,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 
@@ -1864,7 +1863,7 @@ describe("Router.routeTo", () => {
   let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
-    quota = new QuotaCache();
+    quota = new QuotaCache({});
     leaderboard = new LeaderboardCache();
   });
 

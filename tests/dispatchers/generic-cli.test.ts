@@ -1079,6 +1079,10 @@ describe("the command-line estimate against cross-spawn's real output", () => {
    * prompt failing.
    */
   it.runIf(process.platform === "win32")("matches on the shapes that broke it", async () => {
+    // cross-spawn ships no types for its internals; this test deliberately
+    // reaches into one to pin the escaping shapes that broke on Windows.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-expect-error -- untyped internal module, cast on the next line
     const parse = (await import("cross-spawn/lib/parse.js")).default as (
       c: string,
       a: string[],

@@ -177,10 +177,10 @@ describe("MCP server — public surface", () => {
       ]);
 
       const text = await client.readResource({ uri: "harness-dispatch://status" });
-      expect(text.contents[0]!.text).toContain("harness-dispatch status");
+      expect((text.contents[0] as { text: string }).text).toContain("harness-dispatch status");
 
       const json = await client.readResource({ uri: "harness-dispatch://status.json" });
-      const parsed = JSON.parse(String(json.contents[0]!.text)) as {
+      const parsed = JSON.parse(String((json.contents[0] as { text: string }).text)) as {
         routes: Array<Record<string, unknown>>;
         skippedRoutes: unknown[];
       };

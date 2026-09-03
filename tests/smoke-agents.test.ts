@@ -4,7 +4,9 @@ import {
   buildShortTaskPrompt,
   buildTaskBrief,
   smokeWorkspaceRoot,
-} from "../scripts/smoke-agents.mjs";
+} from // scripts/ is plain JS with no declarations; this suite exercises it directly.
+// @ts-expect-error -- untyped local module
+"../scripts/smoke-agents.mjs";
 
 describe("live agent smoke task brief", () => {
   it("keeps the routed prompt short and puts detailed instructions in the workspace brief", () => {

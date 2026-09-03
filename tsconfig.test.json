@@ -11,11 +11,10 @@
   //
   // noEmit, so this is purely a check; vitest transpiles the tests itself.
   //
-  // NOT yet part of `npm run check`: it reports 52 pre-existing errors across
-  // twelve files (possibly-undefined access, wrong arity, a few third-party
-  // shapes under exactOptionalPropertyTypes). Run `npm run typecheck:tests`
-  // to see them. Clearing that list and adding this to the gate is the next
-  // step; wiring it in now would just break the build for everyone.
+  // Part of `npm run check`. It started at 125 errors; clearing them turned up
+  // a real one — `RetryOutcome` did not declare `droppedModel`, a field
+  // `retryJob` sets and the MCP tool documents — and five fixtures scoring a
+  // `surface: "vendor_cli"` that is in no union and no config.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,

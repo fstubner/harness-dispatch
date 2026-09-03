@@ -442,7 +442,7 @@ describe("OpenAICompatibleDispatcher — wire_protocol: anthropic_messages", () 
     const events: Array<{ type: string }> = [];
     for await (const evt of d.stream("go", [], "")) events.push(evt);
 
-    const stdoutChunks = events.filter((e) => e.type === "stdout") as Array<{ chunk: string }>;
+    const stdoutChunks = events.filter((e) => e.type === "stdout") as unknown as Array<{ chunk: string }>;
     expect(stdoutChunks.map((e) => e.chunk).join("")).toBe("Hello, world!");
 
     const completion = events.find((e) => e.type === "completion") as

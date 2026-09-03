@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The tests are typechecked, and the gate enforces it.** Clearing the 125
+  errors that surfaced turned up two things a reader would have taken at face
+  value. `RetryOutcome` never declared `droppedModel` — a field `retry_job`
+  sets and the MCP tool description documents, invisible to any typed caller
+  because the object is built with a conditional spread, which TypeScript
+  does not excess-property check. And five router fixtures scored a route
+  whose billing surface was `"vendor_cli"`, a value in no union and no
+  config: they were measuring a shape that cannot occur. A test helper also
+  returned `Record<string, never>`, which made every assertion against a
+  config file it had just written unable to fail.
+
 - **The test suite's `implements Dispatcher` claims are true now, and there
   is a way to check them.** `tsconfig.json` sets `rootDir: src` so it can
   emit, which means a test file cannot be in the same program — so the tests

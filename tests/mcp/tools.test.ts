@@ -853,14 +853,18 @@ describe("MCP tools — dispatch", () => {
     // workingDir was provided explicitly, so no defaulted-cwd warning.
     expect(startData.warning).toBeUndefined();
 
-    let data: {
+    // Named, not `typeof data`: at the assignment below TypeScript has already
+    // narrowed `data` to `null`, so `as typeof data` cast the response to
+    // `null` and every read after it was `never`.
+    type JobStatusData = {
       completed: boolean;
       status: { status: string; jobDir: string };
       result?: { output: string };
-    } | null = null;
+    };
+    let data: JobStatusData | null = null;
     for (let i = 0; i < 100; i += 1) {
       const inspected = await invokeTool("job_status", { jobId: startData.jobId }, { holder });
-      data = inspected.data as typeof data;
+      data = inspected.data as JobStatusData;
       // completed flips true as soon as result.json lands; the status file's
       // final "completed" write follows one step later — poll for the
       // terminal status too, or a slow runner observes the in-between state.
