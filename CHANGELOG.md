@@ -8,6 +8,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **SECURITY: an endpoint that echoed your API key back in its error body
+  had it passed straight through to the caller and into
+  `logs/dispatches.jsonl`.** Both request paths build `HTTP <status>:
+  <message>` from the response body and neither scrubbed it, while the
+  network-error paths beside them always had. So a key in the base URL's
+  query string — a documented way to configure an endpoint, and how Gemini's
+  is written — came back verbatim whenever the endpoint quoted the request
+  URL in its own 4xx body. Found by writing the test the audit said was
+  missing: scrubbing had been proven at the unit and never once from the
+  dispatcher, which is the only place it can actually leak. Both paths are
+  scrubbed and separately pinned, because fixing one of a pair and missing
+  the other is this file's own recurring failure.
+
 - **The CLI dispatcher is now tested against a real process, not only
   through a mock.** `stream-subprocess.ts` carries a branch in PRODUCTION
   that detects a vitest mock on `runSubprocess` and synthesises one stdout

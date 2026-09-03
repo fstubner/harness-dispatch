@@ -602,7 +602,17 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     }
 
     if (res.status >= 400) {
-      const errMessage = this.#extractErrorMessage(parsedBody, rawBody);
+      // Scrubbed against the base URL, like every other error this
+      // dispatcher returns. An endpoint that echoes the request URL back in
+      // its own error body — several do — otherwise hands the caller their
+      // own key in the query string, and the same string is written to
+      // logs/dispatches.jsonl. The network-error paths above have always
+      // scrubbed; these two, built from a body rather than a thrown Error,
+      // did not.
+      const errMessage = scrubEndpointSecrets(
+        this.#extractErrorMessage(parsedBody, rawBody),
+        this.baseUrl,
+      );
       return {
         output: "",
         service: this.id,
@@ -727,7 +737,17 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       clearTimeout(timer);
       const rawBody = await res.text().catch(() => "");
       const parsedBody = this.#parseBody(rawBody);
-      const errMessage = this.#extractErrorMessage(parsedBody, rawBody);
+      // Scrubbed against the base URL, like every other error this
+      // dispatcher returns. An endpoint that echoes the request URL back in
+      // its own error body — several do — otherwise hands the caller their
+      // own key in the query string, and the same string is written to
+      // logs/dispatches.jsonl. The network-error paths above have always
+      // scrubbed; these two, built from a body rather than a thrown Error,
+      // did not.
+      const errMessage = scrubEndpointSecrets(
+        this.#extractErrorMessage(parsedBody, rawBody),
+        this.baseUrl,
+      );
       yield {
         type: "completion",
         result: {
