@@ -1,6 +1,6 @@
 /**
- * Dispatcher streaming tests — mock `runSubprocess` (which the streaming
- * subprocess helper delegates to in test mode) and assert the events
+ * Dispatcher streaming tests — stub `streamSubprocess` from a buffered result
+ * (see `tests/support/buffered-stream.ts`) and assert the events
  * emitted by GenericCliDispatcher's `stream()` method, parameterized by
  * each built-in harness's protocol (see the shipped config.default.yaml). There
  * is no per-harness dispatcher class — every CLI route runs through the same
@@ -8,11 +8,15 @@
  * contract (stdout events before completion) against each harness's real
  * flags/output shape.
  *
- * The adapter in `stream-subprocess.ts` detects the vi.fn() mock on
- * runSubprocess and synthesises a stream from its buffered result.
+ * These assert the ORDERING contract (chunks before completion) against a
+ * synthesised stream, not against a real pipe. `stream-subprocess.test.ts`
+ * covers the real spawn, and `generic-cli-real-subprocess.test.ts` covers a
+ * dispatcher driving one — both are needed, because a stub that yields one
+ * stdout chunk cannot show a partial line surviving across two reads.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { streamFromBuffered } from "../support/buffered-stream.js";
 import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
 import type { DispatcherEvent, ServiceConfig } from "../../src/types.js";
 import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
@@ -24,6 +28,17 @@ const CURSOR_PROTOCOL = PROTOCOL_PRESETS.cursor!;
 
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
+}));
+// The dispatcher calls `streamSubprocess`, never `runSubprocess`. Production
+// code used to notice the mock above and quietly reroute through a buffered
+// adapter; that branch is gone, so the seam is declared here instead. The
+// buffered mock stays because every assertion below reads argv, env and stdin
+// off it.
+vi.mock("../../src/dispatchers/shared/stream-subprocess.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../src/dispatchers/shared/stream-subprocess.js")
+  >()),
+  streamSubprocess: vi.fn(),
 }));
 vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
   resolveCliCommand: vi.fn(),
@@ -39,6 +54,12 @@ vi.mock("which", () => {
 });
 
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const { streamSubprocess } = await import(
+  "../../src/dispatchers/shared/stream-subprocess.js"
+);
+const streamSubprocessMock = streamSubprocess as unknown as ReturnType<
+  typeof vi.fn
+>;
 const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
 const { GenericCliDispatcher } = await import("../../src/dispatchers/generic-cli.js");
@@ -84,6 +105,7 @@ function makeSvc(overrides: Partial<ServiceConfig>): ServiceConfig {
 
 beforeEach(() => {
   runMock.mockReset();
+  streamSubprocessMock.mockImplementation(streamFromBuffered(runMock));
   resolveMock.mockReset();
   whichMock.mockReset();
 });

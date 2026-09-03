@@ -24,18 +24,18 @@
  * and drains any remaining buffered chunks. If the child doesn't exit within
  * a grace window, SIGKILL is sent.
  *
- * Test compatibility: if `runSubprocess` from `./subprocess.js` has been
- * replaced with a vi.fn() mock, `streamSubprocess` delegates to it and
- * synthesises a single `stdout` + `end` event from the buffered result. This
- * lets the existing dispatcher test suites (which mock `runSubprocess`) keep
- * working without modification while still exercising the streaming code
- * path in production.
+ * This module used to branch on whether `runSubprocess` had been replaced by
+ * a vitest mock, and if so synthesise events from a buffered result instead.
+ * The comment claimed that arrangement still exercised the streaming path in
+ * production; it did not exercise it ANYWHERE, because every dispatcher suite
+ * mocked `runSubprocess` and therefore ran the adapter. The adapter now lives
+ * in `tests/support/buffered-stream.ts`, where a suite opts into it
+ * explicitly, and nothing in this file knows whether it is under test.
  */
 import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
-import { runSubprocess, type SubprocessResult } from "./subprocess.js";
 
 export interface SubprocessChunk {
   stream: "stdout" | "stderr";
@@ -98,74 +98,6 @@ export function streamSubprocess(
   command: string,
   args: readonly string[],
   opts: StreamSubprocessOpts = {},
-): AsyncIterable<SubprocessStreamEvent> {
-  // Test-compatibility: when `runSubprocess` is replaced by a vi.fn() mock
-  // (every dispatcher test does this), delegate to the mock and synthesize
-  // stream events from the buffered result. This keeps existing tests
-  // passing without modification.
-  //
-  // We detect the mock by looking at `runSubprocess.mock` (the vitest fn shape).
-  // In production the function is a regular async function and `.mock` is
-  // undefined — we fall through to the real streaming implementation.
-  const rs = runSubprocess as unknown as {
-    mock?: unknown;
-    _isMockFunction?: boolean;
-  };
-  if (rs._isMockFunction || rs.mock) {
-    return adaptBufferedToStream(command, args, opts);
-  }
-
-  return realStreamSubprocess(command, args, opts);
-}
-
-/**
- * When `runSubprocess` is mocked in tests, call it and synthesize a stream
- * from the buffered result. The ordering is stdout-chunk → stderr-chunk →
- * end, matching what a real subprocess would emit when stdin closes and
- * it flushes both streams before exit.
- */
-function adaptBufferedToStream(
-  command: string,
-  args: readonly string[],
-  opts: StreamSubprocessOpts,
-): AsyncIterable<SubprocessStreamEvent> {
-  const deferredOpts: Parameters<typeof runSubprocess>[2] = {};
-  if (opts.cwd !== undefined) deferredOpts.cwd = opts.cwd;
-  if (opts.env !== undefined) deferredOpts.env = opts.env;
-  if (opts.stdin !== undefined) deferredOpts.stdin = opts.stdin;
-  if (opts.timeoutMs !== undefined) deferredOpts.timeoutMs = opts.timeoutMs;
-  if (opts.maxOutputBytes !== undefined)
-    deferredOpts.maxOutputBytes = opts.maxOutputBytes;
-
-  async function* gen(): AsyncGenerator<SubprocessStreamEvent> {
-    const res: SubprocessResult = await runSubprocess(
-      command,
-      args,
-      deferredOpts,
-    );
-    if (res.stdout) {
-      yield { stream: "stdout", chunk: res.stdout };
-    }
-    if (res.stderr) {
-      yield { stream: "stderr", chunk: res.stderr };
-    }
-    yield {
-      kind: "end",
-      exitCode: res.exitCode,
-      timedOut: res.timedOut,
-      durationMs: res.durationMs,
-      totalStdoutBytes: Buffer.byteLength(res.stdout, "utf8"),
-      totalStderrBytes: Buffer.byteLength(res.stderr, "utf8"),
-      truncated: false,
-    };
-  }
-  return gen();
-}
-
-function realStreamSubprocess(
-  command: string,
-  args: readonly string[],
-  opts: StreamSubprocessOpts,
 ): AsyncIterable<SubprocessStreamEvent> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
