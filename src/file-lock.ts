@@ -25,6 +25,35 @@ import path from "node:path";
  */
 const LOCK_STALE_MS = 10_000;
 
+/**
+ * Take a lock judged stale, by RENAME rather than delete.
+ *
+ * stat-then-rmdir let two waiters both judge the same lock stale — the slower
+ * one's rmdir then removed the faster one's FRESHLY CREATED lock, and both
+ * entered the critical section, recreating the unserialised
+ * read-modify-write this lock exists to prevent. Rename is atomic: exactly
+ * one waiter wins it, the loser gets ENOENT and goes round the loop again.
+ *
+ * Both failures are expected and neither is worth reporting: losing the
+ * rename means another waiter got there first, and a leftover tombstone is
+ * inert because nothing reads `*.stale-*` names. Lifted out of the acquire
+ * loop, where two nested try/catch blocks inside an if inside a try took it
+ * to seven levels.
+ */
+function stealStaleLock(lockDir: string): void {
+  const tomb = `${lockDir}.stale-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    renameSync(lockDir, tomb);
+  } catch {
+    return; // lost the steal race to another waiter
+  }
+  try {
+    rmdirSync(tomb);
+  } catch {
+    // Leftover tombstone; nothing reads `*.stale-*` names.
+  }
+}
+
 /** Pause between acquisition attempts, so waiting costs no CPU. */
 const RETRY_MS = 25;
 
@@ -108,23 +137,7 @@ export function withFileLock<T>(
       try {
         const age = Date.now() - statSync(lockDir).mtimeMs;
         if (age > LOCK_STALE_MS) {
-          // Steal by RENAME, not delete. stat-then-rmdir let two waiters both
-          // judge the same lock stale — the slower one's rmdir then removed
-          // the faster one's FRESHLY CREATED lock, and both entered the
-          // critical section, recreating the unserialised read-modify-write
-          // this lock exists to prevent. Rename is atomic: exactly one waiter
-          // wins it, the loser gets ENOENT and goes round the loop again.
-          const tomb = `${lockDir}.stale-${process.pid}-${Date.now().toString(36)}`;
-          try {
-            renameSync(lockDir, tomb);
-            try {
-              rmdirSync(tomb);
-            } catch {
-              // Leftover tombstone; nothing reads `*.stale-*` names.
-            }
-          } catch {
-            // Lost the steal race to another waiter; retry normally.
-          }
+          stealStaleLock(lockDir);
           continue;
         }
       } catch {
