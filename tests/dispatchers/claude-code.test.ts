@@ -103,19 +103,10 @@ beforeEach(() => {
 });
 
 describe("Claude Code (GenericCliDispatcher + CLAUDE_CODE_PROTOCOL)", () => {
-  it("returns an error DispatchResult when the CLI is not found", async () => {
-    whichMock.mockResolvedValue(null);
-    const d = claudeCode();
-
-    const res = await d.dispatch("hi", [], "");
-
-    expect(res.success).toBe(false);
-    expect(res.service).toBe("claude_code");
-    expect(res.error).toMatch(/'claude' not found on PATH/i);
-    expect(res.output).toBe("");
-    expect(runSubprocessMock).not.toHaveBeenCalled();
-    expect(resolveCliCommandMock).not.toHaveBeenCalled();
-  });
+  // The shared contract every shipped preset owes — a missing CLI, a non-zero
+  // exit, a model override, a timeout, id and availability — lives in
+  // shipped-presets.test.ts, asserted once per harness from one table. What
+  // remains below is what is specific to this harness.
 
   it("parses structured JSON output on a successful run", async () => {
     mockFound();
@@ -152,41 +143,6 @@ describe("Claude Code (GenericCliDispatcher + CLAUDE_CODE_PROTOCOL)", () => {
     expect(res.tokensUsed).toBeUndefined();
   });
 
-  it("reports failure on non-zero exit code", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({
-        stdout: "",
-        stderr: "boom",
-        exitCode: 1,
-      }),
-    );
-
-    const d = claudeCode();
-    const res = await d.dispatch("do thing", [], "");
-
-    expect(res.success).toBe(false);
-    expect(res.error).toBe("boom");
-  });
-
-  it("passes --model <override> through to the subprocess", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ result: "ok" }) }),
-    );
-
-    const d = claudeCode();
-    await d.dispatch("do thing", [], "", {
-      modelOverride: "claude-opus-4-6",
-    });
-
-    expect(runSubprocessMock).toHaveBeenCalledTimes(1);
-    const { args } = captureSubprocessCall(0);
-    expect(args).toContain("--model");
-    const idx = args.indexOf("--model");
-    expect(args[idx + 1]).toBe("claude-opus-4-6");
-  });
-
   it("propagates the provided timeoutMs to runSubprocess", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(
@@ -200,35 +156,11 @@ describe("Claude Code (GenericCliDispatcher + CLAUDE_CODE_PROTOCOL)", () => {
     expect(opts?.timeoutMs).toBe(5000);
   });
 
-  it("returns a timed-out DispatchResult when the subprocess times out", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({
-        stdout: "",
-        stderr: "",
-        exitCode: 124,
-        timedOut: true,
-      }),
-    );
-
-    const d = claudeCode();
-    const res = await d.dispatch("go", [], "", { timeoutMs: 100 });
-
-    expect(res.success).toBe(false);
-    expect(res.error).toMatch(/timed out/i);
-  });
-
   it("reports 'unknown' quota", async () => {
     const d = claudeCode();
     const q = await d.checkQuota();
     expect(q.service).toBe("claude_code");
     expect(q.source).toBe("unknown");
-  });
-
-  it("has a stable id and reports itself as available", () => {
-    const d = claudeCode();
-    expect(d.id).toBe("claude_code");
-    expect(d.isAvailable()).toBe(true);
   });
 
   it("a config-level protocol: override replaces the built-in default entirely", async () => {

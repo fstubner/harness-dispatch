@@ -113,19 +113,10 @@ afterEach(() => {
 });
 
 describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
-  it("returns an error DispatchResult when the CLI is not found", async () => {
-    whichMock.mockResolvedValue(null);
-    const d = cursor();
-
-    const res = await d.dispatch("hi", [], "");
-
-    expect(res.success).toBe(false);
-    expect(res.service).toBe("cursor");
-    expect(res.error).toMatch(/'cursor-agent' not found on PATH/i);
-    expect(res.output).toBe("");
-    expect(runSubprocessMock).not.toHaveBeenCalled();
-    expect(resolveCliCommandMock).not.toHaveBeenCalled();
-  });
+  // The shared contract every shipped preset owes — a missing CLI, a non-zero
+  // exit, a model override, a timeout, id and availability — lives in
+  // shipped-presets.test.ts, asserted once per harness from one table. What
+  // remains below is what is specific to this harness.
 
   it("parses JSON result on a successful run", async () => {
     mockFound();
@@ -146,22 +137,6 @@ describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
     expect(res.output).toBe("hello from cursor");
     expect(res.tokensUsed).toEqual({ input: 7, output: 13 });
     expect(res.durationMs).toBe(42);
-  });
-
-  it("passes --model <override> through to the subprocess", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: JSON.stringify({ result: "ok" }) }),
-    );
-
-    const d = cursor();
-    await d.dispatch("go", [], "/tmp", { modelOverride: "claude-4-cursor" });
-
-    expect(runSubprocessMock).toHaveBeenCalledTimes(1);
-    const { args } = captureSubprocessCall(0);
-    expect(args).toContain("--model");
-    const idx = args.indexOf("--model");
-    expect(args[idx + 1]).toBe("claude-4-cursor");
   });
 
   it("sets --workspace <workingDir> when provided", async () => {
@@ -218,19 +193,6 @@ describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
     expect(opts?.env?.["CURSOR_API_KEY"]).toBe("configured-cursor-key");
   });
 
-  it("reports failure on a non-zero exit code", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: "", stderr: "bad thing", exitCode: 2 }),
-    );
-
-    const d = cursor();
-    const res = await d.dispatch("go", [], "/tmp");
-
-    expect(res.success).toBe(false);
-    expect(res.error).toBe("bad thing");
-  });
-
   it("marks rateLimited=true with retryAfter from 'Retry-After: N' stderr", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(
@@ -247,24 +209,6 @@ describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
     expect(res.success).toBe(false);
     expect(res.rateLimited).toBe(true);
     expect(res.retryAfter).toBe(30);
-  });
-
-  it("returns a timed-out DispatchResult when the subprocess times out", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({
-        stdout: "",
-        stderr: "",
-        exitCode: 124,
-        timedOut: true,
-      }),
-    );
-
-    const d = cursor();
-    const res = await d.dispatch("go", [], "/tmp", { timeoutMs: 100 });
-
-    expect(res.success).toBe(false);
-    expect(res.error).toMatch(/timed out/i);
   });
 
   it("propagates the provided timeoutMs to runSubprocess", async () => {
@@ -287,9 +231,4 @@ describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
     expect(q.source).toBe("unknown");
   });
 
-  it("has a stable id and reports itself as available", () => {
-    const d = cursor();
-    expect(d.id).toBe("cursor");
-    expect(d.isAvailable()).toBe(true);
-  });
 });

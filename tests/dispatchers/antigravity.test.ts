@@ -134,14 +134,10 @@ beforeEach(() => {
 });
 
 describe("Antigravity (GenericCliDispatcher + ANTIGRAVITY_PROTOCOL)", () => {
-  it("returns an error DispatchResult when the CLI is not found", async () => {
-    whichMock.mockResolvedValue(null);
-    const dispatcher = new GenericCliDispatcher(baseSvc());
-    const result = await runToCompletion(dispatcher, "hello");
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("not found");
-    expect(streamSubprocessMock).not.toHaveBeenCalled();
-  });
+  // The shared contract every shipped preset owes — a missing CLI, a non-zero
+  // exit, a model override, a timeout, id and availability — lives in
+  // shipped-presets.test.ts, asserted once per harness from one table. What
+  // remains below is what is specific to this harness.
 
   it("collects stdout and reports success on exit code 0", async () => {
     mockFound();
@@ -264,15 +260,6 @@ describe("Antigravity (GenericCliDispatcher + ANTIGRAVITY_PROTOCOL)", () => {
     expect(result.success).toBe(false);
     expect(result.rateLimited).toBe(true);
     expect(result.retryAfter).toBe(42);
-  });
-
-  it("returns a timed-out DispatchResult when the subprocess times out", async () => {
-    mockFound();
-    mockStream([exit({ exitCode: -1, timedOut: true, durationMs: 600_000 })]);
-    const dispatcher = new GenericCliDispatcher(baseSvc());
-    const result = await runToCompletion(dispatcher, "x");
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("Timed out");
   });
 
   it("has a stable id and delegates availability to commandAvailable", () => {
