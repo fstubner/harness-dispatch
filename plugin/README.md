@@ -3,8 +3,8 @@
 One plugin directory serving both ecosystems (the SKILL.md format is shared):
 
 - **Claude Code / Claude Desktop** — installed as a Claude Code plugin
-  (bundles the MCP server, the `delegating-work` skill, and `/route` +
-  `/jobs` commands).
+  (bundles the MCP server, the `delegating-work` skill, and the `/route`,
+  `/jobs` and `/setup` commands).
 - **Codex CLI / Codex desktop** — installed by `scripts/install-codex.mjs`
   (registers the MCP server via `codex mcp add` and copies the same skill to
   `~/.codex/skills/harness-dispatch/`).
@@ -48,15 +48,18 @@ this order:
 2. `npx -y harness-dispatch` — the published npm package.
 
 > Fallback 2 resolves to whatever is currently on the npm registry under the
-> `harness-dispatch` name — until that's published, `npx -y harness-dispatch` will
-> fail outright rather than silently falling back to the old `harness-router`
-> package (npx does not resolve across a rename). Once published, it can still lag
-> behind this repo's `main`. If a feature described in the main README isn't
-> showing up, check `npm ls -g harness-dispatch` (or the `version` field in the
-> installed package's `package.json`) to see which one actually launched.
+> `harness-dispatch` name, which can lag behind this repo's `main`. If a feature
+> described in the main README isn't showing up, check `npm ls -g harness-dispatch`
+> (or the `version` field in the installed package's `package.json`) to see which
+> one actually launched.
 
-Config resolution: `HARNESS_DISPATCH_CONFIG` env var, else
-`~/.harness-dispatch/config.yaml`, else the server's built-in CLI auto-detection.
+Config resolution, in order: the `--config` flag, else the
+`HARNESS_DISPATCH_CONFIG` env var, else `./config.yaml` in the directory the
+server was launched from, else `~/.harness-dispatch/config.yaml`, else the
+server's built-in CLI auto-detection. The user file moves with
+`HARNESS_DISPATCH_STATE_DIR` when that is set; note that this plugin's launcher
+does not forward that variable, so a client started through the plugin reads the
+default location.
 
 Endpoint API keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, …) are read from the
 inherited environment by `config.yaml`'s `${VAR}` interpolation. CLI-based
