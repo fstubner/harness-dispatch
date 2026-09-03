@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The CLI dispatcher is now tested against a real process, not only
+  through a mock.** `stream-subprocess.ts` carries a branch in PRODUCTION
+  that detects a vitest mock on `runSubprocess` and synthesises one stdout
+  chunk from a buffered result — so every dispatcher suite proved how a
+  command line is built and how a finished blob is read, and none of them
+  reached the streaming path that actually runs. Four behaviours had no test
+  at all: a JSONL event split across two reads, a timeout that really kills
+  the child, an abort reaching a running process, and stdout arriving as
+  events during the run rather than one lump at the end. All four now run
+  against `node -e`. Forcing the buffered adapter fails two of them by name.
+
 - **`doctor` names a route that has never once succeeded.** The circuit
   breaker is about RECENT failure and forgets after its cooldown, so a route
   that is simply dead — a host that no longer resolves, a revoked key — keeps
