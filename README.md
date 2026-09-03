@@ -705,10 +705,11 @@ wait in `queued` and start as slots free — you still get a `jobId` back
 immediately and nothing is rejected or lost, only delayed. The bound exists
 because agent CLIs are heavyweight processes, not fan-outable HTTP calls: a
 measured burst of 13 concurrent runs exhausted memory and failed half of them.
-Change it with `max_concurrent_runs: N` in `config.yaml`. `0` lifts the cap **and**
-bypasses the supervisor pool entirely, giving every job its own runner process —
-measured at ~76 MB apiece, which is the per-job overhead the pool exists to avoid.
-Use it when the machine has room to spare, not as a way to remove a limit.
+Change it with `max_concurrent_runs: N` in `config.yaml`. `0` lifts the cap —
+jobs no longer queue for a slot — while still running them through the
+supervisor pool, so runner processes stay bounded at 4 however many jobs are in
+flight. Memory then scales with the harnesses you actually launch rather than
+with a per-job wrapper.
 
 Prompts and outputs flow only to the harnesses/endpoints you configured. **The
 router makes no other network call by default.**

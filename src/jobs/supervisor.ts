@@ -37,17 +37,18 @@ import type { JobDeps, JobStatus } from "./types.js";
  * runtime; the binding constraint is memory, not cores, so this does NOT
  * scale with CPU count. Override with `max_concurrent_runs:` in config.yaml.
  *
- * `0` does more than lift the cap: it takes the whole slot queue and
- * supervisor pool out of the path, so every job gets its own detached runner
- * process. Measured under load: 8 concurrent dispatches became 8 runner
- * processes at ~76 MB each, which is the per-job wrapper cost the pool was
- * introduced to remove. That is the opposite of harmless on the memory-bound
- * machine this cap exists for, so `0` is for a machine with room to spare and
- * a reason, not a way to "turn off a limit". Routing the unbounded case
- * through the pool instead would be better and is not done here: the pool
- * sizes itself by dividing the limit, so an infinite one provisions zero
- * supervisors, and getting that right needs its own load run rather than a
- * guess.
+ * `0` lifts the cap without leaving the pool. It used to do more than lift it:
+ * it took the slot queue and the supervisor pool out of the path entirely, so
+ * every job got its own detached runner — measured under load at 8 concurrent
+ * dispatches becoming 8 runner processes at ~76 MB each, which is the per-job
+ * wrapper cost the pool was introduced to remove. On the memory-bound machine
+ * this cap exists for, the setting that reads like "no limit" was the one that
+ * cost the most memory.
+ *
+ * The uncapped case now sizes the pool by outstanding work instead of by
+ * dividing the limit (dividing an infinite one provisions zero supervisors,
+ * which is what made this look hard). Jobs are unbounded; runner processes are
+ * not.
  */
 const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
@@ -643,27 +644,6 @@ function spawnDetachedSupervisor(runnerPath: string, configPath: string | undefi
     closeSync(logFd);
   }
 }
-
-export function spawnDetachedRunner(runnerPath: string, jobDir: string, configPath: string | undefined): void {
-  // The runner's own stdout/stderr go to a log inside the job dir so a
-  // bootstrap crash (bad config, missing module) leaves evidence.
-  const logFd = openSync(path.join(jobDir, "output", "runner.log"), "a");
-  try {
-    const child = spawn(process.execPath, [runnerPath, jobDir], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-      windowsHide: true,
-      env: {
-        ...process.env,
-        ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
-      },
-    });
-    child.unref();
-  } finally {
-    closeSync(logFd);
-  }
-}
-
 
 /**
  * Why a detached runner would fail to bootstrap from this config path, if it

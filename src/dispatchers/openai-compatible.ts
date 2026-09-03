@@ -303,6 +303,24 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     return headers;
   }
 
+  /**
+   * Strip our credentials out of text the ENDPOINT wrote.
+   *
+   * One method rather than a call per site, because per-site was how the leak
+   * survived: #210 scrubbed the two `HTTP <status>` paths and its changelog
+   * entry declared the class closed, while the two `describeUnusableBody`
+   * paths — a 200 carrying an unusable body, or an HTML error page from a
+   * gateway — went on returning the raw body verbatim, up to 300 characters
+   * of it, to the caller and into `logs/dispatches.jsonl`. An acceptance pass
+   * reproduced both against the built artifact.
+   *
+   * Every branch that puts endpoint-authored text into a result goes through
+   * here. Adding another that does not is the bug this exists to prevent.
+   */
+  #safe(text: string): string {
+    return scrubEndpointSecrets(text, this.baseUrl ?? "", this.apiKey);
+  }
+
   #body(model: string, fullPrompt: string, stream: boolean): Record<string, unknown> {
     if (this.wireProtocol === "anthropic_messages") {
       // Anthropic requires max_tokens and puts the system prompt at the
@@ -664,9 +682,8 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // logs/dispatches.jsonl. The network-error paths above have always
       // scrubbed; these two, built from a body rather than a thrown Error,
       // did not.
-      const errMessage = scrubEndpointSecrets(
+      const errMessage = this.#safe(
         this.#extractErrorMessage(parsedBody, rawBody),
-        this.baseUrl,
       );
       return {
         output: "",
@@ -687,7 +704,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         // Same questions the streaming path asks, in the same order. This path
         // used to emit a dangling "Unexpected response shape: " with nothing
         // after the colon for an empty body — technically true and useless.
-        error: describeUnusableBody(rawBody, bodyReadError),
+        error: this.#safe(describeUnusableBody(rawBody, bodyReadError)),
         durationMs,
         rateLimitHeaders: responseHeaders,
       };
@@ -761,9 +778,8 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // logs/dispatches.jsonl. The network-error paths above have always
       // scrubbed; these two, built from a body rather than a thrown Error,
       // did not.
-      const errMessage = scrubEndpointSecrets(
+      const errMessage = this.#safe(
         this.#extractErrorMessage(parsedBody, rawBody),
-        this.baseUrl,
       );
       yield {
         type: "completion",
@@ -860,9 +876,8 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // dispatches.jsonl. The fetch-failure sibling routes through
       // describeFetchFailure precisely to avoid that; this branch was the one
       // that did not.
-      const errMsg = scrubEndpointSecrets(
+      const errMsg = this.#safe(
         err instanceof Error ? err.message : String(err),
-        this.baseUrl ?? "",
       );
       yield {
         type: "completion",
@@ -938,7 +953,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
             output,
             service: this.id,
             success: false,
-            error: streamError ?? describeUnusableBody(rawSeen),
+            error: streamError ?? this.#safe(describeUnusableBody(rawSeen)),
             durationMs: Date.now() - start,
             rateLimitHeaders: responseHeaders,
           }

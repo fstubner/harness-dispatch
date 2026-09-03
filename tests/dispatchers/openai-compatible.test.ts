@@ -910,3 +910,78 @@ describe("endpointUrl", () => {
     expect(endpointUrl(base, path)).toBe(want);
   });
 });
+
+describe("credentials never travel back in an endpoint's own text", () => {
+  // #210 scrubbed the two `HTTP <status>: <message>` paths and its changelog
+  // entry declared the class closed. An acceptance pass then reproduced the
+  // same leak, against the built artifact, on the two `describeUnusableBody`
+  // paths one branch over — a 200 carrying a body this dispatcher cannot read,
+  // which is what a gateway's HTML error page arrives as. Both branches quote
+  // up to 300 raw characters of that body, and `error` is written verbatim to
+  // logs/dispatches.jsonl.
+  //
+  // Two credentials, because they leak by different routes: a key in the base
+  // URL's query string, and the configured key echoed out of the request's own
+  // Authorization header. The second is the commoner shape — every endpoint in
+  // this project's config authenticates by header — and was never scrubbed at
+  // all, on any path.
+  const URL_KEY = "URLKEY_aaaaaaaaaaaa";
+  const HDR_KEY = "HDRKEY_bbbbbbbbbbbb";
+  const svc = () =>
+    baseSvc({
+      baseUrl: `https://api.secret-host.example.com/v1?key=${URL_KEY}`,
+      apiKey: HDR_KEY,
+    });
+
+  async function bufferedError(res: Response): Promise<string> {
+    fetchMock.mockResolvedValue(res);
+    const out = await new OpenAICompatibleDispatcher(svc()).dispatch("go", [], "");
+    return out.error ?? "";
+  }
+
+  async function streamedError(res: Response): Promise<string> {
+    fetchMock.mockResolvedValue(res);
+    const d = new OpenAICompatibleDispatcher(svc());
+    const events: Array<{ type: string; result?: { error?: string } }> = [];
+    for await (const evt of d.stream("go", [], "")) events.push(evt);
+    return events.find((e) => e.type === "completion")?.result?.error ?? "";
+  }
+
+  // A gateway's error page, returned with a 200, quoting the URL it was given.
+  const htmlEchoingUrl = () =>
+    `<html>Bad request to https://api.secret-host.example.com/v1?key=${URL_KEY}</html>`;
+  // An endpoint quoting the Authorization header back at us.
+  const jsonEchoingHeader = () => ({
+    error: { message: `invalid api key: Bearer ${HDR_KEY}` },
+  });
+
+  it("scrubs a URL key quoted from an unusable 200 body (buffered)", async () => {
+    const err = await bufferedError(mockJsonResponse(htmlEchoingUrl()));
+    expect(err).toContain("No answer in response body");
+    expect(err).not.toContain(URL_KEY);
+    expect(err).not.toContain("api.secret-host.example.com");
+  });
+
+  it("scrubs a URL key quoted from an unusable 200 body (streaming)", async () => {
+    const err = await streamedError(sseResponse(htmlEchoingUrl()));
+    expect(err).toContain("No answer in response body");
+    expect(err).not.toContain(URL_KEY);
+    expect(err).not.toContain("api.secret-host.example.com");
+  });
+
+  it("scrubs the configured api key echoed from a request header (buffered)", async () => {
+    const err = await bufferedError(
+      mockJsonResponse(jsonEchoingHeader(), { status: 400 }),
+    );
+    expect(err).toContain("HTTP 400");
+    expect(err).not.toContain(HDR_KEY);
+  });
+
+  it("scrubs the configured api key echoed from a request header (streaming)", async () => {
+    const err = await streamedError(
+      sseResponse(JSON.stringify(jsonEchoingHeader()), { status: 400 }),
+    );
+    expect(err).toContain("HTTP 400");
+    expect(err).not.toContain(HDR_KEY);
+  });
+});
