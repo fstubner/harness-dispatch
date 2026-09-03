@@ -1169,6 +1169,48 @@ describe("MCP tools — usage listModels", () => {
     fetchSpy.mockRestore();
   });
 
+  it("does not put the endpoint's credentials in the listModels error", async () => {
+    // This result goes straight into an orchestrating agent's context, and
+    // callers are told to check `usage` before trying an unfamiliar route —
+    // so listModels is reached at exactly the moment a route is misconfigured.
+    // The line redacted the URL and then appended an UNSCRUBBED err.message;
+    // undici embeds the URL it was handed, so the raw credential arrived
+    // beside its own redaction. Same shape as the endpoint dispatcher's leak,
+    // in a module the dispatcher's fix did not reach.
+    const URL_PW = "URLPW_eeeeeeeeeeee";
+    const QUERY_KEY = "QKEY_ffffffffffff";
+    const HDR_KEY = "HDRKEY_gggggggggggg";
+    const base = `https://user:${URL_PW}@secret-internal.example.invalid/v1?key=${QUERY_KEY}`;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(
+        new Error(
+          `Request cannot be constructed from a URL that includes credentials: ` +
+            `${base}/models using Bearer ${HDR_KEY}`,
+        ),
+      );
+    const holder = buildHolder(
+      {
+        leaky: makeService("leaky", {
+          type: "openai_compatible",
+          baseUrl: base,
+          apiKey: HDR_KEY,
+        }),
+      },
+      { leaky: new FakeDispatcher("leaky") },
+    );
+
+    const r = await invokeTool("usage", { listModels: "leaky" }, { holder });
+    const err = (r.data as { liveModels: { error?: string } }).liveModels.error ?? "";
+
+    expect(err).toContain("failed");
+    expect(err).not.toContain(URL_PW);
+    expect(err).not.toContain(QUERY_KEY);
+    expect(err).not.toContain(HDR_KEY);
+    expect(err).not.toContain("secret-internal.example.invalid");
+    fetchSpy.mockRestore();
+  });
+
   it("falls back to a live GET /models fetch when no models: list is declared, tagged source: live", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), {

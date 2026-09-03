@@ -42,6 +42,28 @@ describe("loadConfig — bad config files", () => {
     expect(cfg).toBeDefined();
   });
 
+  it("does not quote an api_key value out of the failing config", async () => {
+    // js-yaml embeds the source lines around a syntax error, so a parse
+    // failure near a credential put that credential into the message — and
+    // this message does not stay in the terminal. It becomes reloadError,
+    // then stateWarnings, which `status`, `doctor`, the HTTP status route and
+    // the harness-dispatch://status MCP resource all read.
+    const secret = "YAMLKEY_hhhhhhhhhhhh";
+    const bad = path.join(dir, "secret.yaml");
+    await fs.writeFile(
+      bad,
+      `endpoints:
+  - name: e
+    api_key: ${secret}
+   bad: : :
+`,
+      "utf8",
+    );
+    const err = (await loadConfig(bad).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/not valid YAML/);
+    expect(err.message).not.toContain(secret);
+  });
+
   it("names the file and the problem for malformed YAML", async () => {
     const bad = path.join(dir, "bad.yaml");
     await fs.writeFile(bad, "clis: [\n  bad: : :\n", "utf8");

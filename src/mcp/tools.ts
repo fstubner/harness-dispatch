@@ -48,7 +48,12 @@ import {
   type JobStatus,
 } from "../jobs.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { buildStatus, buildUsage, redactEndpointHost } from "../status.js";
+import {
+  buildStatus,
+  buildUsage,
+  redactEndpointHost,
+  scrubEndpointSecrets,
+} from "../status.js";
 import { endpointUrl } from "../dispatchers/openai-compatible.js";
 
 import {
@@ -185,6 +190,26 @@ export interface ToolDeps {
 export interface ToolExtra {
   _meta?: { progressToken?: string | number } & Record<string, unknown>;
   sendNotification?: (notification: ServerNotification) => Promise<void>;
+}
+
+/**
+ * Strip a route's credentials out of text an ENDPOINT wrote.
+ *
+ * The `usage` tool's live-models probe reported failures as a redacted URL
+ * followed by an unscrubbed `err.message`, and undici embeds the URL it was
+ * given — so a `base_url` carrying userinfo or `?key=` arrived in full,
+ * beside its own redaction, in a tool result that goes straight into an
+ * orchestrating agent's context.
+ *
+ * Named and shared rather than inlined at each site: this exact class of
+ * defect has now been found four times, three of them because a fix landed
+ * in one branch and the sibling beside it kept leaking.
+ */
+function safeEndpointText(
+  text: string,
+  svc: { baseUrl?: string | undefined; apiKey?: string | undefined },
+): string {
+  return scrubEndpointSecrets(text, svc.baseUrl ?? "", svc.apiKey);
 }
 
 function jsonText(value: unknown): CallToolResult {
@@ -766,7 +791,13 @@ async function fetchEndpointModels(
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
-      return { route, error: `GET ${redactEndpointHost(url)} -> HTTP ${res.status}` };
+      return {
+        route,
+        error: safeEndpointText(
+          `GET ${redactEndpointHost(url)} -> HTTP ${res.status}`,
+          svc,
+        ),
+      };
     }
     const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
     const models = (body.data ?? [])
@@ -774,9 +805,24 @@ async function fetchEndpointModels(
       .filter((id): id is string => typeof id === "string");
     return { route, models, source: "live" };
   } catch (err) {
+    // Scrubbed, not just host-redacted. This line put a redacted URL next to
+    // an UNSCRUBBED `err.message`, which is the precise shape
+    // `scrubEndpointSecrets` was written to stop: undici embeds the URL it
+    // was handed, so a base_url carrying userinfo or `?key=` came back in
+    // full beside its own redaction. It reaches an orchestrating agent's
+    // context directly, because this is the `usage` tool's result and callers
+    // are told to check `usage` before trying an unfamiliar route.
+    //
+    // Three earlier rounds fixed this class inside the endpoint dispatcher
+    // and each declared it closed; the enumeration that finally held is in
+    // that file and does not reach this module. Any NEW site that puts an
+    // endpoint's own text into a result needs this call too.
     return {
       route,
-      error: `GET ${redactEndpointHost(url)} failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: safeEndpointText(
+        `GET ${redactEndpointHost(url)} failed: ${err instanceof Error ? err.message : String(err)}`,
+        svc,
+      ),
     };
   }
 }
