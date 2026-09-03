@@ -54,6 +54,7 @@
     "test:watch": "vitest",
     "test:parity": "vitest run tests/scoring-parity.test.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "prepublishOnly": "npm run build",
     "prepack": "npm run build",
     "test:unit": "vitest run",
