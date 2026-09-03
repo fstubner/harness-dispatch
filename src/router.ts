@@ -80,7 +80,6 @@ import type {
   ServiceConfig,
   TaskType,
 } from "./types.js";
-import path from "node:path";
 import { CircuitBreaker, type CircuitBreakerSnapshot } from "./circuit-breaker.js";
 import { BreakerStore } from "./breaker-store.js";
 import { QuotaCache } from "./quota.js";

@@ -9,7 +9,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import yaml from "js-yaml";
 
 import { ensureHttpToken, maskToken, readHttpToken, rotateHttpToken, tokenPath } from "./auth.js";
 import { AUTO_DETECT_COMMANDS, loadConfig, resolveConfigPath } from "./config.js";
@@ -28,7 +27,7 @@ import { startHttpServer } from "./http/server.js";
 import type { RouteHints, RouterConfig, SafetyProfile, TaskType } from "./types.js";
 import { billingIsBlocked, buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile } from "./safety.js";
-import { configToYaml, isUneditedGenerated, stampGenerated, type YamlOpts } from "./configure-yaml.js";
+import { configToYaml, isUneditedGenerated, stampGenerated } from "./configure-yaml.js";
 import {
   desiredEntry,
   devLaunchCommand,
@@ -109,7 +108,6 @@ function printUsage(): void {
 
 async function cmdConfigure(
   configPath: string | undefined,
-  explicitConfigPath: string | undefined,
   opts: {
     print: boolean;
     yes: boolean;
@@ -1204,7 +1202,7 @@ export async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "configure":
-      return cmdConfigure(configPath, explicitConfigPath, {
+      return cmdConfigure(configPath, {
         print: Boolean(values.print),
         yes: Boolean(values.yes),
         force: Boolean(values.force),

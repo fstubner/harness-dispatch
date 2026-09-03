@@ -13,8 +13,6 @@
  * copy is what drifted last time.
  */
 
-import type { SafetyProfile } from "../types.js";
-import { normalizeSafetyProfile } from "../safety.js";
 
 /**
  * Warn on any unrecognised value for an enum that FAILS OPEN.

@@ -424,11 +424,6 @@ function parseJsonBlob(source: string): unknown {
   }
 }
 
-function parseJsonField(stdout: string, fields: string[]): string | undefined {
-  const parsed = parseJsonBlob(stdout);
-  return parsed !== undefined ? extractField(parsed, fields) : undefined;
-}
-
 /** Unique parent directories of absolute file paths, excluding workingDir itself — same rule for every harness. */
 function includedDirectories(files: string[], workingDir: string): string[] {
   const dirs = new Set<string>();

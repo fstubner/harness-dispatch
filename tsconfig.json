@@ -13,6 +13,13 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
+    // A dead import or local is how this codebase accumulated 38 of them
+    // unnoticed, including a whole unused function and three import
+    // declarations nothing read. They are harmless individually and, in bulk,
+    // are what makes a reader unable to tell what is load-bearing — the cost
+    // an audit named as readability debt high enough to hide defects.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
