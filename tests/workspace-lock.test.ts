@@ -9,12 +9,19 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { promises as fs, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  promises as fs,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { acquireWorkspaceLock, LOCK_STALE_MS } from "../src/workspace-lock.js";
 
@@ -164,6 +171,45 @@ describe("acquireWorkspaceLock — recovery", () => {
     const release = await acquireWorkspaceLock(workDir, 3000);
     release();
     expect(true).toBe(true);
+  });
+
+  it("stops refreshing once the lock has been stolen, instead of clobbering the thief", async () => {
+    // The guard an audit found unpinned and uncovered: a holder that froze
+    // past the stale window is legitimately stolen from, and its heartbeat
+    // must NOT keep writing. Overwriting the thief's record does two things,
+    // the second worse than the first — it destroys their claim, and it makes
+    // this process's own release() believe it still holds the lock, so the
+    // lock is deleted out from under whoever now owns it.
+    //
+    // Fake timers because the heartbeat is on a 15s interval; the guard runs
+    // on the tick, not on acquisition.
+    vi.useFakeTimers();
+    try {
+      const release = await acquireWorkspaceLock(workDir);
+      const file = path.join(lockDir(), readdirSyncSafeName(workDir));
+
+      // A thief takes it while we are frozen: a different pid, a fresh beat.
+      const thief = { pid: process.pid + 1, key: workDir, beatMs: Date.now() };
+      writeFileSync(file, JSON.stringify(thief), "utf8");
+
+      // Let several heartbeats fire. Each must see it is no longer ours.
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      const after = JSON.parse(readFileSync(file, "utf8")) as { pid: number };
+      expect(
+        after.pid,
+        "the frozen holder's heartbeat overwrote the record of the process that stole the lock",
+      ).toBe(thief.pid);
+
+      // And releasing must not delete a lock this process no longer owns.
+      release();
+      expect(
+        existsSync(file),
+        "release() deleted the thief's lock because the heartbeat had re-marked it as ours",
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("steals a corrupt lock file after a grace rather than wedging", async () => {

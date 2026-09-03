@@ -1238,3 +1238,81 @@ describe("MCP tools — usage listModels", () => {
     fetchSpy.mockRestore();
   });
 });
+
+describe("the tools that only TOOL_NAMES was asserting", () => {
+  // `cancel_job`, `retry_job` and `workspace` were listed in TOOL_NAMES and
+  // never invoked through `invokeTool` — so the surface an orchestrator
+  // actually calls was unverified for three of the six tools. The functions
+  // underneath have their own suites; what was missing is the layer that
+  // parses the arguments and shapes the reply, which is where a schema change
+  // or a renamed field would break a caller without failing anything.
+
+  it("cancel_job explains a job it cannot find, naming it", async () => {
+    // Retention prunes finished jobs, so any caller holding an id long enough
+    // reaches this. It must read as an ordinary answer, not an internal fault.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+    );
+    await expect(
+      invokeTool("cancel_job", { jobId: "job-1700000000001-aaaaaaaa" }, { holder }),
+    ).rejects.toThrow(/No such job: job-1700000000001-aaaaaaaa/);
+  });
+
+  it("cancel_job refuses a malformed jobId at the schema, not at the filesystem", async () => {
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+    );
+    // A traversal attempt: the id is the only thing between a caller and
+    // `path.join(jobsRoot(), jobId)`.
+    await expect(
+      invokeTool("cancel_job", { jobId: "../../etc" }, { holder }),
+    ).rejects.toThrow();
+  });
+
+  it("workspace explains a job it cannot find, rather than an empty diff", async () => {
+    // The dangerous answer here would be a confident empty patch, which reads
+    // as "the agent changed nothing".
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+    );
+    await expect(
+      invokeTool("workspace", { jobId: "job-1700000000002-bbbbbbbb", action: "diff" }, { holder }),
+    ).rejects.toThrow(/No such job: job-1700000000002-bbbbbbbb/);
+  });
+
+  it("workspace rejects an action outside diff/apply/discard", async () => {
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+    );
+    // `discard` is irreversible; a near-miss like "delete" must not fall
+    // through to a default.
+    await expect(
+      invokeTool(
+        "workspace",
+        { jobId: "job-1700000000002-bbbbbbbb", action: "delete" },
+        { holder },
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("retry_job resolves the job before the route, so a stranger is named first", async () => {
+    // Order matters for the message a caller reads: with both wrong, the job
+    // is the thing they can actually check.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+    );
+    await expect(
+      invokeTool(
+        "retry_job",
+        { jobId: "job-1700000000003-cccccccc", service: "no_such_route" },
+        { holder },
+      ),
+    ).rejects.toThrow(/No such job: job-1700000000003-cccccccc/);
+  });
+});
+
