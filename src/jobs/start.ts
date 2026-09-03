@@ -25,8 +25,6 @@ import { resolveRunnerPath, runJob, watchUntilTerminal } from "./run.js";
 import {
   configLoadError,
   drainSlotQueue,
-  maxConcurrentRuns,
-  spawnDetachedRunner,
 } from "./supervisor.js";
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
   return (await startAsyncJobTracked(deps, input)).status;
@@ -126,11 +124,9 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // in-process semaphore would bound nothing — the count has to come off
   // disk. The caller still gets its jobId back immediately either way, so the
   // API contract is unchanged and only the start time can move.
-  const limit = maxConcurrentRuns(deps.holder.state.config);
-  if (limit === 0) {
-    spawnDetachedRunner(runnerPath, jobDir, deps.holder.state.configPath);
-    return { status, completion: watchUntilTerminal(jobDir) };
-  }
+  // Every dispatch takes this path, including an uncapped one. It used to
+  // spawn its own detached runner when the cap was lifted, which bypassed the
+  // pool and put a ~76 MB wrapper behind every job.
 
   // Enqueue first, then let drainSlotQueue decide — rather than testing the
   // limit here and spawning inline. Two reasons, both learned the hard way:
