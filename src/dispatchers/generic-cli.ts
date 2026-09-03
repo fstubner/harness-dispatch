@@ -538,43 +538,136 @@ class JsonlAccumulator {
       const matches = Object.entries(rule.when).every(([field, value]) => getPath(event, field) === value);
       if (!matches) continue;
 
-      switch (rule.emit) {
-        case "text": {
-          const t = rule.textField ? getPath(event, rule.textField) : undefined;
-          if (typeof t === "string" && t.length > 0) this.lastText = t;
-          break;
-        }
-        case "tool_use": {
-          const name = rule.nameField ? getPath(event, rule.nameField) : undefined;
-          if (typeof name === "string") {
-            out.push({ type: "tool_use", name, input: rule.inputField ? getPath(event, rule.inputField) : undefined });
-          }
-          break;
-        }
-        case "thinking": {
-          const chunk = rule.chunkField ? getPath(event, rule.chunkField) : undefined;
-          if (typeof chunk === "string" && chunk.length > 0) out.push({ type: "thinking", chunk });
-          break;
-        }
-        case "usage": {
-          const inTok = firstNumberAt(event, rule.inputTokenFields ?? []);
-          const outTok = firstNumberAt(event, rule.outputTokenFields ?? []);
-          if (inTok || outTok) {
-            this.inputTokens += inTok;
-            this.outputTokens += outTok;
-            this.sawUsage = true;
-          }
-          break;
-        }
-        case "error": {
-          const message = rule.messageField ? getPath(event, rule.messageField) : undefined;
-          if (typeof message === "string" && message.length > 0) this.errorMessage = message;
-          break;
-        }
-      }
+      out.push(...this.#apply(rule, event));
     }
     return out;
   }
+
+  /**
+   * One matched rule, applied.
+   *
+   * Split out of `process()`, where this switch sat inside the rule loop and
+   * reached seven levels of nesting — a dispatch table written as a chain.
+   * Each arm is independent, so reading one no longer means holding the loop
+   * and the switch in your head at the same time.
+   */
+  #apply(rule: CliEventRule, event: unknown): DispatcherEvent[] {
+    if (rule.emit === "text") {
+      const text = rule.textField ? getPath(event, rule.textField) : undefined;
+      if (typeof text === "string" && text.length > 0) this.lastText = text;
+      return [];
+    }
+
+    if (rule.emit === "tool_use") {
+      const name = rule.nameField ? getPath(event, rule.nameField) : undefined;
+      if (typeof name !== "string") return [];
+      return [
+        {
+          type: "tool_use",
+          name,
+          input: rule.inputField ? getPath(event, rule.inputField) : undefined,
+        },
+      ];
+    }
+
+    if (rule.emit === "thinking") {
+      const chunk = rule.chunkField ? getPath(event, rule.chunkField) : undefined;
+      return typeof chunk === "string" && chunk.length > 0 ? [{ type: "thinking", chunk }] : [];
+    }
+
+    if (rule.emit === "usage") {
+      const inTok = firstNumberAt(event, rule.inputTokenFields ?? []);
+      const outTok = firstNumberAt(event, rule.outputTokenFields ?? []);
+      if (inTok || outTok) {
+        this.inputTokens += inTok;
+        this.outputTokens += outTok;
+        this.sawUsage = true;
+      }
+      return [];
+    }
+
+    if (rule.emit === "error") {
+      const message = rule.messageField ? getPath(event, rule.messageField) : undefined;
+      if (typeof message === "string" && message.length > 0) this.errorMessage = message;
+    }
+    return [];
+  }
+}
+
+/**
+ * Every requested field, concatenated across a whole JSONL transcript.
+ *
+ * The poor-man's fallback for a harness whose protocol declares no
+ * `eventRules`: no line is authoritative, so every one that yields text
+ * contributes. A line that is not JSON is skipped rather than failing the
+ * parse, because harnesses interleave plain log lines with their events.
+ */
+function concatJsonlFields(stdout: string, fields: string[]): string | undefined {
+  const parts: string[] = [];
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const text = extractField(JSON.parse(trimmed), fields);
+      if (text) parts.push(text);
+    } catch {
+      // Not JSON — a log line, not an event.
+    }
+  }
+  return parts.join("") || undefined;
+}
+
+/**
+ * Token counts out of whichever JSON body carried them, or undefined.
+ *
+ * Lifted out of the `json_field` parsing arm, where it was one of two nested
+ * blocks that took that switch to seven levels. Returning undefined rather
+ * than mutating a variable in the caller is what lets the call site be one
+ * line: "these counts, if there are any".
+ */
+function readUsage(
+  source: unknown,
+  usage: CliProtocolConfig["output"]["usage"],
+): { input: number; output: number } | undefined {
+  if (source === undefined || !usage) return undefined;
+  const input = firstNumberAt(source, usage.input) + sumNumbersAt(source, usage.inputExtra);
+  const output = firstNumberAt(source, usage.output) + sumNumbersAt(source, usage.outputExtra);
+  return input || output ? { input, output } : undefined;
+}
+
+/**
+ * The error a CLI declared in its own output, or undefined.
+ *
+ * The fallback message matters: a harness that sets its error flag and gives
+ * nothing readable would otherwise fail with an empty string, which reads as
+ * a success with no output.
+ */
+function readStructuredError(
+  source: unknown,
+  error: CliProtocolConfig["output"]["error"],
+  fallbackFields: string[],
+): string | undefined {
+  if (source === undefined || !error) return undefined;
+  if (getPath(source, error.field) !== true) return undefined;
+  return (
+    extractField(source, error.messageFields ?? fallbackFields) ??
+    `CLI reported an error (${error.field} set) with no extractable message`
+  );
+}
+
+/**
+ * Complete lines out of a buffer, and whatever is left over.
+ *
+ * The remainder is the point: a real pipe splits wherever it flushes, so the
+ * tail of a chunk is routinely half a JSON line that only completes on the
+ * next read. Returned rather than mutated in place, so the caller's buffer
+ * handling is one assignment instead of an index walked inside four other
+ * conditions.
+ */
+function takeCompleteLines(buffer: string): { lines: string[]; rest: string } {
+  const parts = buffer.split("\n");
+  const rest = parts.pop() ?? "";
+  return { lines: parts, rest };
 }
 
 function firstNumberAt(obj: unknown, fields: string[]): number {
@@ -777,28 +870,31 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let lineBuffer = "";
 
     for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
-      if ("stream" in evt) {
-        if (evt.stream === "stdout") {
-          stdoutBuf.push(evt.chunk);
-          yield { type: "stdout", chunk: evt.chunk };
-          if (acc) {
-            lineBuffer += evt.chunk;
-            let newlineIdx = lineBuffer.indexOf("\n");
-            while (newlineIdx >= 0) {
-              const line = lineBuffer.slice(0, newlineIdx);
-              lineBuffer = lineBuffer.slice(newlineIdx + 1);
-              for (const out of acc.process(line)) yield out;
-              newlineIdx = lineBuffer.indexOf("\n");
-            }
-          }
-        } else {
-          stderrBuf.push(evt.chunk);
-          yield { type: "stderr", chunk: evt.chunk };
-        }
-      } else {
+      // One `continue` per event kind, rather than nested ifs. This loop was
+      // seven levels deep — for/if/if/if/while/for — around the one part that
+      // has to be exactly right: holding a partial line across reads.
+      if (!("stream" in evt)) {
         exitCode = evt.exitCode;
         durationMs = evt.durationMs;
         timedOut = evt.timedOut;
+        continue;
+      }
+
+      if (evt.stream === "stderr") {
+        stderrBuf.push(evt.chunk);
+        yield { type: "stderr", chunk: evt.chunk };
+        continue;
+      }
+
+      stdoutBuf.push(evt.chunk);
+      yield { type: "stdout", chunk: evt.chunk };
+      if (!acc) continue;
+
+      lineBuffer += evt.chunk;
+      const split = takeCompleteLines(lineBuffer);
+      lineBuffer = split.rest;
+      for (const line of split.lines) {
+        for (const out of acc.process(line)) yield out;
       }
     }
     if (acc && lineBuffer.length > 0) {
@@ -861,39 +957,13 @@ export class GenericCliDispatcher extends BaseDispatcher {
             parsedOutput = stderrJson !== undefined ? extractField(stderrJson, fields) : undefined;
             usageSource = stderrJson ?? stdoutJson;
           }
-          if (usageSource !== undefined && protocol.output.usage) {
-            const inTok =
-              firstNumberAt(usageSource, protocol.output.usage.input) +
-              sumNumbersAt(usageSource, protocol.output.usage.inputExtra);
-            const outTok =
-              firstNumberAt(usageSource, protocol.output.usage.output) +
-              sumNumbersAt(usageSource, protocol.output.usage.outputExtra);
-            if (inTok || outTok) tokensUsed = { input: inTok, output: outTok };
-          }
-          if (usageSource !== undefined && protocol.output.error) {
-            const flagged = getPath(usageSource, protocol.output.error.field) === true;
-            if (flagged) {
-              const messageFields = protocol.output.error.messageFields ?? fields;
-              structuredError =
-                extractField(usageSource, messageFields) ??
-                `CLI reported an error (${protocol.output.error.field} set) with no extractable message`;
-            }
-          }
+          tokensUsed = readUsage(usageSource, protocol.output.usage) ?? tokensUsed;
+          structuredError =
+            readStructuredError(usageSource, protocol.output.error, fields) ?? structuredError;
           break;
         }
         case "jsonl_stream": {
-          const parts: string[] = [];
-          for (const line of stdout.split("\n")) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const text = extractField(JSON.parse(trimmed), fields);
-              if (text) parts.push(text);
-            } catch {
-              // Non-JSON line — ignore rather than fail the whole parse.
-            }
-          }
-          parsedOutput = parts.join("") || undefined;
+          parsedOutput = concatJsonlFields(stdout, fields);
           break;
         }
       }

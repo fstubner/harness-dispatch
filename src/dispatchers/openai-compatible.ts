@@ -121,6 +121,37 @@ interface ChatCompletionResponse {
   };
 }
 
+/**
+ * The assistant text carried by one SSE frame's choices, if any.
+ *
+ * `delta` on a streaming frame, `message` on a non-streaming one — an endpoint
+ * may send either shape mid-stream, so both are read.
+ */
+function deltaTexts(choices: ChatChoice[] | undefined): string[] {
+  if (!Array.isArray(choices)) return [];
+  const out: string[] = [];
+  for (const choice of choices) {
+    const content = (choice.delta ?? choice.message)?.content;
+    if (typeof content === "string" && content.length > 0) out.push(content);
+  }
+  return out;
+}
+
+/**
+ * Token counts from an SSE frame, or undefined when it carries none.
+ *
+ * BOTH numbers must be present: a frame with only one is a partial usage
+ * report, and recording it as a complete pair would understate the other half.
+ */
+function readSseUsage(
+  usage: ChatCompletionResponse["usage"],
+): { input: number; output: number } | undefined {
+  const input = usage?.prompt_tokens;
+  const output = usage?.completion_tokens;
+  if (typeof input !== "number" || typeof output !== "number") return undefined;
+  return { input, output };
+}
+
 // ---------------------------------------------------------------------------
 // anthropic_messages response shapes
 // ---------------------------------------------------------------------------
@@ -422,25 +453,12 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         error = typeof obj.error.message === "string" ? obj.error.message : "upstream error mid-stream";
         continue;
       }
-      const choices = obj.choices;
-      if (Array.isArray(choices)) {
-        for (const c of choices) {
-          const delta = c.delta ?? c.message;
-          const content = delta?.content;
-          if (typeof content === "string" && content.length > 0) {
-            // text: this IS the answer — an endpoint streams assistant content, not
-            // a protocol, so it can be shown as it arrives.
-            out.push({ type: "stdout", chunk: content, text: true });
-          }
-        }
+      // text: this IS the answer — an endpoint streams assistant content, not
+      // a protocol, so it can be shown as it arrives.
+      for (const chunk of deltaTexts(obj.choices)) {
+        out.push({ type: "stdout", chunk, text: true });
       }
-      if (obj.usage) {
-        const input = obj.usage.prompt_tokens;
-        const output = obj.usage.completion_tokens;
-        if (typeof input === "number" && typeof output === "number") {
-          usage = { input, output };
-        }
-      }
+      usage = readSseUsage(obj.usage) ?? usage;
     }
     return error !== undefined ? { events: out, usage, error } : { events: out, usage };
   }

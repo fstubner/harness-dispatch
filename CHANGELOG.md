@@ -8,6 +8,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- The "already applied" answer is given from one place. Both branches that
+  can reach it built the message separately and had to say the same thing by
+  hand — and it is the message a caller reads to decide whether their work
+  landed, so the two drifting apart is the exact confusion the second branch
+  was added to fix.
+
+- Five deeply nested blocks were flattened into named helpers: a rule
+  dispatch table written as a switch inside a loop, the stdout line
+  reassembly, two JSON-shape readers, an SSE frame reader, and the
+  steal-a-stale-lock path with its two nested try/catch blocks. Each is
+  behaviour-preserving and each removes a level that had nothing to do with
+  the logic underneath it.
+
 - Housekeeping the audit listed and nothing had got to: CI built the whole
   project twice on every leg of every run (the explicit step plus the one
   inside `npm test`); `doctor` ran its state-directory probe twice, creating

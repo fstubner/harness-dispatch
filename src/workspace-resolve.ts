@@ -661,6 +661,28 @@ export interface ApplyResult {
 }
 
 /**
+ * The "nothing left to apply" answer, given from both places that can reach it.
+ *
+ * Two call sites: the empty-patch branch, and the explicit check further down
+ * that exists because a `git_worktree` patch never empties out. They were
+ * written out separately and had to say the same thing by hand — and this
+ * message is the one a caller reads to decide whether their work landed, so
+ * the two drifting apart is exactly the confusion the second site was added
+ * to fix.
+ */
+function alreadyApplied(jobId: string, patchPath: string, changedCount: number): ApplyResult {
+  return {
+    jobId,
+    applied: false,
+    patchPath,
+    message:
+      `Already applied: the project already matches the workspace for all ` +
+      `${changedCount} changed file(s), so there is nothing left to apply. ` +
+      `Use action: "discard" to clean up the workspace.`,
+  };
+}
+
+/**
  * Apply the agent's work into the real project.
  *
  * Refuses by default when the target has uncommitted changes: the patch was
@@ -702,15 +724,7 @@ export async function applyWorkspace(
       // reading a handful of named files.
       const missing = await changesNotInProject(run, changed);
       if (missing.length === 0) {
-        return {
-          jobId,
-          applied: false,
-          patchPath: diff.patchPath,
-          message:
-            `Already applied: the project already matches the workspace for all ` +
-            `${changed.length} changed file(s), so there is nothing left to apply. ` +
-            `Use action: "discard" to clean up the workspace.`,
-        };
+        return alreadyApplied(jobId, diff.patchPath, changed.length);
       }
       return {
         jobId,
@@ -753,15 +767,7 @@ export async function applyWorkspace(
   if (run.changedFiles !== undefined && run.changedFiles.length > 0) {
     const notLanded = await changesNotInProject(run, run.changedFiles);
     if (notLanded.length === 0) {
-      return {
-        jobId,
-        applied: false,
-        patchPath: diff.patchPath,
-        message:
-          `Already applied: the project already matches the workspace for all ` +
-          `${run.changedFiles.length} changed file(s), so there is nothing left to apply. ` +
-          `Use action: "discard" to clean up the workspace.`,
-      };
+      return alreadyApplied(jobId, diff.patchPath, run.changedFiles.length);
     }
   }
 
