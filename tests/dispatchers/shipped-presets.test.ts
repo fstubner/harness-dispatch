@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { streamFromBuffered } from "../support/buffered-stream.js";
 
 import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
 import type { ServiceConfig } from "../../src/types.js";
@@ -29,6 +30,17 @@ import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
   runSubprocess: vi.fn(),
 }));
+// The dispatcher calls `streamSubprocess`, never `runSubprocess`. Production
+// code used to notice the mock above and quietly reroute through a buffered
+// adapter; that branch is gone, so the seam is declared here instead. The
+// buffered mock stays because every assertion below reads argv, env and stdin
+// off it.
+vi.mock("../../src/dispatchers/shared/stream-subprocess.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../src/dispatchers/shared/stream-subprocess.js")
+  >()),
+  streamSubprocess: vi.fn(),
+}));
 vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
   resolveCliCommand: vi.fn(),
 }));
@@ -43,6 +55,12 @@ vi.mock("which", () => {
 });
 
 const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const { streamSubprocess } = await import(
+  "../../src/dispatchers/shared/stream-subprocess.js"
+);
+const streamSubprocessMock = streamSubprocess as unknown as ReturnType<
+  typeof vi.fn
+>;
 const { resolveCliCommand } = await import("../../src/dispatchers/shared/windows-cmd.js");
 const { default: which } = await import("which");
 const { GenericCliDispatcher } = await import("../../src/dispatchers/generic-cli.js");
@@ -87,6 +105,7 @@ function mockFound(commandPath: string): void {
 
 beforeEach(() => {
   runSubprocessMock.mockReset();
+  streamSubprocessMock.mockImplementation(streamFromBuffered(runSubprocessMock));
   resolveCliCommandMock.mockReset();
   whichMock.mockReset();
 });
