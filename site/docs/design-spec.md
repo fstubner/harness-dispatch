@@ -59,11 +59,12 @@ User asks for a backoff refactor + SLA check + test review. Agent:
 - `site/src/components/ToolCall.astro` — the ONLY place a tool-call line is
   rendered; rules 2/3/5/6 are enforced here structurally.
 - `site/src/styles/tokens.css` — the ONLY place colors/spacing/type live.
-- `pages.yml` builds `site/` and deploys `site/dist` — but it is
-  `workflow_dispatch` only, so it has never run: the site is NOT live, and
-  `https://fstubner.github.io/harness-dispatch/` returns 404. Run the workflow
-  by hand to publish it, and point `package.json`'s `homepage` back at that URL
-  once it answers.
+- **The site is not published, by decision, not by omission.** `pages.yml` can
+  build `site/` and deploy `site/dist`, but it is `workflow_dispatch` only and
+  has never been run; `https://fstubner.github.io/harness-dispatch/` returns
+  404. `package.json`'s `homepage` points at the README instead, so nothing
+  npm shows is a dead link. Keep it that way unless that decision changes —
+  the source here stays useful as the design reference regardless.
 - The pre-Astro `docs/index.html` + `docs/styles.css` have since been removed;
   `site/` is the only source of the page now. claims-check-ignore
 

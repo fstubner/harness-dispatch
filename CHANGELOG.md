@@ -8,6 +8,17 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`max_concurrent_runs: 0` lifts the cap without also removing the
+  supervisor pool.** It used to short-circuit the slot queue and the pool
+  entirely, so every job got its own detached runner — measured under load at
+  8 concurrent dispatches becoming 8 runner processes at ~76 MB each, which
+  is the per-job wrapper cost the pool exists to remove, on the memory-bound
+  machine the cap exists for in the first place. Uncapped now means uncapped
+  *jobs*, with the process count still bounded by the pool. The cap is
+  represented as `null` rather than `0` or `Infinity`, because both of those
+  were wrong somewhere: `0` read as "bypass everything", and `Infinity` broke
+  pool sizing, which divides by the limit and so asked for zero supervisors.
+
 - The contract every shipped harness owes — a missing CLI, a non-zero exit, a
   model override, a timeout, id and availability — is asserted once per
   harness from one table instead of being written out in four per-harness

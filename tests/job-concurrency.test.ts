@@ -147,6 +147,40 @@ describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
     await Promise.allSettled([first.completion, second.completion]);
   }, 60_000);
 
+  it("runs uncapped jobs through the pool rather than a runner process each", async () => {
+    // `max_concurrent_runs: 0` means "no cap", and it used to mean "no pool"
+    // as well: every job got its own detached runner at ~76 MB, which is the
+    // per-job wrapper cost the pool exists to remove — on the memory-bound
+    // machine the cap exists for in the first place. Measured under load
+    // before this was fixed: 8 concurrent dispatches, 8 runner processes.
+    //
+    // A spawned per-job runner writes output/runner.log; a pooled supervisor
+    // does not. That file is the tell, and it is what the sibling test above
+    // uses to prove the opposite case.
+    configPath = await writeConfig(0, 500);
+    const d = await deps();
+
+    const jobs = await Promise.all(
+      ["a", "b", "c"].map((p) =>
+        startAsyncJobTracked(d, { prompt: p, workingDir: tmpDir, service: "slow_node" }),
+      ),
+    );
+
+    // Uncapped: nothing waits for a slot.
+    for (const job of jobs) {
+      expect(job.status.slotQueued, "an uncapped dispatch was made to wait").toBeUndefined();
+    }
+
+    await Promise.allSettled(jobs.map((j) => j.completion));
+
+    for (const job of jobs) {
+      expect(
+        existsSync(path.join(job.status.jobDir, "output", "runner.log")),
+        "an uncapped job spawned its own runner instead of going through the pool",
+      ).toBe(false);
+    }
+  }, 60_000);
+
   it("a waiting job is reported as queued, never as orphaned", async () => {
     // The staleness rule flags a `queued` job whose heartbeat is >90s old as
     // orphaned. Nothing heartbeats for a slot-queued job by design, so

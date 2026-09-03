@@ -55,10 +55,23 @@ const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 const DEFAULT_CLI_WEIGHT = 1.0;
 const DEFAULT_ENDPOINT_WEIGHT = 0.1;
 
-export function maxConcurrentRuns(config: RouterConfig | undefined): number {
+/**
+ * The cap, or `null` for "no cap".
+ *
+ * `null` rather than `0`, and rather than `Infinity`, because both of those
+ * were wrong in a way that mattered. `0` used to short-circuit the whole slot
+ * queue and supervisor pool, so `max_concurrent_runs: 0` — documented as
+ * lifting a limit — silently gave every job its own runner process at ~76 MB,
+ * which is the per-job cost the pool exists to remove, on the memory-bound
+ * machine the cap exists for. And `Infinity` divides badly: the pool sizes
+ * itself with `outstanding / jobsPerSupervisor(limit)`, so an infinite limit
+ * asked for ZERO supervisors. An explicit `null` makes each site say what it
+ * means about the unbounded case.
+ */
+export function maxConcurrentRuns(config: RouterConfig | undefined): number | null {
   const configured = config?.maxConcurrentRuns;
   if (configured !== undefined && Number.isFinite(configured) && configured >= 0) {
-    return configured;
+    return configured === 0 ? null : configured;
   }
   return DEFAULT_MAX_CONCURRENT_RUNS;
 }
@@ -173,8 +186,15 @@ const SUPERVISOR_POLL_MS = 250;
 /** How long a supervisor stays alive with nothing to do before exiting. */
 const SUPERVISOR_IDLE_EXIT_MS = 5_000;
 
-/** Jobs one supervisor may run at once, so the pool can reach the global limit. */
-function jobsPerSupervisor(limit: number): number {
+/**
+ * Jobs one supervisor may run at once, so the pool can reach the global limit.
+ *
+ * Uncapped, a supervisor takes whatever it can claim: the pool size is then
+ * the only bound, which is the point — processes stay bounded even when jobs
+ * do not.
+ */
+function jobsPerSupervisor(limit: number | null): number {
+  if (limit === null) return Number.POSITIVE_INFINITY;
   return Math.max(1, Math.ceil(limit / SUPERVISOR_POOL_SIZE));
 }
 
@@ -299,7 +319,6 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
 
     for (;;) {
       const limit = maxConcurrentRuns(deps.holder.state.config);
-      if (limit === 0) return;
 
       // Exit at once if the jobs root has gone. A per-job runner died with its
       // job, so a deleted jobs directory could never strand one; a pooled
@@ -435,7 +454,6 @@ export async function drainSlotQueue(
   configPath: string | undefined,
 ): Promise<void> {
   const limit = maxConcurrentRuns(config);
-  if (limit === 0) return;
   const runnerPath = resolveRunnerPath();
   if (runnerPath === undefined) return;
 
@@ -469,7 +487,7 @@ export async function drainSlotQueue(
 const DRAIN_LOCK_TIMEOUT_MS = 5_000;
 
 async function drainSlotQueueLocked(
-  limit: number,
+  limit: number | null,
   runnerPath: string,
   configPath: string | undefined,
   config: RouterConfig | undefined,
@@ -499,7 +517,7 @@ async function drainSlotQueueLocked(
     // exist. When nothing is running, the next job always goes — the same
     // reasoning as the earlier fix for a job whose own queued status counted
     // against its own admission.
-    if (active > 0 && active + weight > limit) break;
+    if (limit !== null && active > 0 && active + weight > limit) break;
     const { slotQueued: _dropped, ...cleared } = status;
     await updateStatus(jobDir, {
       ...cleared,
@@ -519,7 +537,10 @@ async function drainSlotQueueLocked(
   // jobsPerSupervisor(limit). The cap must come from the pool size, never from
   // how the work happened to arrive.
   const outstanding = activeJobs;
-  const wanted = Math.min(SUPERVISOR_POOL_SIZE, Math.ceil(outstanding / jobsPerSupervisor(limit)));
+  const wanted =
+    limit === null
+      ? Math.min(SUPERVISOR_POOL_SIZE, outstanding)
+      : Math.min(SUPERVISOR_POOL_SIZE, Math.ceil(outstanding / jobsPerSupervisor(limit)));
   const running = await countLiveSupervisors();
   for (let i = running; i < wanted; i += 1) {
     spawnDetachedSupervisor(runnerPath, configPath);
