@@ -36,7 +36,7 @@ export const transcript = {
     "Refactor the retry logic in the payment queue so it backs off exponentially, then have someone check whether the new backoff still meets our SLA doc, and review the tests once it's done.",
   agentIntro:
     "I have harness-dispatch connected — Codex, Claude Code, and Cursor are all configured. I'll send the backoff refactor over first.",
-  pendingLine: "dispatch — running (job-8f2a1c3d), checking back in ~5 min",
+  pendingLine: "dispatch — running (job-1788400954226-c0a788b0), checking back in ~5 min",
   waitNote:
     "That'll take a few minutes — I'll check back rather than block on it, then get the SLA question and test review going.",
   afterExecute:
@@ -55,7 +55,7 @@ export const executeCall: ToolCallData = {
   result: {
     kind: "steps",
     steps: [
-      { marker: "1", text: "dispatch → pending, jobId job-8f2a1c3d" },
+      { marker: "1", text: "dispatch → pending, jobId job-1788400954226-c0a788b0" },
       { marker: "2", text: "job_status → codex_cli · 8,412 in / 2,896 out · 4m12s", gapText: "~5 min later" },
     ],
   },

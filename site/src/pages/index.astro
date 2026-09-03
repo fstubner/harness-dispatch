@@ -109,20 +109,27 @@ import { transcript, executeCall, fanoutCall } from "../data/scenario";
           <div class="code">
             <div class="code-head">setup</div>
             <pre><span class="prompt">npm install -g harness-dispatch</span>
-<span class="prompt">harness-dispatch configure</span>
+<span class="prompt">harness-dispatch configure --yes</span>
 <span class="c">Detected 4 harness routes.</span>
-<span class="prompt">harness-dispatch doctor --live</span>
-<span class="c">ok routes: 1 ready route(s)
-ok live-probe: routed one prompt via codex
-note 3 route(s) blocked pending allow_paid_usage</span></pre>
+<span class="prompt">harness-dispatch doctor</span>
+<span class="c">ok config: 4 configured route(s)
+ok routes: 3 ready route(s)
+ok harness-login: codex_cli: logged in
+ok billing-policy: all ready routes satisfy billing policy</span></pre>
           </div>
           <div class="code">
             <div class="code-head">mcp config</div>
             <pre>{`{
   "mcpServers": {
-    "harness-dispatch": { "command": "harness-dispatch" }
+    "harness-dispatch": {
+      "command": "harness-dispatch",
+      "args": ["--config", "/absolute/path/to/config.yaml"]
+    }
   }
 }`}</pre>
+            <p class="note">Or let <code>harness-dispatch connect</code> write it. The
+            absolute <code>--config</code> matters: without it the server falls back to
+            shipped defaults and ignores your config file.</p>
           </div>
         </div>
       </div>
@@ -135,8 +142,11 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
         <div class="iface-grid">
           <div class="card">
             <h3>MCP</h3>
-            <p><strong>Tools:</strong> <code>dispatch</code> <code>job_status</code> <code>usage</code></p>
-            <p><strong>Resources:</strong> <code>harness-dispatch://status</code></p>
+            <p><strong>Tools:</strong> <code>dispatch</code> <code>job_status</code>
+            <code>cancel_job</code> <code>retry_job</code> <code>workspace</code>
+            <code>usage</code></p>
+            <p><strong>Resources:</strong> <code>harness-dispatch://status</code>
+            <code>harness-dispatch://status.json</code></p>
           </div>
           <div class="card">
             <h3>REST</h3>
@@ -159,7 +169,7 @@ note 3 route(s) blocked pending allow_paid_usage</span></pre>
         <div class="faq">
           <div class="faq-item">
             <h3>Why local only?</h3>
-            <p>Nothing phones home. Traces (if enabled) go to localhost unless you point them elsewhere. The one outbound call is a public leaderboard GET for route scoring.</p>
+            <p>Nothing phones home. Traces (if enabled) go to localhost unless you point them elsewhere. There are no outbound calls of its own unless you turn on the optional leaderboard fetch, which is off by default.</p>
           </div>
           <div class="faq-item">
             <h3>Why require opt-in for paid routes?</h3>
