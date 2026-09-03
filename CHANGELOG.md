@@ -8,6 +8,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- Three of the six MCP tools were asserted to exist and never invoked.
+  `cancel_job`, `retry_job` and `workspace` had tests for the functions
+  underneath but nothing exercising the layer that parses a caller's
+  arguments and shapes the reply — where a schema change or a renamed field
+  breaks an orchestrator without failing anything. Now driven through the
+  real tool path, including the refusals that matter: a traversal attempt in
+  a job id, and a near-miss `action` on the one verb that is irreversible.
+
+- The workspace lock's heartbeat guard is pinned. A holder that freezes past
+  the stale window is legitimately stolen from, and its heartbeat must stop
+  writing — otherwise it destroys the new owner's claim and, worse, convinces
+  its own `release()` that it still holds the lock, deleting it out from
+  under whoever now owns it. The guard was there and uncovered; removing it
+  now fails a test that names exactly that.
+
 - **`max_concurrent_runs: 0` lifts the cap without also removing the
   supervisor pool.** It used to short-circuit the slot queue and the pool
   entirely, so every job got its own detached runner — measured under load at
