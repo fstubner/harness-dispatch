@@ -791,7 +791,9 @@ async function cmdDoctor(
       // simply has nothing to route to, and no hint what to install.
       detail:
         (status.ready.length > 0
-          ? `${status.ready.length} ready route(s)`
+          ? // Trailing period so this reads as a sentence when the
+            // installed-but-unconfigured note is appended after it.
+            `${status.ready.length} ready route(s).`
           : `0 ready route(s). Looked for these harness CLIs on PATH: ` +
             `${Object.values(AUTO_DETECT_COMMANDS).join(", ")}. ` +
             `Install one, or add a route to config.yaml (endpoints: need no CLI).`) +

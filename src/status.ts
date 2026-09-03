@@ -99,15 +99,32 @@ export function redactEndpointHost(baseUrl: string): string {
  * into a bug report. Reproduced by an acceptance pass.
  *
  * Each credential-bearing piece is removed by value, so it does not matter how
- * the message happened to assemble them: the whole base URL, then origin,
- * hostname, userinfo, and every query value on their own.
+ * the message happened to assemble them: the configured api key, then the
+ * whole base URL, then origin, hostname, userinfo, and every query value on
+ * their own. Pass `apiKey` wherever it is known — for most routes the key is
+ * sent as a header and is not part of the URL at all, so omitting it leaves
+ * the commonest credential unscrubbed.
  */
-export function scrubEndpointSecrets(text: string, baseUrl: string): string {
+export function scrubEndpointSecrets(
+  text: string,
+  baseUrl: string,
+  apiKey?: string,
+): string {
   let out = text;
   const replaceAll = (needle: string, with_: string): void => {
     if (needle.length === 0) return;
     out = out.split(needle).join(with_);
   };
+  // The configured key, first, and it is NOT a part of the URL for most
+  // routes: every endpoint in this project's own config authenticates with an
+  // `Authorization: Bearer` or `x-api-key` header. This function's contract is
+  // to strip credentials out of text we did not write, and it was stripping
+  // only the credential-bearing pieces of the base URL — so an endpoint that
+  // echoed the request HEADER back in its error ("invalid api key: Bearer
+  // sk-…") passed the key through untouched, to the terminal and into
+  // `logs/dispatches.jsonl`. Found by an acceptance pass, reproduced against
+  // the built artifact.
+  if (apiKey !== undefined) replaceAll(apiKey, "<redacted>");
   replaceAll(baseUrl, redactEndpointHost(baseUrl));
   try {
     const url = new URL(baseUrl);
