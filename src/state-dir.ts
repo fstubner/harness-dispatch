@@ -18,7 +18,20 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 export function stateRoot(): string {
-  return process.env.HARNESS_DISPATCH_STATE_DIR ?? path.join(homedir(), ".harness-dispatch");
+  // `??` alone treated an EMPTY variable as a real value, so
+  // `HARNESS_DISPATCH_STATE_DIR=""` — which is what a launcher or shell
+  // produces when it forwards an unset variable — made the state root the
+  // empty string. Every path built on it then resolved relative to the
+  // process's current directory: config, jobs, breaker state, quota counters
+  // and logs all landed wherever the server happened to start, which is the
+  // cwd-dependent config bug this module's own comment says was fixed.
+  // `path.resolve` for the same reason in the other direction: a relative
+  // value was never anchored, so a job runner spawned with a different
+  // working directory read a different state root than the server that
+  // spawned it.
+  const configured = process.env.HARNESS_DISPATCH_STATE_DIR;
+  if (configured !== undefined && configured.trim() !== "") return path.resolve(configured);
+  return path.join(homedir(), ".harness-dispatch");
 }
 
 /**
