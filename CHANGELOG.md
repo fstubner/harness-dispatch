@@ -8,6 +8,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- The contract every shipped harness owes — a missing CLI, a non-zero exit, a
+  model override, a timeout, id and availability — is asserted once per
+  harness from one table instead of being written out in four per-harness
+  files. There is no per-harness dispatcher class to begin with: each built-in
+  harness is the generic CLI dispatcher driven by a protocol block in
+  `config.default.yaml`, so those were never really four different questions.
+  They had already drifted apart, which is the argument for the table: three
+  of the four checked that nothing was even resolved before the failure, one
+  did not. A preset added to the shipped config with no row now fails a
+  completeness check. What stays per harness is what genuinely differs —
+  Codex's JSONL extraction and `--cd` handling, Cursor's workspace default and
+  Retry-After parsing, Antigravity's live streaming and safety-flag mapping,
+  Claude Code's raw-stdout fallback.
+
 - **The job store is five modules instead of one 1,600-line file**, and two
   runtime imports that existed to dodge an import cycle are gone. The cycle
   was real but avoidable: `config-hot-reload.ts` imported

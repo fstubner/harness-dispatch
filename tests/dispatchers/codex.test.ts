@@ -115,17 +115,10 @@ afterEach(() => {
 });
 
 describe("Codex (GenericCliDispatcher + CODEX_PROTOCOL)", () => {
-  it("returns an error DispatchResult when the CLI is not found", async () => {
-    whichMock.mockResolvedValue(null);
-    const d = codex();
-
-    const res = await d.dispatch("hi", [], "");
-
-    expect(res.success).toBe(false);
-    expect(res.service).toBe("codex");
-    expect(res.error).toMatch(/'codex' not found on PATH/i);
-    expect(runSubprocessMock).not.toHaveBeenCalled();
-  });
+  // The shared contract every shipped preset owes — a missing CLI, a non-zero
+  // exit, a model override, a timeout, id and availability — lives in
+  // shipped-presets.test.ts, asserted once per harness from one table. What
+  // remains below is what is specific to this harness.
 
   it("extracts the last agent_message item from JSONL output", async () => {
     mockFound();
@@ -237,26 +230,6 @@ describe("Codex (GenericCliDispatcher + CODEX_PROTOCOL)", () => {
     }
   });
 
-  it("passes --model <override> through to the subprocess", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({
-        stdout: JSON.stringify({
-          type: "item.completed",
-          item: { type: "agent_message", text: "ok" },
-        }),
-      }),
-    );
-
-    const d = codex();
-    await d.dispatch("go", [], "", { modelOverride: "o4-mini" });
-
-    const { args } = captureSubprocessCall(0);
-    expect(args).toContain("--model");
-    const idx = args.indexOf("--model");
-    expect(args[idx + 1]).toBe("o4-mini");
-  });
-
   it("uses Codex harness-native Ollama routing when configured", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(
@@ -288,19 +261,6 @@ describe("Codex (GenericCliDispatcher + CODEX_PROTOCOL)", () => {
     expect(opts?.env?.["OPENAI_API_KEY"]).toBeUndefined();
   });
 
-  it("reports failure on a non-zero exit code", async () => {
-    mockFound();
-    runSubprocessMock.mockResolvedValue(
-      ok({ stdout: "", stderr: "something broke", exitCode: 2 }),
-    );
-
-    const d = codex();
-    const res = await d.dispatch("go", [], "");
-
-    expect(res.success).toBe(false);
-    expect(res.error).toBe("something broke");
-  });
-
   it("reports 'unknown' quota", async () => {
     const d = codex();
     const q = await d.checkQuota();
@@ -308,9 +268,4 @@ describe("Codex (GenericCliDispatcher + CODEX_PROTOCOL)", () => {
     expect(q.source).toBe("unknown");
   });
 
-  it("has a stable id and reports itself as available", () => {
-    const d = codex();
-    expect(d.id).toBe("codex");
-    expect(d.isAvailable()).toBe(true);
-  });
 });
