@@ -55,8 +55,18 @@
  * Explicit `tier` in config is the fallback when ELO is unavailable.
  *
  * R3: adds `stream()` / `streamTo()` that emit `DispatcherEvent`s with an
- * attached `RoutingDecision`. The buffered `route` / `routeTo` methods are
- * reimplemented on top of the streaming primitives.
+ * attached `RoutingDecision`.
+ *
+ * There is ONE selection-and-fallback loop per shape — `#runStream` for the
+ * routed path, `#runStreamTo` for an explicit route — and the buffered
+ * `route()` / `routeTo()` drain them. This paragraph used to claim exactly
+ * that while it was false: the buffered methods were separate 120-line
+ * implementations, and the copies drifted. The timeout rule ended up written
+ * four times, and an audit mutation showed a test pinned only the `route()`
+ * copy, leaving the pair that jobs and the HTTP server actually use unguarded.
+ *
+ * What still differs between buffered and streaming is the dispatcher call
+ * itself, and only that: see `DispatcherInvoke`.
  */
 
 import type {
@@ -75,7 +85,7 @@ import { CircuitBreaker, type CircuitBreakerSnapshot } from "./circuit-breaker.j
 import { BreakerStore } from "./breaker-store.js";
 import { QuotaCache } from "./quota.js";
 import { LeaderboardCache } from "./leaderboard.js";
-import type { Dispatcher } from "./dispatchers/base.js";
+import type { DispatchOpts, Dispatcher } from "./dispatchers/base.js";
 import { drainDispatcherStream } from "./dispatchers/base.js";
 import { withDispatcherSpan, withRouterSpan } from "./observability/spans.js";
 import { buildRouteBilling } from "./billing.js";
@@ -281,48 +291,67 @@ function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
   return svc.capabilities[key] ?? 1.0;
 }
 
-async function withWorkspacePolicy<T>(
-  svc: ServiceConfig,
-  serviceName: string,
-  safetyProfile: SafetyProfile | undefined,
-  requestedPolicy: ServiceConfig["workspacePolicy"] | undefined,
-  workingDir: string,
+/**
+ * How the router asks a dispatcher to do the work.
+ *
+ * There is ONE selection-and-fallback loop, and this is the single thing that
+ * differs between the buffered and streaming entry points. It is a parameter
+ * rather than a second copy of the loop because the copies drifted: the rule
+ * "a per-call timeoutMs beats the route's configured default" was written out
+ * four times, and an audit mutation proved only the `route()` copy was pinned
+ * by a test — while jobs and the HTTP server both dispatch through the
+ * streaming pair. Whatever is true of one entry point is now true of all four
+ * by construction.
+ *
+ * Why the strategy rather than draining `stream()` for everything, which is
+ * what the audit proposed: `OpenAICompatibleDispatcher` overrides `dispatch()`
+ * with a one-shot POST that sets `stream: false` on the wire, deliberately.
+ * Routing every buffered call through `stream()` would flip that request for
+ * every endpoint route — a live behaviour change against third-party gateways,
+ * one of which this repo already has a note about ignoring `stream: true`.
+ * Collapsing the loop is safe; collapsing the transport is not, and they are
+ * separate questions.
+ */
+type DispatcherInvoke = (
+  dispatcher: Dispatcher,
+  prompt: string,
   files: string[],
-  fn: (effectiveWorkingDir: string, effectiveFiles: string[]) => Promise<T>,
-): Promise<T> {
-  const policy = workspacePolicyFor(svc, safetyProfile, requestedPolicy);
-  if (policy === "shared_locked") {
-    const release = await acquireWorkspaceLock(workingDir);
-    try {
-      const workspace = await prepareWorkspace({
-        routeName: serviceName,
-        policy,
-        workingDir,
-        files,
-      });
-      const result = await fn(workspace.effectiveWorkingDir, workspace.files);
-      return await workspace.finish(result as DispatchResult) as T;
-    } finally {
-      release();
-    }
-  }
+  workingDir: string,
+  opts: DispatchOpts,
+) => AsyncIterable<DispatcherEvent>;
 
-  const shouldLockSnapshot = safetyProfile !== "read_only" && (policy === "copy" || policy === "git_worktree");
-  const release = shouldLockSnapshot ? await acquireWorkspaceLock(workingDir) : undefined;
-  let workspace: Awaited<ReturnType<typeof prepareWorkspace>>;
-  try {
-    workspace = await prepareWorkspace({
-      routeName: serviceName,
-      policy,
-      workingDir,
-      files,
-    });
-  } finally {
-    release?.();
-  }
-  const result = await fn(workspace.effectiveWorkingDir, workspace.files);
-  return await workspace.finish(result as DispatchResult) as T;
-}
+/** Real streaming: the dispatcher emits events as they happen. */
+const STREAMING_INVOKE: DispatcherInvoke = (dispatcher, prompt, files, workingDir, opts) =>
+  dispatcher.stream(prompt, files, workingDir, opts);
+
+/**
+ * Buffered: call `dispatch()` and present its single result as a one-event
+ * stream, so the shared loop (and the workspace-policy wrapper, which finishes
+ * a workspace when it sees the completion event) needs no second shape.
+ */
+const BUFFERED_INVOKE: DispatcherInvoke = async function* (
+  dispatcher,
+  prompt,
+  files,
+  workingDir,
+  opts,
+) {
+  const spanAttrs: import("./observability/spans.js").DispatcherSpanAttrs = {
+    "dispatcher.id": dispatcher.id,
+  };
+  if (opts.modelOverride !== undefined) spanAttrs.model = opts.modelOverride;
+  const result = await withDispatcherSpan("dispatch", spanAttrs, async (span) => {
+    const r = await dispatcher.dispatch(prompt, files, workingDir, opts);
+    span.setAttribute("success", r.success);
+    if (r.rateLimited) span.setAttribute("rate_limited", true);
+    if (r.tokensUsed) {
+      span.setAttribute("tokens.input", r.tokensUsed.input);
+      span.setAttribute("tokens.output", r.tokensUsed.output);
+    }
+    return r;
+  });
+  yield { type: "completion", result };
+};
 
 async function* streamWithWorkspacePolicy<T>(
   svc: ServiceConfig,
@@ -845,9 +874,16 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number; signal?: AbortSignal },
+    opts: {
+      hints?: RouteHints;
+      maxFallbacks?: number;
+      defaultTimeoutMs?: number;
+      signal?: AbortSignal;
+      invoke?: DispatcherInvoke;
+    },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
+    const invoke = opts.invoke ?? STREAMING_INVOKE;
     const maxFallbacks = opts.maxFallbacks ?? SCORING.defaultMaxFallbacks;
     const tried = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
@@ -922,7 +958,7 @@ export class Router {
         workingDir,
         files,
         (effectiveWorkingDir, effectiveFiles) =>
-          dispatcher.stream(prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+          invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
       )) {
         yield { event, decision };
         if (event.type === "completion") {
@@ -970,8 +1006,9 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: ExplicitDispatchOpts,
+    opts: ExplicitDispatchOpts & { invoke?: DispatcherInvoke },
   ): AsyncGenerator<RouterStreamEvent> {
+    const invoke = opts.invoke ?? STREAMING_INVOKE;
     if (!(service in this.dispatchers)) {
       yield {
         event: {
@@ -1080,7 +1117,7 @@ export class Router {
       workingDir,
       files,
       (effectiveWorkingDir, effectiveFiles) =>
-        dispatcher.stream(prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+        invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
     )) {
       yield { event, decision };
       if (event.type === "completion") finalResult = event.result;
@@ -1132,122 +1169,43 @@ export class Router {
     );
   }
 
+  /**
+   * The buffered entry point, drained from the one shared loop.
+   *
+   * This used to be a second full implementation of selection, fallback,
+   * timeout precedence, workspace policy and breaker accounting — about 120
+   * lines that had to stay in step with `#runStream` and did not. The router
+   * header claimed the buffered methods were "reimplemented on top of the
+   * streaming primitives"; they were not, and that claim is what made the
+   * drift invisible. `BUFFERED_INVOKE` keeps the one thing that genuinely
+   * differs: the dispatcher's own `dispatch()`, so a route with a non-streaming
+   * fast path still uses it.
+   */
   async #routeImpl(
     prompt: string,
     files: string[],
     workingDir: string,
     opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
-    const hints = opts.hints ?? {};
-    const maxFallbacks = opts.maxFallbacks ?? SCORING.defaultMaxFallbacks;
-    const tried = new Set<string>();
-    let lastResult: DispatchResult | null = null;
-    let lastDecision: RoutingDecision | null = null;
-
-    for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
-      const decision = await this.pickService({
-        hints,
-        prompt,
-        files,
-        exclude: tried,
-      });
-
-      if (decision === null) {
-        if (lastResult !== null) {
-          return { result: lastResult, decision: lastDecision };
-        }
-        return {
-          result: {
-            output: "",
-            service: "none",
-            success: false,
-            error: this.noEligibleRouteError(),
-            skippedRoutes: this.skippedRoutes(),
-          } as DispatchResult,
-          decision: null,
-        };
-      }
-
-      const dispatcher = this.dispatchers[decision.service]!;
-      const dispatchOpts: {
-        modelOverride?: string;
-        safetyProfile?: import("./types.js").SafetyProfile;
-        timeoutMs?: number;
-      signal?: AbortSignal;
-              } = {};
-      if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
-      if (decision.effectiveSafetyProfile !== undefined) {
-        dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
-      }
-      {
-        const effectiveTimeoutMs =
-          hints.timeoutMs ?? this.config.services[decision.service]!.timeoutMs;
-        if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
-        if (opts.signal) dispatchOpts.signal = opts.signal;
-      }
-      // Prefer the buffered dispatch path when it's available — many R1/R2
-      // tests assert on dispatcher.dispatch being called once; if we always
-      // went through stream() those assertions would break. Dispatchers that
-      // extend BaseDispatcher still ultimately funnel through stream(), but
-      // dispatchers (like OpenAICompatibleDispatcher) that override dispatch
-      // keep their fast-path.
-      const spanAttrs: import("./observability/spans.js").DispatcherSpanAttrs = {
-        "dispatcher.id": decision.service,
-      };
-      if (decision.model !== undefined) spanAttrs.model = decision.model;
-      if (decision.taskType) spanAttrs["task_type"] = decision.taskType;
-      const result = await withWorkspacePolicy(
-        this.config.services[decision.service]!,
-        decision.service,
-        decision.effectiveSafetyProfile,
-        decision.workspacePolicy,
-        workingDir,
-        files,
-        (effectiveWorkingDir, effectiveFiles) =>
-          withDispatcherSpan(
-            "dispatch",
-            spanAttrs,
-            async (span) => {
-              const r = await dispatcher.dispatch(
-                prompt,
-                effectiveFiles,
-                effectiveWorkingDir,
-                dispatchOpts,
-              );
-          span.setAttribute("success", r.success);
-          if (r.rateLimited) span.setAttribute("rate_limited", true);
-          if (r.tokensUsed) {
-            span.setAttribute("tokens.input", r.tokensUsed.input);
-            span.setAttribute("tokens.output", r.tokensUsed.output);
-          }
-          return r;
-            },
-          ),
-      );
-      this.handleResult(decision.service, result, decision);
-      lastResult = result;
-      lastDecision = decision;
-
-      if (result.success) {
-        if (attempt > 0) decision.reason += ` (fallback #${attempt} — prev failed)`;
-        return { result, decision };
-      }
-      // Rate-limited and transient failures alike: handleResult already
-      // tripped the breaker; exclude this service and fall back to the
-      // next-best candidate rather than aborting the caller's request.
-      tried.add(decision.service);
+    let result: DispatchResult | null = null;
+    let decision: RoutingDecision | null = null;
+    for await (const event of this.#runStream(prompt, files, workingDir, {
+      ...opts,
+      invoke: BUFFERED_INVOKE,
+    })) {
+      if (event.decision !== null) decision = event.decision;
+      if (event.event.type === "completion") result = event.event.result;
     }
-
     return {
       result:
-        lastResult ??
+        result ??
         ({
           output: "",
           service: "none",
           success: false,
           error: "Router exhausted all fallback attempts.",
         } as DispatchResult),
-      decision: lastDecision,
+      decision,
     };
   }
 
@@ -1261,110 +1219,29 @@ export class Router {
     workingDir: string,
     opts: ExplicitDispatchOpts = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
-    if (!(service in this.dispatchers)) {
-      return {
-        result: {
+    // Drained from `#runStreamTo`, for the reasons on `#routeImpl`: this was
+    // the second of two hand-written explicit-dispatch bodies, and the pair
+    // had already diverged on the timeout rule.
+    let result: DispatchResult | null = null;
+    let decision: RoutingDecision | null = null;
+    for await (const event of this.#runStreamTo(service, prompt, files, workingDir, {
+      ...opts,
+      invoke: BUFFERED_INVOKE,
+    })) {
+      if (event.decision !== null) decision = event.decision;
+      if (event.event.type === "completion") result = event.event.result;
+    }
+    return {
+      result:
+        result ??
+        ({
           output: "",
           service,
           success: false,
-          error: unknownServiceError(service, Object.keys(this.dispatchers)),
-        } as DispatchResult,
-        decision: null,
-      };
-    }
-
-    const breaker = this.breakers.get(service);
-    if (breaker && breaker.isTripped) {
-      const cd = Math.round(breaker.cooldownRemaining() * 10) / 10;
-      return {
-        result: {
-          output: "",
-          service,
-          success: false,
-          error: `'${service}' is circuit-broken — ${cd}s cooldown remaining`,
-        } as DispatchResult,
-        decision: null,
-      };
-    }
-
-    const svc = this.config.services[service]!;
-    const dispatcher = this.dispatchers[service]!;
-    const policy = evaluateRoutePolicy(service, svc, {
-      dispatcher,
-      ...(opts.safetyProfile !== undefined ? { requestedSafetyProfile: opts.safetyProfile } : {}),
-      ...(opts.routePolicy !== undefined ? { routePolicy: opts.routePolicy } : {}),
-      ...(opts.taskType !== undefined ? { taskType: opts.taskType } : {}),
-    });
-    if (policy.blocked) {
-      const result: DispatchResult = {
-        output: "",
-        service,
-        success: false,
-        error: policy.skipped?.message ?? "Route blocked by policy",
-      };
-      if (policy.skipped) result.skippedRoutes = [policy.skipped];
-      return {
-        result,
-        decision: null,
-      };
-    }
-    const quotaScore = await this.quota.getQuotaScore(service);
-    const { qualityScore, elo } = await this.leaderboard.getQualityScore(
-      svc.leaderboardModel,
-      svc.thinkingLevel,
-    );
-    const taskType: TaskType = opts.taskType ?? "";
-    const capScore = capabilityScore(svc, taskType);
-    const effectiveSafety = effectiveSafetyProfile(svc, opts.safetyProfile);
-    const decision: RoutingDecision = {
-      service,
-      tier: svc.tier,
-      quotaScore,
-      qualityScore,
-      cliCapability: svc.cliCapability,
-      capabilityScore: capScore,
-      taskType,
-      ...resolveNamedRouteModel(service, svc, opts.model, taskType),
-      elo: elo ?? undefined,
-      finalScore: qualityScore * svc.cliCapability * capScore * quotaScore * svc.weight,
-      reason: "explicit",
-      safetyProfile: requestedSafetyProfile(svc, opts.safetyProfile),
-      effectiveSafetyProfile: effectiveSafety,
-      billing: buildRouteBilling(svc),
-      workspacePolicy: workspacePolicyFor(svc, effectiveSafety, opts.workspacePolicy),
+          error: "Dispatcher stream ended without a completion event",
+        } as DispatchResult),
+      decision,
     };
-    const dispatchOpts: {
-      modelOverride?: string;
-      safetyProfile?: import("./types.js").SafetyProfile;
-      timeoutMs?: number;
-      signal?: AbortSignal;
-    } = {};
-    if (decision.model !== undefined) dispatchOpts.modelOverride = decision.model;
-    if (decision.effectiveSafetyProfile !== undefined) {
-      dispatchOpts.safetyProfile = decision.effectiveSafetyProfile;
-    }
-    {
-      const effectiveTimeoutMs = opts.timeoutMs ?? svc.timeoutMs;
-      if (effectiveTimeoutMs !== undefined) dispatchOpts.timeoutMs = effectiveTimeoutMs;
-      if (opts.signal) dispatchOpts.signal = opts.signal;
-    }
-    const result = await withWorkspacePolicy(
-      svc,
-      service,
-      decision.effectiveSafetyProfile,
-      decision.workspacePolicy,
-      workingDir,
-      files,
-      (effectiveWorkingDir, effectiveFiles) =>
-        this.dispatchers[service]!.dispatch(
-          prompt,
-          effectiveFiles,
-          effectiveWorkingDir,
-          dispatchOpts,
-        ),
-    );
-    this.handleResult(service, result, decision);
-    return { result, decision };
   }
 
   private handleResult(

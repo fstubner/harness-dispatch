@@ -8,6 +8,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The router had two implementations of every dispatch path, and its own
+  header said otherwise.** `route()`/`routeTo()` and `stream()`/`streamTo()`
+  were separate selection-and-fallback loops, with a second copy of the
+  workspace-policy wrapper beside them — about 250 lines that had to stay in
+  step and did not. The file's header claimed the buffered methods were
+  "reimplemented on top of the streaming primitives", which is what made the
+  drift invisible: the timeout rule ended up written four times, and only the
+  `route()` copy was covered by a test, while background jobs and every HTTP
+  request run on the streaming pair. The buffered methods now drain the same
+  loop. One thing is still chosen per entry point, and only one: whether the
+  dispatcher is asked through `dispatch()` or `stream()` — an endpoint route
+  keeps its non-streaming request, which sets `stream: false` on the wire, so
+  no live traffic changes shape. Behaviour is otherwise unchanged; 123 lines
+  are gone.
+
 - **An empty `HARNESS_DISPATCH_STATE_DIR` sent every state path to the
   current directory.** The lookup used `??`, which treats an empty string as
   a real value — and an empty value is what a launcher or shell produces
