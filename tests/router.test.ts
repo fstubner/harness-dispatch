@@ -1589,6 +1589,124 @@ describe("Router.route", () => {
   });
 });
 
+// The rule "a per-call timeoutMs hint beats the service's configured default"
+// is written out FOUR times in router.ts — once per entry point (route :1184,
+// routeTo :1070, stream :902, streamTo :1347) — and only the `route()` copy was
+// pinned. An audit mutation swapped the operands in the `stream()` copy and the
+// whole suite stayed green, which is the copy that matters: jobs.ts and the HTTP
+// server both dispatch through `stream`/`streamTo`, so every background job and
+// every HTTP call runs on the untested one.
+//
+// Table-driven on purpose. The point is not four more tests; it is that adding a
+// fifth entry point without a row here is visibly incomplete, and that a fix
+// applied to one copy cannot pass while the others still have the bug. Collapsing
+// the four implementations (the real fix) should collapse this table with them.
+describe("timeout precedence holds on every entry point, not just route()", () => {
+  let quota: QuotaCache;
+  let leaderboard: LeaderboardCache;
+
+  beforeEach(() => {
+    quota = new QuotaCache();
+    leaderboard = new LeaderboardCache();
+  });
+
+  /** Runs one entry point and reports the timeoutMs the dispatcher was handed. */
+  const ENTRY_POINTS: Array<{
+    name: string;
+    /** Streaming entry points need the stub that implements `stream`. */
+    streaming: boolean;
+    run: (router: Router, timeoutMs?: number) => Promise<void>;
+  }> = [
+    {
+      name: "route",
+      streaming: false,
+      run: async (router, timeoutMs) => {
+        await router.route("hi", [], "/tmp", timeoutMs === undefined ? {} : { hints: { timeoutMs } });
+      },
+    },
+    {
+      name: "routeTo",
+      streaming: false,
+      run: async (router, timeoutMs) => {
+        await router.routeTo("alpha", "hi", [], "/tmp", timeoutMs === undefined ? {} : { timeoutMs });
+      },
+    },
+    {
+      name: "stream",
+      streaming: true,
+      run: async (router, timeoutMs) => {
+        for await (const _ of router.stream(
+          "hi",
+          [],
+          "/tmp",
+          timeoutMs === undefined ? {} : { hints: { timeoutMs } },
+        )) {
+          // drain
+        }
+      },
+    },
+    {
+      name: "streamTo",
+      streaming: true,
+      run: async (router, timeoutMs) => {
+        for await (const _ of router.streamTo(
+          "alpha",
+          "hi",
+          [],
+          "/tmp",
+          timeoutMs === undefined ? {} : { timeoutMs },
+        )) {
+          // drain
+        }
+      },
+    },
+  ];
+
+  function build(entry: (typeof ENTRY_POINTS)[number], svcTimeoutMs?: number) {
+    const svc = makeService(
+      svcTimeoutMs === undefined
+        ? { name: "alpha", tier: 1 }
+        : { name: "alpha", tier: 1, timeoutMs: svcTimeoutMs },
+    );
+    const dispatcher = entry.streaming
+      ? new StreamStubDispatcher("alpha")
+      : new StubDispatcher("alpha");
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+    const seen = (): number | undefined =>
+      dispatcher instanceof StreamStubDispatcher
+        ? dispatcher.lastOpts?.timeoutMs
+        : dispatcher.calls[0]?.timeoutMs;
+    return { router, seen };
+  }
+
+  it.each(ENTRY_POINTS.map((e) => [e.name, e] as const))(
+    "%s prefers a per-call hint over the service's configured default",
+    async (_name, entry) => {
+      const { router, seen } = build(entry, 900_000);
+      await entry.run(router, 1_800_000);
+      expect(seen(), "the service's 900s default won over the caller's 1800s hint").toBe(1_800_000);
+    },
+  );
+
+  it.each(ENTRY_POINTS.map((e) => [e.name, e] as const))(
+    "%s falls back to the service's configured default when no hint is given",
+    async (_name, entry) => {
+      const { router, seen } = build(entry, 900_000);
+      await entry.run(router);
+      expect(seen()).toBe(900_000);
+    },
+  );
+
+  it.each(ENTRY_POINTS.map((e) => [e.name, e] as const))(
+    "%s leaves timeoutMs unset when neither is given",
+    async (_name, entry) => {
+      const { router, seen } = build(entry);
+      await entry.run(router);
+      expect(seen()).toBeUndefined();
+    },
+  );
+});
+
 describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
   let quota: QuotaCache;
   let leaderboard: LeaderboardCache;
