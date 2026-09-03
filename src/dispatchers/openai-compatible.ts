@@ -197,7 +197,7 @@ type ParsedResponse = ChatCompletionResponse | AnthropicMessageResponse;
  * same way the rest of the output redacts it, so this stays safe to paste into
  * a bug report.
  */
-function describeFetchFailure(err: unknown, baseUrl: string): string {
+function describeFetchFailure(err: unknown, baseUrl: string, apiKey?: string): string {
   const message = err instanceof Error ? err.message : String(err);
   const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
   const code = cause?.code;
@@ -218,7 +218,7 @@ function describeFetchFailure(err: unknown, baseUrl: string): string {
   // this string reaches the terminal and `logs/dispatches.jsonl`. The hint is
   // scrubbed on the same grounds: it can be `cause.message`, which is equally
   // not ours.
-  const safe = (text: string): string => scrubEndpointSecrets(text, baseUrl);
+  const safe = (text: string): string => scrubEndpointSecrets(text, baseUrl, apiKey);
   return hint ? `${safe(message)} (${where}: ${safe(hint)})` : `${safe(message)} (${where})`;
 }
 
@@ -314,8 +314,19 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
    * of it, to the caller and into `logs/dispatches.jsonl`. An acceptance pass
    * reproduced both against the built artifact.
    *
-   * Every branch that puts endpoint-authored text into a result goes through
-   * here. Adding another that does not is the bug this exists to prevent.
+   * That sentence was first written as "every branch goes through here" while
+   * a fifth branch did not — the mid-stream SSE `error` event, where `#safe`
+   * had been applied to the fallback and not to the endpoint's own message.
+   * A verification pass caught it, which is twice now that a claim about this
+   * file has been wider than its code.
+   *
+   * So, enumerated rather than asserted. The branches that assign
+   * `DispatchResult.error` are: rate-limited (ours), `HTTP <status>` on both
+   * paths (scrubbed), the unusable-body describe on both paths (scrubbed),
+   * "No response body" (ours), the stream's thrown-error path (scrubbed), the
+   * mid-stream SSE error (scrubbed here), and the fetch-failure path, which
+   * scrubs inside `describeFetchFailure`. Anything added to that list that
+   * carries endpoint text belongs here too.
    */
   #safe(text: string): string {
     return scrubEndpointSecrets(text, this.baseUrl ?? "", this.apiKey);
@@ -613,7 +624,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
           success: false,
           error: aborted
             ? `Timed out after ${timeoutMs}ms`
-            : describeFetchFailure(err, this.baseUrl ?? ""),
+            : describeFetchFailure(err, this.baseUrl ?? "", this.apiKey),
           durationMs: Date.now() - start,
         },
       };
@@ -953,7 +964,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
             output,
             service: this.id,
             success: false,
-            error: streamError ?? this.#safe(describeUnusableBody(rawSeen)),
+            error: this.#safe(streamError ?? describeUnusableBody(rawSeen)),
             durationMs: Date.now() - start,
             rateLimitHeaders: responseHeaders,
           }
