@@ -19,13 +19,16 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { loadConfig } from "../src/config.js";
-import { buildStatus, buildUsage, renderStatusText } from "../src/status.js";
+import { buildStatus } from "../src/status.js";
 import { clearActiveSecrets, redact } from "../src/redaction.js";
+import { dispatchLogPath, logDispatch } from "../src/dispatch-log.js";
+import { writeJson } from "../src/jobs/store.js";
+import { jsonText } from "../src/mcp/tools.js";
 import type { RouterConfig } from "../src/types.js";
 
 /**
@@ -45,10 +48,8 @@ const SECRETS = {
   apiKeysBlockSecond: "APIKEYSTWO_dddddddddddddddd",
   urlPassword: "URLPW_eeeeeeeeeeeeeeee",
   urlQueryKey: "QUERYKEY_ffffffffffffffff",
-  urlPathKey: "PATHKEY_gggggggggggggggg",
 } as const;
 
-const ALL_SECRETS = Object.values(SECRETS);
 
 function writeConfig(dir: string): string {
   const file = path.join(dir, "config.yaml");
@@ -66,7 +67,7 @@ function writeConfig(dir: string): string {
       `    api_key: ${SECRETS.literalApiKey}`,
       "    tier: 1",
       "  - name: second_route",
-      `    base_url: https://user:${SECRETS.urlPassword}@second.example.invalid/v1/${SECRETS.urlPathKey}?key=${SECRETS.urlQueryKey}`,
+      `    base_url: https://user:${SECRETS.urlPassword}@second.example.invalid/v1/pk7d2f91ab34ce5077bd18e6a4?key=${SECRETS.urlQueryKey}`,
       "    api_key: ${TEST_SECRET_ENV_KEY}",
       "    model: test-model",
       "    tier: 2",
@@ -99,21 +100,17 @@ const status = (config: RouterConfig): Promise<unknown> =>
     leaderboardStub as never,
   );
 
-/** Every place text leaves this process, as a name and a way to produce it. */
-const SURFACES: Array<{ name: string; render: (config: RouterConfig) => Promise<unknown> }> = [
-  {
-    name: "status.json / GET /v1/status / harness-dispatch://status.json",
-    render: status,
-  },
-  {
-    name: "harness-dispatch://status (rendered text)",
-    render: async (config) => renderStatusText((await status(config)) as never),
-  },
-  {
-    name: "usage tool payload",
-    render: async (config) => buildUsage((await status(config)) as never),
-  },
-];
+/**
+ * A dispatch result carrying every planted credential, as a harness that
+ * echoed its own key would produce.
+ */
+const leakyResult = () => ({
+  output: `answer mentioning ${SECRETS.literalApiKey} inline`,
+  service: "second_route",
+  success: false,
+  error: `auth failed: ${SECRETS.urlPassword} ${SECRETS.urlQueryKey} ${SECRETS.envApiKey}`,
+  durationMs: 12,
+});
 
 describe("no configured secret reaches any output surface", () => {
   let dir: string;
@@ -131,45 +128,77 @@ describe("no configured secret reaches any output surface", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  function expectClean(text: string, where: string): void {
+    for (const [shape, value] of Object.entries(SECRETS)) {
+      expect(text, `${shape} leaked into ${where}`).not.toContain(value);
+    }
+  }
+
   it("knows about every planted credential shape", () => {
-    // If this fails, the sweep below is passing for the wrong reason — it
-    // cannot catch a secret the registry never knew about. Asserted through
-    // `redact` rather than `collectSecrets`, because the registry is the union
-    // of what the finished config exposes and what was seen while parsing it;
-    // a shape visible to only one of those is still covered.
+    // If this fails the sweep below is passing for the wrong reason: it cannot
+    // catch a secret the registry never knew about.
     for (const [shape, value] of Object.entries(SECRETS)) {
       expect(redact(value), `${shape} is not registered as a secret`).not.toContain(value);
     }
   });
 
-  for (const surface of SURFACES) {
-    it(`keeps every secret out of: ${surface.name}`, async () => {
-      const rendered = await surface.render(config);
-      const text = redact(
-        typeof rendered === "string" ? rendered : JSON.stringify(rendered, null, 2),
-      );
-      for (const [shape, value] of Object.entries(SECRETS)) {
-        expect(text, `${shape} leaked into ${surface.name}`).not.toContain(value);
-      }
-    });
-  }
+  // Each case below drives the REAL sink and asserts on what that sink
+  // actually emitted. The first version of this file called `redact()` on the
+  // rendered payload before asserting, so it could not fail for a sink that
+  // forgot to redact — an acceptance pass established that by reading, and
+  // found an unredacted SSE sink shipping under a green suite. Nothing here
+  // may call `redact` itself.
 
-  it("scrubs text no matter which code path built it", () => {
-    // The property the six rounds kept failing: it does not matter where the
-    // string came from. An error message nobody has written yet, quoting a
-    // credential in a shape nobody has anticipated, is still scrubbed.
-    for (const value of ALL_SECRETS) {
-      expect(redact(`totally novel message mentioning ${value} inline`)).not.toContain(value);
-      expect(redact(`{"nested":{"deep":"${value}"}}`)).not.toContain(value);
-      expect(redact(`${value}`)).not.toContain(value);
-    }
+  it("sink: MCP tool result", () => {
+    // Driven with a payload that DOES carry the credentials. Routed through a
+    // real tool handler the value never appears, so that version of this case
+    // passed with the sink sabotaged — proving nothing, which is the exact
+    // defect being corrected here.
+    const emitted = JSON.stringify(jsonText({ result: leakyResult() }));
+    expect(emitted, "nothing was serialised").toContain("second_route");
+    expectClean(emitted, "the MCP tool result");
+  });
+
+  it("sink: logs/dispatches.jsonl on disk", () => {
+    const before = existsSync(dispatchLogPath())
+      ? readFileSync(dispatchLogPath(), "utf8").length
+      : 0;
+    logDispatch("second_route", leakyResult() as never, undefined as never);
+    const written = readFileSync(dispatchLogPath(), "utf8").slice(before);
+    expect(written, "nothing was written, so this proved nothing").toContain("second_route");
+    expectClean(written, "logs/dispatches.jsonl");
+  });
+
+  it("sink: job JSON written to disk", async () => {
+    const file = path.join(dir, "result.json");
+    await writeJson(file, { result: leakyResult() });
+    const written = readFileSync(file, "utf8");
+    expect(written, "nothing was written").toContain("second_route");
+    expectClean(written, "a job JSON file");
+  });
+
+  it("sink: status payload", async () => {
+    expectClean(JSON.stringify(await status(config), null, 2), "the status payload");
+  });
+
+  it("warns about a credential in a base_url path instead of guessing", () => {
+    // Deliberately NOT redacted. A long path segment cannot be told from an
+    // Azure deployment name by inspection, and the length heuristic that tried
+    // made `gpt-4-turbo-preview` a redaction target — measured. Guessing wrong
+    // corrupts output, which is worse than the disclosure. So the config says
+    // so out loud and the user, who knows which it is, moves it to api_key.
+    const warnings = (config.configWarnings ?? []).join(" ");
+    expect(warnings).toContain("base_url's path contains a long opaque segment");
+    expect(warnings).toContain("second_route");
   });
 
   it("leaves ordinary text alone", () => {
-    // The cost of the guarantee must not be corrupted output. A real answer
-    // mentioning a route name, a host or a version must survive intact.
+    // The cost of the guarantee must not be corrupted output — a false
+    // positive silently mangles a harness's real answer, which is worse than
+    // the leak it prevents. An acceptance pass measured exactly that when the
+    // registry collected every ${VAR}, not only credential fields.
     const answer =
-      "The fix is in src/router.ts; run `npm run check`. Routes: first_route, second_route.";
+      "The fix is in src/router.ts; run `npm run check`. Model gpt-5.6-terra on first_route.";
     expect(redact(answer)).toBe(answer);
   });
 });

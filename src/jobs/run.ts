@@ -236,7 +236,10 @@ export async function runJob(
     await pendingBeat;
     const message = err instanceof Error ? err.message : String(err);
     try {
-      await writeFile(path.join(jobDir, "output", "stderr.log"), message, {
+      // The sibling of the success path 25 lines up, which redacts. Missing
+      // this one is the same one-branch-of-a-pair miss the chokepoint exists
+      // to make impossible, found in the very file the chokepoint edited.
+      await writeFile(path.join(jobDir, "output", "stderr.log"), redact(message), {
         encoding: "utf8",
         mode: 0o600,
       });

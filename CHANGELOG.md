@@ -73,10 +73,34 @@ pre-1.0, so minor versions can carry behaviour changes.
   preview was sanitised.
 
   The guarantee is pinned by a test that plants a credential of every shape a
-  config can hold and asserts none appears on any surface. It does not know
-  which code path built the string, which is why a new leaking branch fails it
-  without anyone having thought to write a test for that branch — and why it
-  would have caught all six earlier rounds at once.
+  config can hold, drives each sink for real, and asserts on what that sink
+  actually emitted. Removing the redaction from any one sink fails that sink's
+  case and no other.
+
+  The first version of that test did not do this. It called the redactor on the
+  rendered output before asserting, so it proved the redactor works on a string
+  — never in doubt — and could not fail for a sink that forgot to call it. An
+  acceptance pass established that by reading, and found an unredacted
+  server-sent-event path shipping under a green suite in the same breath. The
+  streamed and buffered forms of one request behaved differently: the same
+  credential was removed from the buffered response and returned verbatim in
+  the stream.
+
+- **The redaction registry no longer treats every `${VAR}` as a credential.**
+  It was keyed off the record of resolved environment references, which covers
+  every `${VAR}` in the file — and `${VAR}` is documented as legal in any
+  string value. So `model: ${MY_MODEL}` made that model name a process-wide
+  redaction target, and `status` reported `model=<redacted>`. A harness answer
+  mentioning it would have been mangled the same way, silently, which is worse
+  than the disclosure being guarded against: wrong work product delivered as if
+  it were right. Collection now reads the fields that hold credentials.
+
+  For the same reason, a long segment in a `base_url` path is no longer assumed
+  to be a secret — that guess made an Azure deployment name
+  (`.../deployments/gpt-4-turbo-preview`) a redaction target. A path segment
+  cannot be told from a credential by inspection, so the config now says so and
+  names the route, and the user moves it to `api_key:` where it is removable by
+  value.
 
 - **SECURITY: a CLI harness quoting its own api key had it passed through to
   the caller and into `logs/dispatches.jsonl`.** A CLI route is handed its

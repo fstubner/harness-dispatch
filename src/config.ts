@@ -821,6 +821,37 @@ export function resolveConfigPath(explicit?: string): string | undefined {
 }
 
 /**
+ * Warn when a base_url's PATH looks like it carries a credential.
+ *
+ * Redaction used to guess at this with a length threshold, which made an Azure
+ * deployment name (`.../deployments/gpt-4-turbo-preview`) a redaction target
+ * and would have mangled that name wherever it appeared. A path segment cannot
+ * be told from a credential by inspection, so this says so out loud rather
+ * than guessing: the user knows which it is, and moving it to `api_key:` makes
+ * it redactable everywhere by value.
+ */
+function warnCredentialInUrlPath(config: RouterConfig, warnings: string[]): void {
+  for (const svc of Object.values(config.services ?? {})) {
+    if (svc.baseUrl === undefined) continue;
+    let segments: string[];
+    try {
+      segments = new URL(svc.baseUrl).pathname.split("/");
+    } catch {
+      continue;
+    }
+    const suspicious = segments.find(
+      (seg) => seg.length >= 24 && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !seg.includes("."),
+    );
+    if (suspicious === undefined) continue;
+    warnings.push(
+      `${svc.name}: base_url's path contains a long opaque segment. If that is a ` +
+        `credential, move it to api_key: — a secret in the URL path cannot be told ` +
+        `from a deployment name, so it is NOT removed from logs or error messages.`,
+    );
+  }
+}
+
+/**
  * Load config, and register its secrets for output redaction.
  *
  * A thin wrapper on purpose. `loadConfigInner` has two return paths (legacy
@@ -835,8 +866,14 @@ export async function loadConfig(
   opts: LoadConfigOptions = {},
 ): Promise<RouterConfig> {
   const config = await loadConfigInner(path, opts);
-  setActiveSecrets(config);
-  return config;
+  const pathWarnings: string[] = [];
+  warnCredentialInUrlPath(config, pathWarnings);
+  const withWarnings =
+    pathWarnings.length > 0
+      ? { ...config, configWarnings: [...(config.configWarnings ?? []), ...pathWarnings] }
+      : config;
+  setActiveSecrets(withWarnings);
+  return withWarnings;
 }
 
 async function loadConfigInner(

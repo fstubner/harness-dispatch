@@ -48,35 +48,34 @@ export const REDACTED = "<redacted>";
 const MIN_SECRET_LENGTH = 8;
 
 /**
- * A URL path segment at least this long is treated as a credential.
+ * Query keys whose VALUE is a credential.
  *
- * Some providers put the token in the path (`/bot<TOKEN>/sendMessage`), and a
- * path segment cannot be told apart from a credential by inspection — which is
- * why `redactEndpointHost` preserves the path and a verification pass measured
- * a key leaking through it. Length is the one signal available: the documented
- * path components in this project's config are `v1`, `v1beta`, `openai`, `api`
- * and `gw`, none close to this bound.
- *
- * A false positive costs one redacted word in a diagnostic message. A false
- * negative costs a credential. This only affects text on its way out — never a
- * request that is actually sent — so the failure is always the cheap one.
+ * A name test, not a length test. The length heuristic this replaces treated
+ * any URL path segment of 16+ characters as a secret, which made an Azure
+ * deployment name (`.../deployments/gpt-4-turbo-preview`) a redaction target —
+ * measured by an acceptance pass. A credential in the path is a real shape,
+ * but it cannot be told from a deployment name by inspection, and guessing
+ * wrong corrupts output. `warnCredentialInUrlPath` in config.ts says so out
+ * loud instead, which is actionable where a silent guess is not.
  */
-const CREDENTIAL_PATH_SEGMENT_LENGTH = 16;
+const CREDENTIAL_QUERY_KEY = /^(api[_-]?key|key|token|access[_-]?token|auth|password|secret|sig|signature)$/i;
 
 /**
  * Every secret value reachable from a loaded config.
  *
- * `envRefs` is the richest source and the reason this can be thorough rather
- * than a list of fields someone remembered: it is keyed by the RESOLVED value
- * of every `${VAR}` in the config file, so it holds interpolated credentials
- * regardless of which key they were written under — including the top-level
- * `api_keys:` block, whose entries are keyed by ROUTE NAME and therefore match
- * no credential-looking key name at all. A pass measured every entry after the
- * first in that block leaking, precisely because the earlier fix matched key
- * names.
+ * Collected from fields that HOLD credentials, and deliberately not from
+ * `envRefs`. Keying off `envRefs` was the obvious shortcut — it records every
+ * `${VAR}` in the file by resolved value — and it was wrong in a way that
+ * mattered: `${VAR}` is documented as legal in any string value, so a config
+ * writing `model: ${MY_MODEL}` or `command: ${CODEX_BIN}` turned a model name
+ * and a file path into process-wide redaction targets. An acceptance pass
+ * measured `model=<redacted>` in `status` output, and a harness answer
+ * mentioning that model would have been mangled the same way, silently.
  *
- * Literal (non-`${VAR}`) values are not in `envRefs`, so per-route fields are
- * collected too.
+ * That failure is worse than the leak this guards against: a corrupted answer
+ * is wrong work product delivered as if it were right. A `${VAR}` in a
+ * credential field still resolves into `apiKey` before this runs, so nothing
+ * real is lost by dropping the shortcut.
  */
 export function collectSecrets(config: RouterConfig | undefined): string[] {
   const out = new Set<string>();
@@ -88,8 +87,6 @@ export function collectSecrets(config: RouterConfig | undefined): string[] {
     if (trimmed.length >= MIN_SECRET_LENGTH) out.add(trimmed);
   };
 
-  for (const resolved of config.envRefs?.keys() ?? []) add(resolved);
-
   for (const svc of Object.values(config.services ?? {})) {
     add(svc.apiKey);
     if (svc.baseUrl === undefined) continue;
@@ -97,14 +94,16 @@ export function collectSecrets(config: RouterConfig | undefined): string[] {
       const url = new URL(svc.baseUrl);
       add(url.password);
       add(url.username);
-      for (const value of url.searchParams.values()) add(value);
-      for (const segment of url.pathname.split("/")) {
-        if (segment.length >= CREDENTIAL_PATH_SEGMENT_LENGTH) add(segment);
+      // Only query values under a credential-looking KEY. Taking every value
+      // meant `?model=gemini-2.5-flash` made that model name a redaction
+      // target — measured. A query string carries ordinary parameters too.
+      for (const [key, value] of url.searchParams.entries()) {
+        if (CREDENTIAL_QUERY_KEY.test(key)) add(value);
       }
     } catch {
-      // An unparseable base_url has no parts to take apart. Any credential
-      // written into it is still caught if it also appears as an api_key or a
-      // ${VAR}, which is how it is normally configured.
+      // An unparseable base_url has no parts to take apart. A credential
+      // written into one is still caught if it also appears as an api_key,
+      // which is how it is normally configured.
     }
   }
 
@@ -117,8 +116,15 @@ export function collectSecrets(config: RouterConfig | undefined): string[] {
 export function scrubSecrets(text: string, secrets: readonly string[]): string {
   let out = text;
   for (const secret of secrets) {
-    if (!out.includes(secret)) continue;
-    out = out.split(secret).join(REDACTED);
+    if (out.includes(secret)) out = out.split(secret).join(REDACTED);
+    // Redaction runs AFTER JSON.stringify at most sinks, so a secret holding a
+    // character JSON escapes — a quote, or the backslashes in a Windows path —
+    // is no longer present in its raw form and survived. Measured with a key
+    // containing a double quote.
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    if (escaped !== secret && out.includes(escaped)) {
+      out = out.split(escaped).join(REDACTED);
+    }
   }
   return out;
 }

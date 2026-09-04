@@ -19,10 +19,16 @@
  */
 
 import { resolveConfigPath } from "./config.js";
+import { installOutputRedaction } from "./redaction.js";
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
 import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
 
 async function main(): Promise<void> {
+  // This process writes its own stdout/stderr straight into
+  // .supervisors/spawn-<id>.log, which nothing ever deletes. Only bin.ts
+  // installed the patch, so a fatal handler or an unhandled stack trace
+  // here bypassed every sink the chokepoint covers.
+  installOutputRedaction();
   const arg = process.argv[2];
   if (!arg) {
     console.error("usage: job-runner <jobDir> | job-runner --supervisor");

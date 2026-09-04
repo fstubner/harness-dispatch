@@ -514,8 +514,13 @@ function sseStop(): Record<string, unknown> {
   return { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
 }
 
+// Sink. An SSE frame IS an HTTP response, and this was the one HTTP egress
+// path without redaction while `sendJson` two functions above had it — so
+// the same request leaked with `stream: true` and was clean with
+// `stream: false`. Six call sites feed this: answer chunks, the fanout row
+// dump, and four error frames.
 function writeSse(res: ServerResponse, payload: unknown): void {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  res.write(`data: ${redact(JSON.stringify(payload))}\n\n`);
 }
 
 export async function startHttpServer(opts: StartHttpOptions = {}): Promise<HttpServerHandle> {

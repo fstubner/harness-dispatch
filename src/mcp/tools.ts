@@ -213,7 +213,13 @@ function safeEndpointText(
   return scrubEndpointSecrets(text, svc.baseUrl ?? "", svc.apiKey);
 }
 
-function jsonText(value: unknown): CallToolResult {
+/**
+ * Serialize a tool result. Exported so the egress sweep can drive this sink
+ * directly: routing a secret through a real tool handler is not possible
+ * without a live dispatcher, and a test that cannot fail when the sink stops
+ * redacting is the defect that let an unredacted sink ship green.
+ */
+export function jsonText(value: unknown): CallToolResult {
   return {
     // Sink: a tool result goes straight into the calling agent's context.
     content: [{ type: "text", text: redact(JSON.stringify(value, null, 2)) }],

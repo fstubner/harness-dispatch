@@ -46,7 +46,10 @@ async function startFakeOpenAi(): Promise<{ port: number; close(): Promise<void>
   };
 }
 
-async function writeConfig(baseUrl: string, opts: { includePaidRoute?: boolean } = {}): Promise<string> {
+async function writeConfig(
+  baseUrl: string,
+  opts: { includePaidRoute?: boolean; apiKey?: string } = {},
+): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-http-"));
   const file = path.join(dir, "config.yaml");
   const paidRoute = opts.includePaidRoute
@@ -81,6 +84,7 @@ async function writeConfig(baseUrl: string, opts: { includePaidRoute?: boolean }
       "    type: openai_compatible",
       `    base_url: ${baseUrl}`,
       "    model: local-test",
+      ...(opts.apiKey === undefined ? [] : [`    api_key: ${opts.apiKey}`]),
       "    provider: local",
       "    surface: local_endpoint",
       "    auth_source: local_network",
@@ -103,6 +107,50 @@ async function writeConfig(baseUrl: string, opts: { includePaidRoute?: boolean }
     "utf-8",
   );
   return file;
+}
+
+/**
+ * A fake upstream that echoes the prompt back as its answer.
+ *
+ * The plain fake returns fixed text, so a secret planted in the request never
+ * appears in the response and a leak test against it cannot fail — measured:
+ * removing SSE redaction left the suite green. An endpoint quoting the request
+ * back is the realistic shape (an auth error naming the key it rejected), and
+ * it is the only shape that puts a credential on the response path.
+ */
+async function startEchoingOpenAi(): Promise<{ port: number; close(): Promise<void> }> {
+  const server: Server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as {
+      stream?: boolean;
+      messages?: Array<{ content?: string }>;
+    };
+    const echoed = body.messages?.map((m) => m.content ?? "").join(" ") ?? "";
+    if (body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: echoed } }] })}\n\n`,
+      );
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { role: "assistant", content: echoed } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2 },
+      }),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const addr = server.address();
+  if (!addr || typeof addr !== "object") throw new Error("fake server failed to bind");
+  return {
+    port: addr.port,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
 }
 
 /** A 200 that carries nothing usable, so the route fails and the router falls on. */
@@ -925,4 +973,50 @@ describe("fanout with no eligible route", () => {
     expect(res.status).toBe(400);
     expect(res.body).toMatch(/No fanout route can run this request/);
   });
+});
+
+describe("credentials never reach an HTTP response", () => {
+  // An SSE frame IS an HTTP response, and `writeSse` was the one egress path
+  // without redaction while `sendJson` beside it had it — so the SAME request
+  // leaked with `stream: true` and was clean with `stream: false`. Reproduced
+  // by an acceptance pass against the built artifact.
+  //
+  // Driven through the real server and a real request, because that is the
+  // only shape that can catch this: the unit-level sweep had no way to reach a
+  // frame writer six call sites deep in a route handler.
+  const PLANTED = "HTTPKEY_zzzzzzzzzzzzzzzz";
+  const localFakes: Array<{ close(): Promise<void> }> = [];
+  const localHandles: Array<{ close(): Promise<void> }> = [];
+
+  afterEach(async () => {
+    for (const h of localHandles.splice(0)) await h.close();
+    for (const f of localFakes.splice(0)) await f.close();
+  });
+
+  for (const stream of [false, true]) {
+    it(`${stream ? "streamed" : "buffered"} /v1/chat/completions carries no api_key`, async () => {
+      const fake = await startEchoingOpenAi();
+      localFakes.push(fake);
+      const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`, { apiKey: PLANTED });
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      localHandles.push(handle);
+
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer secret",
+        },
+        body: JSON.stringify({
+          model: "local-test",
+          stream,
+          messages: [{ role: "user", content: `echo ${PLANTED} back` }],
+        }),
+      });
+      const body = await res.text();
+      expect(body.length, "no body came back, so this proved nothing").toBeGreaterThan(0);
+      expect(body, `the api_key leaked in a ${stream ? "streamed" : "buffered"} response`).not.toContain(PLANTED);
+    });
+  }
 });
