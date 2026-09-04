@@ -15,6 +15,7 @@
 
 import { existsSync, promises as fs } from "node:fs";
 import { userConfigPath } from "./state-dir.js";
+import { registerSecretValue, setActiveSecrets } from "./redaction.js";
 import yaml from "js-yaml";
 import which from "which";
 
@@ -659,7 +660,14 @@ function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
 
   const rawApiKeys = (raw.api_keys ?? {}) as Record<string, unknown>;
   for (const [k, v] of Object.entries(rawApiKeys)) {
-    if (typeof v === "string" && v !== "") apiKeys[k] = v;
+    if (typeof v === "string" && v !== "") {
+      apiKeys[k] = v;
+      // Registered here and not from the finished config: an entry overridden
+      // by an inline `api_key:`, or naming no route, never reaches a service
+      // and would otherwise be invisible to redaction while still sitting in
+      // the file. That is the entry a pass measured leaking.
+      registerSecretValue(v);
+    }
   }
 
   // Shorthand: codex_cli_api_key, cursor_cli_api_key, etc. — keyed by the
@@ -667,7 +675,10 @@ function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
   for (const name of Object.values(AUTO_DETECT_NAME)) {
     const shorthand = `${name}_api_key`;
     const v = raw[shorthand];
-    if (typeof v === "string" && v !== "") apiKeys[name] = v;
+    if (typeof v === "string" && v !== "") {
+      apiKeys[name] = v;
+      registerSecretValue(v);
+    }
   }
   return apiKeys;
 }
@@ -809,7 +820,26 @@ export function resolveConfigPath(explicit?: string): string | undefined {
   return existsSync(user) ? user : undefined;
 }
 
+/**
+ * Load config, and register its secrets for output redaction.
+ *
+ * A thin wrapper on purpose. `loadConfigInner` has two return paths (legacy
+ * `services:` and the modern `clis:`/`endpoints:` shape) and gained a third
+ * once before; registering inside it would be two or three sites to keep in
+ * step. Registering here means every caller — the CLI, the MCP server, the
+ * hot reloader, the detached job runner — gets it by loading config at all,
+ * with nothing to remember. See src/redaction.ts for why that matters.
+ */
 export async function loadConfig(
+  path?: string,
+  opts: LoadConfigOptions = {},
+): Promise<RouterConfig> {
+  const config = await loadConfigInner(path, opts);
+  setActiveSecrets(config);
+  return config;
+}
+
+async function loadConfigInner(
   path?: string,
   opts: LoadConfigOptions = {},
 ): Promise<RouterConfig> {

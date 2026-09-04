@@ -18,6 +18,7 @@
  */
 
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { redact } from "./redaction.js";
 import path from "node:path";
 
 import type { DispatchResult, RoutingDecision } from "./types.js";
@@ -113,7 +114,8 @@ export function logDispatch(
     } catch {
       // File doesn't exist yet (or rotation raced another process) — fine.
     }
-    const line = JSON.stringify(buildDispatchLogEntry(route, result, decision)) + "\n";
+    // Sink: this file is read by people and pasted into issues.
+    const line = redact(JSON.stringify(buildDispatchLogEntry(route, result, decision))) + "\n";
     appendFileSync(file, line, { encoding: "utf8", mode: 0o600 });
   } catch (err) {
     if (!warnedOnce) {

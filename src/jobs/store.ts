@@ -13,6 +13,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { redact } from "../redaction.js";
 import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -207,7 +208,8 @@ export function safeBaseName(filePath: string): string {
 
 export async function writeJson(filePath: string, value: unknown): Promise<void> {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  // Sink: every job JSON on disk — status.json, result.json, manifest.json.
+  await writeFile(tmpPath, `${redact(JSON.stringify(value, null, 2))}\n`, { encoding: "utf8", mode: 0o600 });
   await renameWithRetry(tmpPath, filePath);
 }
 

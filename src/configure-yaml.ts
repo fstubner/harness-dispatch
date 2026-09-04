@@ -67,6 +67,45 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
 }
 
 /**
+ * A base_url safe to print, with the same rules the api_key gets.
+ *
+ * `--print` redacted the api_key, printed a note saying the preview was
+ * sanitised, and emitted the base_url verbatim two lines above it — so a URL
+ * carrying `user:password@` or `?key=` disclosed the credential in exactly the
+ * output this file's own header calls "the form people paste into bug
+ * reports". Reproduced against the built binary by a verification pass.
+ *
+ * An `${VAR}`-written base_url comes back as its reference, as the api_key
+ * does. A literal one keeps everything diagnostic — scheme, host, port, path —
+ * and loses only the credential-bearing parts, so the preview still tells the
+ * reader which endpoint a route points at.
+ */
+function baseUrlForYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: YamlOpts,
+): string | undefined {
+  const raw = svc.baseUrl;
+  if (raw === undefined || raw === "") return raw;
+  const ref = config.envRefs?.get(raw);
+  if (ref !== undefined) return ref;
+  if (!opts.redactLiterals) return raw;
+  try {
+    const url = new URL(raw);
+    if (url.password !== "") url.password = "REDACTED";
+    if (url.username !== "") url.username = "REDACTED";
+    for (const key of [...url.searchParams.keys()]) {
+      url.searchParams.set(key, "REDACTED");
+    }
+    return url.toString();
+  } catch {
+    // Unparseable: nothing can be taken apart with confidence, and echoing it
+    // whole is what this function exists to stop.
+    return "<unparseable base_url, redacted>";
+  }
+}
+
+/**
  * Render a route's api_key WITHOUT materialising the secret.
  *
  * `svc.apiKey` is the RESOLVED value — config.ts interpolates `${VAR}` at
@@ -158,7 +197,7 @@ function endpointEntryToYaml(
 ): Record<string, unknown> {
   return {
     name: svc.name,
-    base_url: svc.baseUrl,
+    base_url: baseUrlForYaml(svc, config, opts),
     api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
     // Endpoints have no shipped preset behind them, so an omitted billing
