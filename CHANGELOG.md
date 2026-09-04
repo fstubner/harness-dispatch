@@ -49,6 +49,26 @@ pre-1.0, so minor versions can carry behaviour changes.
   and it would change every buffered endpoint request against a third-party
   gateway.
 
+- **SECURITY: a CLI harness quoting its own api key had it passed through to
+  the caller and into `logs/dispatches.jsonl`.** A CLI route is handed its
+  credential in an environment variable, and a harness reporting an auth
+  failure can print it back; nothing removed it. Reproduced end to end with a
+  stub harness writing `auth error: rejected key <key>` to stderr — it arrived
+  verbatim in the terminal and in the log.
+
+  Reaching it needs `api_key:` on a CLI route, which reclassifies the route as
+  metered and is then blocked by billing policy until the user explicitly opts
+  in — so it is narrower than the endpoint leaks beside it, and it is the same
+  disclosure once opted in.
+
+  The scrub wraps the dispatcher's whole event stream rather than each result
+  site. That is the point of it: this class has now been found five times, and
+  four were a fix landing in one branch while the sibling beside it kept
+  leaking. `#runStream` has five result sites plus the chunk events, and a
+  sixth added later would silently miss a per-site scrub. Chunks are scrubbed
+  too, since they become `partialOutput` and `stdout.log` on disk. A route with
+  no key — every subscription CLI — is untouched and pays nothing.
+
 - **SECURITY: an endpoint that echoed your API key back in its error body
   had it passed straight through to the caller and into
   `logs/dispatches.jsonl`.** Both request paths build `HTTP <status>:
