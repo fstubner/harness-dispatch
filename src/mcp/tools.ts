@@ -20,6 +20,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { redact } from "../redaction.js";
 import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
@@ -214,7 +215,8 @@ function safeEndpointText(
 
 function jsonText(value: unknown): CallToolResult {
   return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    // Sink: a tool result goes straight into the calling agent's context.
+    content: [{ type: "text", text: redact(JSON.stringify(value, null, 2)) }],
   };
 }
 

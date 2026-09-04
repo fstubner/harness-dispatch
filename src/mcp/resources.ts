@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { redact } from "../redaction.js";
 
 import { buildStatus, renderStatusText } from "../status.js";
 import type { ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
@@ -40,7 +41,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
           {
             uri: "harness-dispatch://status",
             mimeType: "text/plain",
-            text: renderStatusText(status),
+            text: redact(renderStatusText(status)),
           },
         ],
       };
@@ -62,7 +63,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
           {
             uri: "harness-dispatch://status.json",
             mimeType: "application/json",
-            text: JSON.stringify(status, null, 2),
+            text: redact(JSON.stringify(status, null, 2)),
           },
         ],
       };

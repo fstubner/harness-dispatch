@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { redact } from "../redaction.js";
 import { createServer, type IncomingMessage, type Server as NodeHttpServer, type ServerResponse } from "node:http";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -50,7 +51,8 @@ export interface StartHttpOptions extends BuildMcpOptions {
 
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
-  const text = JSON.stringify(body, null, 2);
+  // Sink: every JSON response leaves over the wire.
+  const text = redact(JSON.stringify(body, null, 2));
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(text),

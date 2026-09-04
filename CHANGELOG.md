@@ -49,6 +49,35 @@ pre-1.0, so minor versions can carry behaviour changes.
   and it would change every buffered endpoint request against a third-party
   gateway.
 
+- **SECURITY, structural: configured credentials are removed where text leaves
+  the process, instead of at each place a message is built.** Six consecutive
+  reviews found the same defect — a credential reaching a caller, a log file or
+  an agent's context — and six fixes closed the path that reviewer had found.
+  Each fix was correct and each was incomplete: four of the six were "the fix
+  landed in one branch and the sibling beside it kept leaking", twice inside a
+  single file, and one round shipped a comment asserting every branch was
+  covered while one was not.
+
+  Sites were the wrong unit. There is no bounded list of places a string can be
+  built, and ordinary feature work adds more without their author having any
+  reason to think about credentials. The set of ways text LEAVES is bounded:
+  JSON for a tool result or an HTTP response, the dispatch log, job files on
+  disk, and the terminal. Those are now the places redaction happens, and the
+  secrets are derived from the loaded config rather than named per call site —
+  including the `api_keys:` block, whose entries are keyed by route name and so
+  matched no credential-looking key name, and a credential embedded in a
+  `base_url` path, which host redaction preserves by design.
+
+  Also fixed with it: `configure --print` emitted `base_url` in full while
+  redacting the api_key two lines below and printing a note implying the whole
+  preview was sanitised.
+
+  The guarantee is pinned by a test that plants a credential of every shape a
+  config can hold and asserts none appears on any surface. It does not know
+  which code path built the string, which is why a new leaking branch fails it
+  without anyone having thought to write a test for that branch — and why it
+  would have caught all six earlier rounds at once.
+
 - **SECURITY: a CLI harness quoting its own api key had it passed through to
   the caller and into `logs/dispatches.jsonl`.** A CLI route is handed its
   credential in an environment variable, and a harness reporting an auth

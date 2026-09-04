@@ -4,6 +4,7 @@
  */
 
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { installOutputRedaction } from "./redaction.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,19 +135,39 @@ async function cmdConfigure(
     // literal key with no ${VAR} to restore is redacted rather than echoed.
     const preview = configToYaml(config, { redactLiterals: true });
     process.stdout.write(preview);
-    const redacted = Object.values(config.services).some(
+    const keyRedacted = Object.values(config.services).some(
       (svc) =>
         svc.apiKey !== undefined &&
         svc.apiKey !== "" &&
         config.envRefs?.get(svc.apiKey) === undefined &&
         config.apiKeyRefs?.get(svc.name) === undefined,
     );
-    if (redacted) {
+    // The note used to speak only for the api_key while the base_url beside it
+    // was printed whole, so a preview containing a URL password carried a
+    // sentence implying it had been sanitised. It now names what it did.
+    const urlRedacted = Object.values(config.services).some((svc) => {
+      if (svc.baseUrl === undefined || svc.baseUrl === "") return false;
+      if (config.envRefs?.get(svc.baseUrl) !== undefined) return false;
+      try {
+        const url = new URL(svc.baseUrl);
+        return (
+          url.password !== "" || url.username !== "" || [...url.searchParams.keys()].length > 0
+        );
+      } catch {
+        return true;
+      }
+    });
+    if (keyRedacted || urlRedacted) {
+      const what = [
+        keyRedacted ? "api_key values" : undefined,
+        urlRedacted ? "credential-bearing parts of base_url" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" and ");
       process.stderr.write(
-        "note: one or more api_key values are literals in the source config and were " +
-          "replaced with ${ENV_VAR} placeholders in this preview. Move them to " +
-          "environment variables — this output is not a drop-in replacement for that file " +
-          "until you do.\n",
+        `note: ${what} are literals in the source config and were redacted in this ` +
+          "preview. Move them to environment variables — this output is not a drop-in " +
+          "replacement for that file until you do.\n",
       );
     }
     return 0;
@@ -1142,6 +1163,9 @@ function serveOpts(values: { port?: unknown; host?: unknown }): { port?: number;
 }
 
 export async function main(argv: string[]): Promise<number> {
+  // Terminal output is a sink; see src/redaction.ts. Installed before any
+  // config is loaded, which is fine — the registry is consulted per write.
+  installOutputRedaction();
   const { values, positionals } = parseArgs({
     args: argv,
     options: {

@@ -7,6 +7,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { redact } from "../redaction.js";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -163,7 +164,7 @@ export async function runJob(
       }
       if (event.type === "stdout" || event.type === "stderr") {
         try {
-          await appendFile(partialPath, event.chunk, { encoding: "utf8", mode: 0o600 });
+          await appendFile(partialPath, redact(event.chunk), { encoding: "utf8", mode: 0o600 });
         } catch {
           // Progress mirroring is best-effort; the final result still lands.
         }
@@ -209,12 +210,12 @@ export async function runJob(
       result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
       decision: finalDecision,
     };
-    await writeFile(path.join(jobDir, "output", "stdout.log"), result.output, { encoding: "utf8", mode: 0o600 });
-    await writeFile(path.join(jobDir, "output", "stderr.log"), result.error ?? "", { encoding: "utf8", mode: 0o600 });
+    await writeFile(path.join(jobDir, "output", "stdout.log"), redact(result.output), { encoding: "utf8", mode: 0o600 });
+    await writeFile(path.join(jobDir, "output", "stderr.log"), redact(result.error ?? ""), { encoding: "utf8", mode: 0o600 });
     await writeJson(path.join(jobDir, "output", "result.json"), payload);
     await writeFile(
       path.join(jobDir, "output", "result.md"),
-      result.output || result.error || "",
+      redact(result.output || result.error || ""),
       { encoding: "utf8", mode: 0o600 },
     );
     await updateStatus(jobDir, {
