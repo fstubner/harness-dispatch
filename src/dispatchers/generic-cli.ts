@@ -26,6 +26,7 @@ import type {
 } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { streamSubprocess } from "./shared/stream-subprocess.js";
+import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
 import { commandAvailable } from "./shared/which-available.js";
 
@@ -735,7 +736,50 @@ export class GenericCliDispatcher extends BaseDispatcher {
     workingDir: string,
     opts: DispatchOpts = {},
   ): AsyncIterable<DispatcherEvent> {
-    return this.#runStream(prompt, files, workingDir, opts);
+    return this.#scrubbed(this.#runStream(prompt, files, workingDir, opts));
+  }
+
+  /**
+   * Remove this route's own api key from everything the child process said.
+   *
+   * A CLI harness is handed its credential in an environment variable, and a
+   * harness reporting an auth failure can quote it back — reproduced with a
+   * stub harness writing `auth error: rejected key <key>` to stderr, which
+   * arrived verbatim in the terminal AND in `logs/dispatches.jsonl`.
+   *
+   * Wrapped around the whole stream rather than applied at each result site,
+   * and that is the entire point. The same class of leak has now been found
+   * five times in this project, and four of those were "the fix landed in one
+   * branch and the sibling beside it kept leaking" — including twice inside a
+   * single file. `#runStream` has five separate result sites plus the chunk
+   * events, and a sixth added later would silently miss a per-site scrub. It
+   * cannot miss this one.
+   *
+   * Chunks are scrubbed too, not just completions: they become `partialOutput`
+   * and `stdout.log` on disk, which is the same disclosure a beat earlier.
+   *
+   * Costs nothing when the route has no key, which is every subscription CLI —
+   * `redactSecretValue` returns the input untouched for an undefined secret.
+   */
+  async *#scrubbed(inner: AsyncIterable<DispatcherEvent>): AsyncIterable<DispatcherEvent> {
+    if (this.apiKey === undefined || this.apiKey === "") {
+      yield* inner;
+      return;
+    }
+    const clean = (text: string): string => redactSecretValue(text, this.apiKey);
+    for await (const evt of inner) {
+      if (evt.type === "stdout" || evt.type === "stderr") {
+        yield { ...evt, chunk: clean(evt.chunk) };
+        continue;
+      }
+      if (evt.type === "completion") {
+        const result = { ...evt.result, output: clean(evt.result.output) };
+        if (result.error !== undefined) result.error = clean(result.error);
+        yield { ...evt, result };
+        continue;
+      }
+      yield evt;
+    }
   }
 
   async *#runStream(

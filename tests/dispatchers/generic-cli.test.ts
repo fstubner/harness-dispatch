@@ -441,6 +441,61 @@ describe("GenericCliDispatcher", () => {
     expect(args[idx + 1]).toBe("do it");
   });
 
+  it("scrubs the configured api key out of whatever the child printed", async () => {
+    // The harness is handed its credential in an env var, and a harness
+    // reporting an auth failure can quote it back. Reproduced end to end with
+    // a stub harness writing `auth error: rejected key <key>` to stderr: it
+    // arrived verbatim in the terminal and in logs/dispatches.jsonl.
+    //
+    // Both fields, because they are the pair that keeps getting half-fixed
+    // here — `output` is the work product and `error` is what the log writes.
+    mockFound();
+    const KEY = "CLIKEY_iiiiiiiiiiii";
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: `used ${KEY}`, stderr: `auth error: rejected key ${KEY}`, exitCode: 1 }),
+    );
+    const d = new GenericCliDispatcher(
+      svc(
+        { args: ["{{prompt}}"], apiKeyEnvVar: "MY_CLI_API_KEY", output: { mode: "text" } },
+        { apiKey: KEY },
+      ),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error ?? "").not.toContain(KEY);
+    expect(res.output).not.toContain(KEY);
+    expect(res.error ?? "").toContain("<redacted>");
+  });
+
+  it("scrubs the key from a SUCCESSFUL run's output too", async () => {
+    // The sibling branch. A run that exits 0 while having echoed the key is
+    // the same disclosure, and `output` on success is written to result.md.
+    mockFound();
+    const KEY = "CLIKEY_jjjjjjjjjjjj";
+    runSubprocessMock.mockResolvedValue(ok({ stdout: `done, key was ${KEY}` }));
+    const d = new GenericCliDispatcher(
+      svc(
+        { args: ["{{prompt}}"], apiKeyEnvVar: "MY_CLI_API_KEY", output: { mode: "text" } },
+        { apiKey: KEY },
+      ),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(true);
+    expect(res.output).not.toContain(KEY);
+  });
+
+  it("leaves output untouched when the route has no key", async () => {
+    // The common case is a subscription CLI with no api_key at all, and it
+    // must not pay for this or have its text altered.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "a perfectly ordinary answer" }));
+    const d = new GenericCliDispatcher(
+      svc({ args: ["{{prompt}}"], output: { mode: "text" } }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.output).toBe("a perfectly ordinary answer");
+  });
+
   it("injects the configured api key under apiKeyEnvVar", async () => {
     mockFound();
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));

@@ -84,6 +84,18 @@ export function redactEndpointHost(baseUrl: string): string {
 }
 
 /**
+ * Remove one secret from text by value.
+ *
+ * Split/join rather than a regex: a key can contain regex metacharacters, and
+ * building a pattern from a credential is how you get a ReDoS or a silent
+ * non-match on the one string that mattered.
+ */
+export function redactSecretValue(text: string, secret: string | undefined): string {
+  if (secret === undefined || secret.length === 0) return text;
+  return text.split(secret).join("<redacted>");
+}
+
+/**
  * Strip an endpoint's credential-bearing parts out of TEXT WE DID NOT WRITE.
  *
  * `redactEndpointHost` only cleans a URL a caller hands it. An exception
@@ -124,7 +136,7 @@ export function scrubEndpointSecrets(
   // sk-…") passed the key through untouched, to the terminal and into
   // `logs/dispatches.jsonl`. Found by an acceptance pass, reproduced against
   // the built artifact.
-  if (apiKey !== undefined) replaceAll(apiKey, "<redacted>");
+  out = redactSecretValue(out, apiKey);
   replaceAll(baseUrl, redactEndpointHost(baseUrl));
   try {
     const url = new URL(baseUrl);
