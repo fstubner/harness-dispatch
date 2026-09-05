@@ -30,6 +30,7 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { stateRoot } from "./state-dir.js";
@@ -276,4 +277,45 @@ export async function acquireWorkspaceLock(
     releaseLocal();
     if (inProcessLocks.get(key) === current) inProcessLocks.delete(key);
   };
+}
+
+/**
+ * Delete lock files whose holder is definitely gone.
+ *
+ * A dead lock IS reclaimed correctly — but only when something contends for
+ * that same working directory. Nothing contends for a path you dispatched
+ * against once and moved on from, so its file stays forever: one per distinct
+ * workspace, indefinitely. Found by a resource audit, which measured a
+ * seven-day-old lock still sitting there.
+ *
+ * Tiny individually (a couple of hundred bytes), and the point is the count
+ * rather than the size — this directory is walked when locks are examined, so
+ * an unbounded file count is a cost paid later.
+ *
+ * Deliberately reuses `isDead`, so a lock is swept under exactly the same rule
+ * that lets a waiter steal it. A second, looser rule here would be a way for
+ * this to delete a lock the acquire path still considers live.
+ */
+export async function pruneDeadWorkspaceLocks(): Promise<void> {
+  const dir = path.join(stateRoot(), "workspace-locks");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return; // No lock directory yet: nothing to sweep.
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const file = path.join(dir, entry);
+    try {
+      const record = readRecord(file);
+      // An unreadable record is not evidence of a live holder — `readRecord`
+      // returns undefined for a corrupt or half-written file, and the acquire
+      // path already treats that as absent.
+      if (record !== undefined && !isDead(record)) continue;
+      await rm(file, { force: true });
+    } catch {
+      // Vanished mid-sweep, or another process got there first.
+    }
+  }
 }

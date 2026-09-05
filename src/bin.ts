@@ -20,6 +20,7 @@ import { codexLoginState } from "./dispatchers/shared/harness-login.js";
 import { clientConfigLocations, inspectClientEntries } from "./mcp-clients.js";
 import { buildDispatchers } from "./mcp/dispatcher-factory.js";
 import { startMcpServer } from "./mcp/server.js";
+import { resolveRunnerPath } from "./jobs.js";
 import { initObservability } from "./observability/index.js";
 import { QuotaCache } from "./quota.js";
 import { Router } from "./router.js";
@@ -839,6 +840,25 @@ async function cmdDoctor(
       ...stateDirWritable(),
     },
     {
+      // Whether dispatches will actually be detached.
+      //
+      // `resolveRunnerPath()` returning undefined is not an error — it is the
+      // signal to run the job IN-PROCESS, which is right for an unbuilt
+      // checkout and wrong everywhere else: the concurrency cap is enforced by
+      // the supervisor pool, so in-process mode silently removes the bound
+      // that exists because of a measured OOM. It prints one line on stderr at
+      // dispatch time and nothing checked it, so "am I actually capped?" had
+      // no answer. An audit noticed; this is that answer.
+      name: "job-runner",
+      ok: resolveRunnerPath() !== undefined,
+      detail:
+        resolveRunnerPath() !== undefined
+          ? "found; jobs run detached and the concurrency cap applies"
+          : "dist/job-runner.js not found — jobs will run IN-PROCESS, which " +
+            "removes the max_concurrent_runs cap and does not survive a server " +
+            "restart. Run `npm run build`, or reinstall the package.",
+    },
+    {
       name: "http-auth",
       ok: true,
       detail: (await readHttpToken())
@@ -1391,8 +1411,18 @@ if (isThisFile(entrypoint)) {
       // reliable way to tell "bug" from "bad input" by class here. Only a
       // non-Error throw (a genuine programming error) keeps its stack.
       if (err instanceof UsageError || err instanceof Error) {
-        process.stderr.write(`harness-dispatch: ${err.message}
-`);
+        // `--json` is a promise about the SHAPE of this command's output, and
+        // it was kept only on the success path: a bad --config made
+        // `doctor --json` print a sentence, so anything parsing the output got
+        // a parse error instead of the reason. The message is the same; only
+        // the envelope follows what was asked for. Errors still go to stderr,
+        // so a caller reading stdout for results is unaffected either way.
+        const wantsJson = process.argv.slice(2).includes("--json");
+        process.stderr.write(
+          wantsJson
+            ? `${JSON.stringify({ ok: false, error: err.message }, null, 2)}\n`
+            : `harness-dispatch: ${err.message}\n`,
+        );
         process.exit(1);
       }
       throw err;
