@@ -63,8 +63,16 @@ found one.
 ```bash
 npm install -g harness-dispatch
 harness-dispatch configure --yes
-harness-dispatch doctor --live
+harness-dispatch doctor
 ```
+
+`doctor` checks your install, config, auth and routes without contacting any
+provider. Add `--live` when you want it to prove a dispatch really works end to
+end — that one sends a real request through an eligible route and spends
+whatever quota that route bills against, so it is a deliberate step rather than
+part of setup. `configure` is optional too: the tool auto-detects installed
+harnesses and runs without a `config.yaml` at all. Write one when you want to
+pin routes, add an endpoint, or change a default.
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
 tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)

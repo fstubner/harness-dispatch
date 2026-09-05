@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { promises as fs } from "node:fs";
+import { promises as fs, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -100,9 +100,37 @@ describe("dispatch log", () => {
     expect(entry.outputChars).toBeUndefined();
   });
 
-  it("never throws into the dispatch path when the log dir is unwritable", () => {
-    vi.stubEnv("HARNESS_DISPATCH_LOG_DIR", path.join(tmpDir, "nope\0bad"));
-    expect(() => logDispatch("r", result())).not.toThrow();
+  it("never throws into the dispatch path when the log dir is unwritable, and says so once", () => {
+    // `not.toThrow()` alone was the whole assertion, and an audit sabotaged
+    // its way past it: deleting the entire warning left this green. Not
+    // throwing is half the contract — the other half is that the user is told
+    // their dispatch log is silently not being written, which is the
+    // difference between a missing log and a missing log nobody knows about.
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // A directory path whose PARENT is a regular file, so mkdir fails with
+      // ENOTDIR on every platform.
+      //
+      // The previous setup passed a path containing a NUL byte, which reads
+      // as obviously invalid and is not: assigning it to `process.env`
+      // truncates the value AT the NUL, so the log dir became a perfectly
+      // writable directory and the write succeeded. The test's own premise
+      // never held, and `not.toThrow()` passed because nothing had gone
+      // wrong — a test green for the absence of the condition it names.
+      const blocker = path.join(tmpDir, "a-file-not-a-dir");
+      writeFileSync(blocker, "x", "utf8");
+      vi.stubEnv("HARNESS_DISPATCH_LOG_DIR", path.join(blocker, "logs"));
+      expect(() => logDispatch("r", result())).not.toThrow();
+      expect(warn, "the write failed and nothing told the user").toHaveBeenCalled();
+      expect(String(warn.mock.calls[0]?.[0] ?? "")).toContain("dispatch log write failed");
+      // Once, not once per dispatch: this runs on every result, and a warning
+      // per dispatch would bury the output it is warning about.
+      const before = warn.mock.calls.length;
+      logDispatch("r", result());
+      expect(warn.mock.calls.length, "the warning repeated").toBe(before);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it.skipIf(process.platform === "win32")(
