@@ -505,6 +505,21 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
 
 export function renderUsageText(usage: HarnessDispatchUsage): string {
   const lines: string[] = ["harness-dispatch usage", ""];
+  if (usage.routes.length === 0) {
+    // A bare header and nothing else reads as "this command is broken", which
+    // is the one thing it does not mean. Carried as an open item across three
+    // releases because it looked cosmetic; it is the first thing a user with
+    // no routes sees, and it told them nothing about why or what to do.
+    lines.push(
+      "No routes configured.",
+      "",
+      "Install a harness CLI (claude, codex, cursor-agent, agy) and it is picked",
+      "up automatically, or add an `endpoints:` entry to config.yaml — those need",
+      "no CLI. `harness-dispatch doctor` says which of the two applies here.",
+      "",
+    );
+    return lines.join("\n");
+  }
   for (const route of usage.routes) {
     const mark = route.available && route.enabled ? "ok" : "off";
     const quota =

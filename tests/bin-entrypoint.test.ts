@@ -52,3 +52,37 @@ describe("the built command runs when invoked through a link (as npm installs it
     },
   );
 });
+
+describe("--json is a promise about the shape of the output, including on failure", () => {
+  /**
+   * `--json` was honoured only on the success path. A bad `--config` made
+   * `doctor --json` print a sentence, so anything parsing the output got a
+   * parse error rather than the reason — carried as an open acceptance item
+   * across three releases because it reads as cosmetic. It is not: the whole
+   * point of the flag is that a program, not a person, is reading.
+   */
+  it.skipIf(!existsSync(bin))("reports a bad --config as JSON when --json is given", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "hd-json-err-"));
+    cleanup.push(dir);
+    // A directory, which is a real mistake people make and cannot be a config.
+    const err = await run(process.execPath, [bin, "doctor", "--json", "--config", dir]).catch(
+      (e: { stderr?: string; stdout?: string }) => e,
+    );
+    const text = String(err.stderr ?? "");
+    const parsed = JSON.parse(text) as { ok: boolean; error: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain("is a directory");
+  });
+
+  it.skipIf(!existsSync(bin))("still reports it as a plain line without --json", async () => {
+    // The default must not become JSON for a person reading a terminal.
+    const dir = mkdtempSync(path.join(tmpdir(), "hd-txt-err-"));
+    cleanup.push(dir);
+    const err = await run(process.execPath, [bin, "doctor", "--config", dir]).catch(
+      (e: { stderr?: string }) => e,
+    );
+    const text = String(err.stderr ?? "");
+    expect(text).toContain("harness-dispatch: ");
+    expect(() => JSON.parse(text)).toThrow();
+  });
+});

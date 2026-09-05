@@ -5,6 +5,7 @@
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
+import { pruneDeadWorkspaceLocks } from "../workspace-lock.js";
 import path from "node:path";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { buildContextPreamble } from "./context.js";
@@ -54,6 +55,12 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   if (configError !== undefined) throw new Error(configError);
 
   await pruneStaleJobs();
+  // Same maintenance moment, same reason: a lock whose holder is gone is only
+  // reclaimed when something contends for that exact directory, so a
+  // dispatched-once workspace leaves its file behind forever. Best effort, and
+  // deliberately not awaited-into-failure — a sweep must never block the job
+  // that was actually asked for.
+  await pruneDeadWorkspaceLocks().catch(() => undefined);
   const jobId = newJobId();
   const root = jobsRoot();
   const jobDir = path.join(root, jobId);

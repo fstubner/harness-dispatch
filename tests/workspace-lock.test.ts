@@ -259,3 +259,45 @@ function readdirSyncSafeName(workingDir: string): string {
   const { createHash } = require("node:crypto") as typeof import("node:crypto");
   return `${createHash("sha256").update(key).digest("hex").slice(0, 16)}.json`;
 }
+
+describe("pruneDeadWorkspaceLocks", () => {
+  /**
+   * A dead lock IS reclaimed — but only when something contends for that same
+   * working directory. Nothing contends for a path dispatched against once and
+   * left alone, so its file stayed forever: one per distinct workspace. A
+   * resource audit measured a seven-day-old lock still sitting there.
+   */
+  it("removes a lock whose holder is gone and keeps a live one", async () => {
+    const { pruneDeadWorkspaceLocks } = await import("../src/workspace-lock.js");
+    await fs.mkdir(lockDir(), { recursive: true });
+
+    const dead = path.join(lockDir(), "dead000000000000.json");
+    await fs.writeFile(
+      dead,
+      JSON.stringify({ pid: 0, key: "/gone", beatMs: Date.now() - 10 * 60_000 }),
+      "utf8",
+    );
+    // This process is alive and its beat is now, so it must survive.
+    const live = path.join(lockDir(), "live000000000000.json");
+    await fs.writeFile(
+      live,
+      JSON.stringify({ pid: process.pid, key: "/here", beatMs: Date.now() }),
+      "utf8",
+    );
+    // Unreadable: the acquire path already treats this as absent, so the
+    // sweep must not be more cautious than the rule that steals it.
+    const corrupt = path.join(lockDir(), "corrupt00000000.json");
+    await fs.writeFile(corrupt, "{not json", "utf8");
+
+    await pruneDeadWorkspaceLocks();
+
+    expect(existsSync(dead), "a dead lock was kept").toBe(false);
+    expect(existsSync(corrupt), "an unreadable lock was kept").toBe(false);
+    expect(existsSync(live), "a LIVE lock was deleted").toBe(true);
+  });
+
+  it("does nothing when there is no lock directory yet", async () => {
+    const { pruneDeadWorkspaceLocks } = await import("../src/workspace-lock.js");
+    await expect(pruneDeadWorkspaceLocks()).resolves.toBeUndefined();
+  });
+});

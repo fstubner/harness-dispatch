@@ -7,7 +7,7 @@
  * consumer imports from here, so the split is invisible outside src/jobs/.
  */
 
-export { executeJobDir, runJob } from "./jobs/run.js";
+export { executeJobDir, resolveRunnerPath, runJob } from "./jobs/run.js";
 export {
   activeCapacity,
   claimJobDir,

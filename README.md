@@ -77,23 +77,33 @@ pin routes, add an endpoint, or change a default.
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
 tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
 — unless a `config.yaml` already exists in the current directory or
-`HARNESS_DISPATCH_CONFIG` is set, in which case that file is the target — and then
-offers to register this server with each MCP client it finds (Claude Code,
-Cursor) — showing you what it would write, and what is already there, before
-changing anything. `--no-clients` skips the offer and prints a snippet to paste
-instead; `harness-dispatch connect` does the same registration later on its own,
-and `connect --remove` undoes it. Without
-`--yes` configure previews and writes nothing. Re-running it regenerates a file it
-wrote and you have not edited, so installing a harness later is just `configure --yes`
-again; a file you have changed is refused without `--force`, and because such a file
-lists its own routes, even `--force` regenerates it from the file rather than from a
-fresh detection (it says so; add `detect: true` to the file to merge new harnesses). `doctor` then checks the whole chain:
-binary, config load, harness detection, auth and billing classification, route
-readiness, and for a Codex route asks `codex login status` whether the CLI is
-logged in (the other harnesses have no equivalent this tool has verified, so
-their login state is not checked). `--live` goes further and routes one tiny real prompt, so you see a
-completion before wiring anything into your agent. The live probe never touches paid or
-unknown-billing routes unless you pass `--allow-paid`.
+`HARNESS_DISPATCH_CONFIG` is set, in which case that file is the target.
+
+Without `--yes` it previews and writes nothing.
+
+**Registering with your MCP clients.** After writing, `configure` offers to
+register this server with each client it finds (Claude Code, Cursor), showing
+what it would write and what is already there before changing anything.
+`--no-clients` skips the offer and prints a snippet to paste instead.
+`harness-dispatch connect` does the same registration later on its own, and
+`connect --remove` undoes it.
+
+**Re-running it.** A file `configure` wrote and you have not edited is
+regenerated, so installing a harness later is just `configure --yes` again. A
+file you have changed is refused without `--force` — and because such a file
+lists its own routes, even `--force` regenerates it from the file rather than
+from a fresh detection. It says so when that happens; add `detect: true` to the
+file to merge newly installed harnesses in.
+
+**What `doctor` checks.** The whole chain: binary, config load, harness
+detection, auth and billing classification, route readiness, whether
+`dist/job-runner.js` is present (without it jobs run in-process and the
+concurrency cap does not apply), and for a Codex route it asks `codex login
+status` whether the CLI is logged in. The other harnesses have no equivalent
+this tool has verified, so their login state is not checked. `--live` goes
+further and routes one tiny real prompt through an eligible route, so you see a
+completion before wiring anything into your agent — that one spends quota, and
+it never touches paid or unknown-billing routes unless you pass `--allow-paid`.
 
 Your Claude Code / Codex / Cursor subscriptions run by default with no opt-in;
 `configure` tells you if anything is blocked and why.
