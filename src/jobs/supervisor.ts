@@ -12,7 +12,7 @@ import { executeJobDir, resolveRunnerPath } from "./run.js";
 import { listAsyncJobs } from "./read.js";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { ConfigHotReloader } from "../mcp/config-hot-reload.js";
@@ -549,6 +549,38 @@ async function drainSlotQueueLocked(
 }
 
 /**
+ * Delete a spawn log that recorded nothing.
+ *
+ * These are kept on purpose — see the sweep below — because a supervisor that
+ * died is exactly the one that left a stale heartbeat, and its bootstrap
+ * output is the only explanation of why. That reasoning covers a log with
+ * something IN it. It does not cover an empty one, which explains nothing and
+ * is what a supervisor that started and exited cleanly leaves behind.
+ *
+ * Measured on the maintainer's own machine before this: 129 spawn logs going
+ * back three weeks, zero live heartbeats, 780 bytes between them — an average
+ * of six bytes each. Two independent audits flagged the directory as growing
+ * without bound. The sweep reads this directory on every drain, which is the
+ * same permanent per-dispatch cost the heartbeat cleanup below was added to
+ * stop paying.
+ *
+ * Only past the staleness threshold, so a live supervisor that has not yet
+ * written anything keeps its log.
+ */
+async function dropEmptySpawnLog(dir: string, entry: string): Promise<void> {
+  if (!entry.startsWith("spawn-") || !entry.endsWith(".log")) return;
+  try {
+    const info = await stat(path.join(dir, entry));
+    if (info.size > 0) return;
+    if (Date.now() - info.mtimeMs <= ORPHAN_THRESHOLD_MS) return;
+    await rm(path.join(dir, entry), { force: true });
+  } catch {
+    // Vanished mid-sweep, or another drain got there first. Either way it is
+    // gone, which is the outcome this wanted.
+  }
+}
+
+/**
  * Supervisors currently alive, counted from their heartbeat files.
  *
  * Approximate on purpose: over-counting briefly means the pool runs one short
@@ -573,7 +605,10 @@ async function countLiveSupervisors(): Promise<number> {
     // delete the diagnostic for the failure it was cleaning up after.
     // Counting was already ignoring them only by accident: a log body does
     // not Date.parse, so it read as not-live.
-    if (!entry.endsWith(".txt")) continue;
+    if (!entry.endsWith(".txt")) {
+      await dropEmptySpawnLog(dir, entry);
+      continue;
+    }
     try {
       const beat = await readFile(path.join(dir, entry), "utf8");
       if (Date.now() - Date.parse(beat) <= ORPHAN_THRESHOLD_MS) {

@@ -327,4 +327,39 @@ describe("dead supervisor heartbeats are cleaned up", () => {
     expect(existsSync(path.join(dir, "spawn-9991.log"))).toBe(true);
     expect(existsSync(path.join(dir, "9992.txt"))).toBe(true);
   });
+
+  /**
+   * The other half of that rule. Keeping a crash log is right because it
+   * explains a death; keeping an EMPTY one explains nothing, and that is what
+   * a supervisor which started and exited cleanly leaves behind.
+   *
+   * Measured before this existed: 129 spawn logs on the maintainer's machine
+   * going back three weeks, zero live heartbeats, 780 bytes between them — six
+   * bytes each. Two independent audits flagged the directory as growing
+   * without bound, and the liveness check reads it on every drain, which is
+   * the same permanent per-dispatch cost the heartbeat cleanup above removed.
+   */
+  it("drops an empty spawn log once it is stale, and keeps a fresh one", async () => {
+    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const dir = path.join(jobsDir, ".supervisors");
+    await fs.mkdir(dir, { recursive: true });
+
+    const old = path.join(dir, "spawn-8881.log");
+    await fs.writeFile(old, "", "utf8");
+    const past = new Date(Date.now() - 10 * 60_000);
+    await fs.utimes(old, past, past);
+
+    // Empty but recent: a live supervisor that has not written yet.
+    await fs.writeFile(path.join(dir, "spawn-8882.log"), "", "utf8");
+    // Stale but NOT empty: the diagnostic the sweep above exists to protect.
+    const kept = path.join(dir, "spawn-8883.log");
+    await fs.writeFile(kept, "Error: bad config\n", "utf8");
+    await fs.utimes(kept, past, past);
+
+    await countLiveSupervisorsForTest();
+
+    expect(existsSync(old), "a stale empty log was kept").toBe(false);
+    expect(existsSync(path.join(dir, "spawn-8882.log")), "a fresh log was deleted").toBe(true);
+    expect(existsSync(kept), "a crash log with a reason in it was deleted").toBe(true);
+  });
 });
