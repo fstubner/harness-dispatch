@@ -839,9 +839,17 @@ function warnCredentialInUrlPath(config: RouterConfig, warnings: string[]): void
     } catch {
       continue;
     }
-    const suspicious = segments.find(
-      (seg) => seg.length >= 24 && /[0-9]/.test(seg) && /[A-Za-z]/.test(seg) && !seg.includes("."),
-    );
+    // Two shapes the first version of this test exempted, both real: the
+    // `!includes(".")` filter skipped every JWT (`eyJ….eyJ….sig`), and
+    // requiring a digit skipped an all-alphabetic token. Neither got a
+    // warning or redaction, which is the worst of both.
+    const suspicious = segments.find((seg) => {
+      if (seg.length < 24) return false;
+      if (/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(seg)) return true;
+      // A dotted segment is otherwise a filename or a version, not a secret.
+      if (seg.includes(".")) return false;
+      return /^[A-Za-z0-9_:-]+$/.test(seg) && !/[_-]/.test(seg.slice(0, 8));
+    });
     if (suspicious === undefined) continue;
     warnings.push(
       `${svc.name}: base_url's path contains a long opaque segment. If that is a ` +

@@ -72,10 +72,19 @@ pre-1.0, so minor versions can carry behaviour changes.
   redacting the api_key two lines below and printing a note implying the whole
   preview was sanitised.
 
-  The guarantee is pinned by a test that plants a credential of every shape a
-  config can hold, drives each sink for real, and asserts on what that sink
-  actually emitted. Removing the redaction from any one sink fails that sink's
-  case and no other.
+  The guarantee is pinned two ways, because one of them does not reach far
+  enough and saying otherwise was itself an overclaim. Four sinks are proven
+  behaviourally: a credential of every shape a config can hold is planted, the
+  sink is driven for real, and removing its redaction fails that sink's case
+  and no other. The remaining eight have no reachable input that carries a
+  credential today — something upstream already removed it — so a behavioural
+  case for them could not fail, and inventing one would be a test passing for
+  the wrong reason. They are covered instead by an inventory that fails if the
+  redaction call disappears, which is the real risk for a guard.
+
+  An earlier version of this entry claimed all of them were proven
+  behaviourally. A verification pass sabotaged all nine call sites one at a
+  time and found five shipped green.
 
   The first version of that test did not do this. It called the redactor on the
   rendered output before asserting, so it proved the redactor works on a string
