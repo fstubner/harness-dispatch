@@ -264,8 +264,11 @@ pre-1.0, so minor versions can carry behaviour changes.
   throws — stronger than absence, because a buffered entry point that
   accidentally streams now fails loudly instead of passing quietly. A new
   `tsconfig.test.json` typechecks tests against src; `npm run typecheck:tests`
-  runs it. It reports 52 remaining pre-existing errors and is deliberately
-  not in `npm run check` until they are cleared.
+  runs it. It reported 52 remaining pre-existing errors when it landed and was
+  deliberately kept out of `npm run check` until they were cleared — which
+  happened later in this same release, so as shipped the gate runs it and it
+  is clean. An acceptance pass caught this paragraph still describing the
+  interim state, two entries above one saying the opposite.
 
 - **"A shipped harness preset" now has a module.** It was a protocol block
   in YAML, loaded and parsed inside `config.ts`, interpreted by the generic
