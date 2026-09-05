@@ -202,3 +202,64 @@ describe("no configured secret reaches any output surface", () => {
     expect(redact(answer)).toBe(answer);
   });
 });
+
+/**
+ * Every sink, and which of them a behavioural test can actually prove.
+ *
+ * A verification pass sabotaged all nine redaction call sites one at a time.
+ * Four failed exactly one case each; five shipped green — including
+ * `sendJson`, whose own comment calls itself a sink, and the `jobs/run.ts`
+ * catch path added to fix round eight. My commit and changelog both said
+ * removing any one sink's redaction fails that sink's case. That was wrong,
+ * and it is the same overclaim this whole sequence has been about.
+ *
+ * The five are not dead code. They are structural guards: no currently
+ * reachable input puts a credential through them, because something upstream
+ * already redacted it — the buffered HTTP path serves `result.output` read
+ * back from `result.json`, which `writeJson` cleaned on the way to disk. That
+ * is the design working, and it is exactly why the guards must stay: the point
+ * of scrubbing at sinks rather than at sites is that a NEW path reaching one
+ * is covered without anyone thinking about it.
+ *
+ * So they get the check that fits what they are. A behavioural test cannot
+ * fail for them without a reachable secret, and inventing one would be a test
+ * that passes for the wrong reason — the defect that started this. Instead
+ * this asserts the call is still there. It catches a removal, which is the
+ * real risk for a guard, and it names every sink in one list so a new one has
+ * somewhere to be added.
+ */
+describe("every egress sink still redacts", () => {
+  const SINK_SITES: Array<{ file: string; needle: string; proven: boolean }> = [
+    { file: "src/mcp/tools.ts", needle: "redact(JSON.stringify(value, null, 2))", proven: true },
+    { file: "src/dispatch-log.ts", needle: "redact(JSON.stringify(buildDispatchLogEntry", proven: true },
+    { file: "src/jobs/store.ts", needle: "redact(JSON.stringify(value, null, 2))", proven: true },
+    { file: "src/http/server.ts", needle: "redact(JSON.stringify(payload))", proven: true },
+    // Structural guards: no reachable input carries a secret here today.
+    { file: "src/http/server.ts", needle: "redact(JSON.stringify(body, null, 2))", proven: false },
+    { file: "src/mcp/resources.ts", needle: "redact(renderStatusText(status))", proven: false },
+    { file: "src/mcp/resources.ts", needle: "redact(JSON.stringify(status, null, 2))", proven: false },
+    { file: "src/jobs/run.ts", needle: "redact(result.output)", proven: false },
+    { file: "src/jobs/run.ts", needle: "redact(result.error ?? \"\")", proven: false },
+    { file: "src/jobs/run.ts", needle: "redact(message)", proven: false },
+    { file: "src/jobs/run.ts", needle: "redact(event.chunk)", proven: false },
+    { file: "src/observability/spans.ts", needle: "redact(e.message)", proven: false },
+  ];
+
+  for (const site of SINK_SITES) {
+    it(`${site.file}: ${site.needle.slice(0, 44)}${site.proven ? "" : " (guard)"}`, () => {
+      const source = readFileSync(path.join(process.cwd(), site.file), "utf8");
+      expect(
+        source,
+        `${site.file} no longer redacts at this sink — if that is deliberate, ` +
+          `remove it from SINK_SITES and say why in the same commit`,
+      ).toContain(site.needle);
+    });
+  }
+
+  it("names the sinks a behavioural case actually proves", () => {
+    // Kept honest against the sabotage matrix rather than against intent: if a
+    // guard gains a reachable secret input, write the behavioural case and
+    // flip it to proven, rather than leaving this list flattering.
+    expect(SINK_SITES.filter((s) => s.proven)).toHaveLength(4);
+  });
+});

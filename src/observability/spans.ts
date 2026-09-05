@@ -17,6 +17,7 @@
  */
 
 import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
+import { redact } from "../redaction.js";
 
 import { VERSION } from "../version.js";
 
@@ -64,8 +65,15 @@ async function withSpan<T>(
       const durationMs = Date.now() - t0;
       span.setAttribute("duration_ms", durationMs);
       const e = err instanceof Error ? err : new Error(String(err));
-      span.recordException(e);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: e.message });
+      // Spans leave the process over OTLP, so this is a sink like any other —
+      // and it was the one egress path outside the eight that redact. Opt-in
+      // and localhost-by-default, which is why it is low rather than nothing.
+      // The exception is rebuilt rather than mutated: recordException reads
+      // `message` off the object it is given.
+      const safe = new Error(redact(e.message));
+      safe.name = e.name;
+      span.recordException(safe);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: safe.message });
       throw err;
     } finally {
       span.end();
