@@ -242,6 +242,15 @@ describe("every egress sink still redacts", () => {
     { file: "src/jobs/run.ts", needle: "redact(result.error ?? \"\")", proven: false },
     { file: "src/jobs/run.ts", needle: "redact(message)", proven: false },
     { file: "src/jobs/run.ts", needle: "redact(event.chunk)", proven: false },
+    // result.md — the file the CALLER reads. Missing from the first version of
+    // this list, and removing its redact left the file 20/20 green, which is
+    // the gap the list exists to close.
+    { file: "src/jobs/run.ts", needle: "redact(result.output || result.error", proven: false },
+    // The terminal. Named in the CHANGELOG as one of the egress kinds, and
+    // omitting it from the wiring was measured once already; omitting it from
+    // the inventory left removal caught only incidentally, by noUnusedLocals.
+    { file: "src/bin.ts", needle: "installOutputRedaction();", proven: false },
+    { file: "src/job-runner.ts", needle: "installOutputRedaction();", proven: false },
     { file: "src/observability/spans.ts", needle: "redact(e.message)", proven: false },
   ];
 
@@ -261,5 +270,8 @@ describe("every egress sink still redacts", () => {
     // guard gains a reachable secret input, write the behavioural case and
     // flip it to proven, rather than leaving this list flattering.
     expect(SINK_SITES.filter((s) => s.proven)).toHaveLength(4);
+    // Pinned so ADDING a sink without deciding proven-vs-guard is a failing
+    // test rather than a silent gap.
+    expect(SINK_SITES).toHaveLength(15);
   });
 });

@@ -377,10 +377,12 @@ describe("CLI parser", () => {
     const help = await capture(() => main(["--help"]));
     expect(help.stdout).toContain("harness-dispatch dispatch");
     const config = await writeConfig();
-    const routed = await capture(() => main(["route", "--config", config]));
     // No prompt: both spellings should reach the same usage error, not an
-    // "unknown command".
-    expect(routed.stderr).toMatch(/missing prompt/);
+    // "unknown command". It THROWS now rather than returning 1 — the message
+    // used to be written straight to stderr, which bypassed the one place
+    // that knows whether --json was asked for, so `dispatch --json` reported
+    // failure as a bare sentence.
+    await expect(main(["route", "--config", config])).rejects.toThrow(/missing prompt/);
   });
 
   it("supports status --json", async () => {

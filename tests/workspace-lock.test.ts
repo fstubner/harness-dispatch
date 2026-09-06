@@ -284,16 +284,37 @@ describe("pruneDeadWorkspaceLocks", () => {
       JSON.stringify({ pid: process.pid, key: "/here", beatMs: Date.now() }),
       "utf8",
     );
-    // Unreadable: the acquire path already treats this as absent, so the
-    // sweep must not be more cautious than the rule that steals it.
+    // Unreadable AND old: past the acquire path's grace, so stealable.
     const corrupt = path.join(lockDir(), "corrupt00000000.json");
     await fs.writeFile(corrupt, "{not json", "utf8");
+    const past = new Date(Date.now() - 60_000);
+    await fs.utimes(corrupt, past, past);
 
     await pruneDeadWorkspaceLocks();
 
     expect(existsSync(dead), "a dead lock was kept").toBe(false);
-    expect(existsSync(corrupt), "an unreadable lock was kept").toBe(false);
+    expect(existsSync(corrupt), "a stale unreadable lock was kept").toBe(false);
     expect(existsSync(live), "a LIVE lock was deleted").toBe(true);
+  });
+
+  it("gives a freshly unreadable lock the same grace the acquire path gives it", async () => {
+    // The sweep deleted an unreadable lock ON SIGHT — measured by an
+    // acceptance pass at 25ms, against 1018ms on the acquire path, while the
+    // docblock, the commit message and this test's sibling all claimed the two
+    // used the same rule.
+    //
+    // It matters because `tryCreate` opens with `wx` and then writes, so a
+    // genuinely empty file exists for a moment. This sweep runs before every
+    // job start; losing that race deletes a LIVE holder's lock and lets two
+    // dispatches edit one shared_locked workspace.
+    const { pruneDeadWorkspaceLocks } = await import("../src/workspace-lock.js");
+    await fs.mkdir(lockDir(), { recursive: true });
+    const justCreated = path.join(lockDir(), "fresh00000000000.json");
+    await fs.writeFile(justCreated, "", "utf8");
+
+    await pruneDeadWorkspaceLocks();
+
+    expect(existsSync(justCreated), "a lock mid-creation was deleted").toBe(true);
   });
 
   it("does nothing when there is no lock directory yet", async () => {

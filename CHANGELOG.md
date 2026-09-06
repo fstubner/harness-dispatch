@@ -4,7 +4,53 @@ Notable changes per release. Format follows [Keep a Changelog](https://keepachan
 this project uses [semantic versioning](https://semver.org/spec/v2.0.0.html) and is
 pre-1.0, so minor versions can carry behaviour changes.
 
-## [Unreleased]
+## [0.10.0] — 2026-09-06
+
+### Added
+
+- **`doctor` says whether jobs will actually run detached.** A missing
+  `dist/job-runner.js` is not an error — it is the signal to run jobs
+  in-process, which is right for an unbuilt checkout and wrong everywhere
+  else, because the concurrency cap is enforced by the supervisor pool. So the
+  bound that exists because of a measured out-of-memory crash silently stopped
+  applying, with one line on stderr at dispatch time and nothing checking it.
+  This check FAILS rather than warns, so `doctor` now exits 1 in an unbuilt
+  checkout where it previously exited 0.
+
+- **Locks left by a process that is gone are swept before each job starts.**
+  Such a lock was always reclaimable, but only when something contended for
+  that same directory — and nothing contends for a path you dispatched against
+  once and moved on from, so its file stayed indefinitely. An unreadable lock
+  is given the same grace the acquire path gives it, rather than being deleted
+  on sight: `wx` creation leaves a real empty-file window, and losing that race
+  would delete a live holder's lock.
+
+- **Empty supervisor spawn logs are cleaned up.** Keeping a crash log is
+  deliberate — a supervisor that died is the one that left a stale heartbeat,
+  and its output is the only explanation. An empty one explains nothing, and
+  the liveness check reads that directory on every drain. Measured before this:
+  129 files over three weeks, six bytes each.
+
+### Fixed
+
+- **`usage` with no routes explained itself.** It printed a bare header, which
+  reads as a broken command — the one thing it does not mean. It now says
+  there are no routes and names both ways to get one.
+
+- **`--json` is honoured when a command fails, not only when it succeeds.** A
+  bad `--config` made `doctor --json` print a sentence, so anything parsing the
+  output got a parse error instead of the reason. Four shapes bypassed the
+  envelope entirely — an unknown command, `auth` with no subcommand, `dispatch`
+  with no prompt, and the `--json=true` spelling — and the first printed the
+  help block to stdout, so `harness-dispatch frobnicate --json | jq` was fed
+  usage text. Errors stay on stderr; without `--json` the plain line is
+  unchanged.
+
+- **README:** the quick start told a new user to run `doctor --live` as step
+  three of installing without saying it contacts providers and spends quota.
+  The `configure` section was one 180-word block covering four separate
+  concerns; it is split under headings, and `configure` is now described as
+  optional where someone deciding whether to run it will see it.
 
 ### Fixed
 
@@ -515,8 +561,9 @@ pre-1.0, so minor versions can carry behaviour changes.
   current directory; it is now the same usage error as a missing value. An
   empty or routes-free config file was reported as the source of routes
   that detection had found; doctor's `config` line now says they were
-  auto-detected and that the file defines no routes of its own. (Finding 3.
-  A load failure under `doctor --json` still prints text, not JSON.)
+  auto-detected and that the file defines no routes of its own. (Finding 3;
+  its remaining half — a load failure printing text under `--json` — is fixed
+  further down this same release.)
 
 ## [0.9.0] — 2026-09-02
 
