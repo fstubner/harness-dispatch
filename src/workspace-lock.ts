@@ -30,7 +30,7 @@
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { stateRoot } from "./state-dir.js";
@@ -292,9 +292,11 @@ export async function acquireWorkspaceLock(
  * rather than the size — this directory is walked when locks are examined, so
  * an unbounded file count is a cost paid later.
  *
- * Deliberately reuses `isDead`, so a lock is swept under exactly the same rule
- * that lets a waiter steal it. A second, looser rule here would be a way for
- * this to delete a lock the acquire path still considers live.
+ * Reuses `isDead` for a readable record, and honours the same
+ * `UNREADABLE_GRACE_MS` the acquire path gives an unreadable one. The first
+ * version of this claimed both and only did the first: it deleted an
+ * unreadable lock on sight, measured at 25ms against the acquire path's
+ * 1018ms, which is precisely the looser second rule the claim denied.
  */
 export async function pruneDeadWorkspaceLocks(): Promise<void> {
   const dir = path.join(stateRoot(), "workspace-locks");
@@ -309,10 +311,25 @@ export async function pruneDeadWorkspaceLocks(): Promise<void> {
     const file = path.join(dir, entry);
     try {
       const record = readRecord(file);
-      // An unreadable record is not evidence of a live holder — `readRecord`
-      // returns undefined for a corrupt or half-written file, and the acquire
-      // path already treats that as absent.
-      if (record !== undefined && !isDead(record)) continue;
+      if (record !== undefined) {
+        if (!isDead(record)) continue;
+        await rm(file, { force: true });
+        continue;
+      }
+      // UNREADABLE, and this is where the claim that "the sweep uses exactly
+      // the rule that lets a waiter steal it" was FALSE — measured by an
+      // acceptance pass at 25ms here against 1018ms there.
+      //
+      // The acquire path gives an unreadable record UNREADABLE_GRACE_MS before
+      // treating it as stealable, because a torn read of a mid-rewrite
+      // heartbeat used to be enough to take a LIVE holder's lock. Deleting on
+      // sight here reintroduced exactly that: `tryCreate` opens with `wx` and
+      // then writes, so a real empty-file window exists, and an older build
+      // rewriting a heartbeat in place widens it. This sweep runs before every
+      // job start, so losing that race means two dispatches editing one
+      // `shared_locked` workspace — the outcome the lock exists to prevent.
+      const age = Date.now() - (await stat(file)).mtimeMs;
+      if (age <= UNREADABLE_GRACE_MS) continue;
       await rm(file, { force: true });
     } catch {
       // Vanished mid-sweep, or another process got there first.

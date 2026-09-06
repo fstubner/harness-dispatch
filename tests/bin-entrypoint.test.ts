@@ -85,4 +85,39 @@ describe("--json is a promise about the shape of the output, including on failur
     expect(text).toContain("harness-dispatch: ");
     expect(() => JSON.parse(text)).toThrow();
   });
+  // Three error shapes wrote to stderr and returned, bypassing the handler
+  // that knows about --json, and `unknown command` printed the help block to
+  // STDOUT — so `harness-dispatch frobnicate --json | jq` got usage text as
+  // its input, the exact pipe the envelope exists to keep parseable. Measured
+  // by an acceptance pass.
+  const BYPASSED: Array<[string, string[], string]> = [
+    ["unknown command", ["frobnicate", "--json"], "unknown command"],
+    ["auth with no subcommand", ["auth", "--json"], "expected show or rotate"],
+    ["dispatch with no prompt", ["dispatch", "--json"], "missing prompt"],
+    // `--json=true` got JSON on success and plain text on failure.
+    ["the --json=true spelling", ["frobnicate", "--json=true"], "unknown command"],
+  ];
+
+  for (const [label, args, expected] of BYPASSED) {
+    it.skipIf(!existsSync(bin))(`${label} reports as JSON`, async () => {
+      const err = await run(process.execPath, [bin, ...args]).catch(
+        (e: { stderr?: string; stdout?: string }) => e,
+      );
+      const parsed = JSON.parse(String(err.stderr ?? "")) as { ok: boolean; error: string };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error).toContain(expected);
+      // Nothing on stdout, so a pipe reading results is not fed help text.
+      expect(String(err.stdout ?? "")).toBe("");
+    });
+  }
+
+  it.skipIf(!existsSync(bin))("still prints the usage block for a human", async () => {
+    // Losing the help for an unknown command would be a worse product than
+    // the bug being fixed; it moves to stderr, it does not disappear.
+    const err = await run(process.execPath, [bin, "frobnicate"]).catch(
+      (e: { stderr?: string }) => e,
+    );
+    expect(String(err.stderr ?? "")).toContain("Usage:");
+  });
 });
+

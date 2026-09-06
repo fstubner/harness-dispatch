@@ -253,3 +253,24 @@ describe("renderStatusText", () => {
     expect(text).not.toContain("note:");
   });
 });
+
+describe("usage with no routes", () => {
+  /**
+   * An acceptance pass deleted this block and the doctor job-runner check
+   * together and the full suite stayed at 1258 passed, exit 0 — byte
+   * identical. Both behaviours worked; neither was pinned, and the commit
+   * message presented them as delivered.
+   */
+  it("explains itself rather than printing a bare header", async () => {
+    const { renderUsageText } = await import("../src/status.js");
+    const text = renderUsageText({
+      name: "harness-dispatch",
+      generatedAt: new Date().toISOString(),
+      routes: [],
+    } as never);
+    expect(text).toContain("No routes configured");
+    // Both ways out, because which one applies depends on the machine.
+    expect(text).toContain("endpoints:");
+    expect(text).toMatch(/claude|codex|cursor-agent|agy/);
+  });
+});

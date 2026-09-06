@@ -61,8 +61,22 @@ async function buildRuntime(configPath: string | undefined): Promise<Runtime> {
   return { config, dispatchers, quota, leaderboard, router };
 }
 
-function printUsage(): void {
-  process.stdout.write(
+/**
+ * Did this invocation ask for machine-readable output?
+ *
+ * Read from raw argv rather than the parsed flags because the two callers are
+ * the unknown-command branch and the top-level error handler, both of which
+ * run where parsing has either not happened or already failed. `--json=true`
+ * counts: an acceptance pass measured that spelling getting JSON on success
+ * and plain text on failure, which is the inconsistency the envelope exists to
+ * remove.
+ */
+function wantsJsonOutput(): boolean {
+  return process.argv.slice(2).some((a) => a === "--json" || a.startsWith("--json="));
+}
+
+function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
+  stream.write(
     [
       "harness-dispatch",
       "",
@@ -1051,8 +1065,10 @@ async function cmdAuth(action: string | undefined): Promise<number> {
       return 0;
     }
     default:
-      process.stderr.write("auth: expected show or rotate\n");
-      return 1;
+      // Thrown, not written: the top-level handler is the one place that
+      // knows whether --json was asked for. Written here it bypassed the
+      // envelope, so `auth --json` reported failure as a bare sentence.
+      throw new UsageError("auth: expected show or rotate");
   }
 }
 
@@ -1082,11 +1098,10 @@ async function cmdDispatch(
   },
 ): Promise<number> {
   if (!prompt) {
-    process.stderr.write(
-      'dispatch: missing prompt. Usage: dispatch [--service <id>] [--safety <profile>]\n' +
-        '          [--task-type <type>] [--no-fallback] [--json] "<prompt>"\n',
+    throw new UsageError(
+      'dispatch: missing prompt. Usage: dispatch [--service <id>] [--safety <profile>] ' +
+        '[--task-type <type>] [--no-fallback] [--json] "<prompt>"',
     );
-    return 1;
   }
   const runtime = await buildRuntime(configPath);
   const hints: RouteHints = { taskType: opts.taskType ?? "execute" };
@@ -1344,9 +1359,15 @@ export async function main(argv: string[]): Promise<number> {
       }
       return main(configPath !== undefined ? ["--config", configPath] : []);
     default:
-      process.stderr.write(`unknown command: ${command}\n`);
-      printUsage();
-      return 1;
+      // Usage goes to STDERR here, not stdout. An unknown command is an
+      // error, and printing the help block on stdout meant
+      // `harness-dispatch frobnicate --json | jq` got the usage text as
+      // its input — the exact pipe the --json envelope keeps parseable.
+      // Suppressed under --json: the caller asked for machine-readable
+      // output, and a help block ahead of the envelope makes stderr
+      // unparseable in the same way stdout was.
+      if (!wantsJsonOutput()) printUsage(process.stderr);
+      throw new UsageError(`unknown command: ${command}`);
   }
 }
 
@@ -1417,7 +1438,7 @@ if (isThisFile(entrypoint)) {
         // a parse error instead of the reason. The message is the same; only
         // the envelope follows what was asked for. Errors still go to stderr,
         // so a caller reading stdout for results is unaffected either way.
-        const wantsJson = process.argv.slice(2).includes("--json");
+        const wantsJson = wantsJsonOutput();
         process.stderr.write(
           wantsJson
             ? `${JSON.stringify({ ok: false, error: err.message }, null, 2)}\n`

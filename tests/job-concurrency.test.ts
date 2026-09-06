@@ -363,3 +363,28 @@ describe("dead supervisor heartbeats are cleaned up", () => {
     expect(existsSync(kept), "a crash log with a reason in it was deleted").toBe(true);
   });
 });
+
+describe("the dead-lock sweep is actually wired into the job path", () => {
+  /**
+   * The sweep function was tested; its CALL was not. Removing
+   * `pruneDeadWorkspaceLocks()` from start.ts failed nothing, so the whole
+   * behaviour could be silently disconnected while its own test stayed green
+   * — the same shape as a sink that redacts in a function nobody calls.
+   *
+   * Asserted against the source rather than by running a job: the call sits on
+   * the path that spawns real detached runners, and a test that started one to
+   * observe a file deletion would be slower and flakier than the thing it
+   * checks.
+   */
+  it("start.ts calls the sweep before starting work", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(
+      path.join(process.cwd(), "src", "jobs", "start.ts"),
+      "utf8",
+    );
+    expect(
+      src,
+      "the dead-lock sweep is no longer called from the job start path",
+    ).toContain("pruneDeadWorkspaceLocks(");
+  });
+});
