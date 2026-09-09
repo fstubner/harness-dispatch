@@ -286,6 +286,15 @@ async function handleChatCompletions(
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
+    // Send the headers NOW, not when the first chunk happens to arrive.
+    //
+    // For a CLI harness no delta exists until the run completes, so without
+    // this nothing reached the client — not even the status line. Measured:
+    // 3.0s to first byte for a fast prompt, 13.6s for a 12s one. Any client
+    // or proxy with a response-header timeout gives up on a live stream, and
+    // a streaming request creates no job record, so there is no jobId to
+    // recover with.
+    res.flushHeaders();
     sse.started = true;
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
@@ -471,9 +480,21 @@ async function handleChatCompletions(
     });
     return;
   }
+  // A dispatch that FAILED is not a 200.
+  //
+  // The error text was served as the assistant's answer with
+  // `finish_reason: "stop"`, and the failure was visible only in the vendor
+  // extension. Six hundred lines up, the fanout branch already establishes
+  // the opposite rule in as many words — "an empty candidate set is a
+  // REFUSAL, not an empty success… CI and cron read 200 as 'it worked'" —
+  // and the single-route branch beside it kept answering 200. The same defect
+  // one branch over, which is the shape this codebase keeps producing.
+  //
+  // 502: the router worked, the harness it delegated to did not.
+  const status = result.success ? 200 : 502;
   sendJson(
     res,
-    200,
+    status,
     completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
       harness_dispatch: {
         jobId: jobStatus.jobId,

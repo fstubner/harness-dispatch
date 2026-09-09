@@ -103,6 +103,42 @@ describe("copy workspaces", () => {
     };
   }
 
+  it("a forced apply names a COMMITTED divergence, not just an uncommitted one", async () => {
+    // The dangerous half of the pair. The non-forced refusal tells you to
+    // "commit or stash first" — and committing is exactly what walks you into
+    // the case that had no reporting at all: `moved` was computed only when
+    // force was absent, and the note only ever listed UNCOMMITTED changes, so
+    // a committed change left the tree clean and was overwritten with the same
+    // cheerful "Applied N bytes" as a clean run.
+    //
+    // An audit reproduced a committed line silently gone. Recoverable from
+    // git, but nothing told the user to look.
+    // `copy`, which is where the audit reproduced it. Under `git_worktree` a
+    // forced apply writes conflict markers and returns applied:false — loud,
+    // and documented — so the silent case only exists on this policy.
+    const run = await copyRun();
+    const proj = run.originalWorkingDir;
+    await fs.writeFile(path.join(proj, "app.js"), "const a = 4321;\n", "utf8");
+    const git = async (...args: string[]): Promise<void> => {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(execFile)("git", args, { cwd: proj });
+    };
+    await git("add", "-A");
+    await git("commit", "-qm", "user work");
+
+    const out = await applyWorkspace("job-1700000000009-99999999", jobDir, run, {
+      force: true,
+    });
+
+    expect(out.applied, out.message).toBe(true);
+    expect(out.message, "the committed divergence was not named").toMatch(/FORCED over/);
+    expect(out.message).toMatch(/since the dispatch started/);
+    expect(out.message, "the file it ran over was not named").toContain("app.js");
+    // And it must still point at where the work went.
+    expect(out.message).toMatch(/git (diff|history)/);
+  });
+
   it("produces a patch of what the agent changed, with project-relative paths", async () => {
     const run = await copyRun();
     const patch = await buildWorkspacePatch(run);

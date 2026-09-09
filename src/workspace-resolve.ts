@@ -778,8 +778,19 @@ export async function applyWorkspace(
   // commit it, apply job B — and B silently reverted A's committed line, with
   // git apply unable to conflict because the patch's context was the current
   // file.
+  // Computed whether or not force was passed. Gating the CHECK on force meant
+  // `moved` was never known on the forced path, and the note below only ever
+  // reported UNCOMMITTED changes — so a change that had been COMMITTED since
+  // the dispatch started left the tree clean, produced an empty `dirty`, and
+  // was overwritten with the same cheerful "Applied N bytes" as a clean run.
+  //
+  // That is the worse half of the pair: the non-forced refusal tells you to
+  // "commit or stash first", and committing is exactly what walks you into
+  // the case nothing reports. An audit reproduced it — a committed line gone,
+  // recoverable from git, with nothing telling the user to look.
+  const moved =
+    run.changedFiles !== undefined ? await projectMovedSince(run, run.changedFiles) : [];
   if (opts.force !== true && run.changedFiles !== undefined) {
-    const moved = await projectMovedSince(run, run.changedFiles);
     if (moved.length > 0) {
       return {
         jobId,
@@ -910,11 +921,26 @@ export async function applyWorkspace(
   // line as a clean apply — so a human edit the patch replaced left no trace
   // in the response at all. The waiver covers doing it; it does not cover
   // being quiet about it.
+  const forcedOver: string[] = [];
+  if (opts.force === true && dirty !== undefined && dirty.length > 0) {
+    forcedOver.push(
+      `${dirty.length} uncommitted change(s): ${dirty.map((l) => l.slice(2).trim()).join(", ")}`,
+    );
+  }
+  if (opts.force === true && moved.length > 0) {
+    // The committed case, which had no reporting at all. Named separately
+    // because the recovery differs: uncommitted work replaced this way is
+    // gone, while a committed change is still in the reflog.
+    forcedOver.push(
+      `${moved.length} file(s) changed in the project since the dispatch started: ` +
+        `${moved.join(", ")} — the agent worked from the older version. If those changes were ` +
+        `committed they are still in git history; check \`git diff HEAD\` before committing this`,
+    );
+  }
   const overwritten =
-    opts.force === true && dirty !== undefined && dirty.length > 0
-      ? ` FORCED over ${dirty.length} uncommitted change(s): ` +
-        `${dirty.map((l) => l.slice(2).trim()).join(", ")} — where the patch touched the same ` +
-        `lines, your version was replaced, not merged.`
+    forcedOver.length > 0
+      ? ` FORCED over ${forcedOver.join("; and ")} — where the patch touched the same lines, ` +
+        `that version was replaced, not merged.`
       : "";
   return {
     jobId,
