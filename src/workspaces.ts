@@ -153,8 +153,35 @@ function resolveDir(workingDir: string): string {
  */
 export function workspacesBase(): string {
   return dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () =>
-    path.join(os.tmpdir(), "harness-dispatch", "workspaces"),
+    path.join(os.tmpdir(), defaultWorkspacesFolder(), "workspaces"),
   );
+}
+
+/**
+ * `harness-dispatch` on Windows, `harness-dispatch-<uid>` on POSIX.
+ *
+ * On Windows `os.tmpdir()` is already per-user, so a bare name is correct
+ * there and has always worked. On Linux `/tmp` is shared, and the ownership
+ * guard that protects the tree then has a side effect nobody had measured:
+ * whoever dispatches FIRST owns `/tmp/harness-dispatch` 0700, and every other
+ * user on the machine is refused `copy` and `git_worktree` outright —
+ *
+ *   /tmp/harness-dispatch is owned by another user (uid 2001, this process is uid 2002)
+ *
+ * — until they discover the override. An audit reproduced it with two
+ * ordinary unprivileged users, neither doing anything wrong. The same
+ * mechanism locks a user out of their own tool after one `sudo` run leaves
+ * the directory owned by root.
+ *
+ * A uid segment gives each user their own root, which is what the guard
+ * assumes it is protecting. It does not weaken the guard: the per-user
+ * directory is still created 0700 and still ownership-checked, so a
+ * pre-created or symlinked trap is refused exactly as before.
+ */
+function defaultWorkspacesFolder(): string {
+  if (process.platform === "win32") return "harness-dispatch";
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  return uid === undefined ? "harness-dispatch" : `harness-dispatch-${uid}`;
 }
 
 /** Exported for tests, for the same reason as `workspaceRunId`. */

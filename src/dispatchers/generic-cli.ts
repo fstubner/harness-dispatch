@@ -381,7 +381,20 @@ function quoteWindowsArgument(arg: string): string {
  */
 function commandLineLength(command: string, args: string[]): number {
   if (process.platform !== "win32") {
-    return args.reduce((n, a) => n + a.length + 1, command.length);
+    // BYTES, not code units. The kernel counts bytes (MAX_ARG_STRLEN is
+    // 131072 per argument); `String.length` counts UTF-16 units. Measured
+    // through the built artifact: 100,000 CJK characters in one argument
+    // measured as 100,021 against a 129,024 budget — so the guard did not
+    // fire — while the kernel saw 300,000 bytes and the spawn died with
+    // E2BIG. That is precisely the outcome the comment above says this
+    // exists to prevent.
+    //
+    // Invisible on Windows, where the same string is 100,000 UTF-16 units
+    // against a far smaller budget, so the friendly refusal fires there.
+    // Reachable in practice: the guard only runs when a protocol does NOT
+    // use stdin, and antigravity_cli is the shipped route that puts the
+    // prompt in argv — while advertising a two-million-token input.
+    return args.reduce((n, a) => n + Buffer.byteLength(a, "utf8") + 1, Buffer.byteLength(command, "utf8"));
   }
   if (commandLineBudget(command) !== WINDOWS_CMD_SHIM_MAX) {
     // Straight to CreateProcess: the same quoting, without cmd.exe's escaping.
