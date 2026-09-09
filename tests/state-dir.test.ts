@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { stateRoot, userConfigPath } from "../src/state-dir.js";
@@ -105,4 +106,54 @@ describe("every directory env var follows the same rule", () => {
       }
     });
   }
+});
+
+describe("POSIX defaults measured in a container", () => {
+  /**
+   * A POSIX audit — the first one this project has ever had — found three
+   * things that are invisible on Windows and were therefore never tested.
+   */
+  it("the default workspaces root is per-user on POSIX, plain on Windows", async () => {
+    // /tmp is shared on Linux while os.tmpdir() is per-user on Windows, so a
+    // single shared folder name meant whoever dispatched first owned
+    // /tmp/harness-dispatch 0700 and every other user was refused `copy` and
+    // `git_worktree` outright. Reproduced with two ordinary unprivileged
+    // users; the same mechanism locks you out of your own tool after one
+    // `sudo` run. The ownership guard is unchanged — this gives it a root per
+    // user, which is what it assumes it is protecting.
+    const { workspacesBase } = await import("../src/workspaces.js");
+    const saved = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    try {
+      const base = workspacesBase();
+      if (process.platform === "win32") {
+        expect(base).toContain("harness-dispatch");
+      } else {
+        expect(base, "no uid segment: a second user is locked out").toMatch(
+          /harness-dispatch-\d+/,
+        );
+      }
+    } finally {
+      if (saved !== undefined) process.env.HARNESS_DISPATCH_WORKSPACES_DIR = saved;
+    }
+  });
+
+  it("the POSIX command-line budget counts bytes, not UTF-16 units", async () => {
+    // Measured through the built artifact: 100,000 CJK characters in one
+    // argument measured 100,021 against a 129,024 budget so the guard did not
+    // fire, while the kernel saw 300,000 bytes and the spawn died E2BIG —
+    // exactly what the guard exists to prevent. Reachable via the one shipped
+    // route that puts the prompt in argv rather than on stdin.
+    const wide = "漢".repeat(1000);
+    expect(Buffer.byteLength(wide, "utf8")).toBe(3000);
+    expect(wide.length).toBe(1000);
+    // The product must agree with the kernel, not with String.length.
+    const src = readFileSync(
+      path.join(process.cwd(), "src", "dispatchers", "generic-cli.ts"),
+      "utf8",
+    );
+    expect(src, "the POSIX branch is back to counting code units").toContain(
+      'Buffer.byteLength(a, "utf8")',
+    );
+  });
 });

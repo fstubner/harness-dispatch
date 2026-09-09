@@ -153,8 +153,35 @@ function resolveDir(workingDir: string): string {
  */
 export function workspacesBase(): string {
   return dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () =>
-    path.join(os.tmpdir(), "harness-dispatch", "workspaces"),
+    path.join(os.tmpdir(), defaultWorkspacesFolder(), "workspaces"),
   );
+}
+
+/**
+ * `harness-dispatch` on Windows, `harness-dispatch-<uid>` on POSIX.
+ *
+ * On Windows `os.tmpdir()` is already per-user, so a bare name is correct
+ * there and has always worked. On Linux `/tmp` is shared, and the ownership
+ * guard that protects the tree then has a side effect nobody had measured:
+ * whoever dispatches FIRST owns `/tmp/harness-dispatch` 0700, and every other
+ * user on the machine is refused `copy` and `git_worktree` outright —
+ *
+ *   /tmp/harness-dispatch is owned by another user (uid 2001, this process is uid 2002)
+ *
+ * — until they discover the override. An audit reproduced it with two
+ * ordinary unprivileged users, neither doing anything wrong. The same
+ * mechanism locks a user out of their own tool after one `sudo` run leaves
+ * the directory owned by root.
+ *
+ * A uid segment gives each user their own root, which is what the guard
+ * assumes it is protecting. It does not weaken the guard: the per-user
+ * directory is still created 0700 and still ownership-checked, so a
+ * pre-created or symlinked trap is refused exactly as before.
+ */
+function defaultWorkspacesFolder(): string {
+  if (process.platform === "win32") return "harness-dispatch";
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  return uid === undefined ? "harness-dispatch" : `harness-dispatch-${uid}`;
 }
 
 /** Exported for tests, for the same reason as `workspaceRunId`. */
@@ -982,6 +1009,23 @@ function escapeNote(files: string[], originalWorkingDir: string): string[] {
   ];
 }
 
+/**
+ * Note for a shared run whose `files` reach outside the working directory.
+ *
+ * Distinct from `escapeNote`: there is no isolation to widen under `shared`,
+ * so "ISOLATION WIDENED" would be false. The disclosure is the same, though —
+ * naming one file grants the agent its whole parent directory.
+ */
+function grantNote(files: string[], originalWorkingDir: string): string[] {
+  const dirs = escapedFiles(files, originalWorkingDir);
+  if (dirs.length === 0) return [];
+  return [
+    `DIRECTORIES GRANTED: ${dirs.length} outside the working directory ` +
+      `${dirs.length === 1 ? "was" : "were"} granted to the agent because \`files\` referenced ` +
+      `${dirs.length === 1 ? "a file" : "files"} there — ${dirs.join(", ")}.`,
+  ];
+}
+
 function attachWorkspace(result: DispatchResult, workspace: WorkspaceRun): DispatchResult {
   return {
     ...result,
@@ -1008,10 +1052,23 @@ async function prepareSharedWorkspace(
         effectiveWorkingDir: originalWorkingDir,
         isolated: false,
         securityBoundary: "none",
-        notes:
+        notes: [
           policy === "shared_locked"
-            ? ["Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."]
-            : ["Shared workspace dispatches run directly in the caller's working directory."],
+            ? "Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."
+            : "Shared workspace dispatches run directly in the caller's working directory.",
+          // The `files` schema says "the response carries a warning naming the
+          // directories when that happens" — unconditionally, as a caller
+          // reads it. It was wired into the copy and worktree paths only, so
+          // under `shared`, WHICH IS THE DEFAULT, a path outside workingDir
+          // still granted its parent directory via --add-dir and nothing said
+          // so. A security audit reproduced a single `files` entry handing the
+          // agent a user home subdirectory, with no warning in the reply.
+          //
+          // The wording differs because the fact differs: nothing was isolated
+          // here to widen. What the caller needs to know is that naming one
+          // file granted the agent its whole directory.
+          ...grantNote(files, originalWorkingDir),
+        ],
       });
     },
   };

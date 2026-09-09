@@ -712,3 +712,67 @@ describe("a workspace root that is a symlink", () => {
     },
   );
 });
+
+describe("a file outside workingDir is disclosed under EVERY policy", () => {
+  /**
+   * The `files` schema promises, unconditionally: "the response carries a
+   * warning naming the directories when that happens". It was wired into the
+   * copy and worktree paths only — so under `shared`, WHICH IS THE DEFAULT,
+   * naming one file still granted the agent its whole parent directory via
+   * --add-dir and nothing said so. A security audit reproduced a single
+   * `files` entry handing over a home subdirectory with no warning anywhere
+   * in the reply.
+   *
+   * Table-driven across all four policies for the reason at the top of this
+   * file: the miss was testing the case the change was written for.
+   */
+  const POLICIES = ["shared", "shared_locked", "copy", "git_worktree"] as const;
+
+  for (const policy of POLICIES) {
+    it(`${policy} names the granted directory`, async () => {
+      const { prepareWorkspace } = await import("../src/workspaces.js");
+      const wd = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wm-wd-"));
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wm-out-"));
+      const file = path.join(outside, "secret.txt");
+      await fs.writeFile(file, "x", "utf8");
+      if (policy === "git_worktree") {
+        // This policy refuses a directory that is not version-controlled, so
+        // the disclosure it owes can only be observed inside a real repo.
+        const { execFileSync } = await import("node:child_process");
+        const git = (...args: string[]): void => {
+          execFileSync("git", args, { cwd: wd, stdio: "ignore" });
+        };
+        git("init", "-q");
+        git("config", "user.email", "t@example.test");
+        git("config", "user.name", "t");
+        await fs.writeFile(path.join(wd, "seed.txt"), "seed", "utf8");
+        git("add", "-A");
+        git("commit", "-qm", "seed");
+      }
+      try {
+        const w = await prepareWorkspace({
+          routeName: "r",
+          policy,
+          workingDir: wd,
+          files: [file],
+        });
+        const finished = await w.finish({
+          output: "ok",
+          service: "r",
+          success: true,
+          durationMs: 1,
+        });
+        const notes = JSON.stringify(finished.workspace?.notes ?? []);
+        expect(notes, `${policy} disclosed nothing`).toMatch(
+          /ISOLATION WIDENED|DIRECTORIES GRANTED/,
+        );
+        expect(notes, `${policy} did not name the directory`).toContain(
+          path.basename(outside),
+        );
+      } finally {
+        await fs.rm(wd, { recursive: true, force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    });
+  }
+});
