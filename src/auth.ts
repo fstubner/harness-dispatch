@@ -2,12 +2,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-import { stateRoot } from "./state-dir.js";
+import { dirFromEnv, stateRoot } from "./state-dir.js";
 
 const TOKEN_ENV = "HARNESS_DISPATCH_HTTP_TOKEN";
 
 export function authDir(): string {
-  return process.env.HARNESS_DISPATCH_HOME ?? stateRoot();
+  return dirFromEnv("HARNESS_DISPATCH_HOME", stateRoot);
 }
 
 export function tokenPath(): string {

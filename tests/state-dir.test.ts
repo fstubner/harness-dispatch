@@ -51,3 +51,58 @@ describe("stateRoot", () => {
     expect(userConfigPath()).toBe(path.join(path.resolve(dir), "config.yaml"));
   });
 });
+
+describe("every directory env var follows the same rule", () => {
+  /**
+   * `stateRoot` was fixed for an empty value and gained a careful comment
+   * explaining why. Its five siblings kept `??` and kept the bug — measured:
+   * `HARNESS_DISPATCH_JOBS_DIR=""` put the jobs tree in the process's current
+   * directory, and `HARNESS_DISPATCH_LOG_DIR=""` wrote dispatches.jsonl there.
+   * An upgrade audit found two of them; there were five.
+   *
+   * Table-driven on purpose. A per-variable test is what let one get fixed
+   * while four did not, so adding a variable without adding it here should be
+   * the thing that fails.
+   */
+  const VARS: Array<[string, () => Promise<string>]> = [
+    ["HARNESS_DISPATCH_STATE_DIR", async () => (await import("../src/state-dir.js")).stateRoot()],
+    ["HARNESS_DISPATCH_HOME", async () => (await import("../src/auth.js")).tokenPath()],
+    ["HARNESS_DISPATCH_LOG_DIR", async () => (await import("../src/dispatch-log.js")).dispatchLogPath()],
+    ["HARNESS_DISPATCH_JOBS_DIR", async () => (await import("../src/jobs/store.js")).jobsRoot()],
+    ["HARNESS_DISPATCH_WORKSPACES_DIR", async () => (await import("../src/workspaces.js")).workspacesBase()],
+  ];
+
+  for (const [name, read] of VARS) {
+    it(`${name}: empty means unset, not the empty path`, async () => {
+      const saved = process.env[name];
+      try {
+        process.env[name] = "";
+        const empty = await read();
+        expect(empty, `${name}="" produced a relative path`).not.toBe("");
+        expect(path.isAbsolute(empty), `${name}="" produced ${empty}`).toBe(true);
+
+        process.env[name] = "   ";
+        expect(path.isAbsolute(await read()), `${name}="   " produced a relative path`).toBe(true);
+      } finally {
+        if (saved === undefined) delete process.env[name];
+        else process.env[name] = saved;
+      }
+    });
+
+    it(`${name}: a relative value is anchored`, async () => {
+      // A detached job runner starts in a different working directory than the
+      // server that spawned it, so an unanchored relative path meant the two
+      // disagreed about where state lived.
+      const saved = process.env[name];
+      try {
+        process.env[name] = "rel-state";
+        const resolved = await read();
+        expect(path.isAbsolute(resolved), `${name} stayed relative: ${resolved}`).toBe(true);
+        expect(resolved).toContain("rel-state");
+      } finally {
+        if (saved === undefined) delete process.env[name];
+        else process.env[name] = saved;
+      }
+    });
+  }
+});

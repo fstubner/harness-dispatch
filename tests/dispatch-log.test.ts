@@ -89,6 +89,48 @@ describe("dispatch log", () => {
     expect(buildDispatchLogEntry("only", result()).candidates).toBeUndefined();
   });
 
+  it("records the score components, not only the winner and the margin", () => {
+    // `candidates` says the pick beat a runner-up 0.92 to 0.81 and never why.
+    // An audit of 457 real dispatches set out to answer whether the router
+    // earns its place and could not: quota, quality and capability were never
+    // recorded, so every hypothesis about the scoring was unfalsifiable from
+    // the one artifact built to test it. They cannot be reconstructed after
+    // the fact either — quota and breaker state have moved on by then.
+    const decision = {
+      service: "picked",
+      tier: 1,
+      reason: "tier 1 best (3 available)",
+      quotaScore: 0.9,
+      qualityScore: 0.82,
+      capabilityScore: 0.75,
+      finalScore: 0.92,
+    } as unknown as RoutingDecision;
+
+    const entry = buildDispatchLogEntry("picked", result(), decision);
+    expect(entry.scores).toEqual({
+      quota: 0.9,
+      quality: 0.82,
+      capability: 0.75,
+      final: 0.92,
+    });
+  });
+
+  it("records them on the explicit path too", () => {
+    // The comparison that matters is "was naming a route by hand better than
+    // letting it choose". That needs the forced route's scores as well, so
+    // this is deliberately not gated on the router having chosen.
+    const forced = {
+      service: "only",
+      tier: 1,
+      reason: "explicit",
+      quotaScore: 1,
+      qualityScore: 0.5,
+      capabilityScore: 1,
+      finalScore: 1,
+    } as unknown as RoutingDecision;
+    expect(buildDispatchLogEntry("only", result(), forced).scores?.final).toBe(1);
+  });
+
   it("records failures with a capped error string and rateLimited flag", () => {
     const entry = buildDispatchLogEntry(
       "sad_route",
