@@ -1,4 +1,5 @@
 import { execFile as execFileCb } from "node:child_process";
+import { dirFromEnv } from "./state-dir.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
 import {
@@ -151,9 +152,8 @@ function resolveDir(workingDir: string): string {
  * above was written for, one step further along.
  */
 export function workspacesBase(): string {
-  return (
-    process.env.HARNESS_DISPATCH_WORKSPACES_DIR ??
-    path.join(os.tmpdir(), "harness-dispatch", "workspaces")
+  return dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () =>
+    path.join(os.tmpdir(), "harness-dispatch", "workspaces"),
   );
 }
 
@@ -315,8 +315,10 @@ export async function assertStillOurs(dir: string): Promise<void> {
  * spellings failed to match and the loop body never ran even once.
  */
 async function resolvedAnchor(): Promise<{ declared: string; resolved: string }> {
-  const configured = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
-  const anchor = configured !== undefined ? path.resolve(configured) : os.tmpdir();
+  // Same rule as everywhere else: an empty value means "not set". Read
+  // directly rather than through workspacesBase() because the anchor is the
+  // configured directory itself, not the `workspaces` subdirectory under it.
+  const anchor = dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () => os.tmpdir());
 
   // VERIFY THE NEAREST EXISTING ANCESTOR BEFORE CREATING ANYTHING.
   //

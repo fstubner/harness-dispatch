@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { stateRoot } from "../state-dir.js";
+import { dirFromEnv, stateRoot } from "../state-dir.js";
 import type { JobManifest, JobStatus } from "./types.js";
 
 /**
@@ -92,7 +92,7 @@ export function pollInstructions(jobId: string): string {
 }
 
 export function jobsRoot(): string {
-  return process.env.HARNESS_DISPATCH_JOBS_DIR ?? path.join(stateRoot(), "jobs");
+  return dirFromEnv("HARNESS_DISPATCH_JOBS_DIR", () => path.join(stateRoot(), "jobs"));
 }
 
 const DEFAULT_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
