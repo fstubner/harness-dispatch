@@ -497,10 +497,22 @@ export function parseChatRequest(raw: unknown): {
   // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
   // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
   // exists to prevent, on the surface CI uses.
+  // A non-string workingDir is REJECTED, not quietly treated as absent.
+  //
+  // The ternary turned `workingDir: 123` into "not provided", so the request
+  // succeeded 200 and a write-capable agent ran in the SERVER's own directory
+  // — while the warning said workingDir "was not provided", which was false:
+  // it was provided, as the wrong type. MCP rejects the same argument by
+  // name, and `files`/`models`/`hints.model` are all type-checked one screen
+  // away. This is the rule this module sets for itself at the top of the file.
+  const rawWorkingDir = (body as { workingDir?: unknown }).workingDir;
+  if (rawWorkingDir !== undefined && rawWorkingDir !== null && typeof rawWorkingDir !== "string") {
+    throw new BadRequestError(
+      `workingDir must be a string (an absolute path), received ${typeof rawWorkingDir}.`,
+    );
+  }
   const workingDirError = validateWorkingDir(
-    typeof (body as { workingDir?: unknown }).workingDir === "string"
-      ? ((body as { workingDir?: string }).workingDir as string)
-      : undefined,
+    typeof rawWorkingDir === "string" ? rawWorkingDir : undefined,
   );
   if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
   // Same cap as the MCP surface, and for the same reason: each file's parent

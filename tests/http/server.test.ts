@@ -1020,3 +1020,49 @@ describe("credentials never reach an HTTP response", () => {
     });
   }
 });
+
+describe("failures and bad types are not 200s", () => {
+  const localFakes2: Array<{ close(): Promise<void> }> = [];
+  const localHandles2: Array<{ close(): Promise<void> }> = [];
+
+  afterEach(async () => {
+    for (const h of localHandles2.splice(0)) await h.close();
+    for (const f of localFakes2.splice(0)) await f.close();
+  });
+
+  async function serve(): Promise<{ port: number }> {
+    const fake = await startFakeOpenAi();
+    localFakes2.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    localHandles2.push(handle);
+    return { port: handle.port };
+  }
+
+  const post = (port: number, body: unknown): Promise<Response> =>
+    fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify(body),
+    });
+
+  it("rejects a workingDir of the wrong type instead of running in the server's directory", async () => {
+    // The guard was `typeof === "string" ? … : undefined`, so a number became
+    // "not provided": 200, and a write-capable agent ran in the SERVER's own
+    // directory — while the warning said workingDir "was not provided", which
+    // was false. MCP rejects the same argument by name.
+    const { port } = await serve();
+    const res = await post(port, {
+      model: "local-test",
+      messages: [{ role: "user", content: "hi" }],
+      workingDir: 123,
+    });
+    expect(res.status, "a mistyped workingDir was accepted").toBe(400);
+    const body = (await res.json()) as { error?: { message?: string } };
+    expect(JSON.stringify(body)).toMatch(/workingDir must be a string/);
+  });
+});

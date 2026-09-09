@@ -266,13 +266,27 @@ async function emitProgress(
   if (!extra?.sendNotification || progressToken === undefined) return;
   counter.value += 1;
   try {
+    // Sink. `_meta.event` carries the RAW dispatcher event — full stdout and
+    // stderr chunk text, untruncated error strings — and this was the one MCP
+    // path with no redaction. Over stdio it is caught by accident, by the
+    // process-wide stdout patch; over the HTTP MCP transport nothing catches
+    // it, because that path never touches sendJson, writeSse or stdout.
+    //
+    // Redacted by serializing and re-parsing rather than walking the object:
+    // the event shape is a union that grows, and a per-field scrub is exactly
+    // the per-site pattern that failed eight times before the sink design
+    // replaced it.
+    const safe = JSON.parse(redact(JSON.stringify({ event, route }))) as {
+      event: DispatcherEvent;
+      route?: string;
+    };
     await extra.sendNotification({
       method: "notifications/progress",
       params: {
         progressToken,
         progress: counter.value,
-        message: summarizeEvent(event, route),
-        _meta: { event, route },
+        message: redact(summarizeEvent(event, route)),
+        _meta: safe,
       },
     });
   } catch {
