@@ -114,6 +114,11 @@ describe("the docs a user reads must name the tools that actually exist", () => 
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
+    // Added when the README's reference half moved here: this file now carries
+    // the tool reference, so it is the doc most likely to drift, and it was
+    // outside the guard for exactly as long as it took the suite to notice the
+    // README had stopped naming them.
+    "docs/interfaces.md",
     "plugin/skills/delegating-work/SKILL.md",
   ];
 

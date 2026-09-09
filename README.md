@@ -1,18 +1,46 @@
 # harness-dispatch
 
+[![npm](https://img.shields.io/npm/v/harness-dispatch?logo=npm)](https://www.npmjs.com/package/harness-dispatch)
+[![CI](https://github.com/fstubner/harness-dispatch/actions/workflows/ci.yml/badge.svg)](https://github.com/fstubner/harness-dispatch/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/harness-dispatch)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/harness-dispatch)](LICENSE)
+
 **Route whole coding tasks — not API requests — to the agent CLIs you already pay for.**
 
-Each harness keeps its own scaffolding, test loop, and codebase index. There's no
+```bash
+npm install -g harness-dispatch
+harness-dispatch configure --yes
+harness-dispatch doctor
+```
+
+Before running that: [what it does on your machine](#what-it-does-on-your-machine).
+
+Each harness keeps its own scaffolding, test loop, and codebase index. There is no
 proxy in between and nothing is re-implemented: Claude Code stays Claude Code. One
 orchestrating agent picks the right one per task and spends your flat-rate
 subscription quota before anything metered.
 
-It's a local MCP server, so the harnesses on your machine (Claude Code, Codex,
-Cursor Agent, Antigravity CLI, plus any local or remote OpenAI-compatible endpoint)
-become tools any AI can call. Exposing them as real tools beats asking an agent to
-shell out to another CLI: models are trained on tool calling, so they actually use
-the tools they're given. (No Gemini CLI: Google discontinued that CLI's backend in
-mid-2026, and Antigravity CLI replaced it.)
+It is a local MCP server, so the harnesses on your machine — Claude Code, Codex,
+Cursor Agent, Antigravity CLI, plus any local or remote OpenAI-compatible endpoint —
+become tools any AI can call.
+
+Six tools: `dispatch` starts routed work, `job_status` checks or lists it,
+`cancel_job` stops one, `retry_job` runs a finished one again, `workspace`
+inspects or keeps an isolated run's changes, and `usage` reads route and quota
+state.
+
+## Documentation
+
+<!-- Absolute links on purpose: `docs/` is not in package.json's `files`, so a
+     relative link is dead on npmjs.com — the same reason plugin/README.md is
+     linked absolutely below. CHANGELOG.md IS shipped, so it stays relative. -->
+
+| | |
+|---|---|
+| [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md) | Adding a harness, endpoint modes, what `configure` writes |
+| [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) | The six tools, the REST endpoints, chaining delegated work |
+| [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | The status model, quota, and what leaves your machine |
+| [CHANGELOG](CHANGELOG.md) | What changed, and what each fix missed |
 
 ## What it looks like
 
@@ -51,6 +79,24 @@ Carry on working, then call `job_status` with that id for a live output tail or 
 finished result. The run lives in a detached process, so **nothing is lost to a client
 timeout — or to the server itself restarting mid-run.**
 
+## What it does on your machine
+
+Stated plainly, up front, rather than left to be inferred:
+
+- It **spawns the CLIs above as subprocesses** with your prompts.
+- Those CLIs **read and write files** under the `workingDir` you pass (that's the
+  point of the tool) and **run shell commands**, depending on the workspace and
+  safety policy in effect.
+- At most **4 agent CLIs run at once**; extra dispatches queue and start as slots
+  free. Tune with `max_concurrent_runs`.
+- `serve` additionally binds a local HTTP port: loopback only by default,
+  bearer-token gated. Read [the HTTP surface docs](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) before pointing `--host`
+  anywhere else.
+
+None of this is unusual for a coding-agent tool. It's here in one place so you can
+decide before installing rather than after.
+
+
 ## Install
 
 Needs Node.js `>=22.22.2` (so current LTS works) and at least one harness or endpoint.
@@ -59,12 +105,6 @@ Needs Node.js `>=22.22.2` (so current LTS works) and at least one harness or end
 `workspace` tool shells out to git to diff and apply an isolated run's changes,
 and the `git_worktree` isolation policy needs it. `doctor` reports whether it
 found one.
-
-```bash
-npm install -g harness-dispatch
-harness-dispatch configure --yes
-harness-dispatch doctor
-```
 
 `doctor` checks your install, config, auth and routes without contacting any
 provider. Add `--live` when you want it to prove a dispatch really works end to
@@ -120,23 +160,6 @@ relative link is dead on npmjs.com). Claude Code:
 `/plugin marketplace add <repo path or URL>` then
 `/plugin install harness-dispatch@harness-dispatch`. Codex:
 `node plugin/scripts/install-codex.mjs`.
-
-## What it does on your machine
-
-Stated plainly, up front, rather than left to be inferred:
-
-- It **spawns the CLIs above as subprocesses** with your prompts.
-- Those CLIs **read and write files** under the `workingDir` you pass (that's the
-  point of the tool) and **run shell commands**, depending on the workspace and
-  safety policy in effect.
-- At most **4 agent CLIs run at once**; extra dispatches queue and start as slots
-  free. Tune with `max_concurrent_runs`.
-- `serve` additionally binds a local HTTP port: loopback only by default,
-  bearer-token gated. Read [HTTP Surface](#http-surface) before pointing `--host`
-  anywhere else.
-
-None of this is unusual for a coding-agent tool. It's here in one place so you can
-decide before installing rather than after.
 
 ## Billing, and what it can't promise
 
@@ -222,548 +245,26 @@ build will do. On macOS and Linux the better route is `--sandbox enabled`,
 which constrains shell for real — untested here, so it is not shipped on by
 default.
 
-## Adding a harness
-
-`config.yaml` is entirely optional. There is no separate hidden defaults format —
-harness-dispatch ships with its own [`config.default.yaml`](config.default.yaml), the
-same shape you'd write yourself, and reads it as its built-in config. With no
-`config.yaml` of your own, the shipped one is filtered down to whichever of `claude`,
-`codex`, `agy` (Antigravity), and `cursor-agent` are on your PATH:
-
-```yaml
-# config.yaml can be empty, or not exist at all.
-```
-
-Adding a harness that isn't auto-detected — a second Codex route pinned to a specific
-model, or a local/hosted OpenAI-compatible endpoint — is a few lines:
-
-```yaml
-detect: true            # keep auto-detected harnesses as well; see below
-
-clis:
-  - name: codex_sol
-    harness: codex        # picks the dispatcher: claude_code | codex | cursor | antigravity_cli | generic
-    model: gpt-5.6-sol
-    tier: 1
-
-endpoints:
-  - name: ollama
-    base_url: http://localhost:11434/v1
-    model: qwen2.5-coder
-    tier: 3
-```
-
-**`detect: true` is doing real work there.** A config that lists any `clis:` or
-`endpoints:` is authoritative: it gets exactly the routes it names, and nothing is
-auto-detected alongside them. Without that line, the snippet above does not *add*
-`codex_sol` and `ollama` to your installed harnesses — it replaces them, and
-`claude_code_cli`, `codex_cli`, `cursor_cli` and `antigravity_cli` are gone.
-
-Which one you want depends on the goal:
-
-| You want | Write |
-|---|---|
-| My routes *plus* whatever is installed | `detect: true` alongside your entries |
-| Exactly the routes I list, nothing else | just the entries (the default) |
-| Nothing but auto-detection, minus a route | no `clis:`/`endpoints:`, plus `disabled: [name]` |
-| No routes at all | `detect: false` |
-
-See the shipped [`config.default.yaml`](config.default.yaml) for the full field
-reference (capability weights, tiers, escalation, workspace policy, and more) — copy
-it to your own `config.yaml` and edit, or run `harness-dispatch configure` to generate
-a starting point.
-
-**A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
-either.** `harness: generic` takes a `protocol:` block instead of reusing one of the
-4 built-in harnesses' flag/output conventions. `protocol.args` is a literal
-command-line argument list, written the same way you'd type it by hand — a handful of
-reserved `{{name}}` tokens are substituted (or expanded to zero or more real tokens) at
-dispatch time; everything else passes through verbatim:
-
-```yaml
-clis:
-  - name: my_custom_cli
-    harness: generic
-    command: my-cli           # the binary, resolved on PATH like any other
-    tier: 3
-    protocol:
-      args: ["-p", "{{prompt}}", "{{working_dir}}", "{{model}}", "{{safety}}", "--json"]
-      working_dir: { flag: "--cd" }              # omit {{working_dir}}/this to rely on process cwd alone
-      model: { flag: "--model" }                 # omit {{model}}/this if the CLI has no model override
-      safety:                                     # args per requested safety profile, via {{safety}}
-        read_only: ["--mode", "plan"]
-        workspace_edit: ["--mode", "accept-edits"]
-        full_auto: ["--dangerously-skip-permissions"]
-      output:
-        mode: json_field    # text | json_field | jsonl_stream
-        fields: [result, output, text]   # checked in order; dotted paths work ("message.content")
-```
-
-The full token reference:
-
-| Token | Expands to |
-| --- | --- |
-| `{{prompt}}` | the prompt text (one token) — omitted entirely if `stdin: true` |
-| `{{model}}` | `[model.flag, value]` if a model is set, else nothing |
-| `{{safety}}` | `safety[requested profile]` — zero or more tokens |
-| `{{working_dir}}` | `[working_dir.flag, dir, ...working_dir.extra_args_when_set]` if set, else nothing |
-| `{{file_dirs}}` | `[file_dirs.flag, dir]` repeated once per included file's directory |
-| `{{native_args}}` | `endpoint_native_args[endpoint_provider]`, only under `endpoint_mode: harness_native_endpoint` |
-
-**Protocols are named and selectable, not just inline.** `claude_code`, `codex`,
-`cursor`, and `antigravity_cli` are registered presets — every entry's `harness:` value
-in the shipped [`config.default.yaml`](config.default.yaml)'s `clis:` list is
-automatically selectable as a preset name. Reference one by name instead of retyping it:
-
-```yaml
-clis:
-  - name: my_cursor_fork
-    harness: generic
-    command: my-cursor-fork-cli   # a different binary that happens to share Cursor's CLI shape
-    protocol: cursor
-```
-
-Or start from a preset and override just what differs, for the common "95% the
-same, one flag different" case — `safety` merges per-profile (overriding just
-`full_auto` doesn't erase `read_only`/`workspace_edit` from the preset):
-
-```yaml
-clis:
-  - name: my_codex_fork
-    harness: generic
-    command: my-codex-fork-cli
-    protocol:
-      extends: codex
-      model: { flag: "--llm-model" }  # only this differs from the codex preset
-      safety:
-        full_auto: ["--yolo"]         # only this profile's args are replaced
-```
-
-A built-in route's own `protocol:` (under `overrides.claude_code_cli`, etc.) accepts a
-preset name or `extends:` too — it's parsed through the exact same code path as any
-other route.
-
-The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
-either — there is no per-harness dispatcher class or hardcoded TypeScript data for any
-of them in this codebase. All 4 are ordinary `clis:` entries in the shipped
-[`config.default.yaml`](config.default.yaml) — not a separate "defaults registry" in
-some other format, loaded through the exact same parser as your own `config.yaml`,
-covering each CLI's real flags including Codex's mid-run tool_use/thinking/usage
-streaming events via `event_rules` (see below). Every CLI-type route — built-in or
-user-added — runs through the one `GenericCliDispatcher` interpreter. Copy an entry
-from the shipped file into your own `config.yaml` and edit it directly (or add a
-`protocol:` block under `overrides.claude_code_cli`, etc.) and it replaces the default
-entirely — nothing about the 4 built-ins is more hardcoded than a route you add
-yourself.
-
-For a CLI whose events don't fit `text`/`json_field`'s single-parse-at-exit model —
-mid-run tool_use/thinking surfacing, token-usage aggregation across lines — use
-`output.mode: jsonl_stream` with `output.event_rules`:
-
-```yaml
-      output:
-        mode: jsonl_stream
-        event_rules:
-          - when: { type: "message" }             # every listed field must match this line
-            emit: text
-            text_field: message.content            # dotted paths work
-          - when: { "item.type": "tool_use" }
-            emit: tool_use
-            name_field: item.name
-            input_field: item.input
-          - when: { type: "thinking" }
-            emit: thinking
-            chunk_field: item.text
-          - when: {}                                # omit `when` (or leave it empty) to match every line
-            emit: usage
-            input_token_fields: [usage.input_tokens, usage.prompt_tokens]   # first present wins
-            output_token_fields: [usage.output_tokens, usage.completion_tokens]
-```
-
-Other fields worth knowing: `file_dirs: { flag: ... }` (paired with `{{file_dirs}}`)
-repeats a flag once per unique file directory (Antigravity's `--add-dir`);
-`api_key_env_var` injects `api_key` under a named env var for the child process (and
-clears it if ambient but unconfigured, so a stray key never leaks into a
-subscription-auth call); `success_requires_output: false` switches from the default
-strict contract (exit 0 AND a non-empty parsed field) to the lenient one Claude
-Code/Codex/Antigravity use (exit 0 alone, falling back to raw stdout/stderr text when
-parsing yields nothing). Billing for a `generic` route defaults to `unknown` (blocked
-until you classify it — there's no way to know an arbitrary CLI's real billing model) —
-set `billing_kind:` / `paid_usage_possible:` explicitly once you know it.
-
 ## CLI
 
 ```bash
-harness-dispatch                         # stdio MCP
-harness-dispatch configure               # detect harnesses and prepare config
-harness-dispatch configure --print       # inspect generated config YAML
-harness-dispatch connect                 # register with the MCP clients you have
-harness-dispatch connect --clients cursor  # no prompt; ids from the listing it prints
-harness-dispatch connect --dev           # point clients at THIS checkout's build
-harness-dispatch connect --remove        # take the entry back out
-harness-dispatch doctor                  # validate install, auth, config, and routes
-harness-dispatch doctor --live           # run one eligible live routed probe
-harness-dispatch doctor --live --allow-paid
-harness-dispatch status                  # readable route readiness
-harness-dispatch status --json           # structured route metadata
-harness-dispatch status --watch          # live status refresh
-harness-dispatch usage                   # per-route call counts, quota, billing kind
-harness-dispatch usage --json            # structured usage metadata
-harness-dispatch dispatch "<prompt>"     # route one task and print the result
-harness-dispatch dispatch "<prompt>" --service codex_cli --safety read_only --task-type review --no-fallback --json
-harness-dispatch serve --port 3333       # /mcp and /v1/* over local HTTP
-harness-dispatch auth show               # print HTTP bearer token
-harness-dispatch auth rotate             # rotate HTTP bearer token
+harness-dispatch configure        # detect harnesses and prepare config
+harness-dispatch doctor           # validate install, auth, config and routes
+harness-dispatch status           # route readiness, quota, breaker state
+harness-dispatch usage            # per-route call counts and billing kind
+harness-dispatch dispatch "..."   # route one task and print the result
+harness-dispatch serve            # /mcp and /v1/* over local HTTP
 ```
 
-Hidden compatibility aliases currently map old alpha commands to the new surface:
-`dashboard` and `list-services` map to `status`, `route <prompt>` is an alias of
-`dispatch`, and `mcp --http <port>` maps to `serve`.
-They are not part of the public vocabulary and may be removed without a major
-version bump.
+Every command, its flags, and the hidden compatibility aliases are in
+[MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md#cli).
 
-## MCP Surface
+## Everything else
 
-`tools/list` returns six tools:
-
-| Tool | Purpose |
-| --- | --- |
-| `dispatch` | Always starts new routed coding work — one task to the best-fit harness, or a fanout to several for independent opinions. Every call runs as a background job from the first moment: a fast task returns its full result inline (`completed: true`), a slow one returns `completed: false` plus a `jobId` to check on. Nothing is ever lost to a timeout — including the MCP call's own. |
-| `job_status` | Checks work started by `dispatch`. Pass the `jobId` it returned to get a `partialOutput` tail while running and the full `result` once done; omit `jobId` to list recent background dispatches (compact, newest first). |
-| `cancel_job` | Stops work started by `dispatch` — a wrong turn, a wrong directory, a superseded run. A job still waiting for a slot stops outright; a running one tears down within about a second (poll `job_status` to see it land), killing the agent CLI and its children. Files it already changed are **not** reverted, and a cancelled run is not counted as a route failure. |
-| `retry_job` | Re-runs a finished job's task from its own record — same prompt (as the delegate saw it), files, working directory, hints and workspace policy. Pass `service` to send the retry to a different route, which is the usual reason to retry: the task was fine and the route was not — the original's model is left behind when the new route does not declare it, reported as `droppedModel`. Returns a new jobId; the original is untouched. |
-| `workspace` | For a job that ran with `workspacePolicy: "copy"` or `"git_worktree"`, the agent's changes live in an isolated workspace and were **never** applied to your project. `action: "diff"` returns the real patch; `"apply"` applies it (refusing when your project has uncommitted changes, since the patch was built against a clean base — `force: true` overrides); `"discard"` deletes the workspace. The full patch is always written to the job directory, so `git apply` by hand is available either way. |
-| `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value. `service` and `models` are validated — an unknown route id is rejected, naming the valid ones — while `hints.model` is forwarded to the picked harness as-is, so a wrong model name fails at the harness instead. Pass `listModels: <route id>` to get that `openai_compatible` route's model catalog instead of (or alongside) the summary: the route's declared `models:` list when it has one, otherwise a live `GET /models` from the endpoint. |
-
-`workingDir` is effectively required when starting work: if you omit it, the task runs
-in the router server's own process directory instead of your project, and the response
-carries a `warning` field saying so.
-
-**How the grace window works.** `dispatch` starts the task as a background job
-immediately, then waits up to `graceSeconds` (default 25) for it to finish. Within the
-window you get the complete result inline, exactly as if the call had blocked. Past it
-you get the `jobId` — call `job_status` with that `jobId` to see a `partialOutput` tail
-while it runs and the full `result` once `completed`. Expect the `jobId` path to be
-ordinary rather than exceptional: real agent-CLI work regularly runs for minutes, so on
-this maintainer's install a little over half of live dispatches finish past the default
-window. Treat a `completed: false` as the normal shape of a substantial task, not as a
-sign anything went wrong. Because the run never depends on
-the MCP call staying open, a client-side timeout costs you the inline reply, never the
-work. Background runs default to a generous 60-minute ceiling meant only to catch a
-genuinely hung process (stuck waiting on input, a stalled network call), not to cap
-normal work — raise it per call with `hints.timeoutMs` (milliseconds), or set a
-permanent per-route default with `timeout_ms:` in that service's config entry.
-Precedence is `hints.timeoutMs` > the service's `timeout_ms` > the 60-minute default.
-
-Starting a task:
-
-```json
-{
-  "prompt": "Review this package for release blockers.",
-  "files": [],
-  "workingDir": "/path/to/project",
-  "workspacePolicy": "shared_locked",
-  "hints": {
-    "model": "gpt-5.4",
-    "taskType": "review",
-    "preferLargeContext": false,
-    "safetyProfile": "workspace_edit"
-  }
-}
-```
-
-For fanout (each route that outlives the grace window returns its own `jobId`):
-
-```json
-{
-  "mode": "fanout",
-  "prompt": "Compare the maintainability tradeoffs in this refactor.",
-  "models": ["claude-opus-4-6", "gpt-5.4"],
-  "workspacePolicy": "copy",
-  "hints": {
-    "taskType": "plan",
-    "safetyProfile": "workspace_edit"
-  }
-}
-```
-
-Checking and listing (`job_status`): `{"jobId": "job-..."}` returns status plus
-`partialOutput` or the final `result`; `{}` (no `jobId`) returns the 20 most recent
-background dispatches, newest first, plus an `omitted` count when there are more. On `dispatch`, force pure async with `"graceSeconds": 0`, or force a specific
-backend with a top-level `"service"` (single mode only). Nothing is lost by checking
-late — everything persists under `~/.harness-dispatch/jobs/<jobId>/`.
-
-Status is exposed as resources:
-
-- `harness-dispatch://status`
-- `harness-dispatch://status.json`
-
-## HTTP Surface
-
-`harness-dispatch serve` starts an authenticated local server on `127.0.0.1`.
-
-Endpoints:
-
-- `GET /health` — liveness, and the **only** route served without a token, so a
-  deploy gate or container probe can ask without being handed a credential. It
-  answers `{"status","service","version"}` and nothing else: no routes, no
-  endpoints, no quota, no config.
-- `POST /mcp` for streamable HTTP MCP
-- `POST /v1/chat/completions` with `stream: true` sends the answer as SSE
-  deltas. An endpoint route streams its text as it arrives; a CLI harness emits
-  protocol on stdout, so its answer is sent once, at completion — the deltas
-  never carry harness protocol either way. **Streaming creates no job record**,
-  so unlike the non-streaming call there is no `jobId` to poll and an
-  interrupted stream cannot be recovered. Use the non-streaming form for work
-  you would mind losing.
-- `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
-  `harness-dispatch://status.json`). Authenticated, because that answer is not
-  for strangers.
-- `GET /v1/usage` — per-route call counts, quota, billing kind, and breaker state only
-- `GET /v1/models` — OpenAI-style model list; each entry's `id` is a route id you can
-  pass as `model` in `/v1/chat/completions`
-
-HTTP uses the bearer token from `harness-dispatch auth show`. The same token protects
-MCP-over-HTTP and `/v1/*`.
-
-`--host <host>` overrides the default `127.0.0.1` bind address if you need to reach the
-server from another machine. Only pass a non-loopback host if you actually mean to —
-this exposes a bearer-token-gated server, and everything the dispatched harness can do
-(spawn CLIs, read/write files in `workingDir`), to your network. `serve` prints a
-warning to stderr when it detects this so it isn't silent.
-
-Example:
-
-```bash
-TOKEN="$(harness-dispatch auth show)"
-
-curl http://127.0.0.1:3333/v1/chat/completions \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{
-    "model": "gpt-5.4",
-    "messages": [{"role": "user", "content": "Fix the failing tests."}],
-    "workingDir": "/path/to/project",
-    "safetyProfile": "workspace_edit",
-    "workspacePolicy": "copy"
-  }'
-```
-
-The REST surface is OpenAI-compatible enough for local clients that can speak
-`/v1/chat/completions`. The `model` field is treated as a routing/model hint.
-
-Non-streaming completions are backed by the same persisted job pipeline as the
-MCP `dispatch` tool: the reply carries `harness_dispatch.jobId`, and the same id
-is sent early as an `x-harness-dispatch-job-id` response header. If your client
-times out mid-run (curl defaults, CI step limits), the run still finishes and
-the result persists — recover it with the `job_status` MCP tool or by reading
-`~/.harness-dispatch/jobs/<jobId>/output/`.
-
-## Endpoint Modes
-
-harness-dispatch supports two local/custom endpoint patterns:
-
-- `direct_openai_compatible`: harness-dispatch calls an OpenAI-compatible
-  `/v1/chat/completions` endpoint directly. This is the right mode for Ollama,
-  LM Studio, vLLM, LiteLLM, and private local HTTP model servers.
-- `harness_native_endpoint`: a downstream CLI keeps its agent scaffold but is
-  pointed at a supported local provider. Codex currently supports this for
-  `ollama` and `lmstudio` through `--oss --local-provider`.
-
-Example direct local route:
-
-```yaml
-endpoints:
-  - name: ollama
-    base_url: http://localhost:11434/v1
-    model: qwen2.5-coder
-    endpoint_mode: direct_openai_compatible
-    endpoint_provider: ollama
-    wire_protocol: openai_chat_completions
-```
-
-Example Codex harness-native local route, as a `clis:` entry (the same shape
-`configure` writes; everything not set here comes from the shipped `codex` defaults):
-
-```yaml
-clis:
-  - name: codex_ollama
-    harness: codex
-    model: qwen3-coder:latest
-    endpoint_mode: harness_native_endpoint
-    endpoint_provider: ollama
-    wire_protocol: openai_chat_completions
-    billing_kind: local_compute
-    paid_usage_possible: false
-    tier: 3
-    weight: 0.75
-    cli_capability: 1.0
-    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`)
-    capabilities:
-      execute: 0.8
-      plan: 0.7
-      review: 0.7
-```
-
-The older top-level `services:` format still loads, but it is a separate format:
-a file that uses it has its `clis:`/`endpoints:` ignored with a warning, so do not
-mix the two.
-
-## Configure
-
-`configure` is the main setup flow. It does four things, in order, and prompts for
-nothing except the final registration:
-
-1. Detect installed harness CLIs on PATH (or load the existing config, when there
-   is one it did not write itself — see the note on re-runs under Install).
-2. Print every route with its billing classification and effective safety
-   profile, and say which routes are blocked until you opt in to paid usage.
-3. Write the config YAML (`--yes`; without it, nothing is written).
-4. Offer to register with each MCP client it finds, or print the snippet
-   (`--no-clients`).
-
-There is no interactive choice of harnesses, model priority or safety profile:
-edit the written file for those.
-
-The current command is conservative: it prints detected routes by default and writes
-only when explicitly asked with `--yes`.
-
-## Status Model
-
-`status --json`, `/v1/status`, and `harness-dispatch://status.json` share the same
-shape. Each route includes:
-
-- route id and harness
-- billing provider, surface, auth source, billing kind, paid-use flags, and confidence
-- configured and effective safety profile
-- effective workspace policy
-- availability
-- tier and model metadata
-- quota score and local call count
-- circuit breaker state — a tripped route's remaining cooldown is persisted to disk
-  (one file per route under `~/.harness-dispatch/breaker_state/`), so a server
-  restart mid-cooldown still excludes that route instead of retrying an exhausted
-  one with a clean slate; a pre-0.5 single-blob `breaker_state.json` is migrated
-  automatically on first read
-- skip reason when a route is disabled, unavailable, paid-blocked, unknown-billing,
-  safety-incompatible, or circuit-broken
-- token limits when known
-
-Safety profiles:
-
-- `read_only`: inspect-only routes.
-- `workspace_edit`: default; routes may edit files in the workspace without broad shell access.
-- `full_auto`: permits routes that require shell/write automation beyond workspace-edit mode.
-
-Workspace policy:
-
-- `shared`: run directly in the caller's `workingDir`.
-- `shared_locked`: run directly in `workingDir`, but serialize write-capable
-  dispatches for the same directory across ALL processes — concurrent dispatches
-  from separate server instances and detached job runners queue on a heartbeated
-  cross-process lock rather than editing the directory at the same time.
-- `copy`: copy the project into a workspace OUTSIDE it, run the agent there, and
-  return the isolated workspace path plus changed-file metadata. Both isolated
-  policies keep their workspaces under the system temp directory; nothing is
-  written inside your project. Set `HARNESS_DISPATCH_WORKSPACES_DIR` to put them
-  somewhere else — on the project's own volume, for instance, where a
-  copy-on-write clone is possible.
-- `git_worktree`: create a detached git worktree for the route and return the
-  worktree path plus changed-file metadata. This starts from `HEAD`, so
-  uncommitted source-workspace changes are not copied.
-
-Write-capable fanout is allowed only with `workspacePolicy: "copy"` or
-`workspacePolicy: "git_worktree"`. These modes isolate project state and process
-cwd. They are not hardened OS sandboxes: a route with broad shell permission can
-still access the host unless the downstream harness or operating system enforces
-that boundary.
-
-Provider notes:
-
-- Claude Code `claude -p` is classified as included plan usage. Anthropic announced a
-  separate Agent SDK credit pool for it (2026-06-15) and paused that change before it
-  took effect; the classification will move only if the split actually ships.
-- Codex CLI/SDK uses the official Codex product surface unless a route is explicitly
-  configured with an API key, in which case it is API billing.
-- Cursor Agent CLI is classified as included usage with possible on-demand continuation.
-- OpenAI-compatible `api.openai.com` routes are metered; known local runtimes are local;
-  unknown loopback/custom endpoints require explicit billing metadata.
-
-## Observability & Privacy
-
-harness-dispatch contains **no phone-home telemetry** — nothing is ever sent to
-the author or any third party. OpenTelemetry tracing is available for your own
-use, but **it is off by default** — nothing OpenTelemetry-related initializes
-unless you opt in:
-
-- Enable it with `telemetry: { enabled: true }` in `config.yaml`, or the
-  `HARNESS_DISPATCH_TELEMETRY=1` env var.
-- Once enabled, traces export via OTLP/HTTP to `http://localhost:4318` (the
-  standard local collector port) by default. If nothing is listening there,
-  spans are simply dropped — no data leaves your machine.
-- Traces only go somewhere else if *you* set `OTEL_EXPORTER_OTLP_ENDPOINT` to
-  a remote collector.
-- `OTEL_SDK_DISABLED=true` forces initialization off even if `telemetry:` is
-  enabled in config.
-
-Every dispatch also appends one JSONL line to a local
-dispatch log at `~/.harness-dispatch/logs/dispatches.jsonl` (override the
-directory with `HARNESS_DISPATCH_LOG_DIR`) — route, success, duration, token
-counts, and a capped error string, for post-hoc debugging. It's local-only,
-size-capped via single-file rotation, and never sent anywhere. Job artifacts
-(prompt, snapshotted files, stdout/stderr, result) live under
-`~/.harness-dispatch/jobs/<jobId>/` and are pruned after 7 days of inactivity by
-default — set `retention: { jobs_days: N }` in `config.yaml` (or
-`HARNESS_DISPATCH_JOB_MAX_AGE_MS` for a millisecond override) to change that
-window. `0` means keep forever, and a running or queued job with a live
-heartbeat is never pruned regardless of the window.
-
-At most **4 agent CLIs run at once**, machine-wide. Dispatches past that limit
-wait in `queued` and start as slots free — you still get a `jobId` back
-immediately and nothing is rejected or lost, only delayed. The bound exists
-because agent CLIs are heavyweight processes, not fan-outable HTTP calls: a
-measured burst of 13 concurrent runs exhausted memory and failed half of them.
-Change it with `max_concurrent_runs: N` in `config.yaml`. `0` lifts the cap —
-jobs no longer queue for a slot — while still running them through the
-supervisor pool, so runner processes stay bounded at 4 however many jobs are in
-flight. Memory then scales with the harnesses you actually launch rather than
-with a per-job wrapper.
-
-Prompts and outputs flow only to the harnesses/endpoints you configured. **The
-router makes no other network call by default.**
-
-Routes rank on the `tier` and `weight` you set. Optionally, public Arena ELO
-benchmark data can inform ranking and derive tiers automatically:
-
-```yaml
-leaderboard:
-  enabled: true    # default false
-```
-
-Turning it on adds one GET to `api.wulong.dev` per process, refreshed daily.
-It sends nothing about you or your prompts. It is off by default because a
-benchmark maintained elsewhere should not quietly reorder the subscriptions
-you are paying for, and because a routing tool should not need the network to
-decide which of your local CLIs to run.
-
-## Chaining delegated work
-
-Pass the jobIds of earlier dispatches as `contextJobs` and their prompts and
-outputs are rendered into the new prompt directly — arguments to the `dispatch`
-MCP tool, not an HTTP body (the OpenAI-compatible endpoint does not implement
-`contextJobs`, and refuses it rather than accepting it and ignoring it):
-
-```json
-{ "prompt": "Now write the migration.", "contextJobs": ["job-1786977300001-0f0aaaaa"] }
-```
-
-Without it, chaining means reading the first job's output into your own context
-and re-summarising it into the second prompt — which spends the context that
-delegating was meant to save, and loses detail in the retelling.
-
-Injected context is capped (24k characters total, 8k per job, 16 jobs) so it
-cannot crowd out the task itself, and a referenced job that is missing or still
-running is reported in the preamble rather than silently dropped.
+Route ids, protocol blocks and per-harness overrides live in
+[Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md). The tool and endpoint reference is in
+[MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md). Quota, breaker state and telemetry
+are in [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
 
 ## Development
 
