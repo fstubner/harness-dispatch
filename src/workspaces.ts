@@ -982,6 +982,23 @@ function escapeNote(files: string[], originalWorkingDir: string): string[] {
   ];
 }
 
+/**
+ * Note for a shared run whose `files` reach outside the working directory.
+ *
+ * Distinct from `escapeNote`: there is no isolation to widen under `shared`,
+ * so "ISOLATION WIDENED" would be false. The disclosure is the same, though —
+ * naming one file grants the agent its whole parent directory.
+ */
+function grantNote(files: string[], originalWorkingDir: string): string[] {
+  const dirs = escapedFiles(files, originalWorkingDir);
+  if (dirs.length === 0) return [];
+  return [
+    `DIRECTORIES GRANTED: ${dirs.length} outside the working directory ` +
+      `${dirs.length === 1 ? "was" : "were"} granted to the agent because \`files\` referenced ` +
+      `${dirs.length === 1 ? "a file" : "files"} there — ${dirs.join(", ")}.`,
+  ];
+}
+
 function attachWorkspace(result: DispatchResult, workspace: WorkspaceRun): DispatchResult {
   return {
     ...result,
@@ -1008,10 +1025,23 @@ async function prepareSharedWorkspace(
         effectiveWorkingDir: originalWorkingDir,
         isolated: false,
         securityBoundary: "none",
-        notes:
+        notes: [
           policy === "shared_locked"
-            ? ["Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."]
-            : ["Shared workspace dispatches run directly in the caller's working directory."],
+            ? "Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."
+            : "Shared workspace dispatches run directly in the caller's working directory.",
+          // The `files` schema says "the response carries a warning naming the
+          // directories when that happens" — unconditionally, as a caller
+          // reads it. It was wired into the copy and worktree paths only, so
+          // under `shared`, WHICH IS THE DEFAULT, a path outside workingDir
+          // still granted its parent directory via --add-dir and nothing said
+          // so. A security audit reproduced a single `files` entry handing the
+          // agent a user home subdirectory, with no warning in the reply.
+          //
+          // The wording differs because the fact differs: nothing was isolated
+          // here to widen. What the caller needs to know is that naming one
+          // file granted the agent its whole directory.
+          ...grantNote(files, originalWorkingDir),
+        ],
       });
     },
   };
