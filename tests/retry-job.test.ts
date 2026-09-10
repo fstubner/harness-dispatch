@@ -223,6 +223,19 @@ describe("retryJob", () => {
     ).rejects.toThrow(/Unknown service: ghost/);
   });
 
+  // The same `in` guard, on the other surface that accepts a free-string route
+  // id. `retry_job`'s `service` is `z.string().optional()` with no enum, so an
+  // inherited Object key reaches the check and passes it.
+  for (const [i, key] of ["constructor", "toString", "__proto__"].entries()) {
+    it(`refuses the inherited key '${key}' as a retarget`, async () => {
+      const jobId = `job-170000000002${i}-aaaa000${i}`;
+      await plantFinished(jobId);
+      await expect(
+        retryJob(jobId, await buildDeps(), { service: key }),
+      ).rejects.toThrow(/Unknown service/);
+    });
+  }
+
   it("refuses to retry a job that is still running", async () => {
     // Two attempts racing on one working directory is the failure this
     // prevents — the original is still editing files.
