@@ -1,0 +1,34 @@
+# Keeps the SHA-pinned actions in .github/workflows from going stale.
+#
+# The workflows pin every action to a commit rather than a major tag, because a
+# tag is a pointer its owner can move and these workflows run with the
+# repository's contents — and, in publish.yml, with npm trusted publishing.
+# That safety has a cost: a commit pin never updates on its own.
+#
+# Nothing else covers it. This repository has no scheduled version updates;
+# Dependabot runs here from the repository's security-updates setting, which is
+# why npm PRs arrive with no config file. That mechanism covers package
+# ecosystems and NOT GitHub Actions, so without this file the pins would sit
+# wherever they were first set.
+#
+# Deliberately github-actions only. Declaring npm here would switch on
+# scheduled version updates for it as well, turning the current
+# security-only stream into a weekly one. Security updates are a repository
+# setting and keep working regardless of what this file says.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    # "/" is how the Actions ecosystem is addressed: it scans
+    # .github/workflows, so ci.yml, pages.yml and publish.yml are all covered
+    # by this single entry.
+    directory: "/"
+    schedule:
+      interval: weekly
+    # One PR for all of them. Five pinned actions would otherwise mean up to
+    # five separate PRs a week, and a pile of single-line bumps is how a solo
+    # maintainer learns to stop reading them. Dependabot rewrites both the SHA
+    # and the version comment beside it.
+    groups:
+      actions:
+        patterns:
+          - "*"

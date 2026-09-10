@@ -103,6 +103,67 @@ describe("copy workspaces", () => {
     };
   }
 
+  it("a gone workspace does not blame retention for it", async () => {
+    // `discardWorkspace` already knows a root goes missing three ways —
+    // retention pruned it, a user deleted it, or a worktree was removed through
+    // git — and says so in its own comment. buildWorkspacePatch asserted the
+    // first as fact, which blames the clock for something this tool ASKS for:
+    // every isolated dispatch returns a cleanupHint telling the caller to
+    // remove the workspace when they are done with it. Follow that, then ask
+    // for the patch, and the answer was that you should have resolved the job
+    // before it aged out — which it had not.
+    const run = await copyRun();
+    await fs.rm(run.workspaceRoot!, { recursive: true, force: true });
+
+    const err = await buildWorkspacePatch(run).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+
+    expect(err, "a missing workspace produced no error at all").not.toBeNull();
+    expect(err, "retention is still named as the only cause").toMatch(/removed/i);
+    expect(err).toMatch(/cleanupHint/);
+    // The patch is written to the job directory at dispatch time, so the work
+    // is often still recoverable — the old message never said where to look.
+    expect(err, "nothing told the user where the patch already is").toMatch(/job directory/i);
+  });
+
+  it("a forced apply names a COMMITTED divergence, not just an uncommitted one", async () => {
+    // The dangerous half of the pair. The non-forced refusal tells you to
+    // "commit or stash first" — and committing is exactly what walks you into
+    // the case that had no reporting at all: `moved` was computed only when
+    // force was absent, and the note only ever listed UNCOMMITTED changes, so
+    // a committed change left the tree clean and was overwritten with the same
+    // cheerful "Applied N bytes" as a clean run.
+    //
+    // An audit reproduced a committed line silently gone. Recoverable from
+    // git, but nothing told the user to look.
+    // `copy`, which is where the audit reproduced it. Under `git_worktree` a
+    // forced apply writes conflict markers and returns applied:false — loud,
+    // and documented — so the silent case only exists on this policy.
+    const run = await copyRun();
+    const proj = run.originalWorkingDir;
+    await fs.writeFile(path.join(proj, "app.js"), "const a = 4321;\n", "utf8");
+    const git = async (...args: string[]): Promise<void> => {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(execFile)("git", args, { cwd: proj });
+    };
+    await git("add", "-A");
+    await git("commit", "-qm", "user work");
+
+    const out = await applyWorkspace("job-1700000000009-99999999", jobDir, run, {
+      force: true,
+    });
+
+    expect(out.applied, out.message).toBe(true);
+    expect(out.message, "the committed divergence was not named").toMatch(/FORCED over/);
+    expect(out.message).toMatch(/since the dispatch started/);
+    expect(out.message, "the file it ran over was not named").toContain("app.js");
+    // And it must still point at where the work went.
+    expect(out.message).toMatch(/git (diff|history)/);
+  });
+
   it("produces a patch of what the agent changed, with project-relative paths", async () => {
     const run = await copyRun();
     const patch = await buildWorkspacePatch(run);

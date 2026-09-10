@@ -266,13 +266,27 @@ async function emitProgress(
   if (!extra?.sendNotification || progressToken === undefined) return;
   counter.value += 1;
   try {
+    // Sink. `_meta.event` carries the RAW dispatcher event — full stdout and
+    // stderr chunk text, untruncated error strings — and this was the one MCP
+    // path with no redaction. Over stdio it is caught by accident, by the
+    // process-wide stdout patch; over the HTTP MCP transport nothing catches
+    // it, because that path never touches sendJson, writeSse or stdout.
+    //
+    // Redacted by serializing and re-parsing rather than walking the object:
+    // the event shape is a union that grows, and a per-field scrub is exactly
+    // the per-site pattern that failed eight times before the sink design
+    // replaced it.
+    const safe = JSON.parse(redact(JSON.stringify({ event, route }))) as {
+      event: DispatcherEvent;
+      route?: string;
+    };
     await extra.sendNotification({
       method: "notifications/progress",
       params: {
         progressToken,
         progress: counter.value,
-        message: summarizeEvent(event, route),
-        _meta: { event, route },
+        message: redact(summarizeEvent(event, route)),
+        _meta: safe,
       },
     });
   } catch {
@@ -450,7 +464,18 @@ async function startSingle(
   // rejects unknown `models` at the boundary; single mode let the same
   // mistake through, burned a job dir, and returned a success-shaped
   // completed:true / success:false — one input, two behaviours.
-  if (input.service !== undefined && !(input.service in deps.holder.state.config.services)) {
+  //
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so every
+  // inherited Object key passed this guard for a config declaring no such
+  // route. Measured on all four of `constructor`, `toString`, `__proto__` and
+  // `hasOwnProperty`: the job directory this check exists to prevent was
+  // created, and the dispatch came back `completed: true` / `success: false`
+  // with `error: "route is disabled"` — a false statement, since nothing is
+  // disabled and the route does not exist. `evaluateRoutePolicy` had simply
+  // read `enabled` off a function. `status.ts` already uses `Object.hasOwn`
+  // here, with a comment naming `constructor`; the lesson never reached the
+  // two guards a caller can actually reach.
+  if (input.service !== undefined && !Object.hasOwn(deps.holder.state.config.services, input.service)) {
     throw new Error(
       `Unknown service: ${input.service}. Valid route ids: ` +
         `${Object.keys(deps.holder.state.config.services).join(", ")}. ` +
