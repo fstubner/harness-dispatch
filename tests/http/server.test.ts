@@ -583,6 +583,69 @@ describe("HTTP server", () => {
     expect(text).toContain("[DONE]");
   });
 
+  it("gives every streamed chunk the id, object and created an OpenAI client requires", async () => {
+    // A frame carried `choices` alone. `id`, `object` and `created` are
+    // required on a chunk, and the non-streaming envelope on this same
+    // endpoint has always sent them — so one endpoint answered the same client
+    // two structurally different ways depending on one boolean, and a client
+    // that reads `chunk.id` or switches on `object` got undefined from the
+    // streaming half.
+    //
+    // The stability assertions are the point, not the presence ones: minting
+    // the id inside the frame builder would satisfy "has an id" while making
+    // every frame a different response to anything grouping or deduping by it.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local-test",
+        stream: true,
+        messages: [{ role: "user", content: "say hello" }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+
+    const frames = text
+      .split("\n\n")
+      .map((block) => block.replace(/^data: /, "").trim())
+      .filter((payload) => payload !== "" && payload !== "[DONE]")
+      .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+    // Content frames plus the terminal stop frame; an error frame would also
+    // land here and is deliberately NOT given chunk fields, so only frames
+    // carrying `choices` are the chunks under test.
+    const chunks = frames.filter((f) => Array.isArray(f.choices));
+    expect(chunks.length, "no chunk frames were parsed").toBeGreaterThanOrEqual(2);
+
+    for (const chunk of chunks) {
+      expect(chunk.object, "a chunk claimed the wrong type").toBe("chat.completion.chunk");
+      expect(typeof chunk.id, "a chunk had no id").toBe("string");
+      expect(String(chunk.id)).toMatch(/^chatcmpl-/);
+      expect(Number.isInteger(chunk.created), "created was not a unix second").toBe(true);
+      expect(typeof chunk.model, "a chunk named no model").toBe("string");
+    }
+
+    expect(new Set(chunks.map((c) => c.id)).size, "the id changed between frames").toBe(1);
+    expect(new Set(chunks.map((c) => c.created)).size, "created changed between frames").toBe(1);
+
+    // The frame a client attributes finish_reason to must belong to the chunks
+    // it terminates.
+    const stop = chunks.at(-1)!;
+    expect((stop.choices as Array<{ finish_reason?: string }>)[0]?.finish_reason).toBe("stop");
+    expect(stop.id).toBe(chunks[0]!.id);
+
+    // `model` is asserted present but not constant: it is filled in from the
+    // router's decision, which is not known before the stream opens, so
+    // pinning it across frames would assert something this code does not
+    // promise.
+  });
+
   it("does NOT emit an SSE error frame when a fallback then succeeds", async () => {
     // The frame was written the moment a route failed — before the router had
     // tried the next one. So a request that succeeded on the fallback still
