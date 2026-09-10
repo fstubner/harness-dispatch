@@ -1875,6 +1875,34 @@ describe("Router.routeTo", () => {
     expect(decision).toBeNull();
   });
 
+  // The same rejection for a name that is not a route but IS an inherited
+  // Object key. `service in this.dispatchers` was true for every one of them,
+  // and the lookup on the next line then returned a real function — so
+  // `dispatcher === undefined` did not catch it either, and a function
+  // travelled on to be treated as a dispatcher.
+  //
+  // Both explicit paths are covered because `routeTo` drains `#runStreamTo`:
+  // the CLI's `dispatch --service` and every MCP dispatch carrying an explicit
+  // `service` meet at this one guard. Written because sabotaging it left the
+  // whole suite green — the same discovery the routePolicy test above records
+  // making about this very method.
+  for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    it(`refuses the inherited key '${key}' on routeTo and streamTo`, async () => {
+      const router = new Router(makeConfig([]), quota, {}, leaderboard);
+
+      const { result } = await router.routeTo(key, "hi", [], "/tmp");
+      expect(result.success, `routeTo accepted '${key}' as a route`).toBe(false);
+      expect(result.error).toMatch(/Unknown service/);
+
+      let final: DispatchResult | null = null;
+      for await (const event of router.streamTo(key, "hi", [], "/tmp")) {
+        if (event.event.type === "completion") final = event.event.result;
+      }
+      expect(final?.success, `streamTo accepted '${key}' as a route`).toBe(false);
+      expect(final?.error).toMatch(/Unknown service/);
+    });
+  }
+
   it("dispatches directly to the requested service with reason 'explicit'", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const router = new Router(
