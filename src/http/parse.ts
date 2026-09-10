@@ -497,10 +497,22 @@ export function parseChatRequest(raw: unknown): {
   // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
   // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
   // exists to prevent, on the surface CI uses.
+  // A non-string workingDir is REJECTED, not quietly treated as absent.
+  //
+  // The ternary turned `workingDir: 123` into "not provided", so the request
+  // succeeded 200 and a write-capable agent ran in the SERVER's own directory
+  // — while the warning said workingDir "was not provided", which was false:
+  // it was provided, as the wrong type. MCP rejects the same argument by
+  // name, and `files`/`models`/`hints.model` are all type-checked one screen
+  // away. This is the rule this module sets for itself at the top of the file.
+  const rawWorkingDir = (body as { workingDir?: unknown }).workingDir;
+  if (rawWorkingDir !== undefined && rawWorkingDir !== null && typeof rawWorkingDir !== "string") {
+    throw new BadRequestError(
+      `workingDir must be a string (an absolute path), received ${typeof rawWorkingDir}.`,
+    );
+  }
   const workingDirError = validateWorkingDir(
-    typeof (body as { workingDir?: unknown }).workingDir === "string"
-      ? ((body as { workingDir?: string }).workingDir as string)
-      : undefined,
+    typeof rawWorkingDir === "string" ? rawWorkingDir : undefined,
   );
   if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
   // Same cap as the MCP surface, and for the same reason: each file's parent
@@ -552,13 +564,44 @@ export function parseChatRequest(raw: unknown): {
   };
 }
 
+/**
+ * One completion id in the shape OpenAI clients expect.
+ *
+ * Shared with the streaming path deliberately: every chunk of one stream must
+ * repeat the SAME id, so it is minted once per request there rather than per
+ * frame, and the `chatcmpl-` convention lives in one place.
+ */
+export function newCompletionId(): string {
+  return `chatcmpl-${randomUUID()}`;
+}
+
+/**
+ * The identity every chunk of one streamed response repeats.
+ *
+ * `id` and `created` are fixed for the life of the stream — a client that
+ * groups chunks by id (or dedupes on it) sees one response, not one per frame.
+ * `model` is mutable because the route, and therefore the model that answered,
+ * is not known until the router has picked one: it starts as whatever the
+ * caller asked for and is filled in once a decision arrives, matching what the
+ * non-streaming path reports.
+ */
+export interface StreamIdentity {
+  id: string;
+  created: number;
+  model: string;
+}
+
+export function newStreamIdentity(model: string): StreamIdentity {
+  return { id: newCompletionId(), created: Math.floor(Date.now() / 1000), model };
+}
+
 export function completionEnvelope(
   content: string,
   model: string,
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
-    id: `chatcmpl-${randomUUID()}`,
+    id: newCompletionId(),
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,

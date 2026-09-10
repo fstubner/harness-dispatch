@@ -265,6 +265,35 @@ services:
     const warningText = cfg.configWarnings!.join("\n");
     expect(warningText).toContain("HR_TEST_DEFINITELY_UNSET_VAR");
   });
+
+  // An inherited Object key is not a set env var.
+  //
+  // Node's env object reports every one of them as present — `"constructor" in
+  // process.env` is true — and then RETURNS the inherited function from the
+  // get. So this reference was not reported as unset (the whole point of the
+  // two cases above) and substituted the function instead. Measured before the
+  // fix: `base_url` became "https://host/function () { [native code] }/v1"
+  // with configWarnings empty. Both halves needed the same gate; fixing only
+  // the warning would still have spliced the function source in.
+  for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    it(`treats the inherited key \${${name}} as unset rather than substituting it`, async () => {
+      const yamlText = `
+endpoints:
+  - name: local_inference
+    base_url: https://host/\${${name}}/v1
+    model: m
+`;
+      const p = await writeTmpYaml(`inherited-${name.replace(/_/g, "")}.yaml`, yamlText);
+      const cfg = await loadConfig(p, { whichFn: noCliFound });
+      expect((cfg.configWarnings ?? []).join(" "), "an unresolvable reference went unreported").toContain(
+        name,
+      );
+      expect(
+        cfg.services.local_inference!.baseUrl,
+        "a native function was interpolated into the config",
+      ).not.toContain("native code");
+    });
+  }
 });
 
 describe("loadConfig — auto-detect + overrides", () => {
