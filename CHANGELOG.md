@@ -4,6 +4,113 @@ Notable changes per release. Format follows [Keep a Changelog](https://keepachan
 this project uses [semantic versioning](https://semver.org/spec/v2.0.0.html) and is
 pre-1.0, so minor versions can carry behaviour changes.
 
+## [Unreleased]
+
+### Security
+
+- **MCP progress notifications are redacted.** `_meta.event` carried the raw
+  dispatcher event — full stdout and stderr chunk text, untruncated errors — and
+  was the one MCP path with no redaction of its own. Over stdio the
+  process-wide stdout patch caught it by accident; over the HTTP MCP transport
+  nothing did, because that path never touches the JSON or SSE writers.
+
+- **A malformed job id in `contextJobs` can no longer read outside the jobs
+  root.** The id was validated inside the `try`, so a bad one threw straight
+  into the `catch`, which then read three fixed filenames under the still
+  unvalidated path. An audit reproduced `../outside` rendering a planted prompt
+  into the preamble prepended to a delegate's prompt. Not reachable from either
+  public surface — the MCP schema and the HTTP parser both refuse it first —
+  but the next caller would have reintroduced it.
+
+- **`files` pointing outside `workingDir` is disclosed under the default
+  workspace policy.** The schema promises a warning naming the directories,
+  unconditionally; the warning was wired into the `copy` and `git_worktree`
+  paths only. Under `shared`, naming one file granted the agent its whole
+  parent directory with nothing said.
+
+- **The state directory is no longer created world-readable.** It was the only
+  one of nine directory-creating sites passing no mode, so its permissions
+  depended on which code path created it first — 0755 at the default umask,
+  0777 at umask 000, where every sibling produces 0700. With the root
+  writable, another user can plant a `config.yaml` there, and that path is
+  live: a planted file steers routes and credential references.
+
+- **Rotating the HTTP token tightens its permissions.** A write's `mode:`
+  applies only when the file is created, so rotating over an existing 0644
+  token left it 0644 — and you rotate a token because it leaked.
+
+- **Dependency advisories:** js-yaml 4.3.1 → 4.3.2 (GHSA-2883-xcg3-v3hh) and
+  hono 4.13.1 → 4.13.7 via the MCP SDK. Lockfile only; the declared ranges
+  already allowed both.
+
+### Fixed
+
+- **A forced `workspace apply` says when it overwrote committed work.** The
+  divergence check ran only when `force` was absent, and the note listed only
+  uncommitted changes — so a change committed while the dispatch was running
+  left the tree clean and was overwritten with the same "Applied N bytes" as a
+  clean run. That is the worse half of the pair: the ordinary refusal tells you
+  to commit or stash first, and committing is what walks you into the silent
+  case. Affected the `copy` policy; under `git_worktree` a forced apply already
+  failed loudly.
+
+- **A dispatch that failed on every route answers 502, not 200.** The error
+  text was served as the assistant's own answer with `finish_reason: "stop"`,
+  leaving the failure visible only in a vendor extension field — while the
+  fanout branch in the same file already spelled out the opposite rule,
+  because CI and cron read 200 as "it worked".
+
+- **Streaming responses send their headers immediately.** Nothing reached the
+  client until the whole run finished — not even the status line — because for
+  a CLI harness no delta exists before completion. Measured at 3.0s to first
+  byte for a fast prompt and 13.6s for a twelve-second one, long enough for a
+  proxy with a header timeout to abandon a live stream that has no job record
+  to recover from.
+
+- **A `workingDir` of the wrong type is refused instead of ignored.** A
+  non-string was turned into "not provided", so the request succeeded and a
+  write-capable agent ran in the server's own directory, under a warning that
+  said the field had not been provided.
+
+- **An empty directory environment variable no longer means "the current
+  directory".** This was fixed once for the state root and left in five
+  siblings, which is what a launcher forwarding an unset variable produces:
+  an empty jobs-directory variable put the jobs tree in the process's working
+  directory, and an empty log-directory variable wrote the dispatch log there.
+  There is now one rule at one seam in `src/state-dir.ts`, with a test over
+  every variable.
+
+- **The POSIX command-line budget counts bytes, not UTF-16 units.** 100,000
+  CJK characters in one argument measured 100,021 against a 129,024 budget, so
+  the guard stayed quiet while the kernel saw 300,000 bytes and the spawn died
+  `E2BIG` — the exact outcome the guard exists to prevent. Reachable through
+  the one shipped route that puts the prompt in argv while advertising a
+  two-million-token input.
+
+### Changed
+
+- **On Linux and macOS the default workspaces root is now per-user.**
+  `os.tmpdir()` is per-user on Windows and shared on Linux, so whoever
+  dispatched first owned `/tmp/harness-dispatch` at 0700 and every other user
+  on the machine was refused the `copy` and `git_worktree` policies outright —
+  including you, after one `sudo` run. Upgrading leaves the old shared
+  directory behind; it holds only completed workspaces and is safe to delete.
+
+- **The README is the page that decides whether you install it**, at 321 lines
+  instead of 820, with the reference half moved to `docs/configuration.md`,
+  `docs/interfaces.md` and `docs/operations.md`. The disclosure of what the
+  tool does on your machine now sits above the install command rather than 128
+  lines below it.
+
+### Added
+
+- **The dispatch log records what the router scored, not just what it picked.**
+  An audit of 457 real dispatches set out to answer whether the router earns
+  its place and could not: the quota, quality and capability components were
+  never written down, so every hypothesis about the scoring was unfalsifiable
+  from the one artifact built to test it — and they cannot be reconstructed
+  afterwards, because quota and breaker state have moved on.
+
 ## [0.10.0] — 2026-09-06
 
 ### Added
@@ -2515,7 +2622,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/fstubner/harness-dispatch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/fstubner/harness-dispatch/compare/v0.7.8...v0.7.9
