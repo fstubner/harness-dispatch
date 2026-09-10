@@ -564,13 +564,44 @@ export function parseChatRequest(raw: unknown): {
   };
 }
 
+/**
+ * One completion id in the shape OpenAI clients expect.
+ *
+ * Shared with the streaming path deliberately: every chunk of one stream must
+ * repeat the SAME id, so it is minted once per request there rather than per
+ * frame, and the `chatcmpl-` convention lives in one place.
+ */
+export function newCompletionId(): string {
+  return `chatcmpl-${randomUUID()}`;
+}
+
+/**
+ * The identity every chunk of one streamed response repeats.
+ *
+ * `id` and `created` are fixed for the life of the stream — a client that
+ * groups chunks by id (or dedupes on it) sees one response, not one per frame.
+ * `model` is mutable because the route, and therefore the model that answered,
+ * is not known until the router has picked one: it starts as whatever the
+ * caller asked for and is filled in once a decision arrives, matching what the
+ * non-streaming path reports.
+ */
+export interface StreamIdentity {
+  id: string;
+  created: number;
+  model: string;
+}
+
+export function newStreamIdentity(model: string): StreamIdentity {
+  return { id: newCompletionId(), created: Math.floor(Date.now() / 1000), model };
+}
+
 export function completionEnvelope(
   content: string,
   model: string,
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
-    id: `chatcmpl-${randomUUID()}`,
+    id: newCompletionId(),
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model,
