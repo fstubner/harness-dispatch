@@ -42,8 +42,18 @@ export function interpolateEnv(
 ): string {
   if (!value.includes("${")) return value;
   const resolved = value.replace(ENV_VAR_ANYWHERE_RE, (_match, name: string) => {
-    if (!(name in process.env)) unsetVars.add(name);
-    return process.env[name] ?? "";
+    // `Object.hasOwn`, not `in`, and the READ needs the same gate.
+    //
+    // Node's env object reports every inherited Object key as present (`in` is
+    // true for `constructor`, `toString`, `__proto__`, `hasOwnProperty`) and
+    // returns the inherited value from the get. Measured: `${constructor}` in
+    // a config value produced "https://host/function () { [native code] }/v1"
+    // and reported NOTHING in unsetVars — native function source spliced into
+    // a base_url or api_key, silently. Gating only the warning would still
+    // substitute it, which is why `present` guards both.
+    const present = Object.hasOwn(process.env, name);
+    if (!present) unsetVars.add(name);
+    return present ? (process.env[name] ?? "") : "";
   });
   if (resolved === value) return value; // nothing legal to substitute
   // Remember which reference produced this value so `configure` can emit the
