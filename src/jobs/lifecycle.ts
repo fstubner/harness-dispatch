@@ -263,7 +263,11 @@ export async function retryJob(
 
   const manifest = prior.manifest;
   const prompt = await readFile(manifest.promptPath, "utf8");
-  if (opts.service !== undefined && !(opts.service in deps.holder.state.config.services)) {
+  // `Object.hasOwn`, not `in` — see the same guard in `mcp/tools.ts`. This
+  // surface failed worse: an inherited key was not refused at all, so the
+  // retry STARTED and reported "retargeted to toString… the original job is
+  // untouched" with a fresh jobId, for a route that does not exist.
+  if (opts.service !== undefined && !Object.hasOwn(deps.holder.state.config.services, opts.service)) {
     throw new Error(
       `Unknown service: ${opts.service}. Valid route ids: ` +
         `${Object.keys(deps.holder.state.config.services).join(", ")}.`,

@@ -464,7 +464,18 @@ async function startSingle(
   // rejects unknown `models` at the boundary; single mode let the same
   // mistake through, burned a job dir, and returned a success-shaped
   // completed:true / success:false — one input, two behaviours.
-  if (input.service !== undefined && !(input.service in deps.holder.state.config.services)) {
+  //
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so every
+  // inherited Object key passed this guard for a config declaring no such
+  // route. Measured on all four of `constructor`, `toString`, `__proto__` and
+  // `hasOwnProperty`: the job directory this check exists to prevent was
+  // created, and the dispatch came back `completed: true` / `success: false`
+  // with `error: "route is disabled"` — a false statement, since nothing is
+  // disabled and the route does not exist. `evaluateRoutePolicy` had simply
+  // read `enabled` off a function. `status.ts` already uses `Object.hasOwn`
+  // here, with a comment naming `constructor`; the lesson never reached the
+  // two guards a caller can actually reach.
+  if (input.service !== undefined && !Object.hasOwn(deps.holder.state.config.services, input.service)) {
     throw new Error(
       `Unknown service: ${input.service}. Valid route ids: ` +
         `${Object.keys(deps.holder.state.config.services).join(", ")}. ` +

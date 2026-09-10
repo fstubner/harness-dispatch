@@ -202,7 +202,10 @@ export class ConfigHotReloader {
       const oldRouter = this.holder.state.router;
       const oldBreakerStatus = oldRouter.circuitBreakerStatus();
       for (const [name, status] of Object.entries(oldBreakerStatus)) {
-        if (!(name in next.config.services)) continue;
+        // `Object.hasOwn`, not `in` — same prototype-chain hazard as the
+        // service guards; a route named `constructor` would read as still
+        // present in the new config and be skipped.
+        if (!Object.hasOwn(next.config.services, name)) continue;
         const nb = next.router.getBreaker(name);
         if (!nb) continue;
         if (status.tripped) {

@@ -403,7 +403,14 @@ async function handleChatCompletions(
     const routes =
       parsed.models.length > 0
         ? parsed.models
-        : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
+        : Object.keys(state.config.services).filter((route) =>
+            // `Object.hasOwn`, not `in` — the same prototype-chain hazard the
+            // service guards carry. Here the names come from config rather
+            // than a caller, so it takes a route literally named `constructor`
+            // in config.yaml, which would then be treated as having a
+            // dispatcher it never got.
+            Object.hasOwn(state.dispatchers, route),
+          );
     const selected = eligibleRoutes(routes);
     // An empty candidate set is a REFUSAL, not an empty success.
     //
