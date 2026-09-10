@@ -22,13 +22,13 @@ import { redact } from "./redaction.js";
 import path from "node:path";
 
 import type { DispatchResult, RoutingDecision } from "./types.js";
-import { stateRoot } from "./state-dir.js";
+import { dirFromEnv, stateRoot } from "./state-dir.js";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_ERROR_CHARS = 300;
 
 function logDir(): string {
-  return process.env.HARNESS_DISPATCH_LOG_DIR ?? path.join(stateRoot(), "logs");
+  return dirFromEnv("HARNESS_DISPATCH_LOG_DIR", () => path.join(stateRoot(), "logs"));
 }
 
 export function dispatchLogPath(): string {
@@ -50,6 +50,18 @@ export interface DispatchLogEntry {
   tier?: number;
   safetyProfile?: string;
   reason?: string;
+  /**
+   * The score components behind the pick, present whenever a decision was
+   * made — including on the explicit path, where they record what the forced
+   * route WOULD have scored. That comparison is what makes "was naming a
+   * route by hand better than letting it choose" answerable.
+   */
+  scores?: {
+    quota: number;
+    quality: number;
+    capability: number;
+    final: number;
+  };
   /**
    * What the picked route beat, when the router chose — absent on the forced
    * and explicit paths, where nothing was compared.
@@ -89,6 +101,25 @@ export function buildDispatchLogEntry(
     if (decision.candidates !== undefined && decision.candidates.length > 0) {
       entry.candidates = decision.candidates;
     }
+    // The score COMPONENTS, not just the winner and the margin.
+    //
+    // `candidates` says the picked route beat `runner_up` 0.92 to 0.81. It
+    // does not say why, and "why" is the only thing that can tell a scoring
+    // bug from a route that is genuinely better. An audit of 457 real
+    // dispatches tried to answer whether the router earns its place and could
+    // not: quota, quality and capability were never recorded, so every
+    // hypothesis about the scoring was unfalsifiable from the one artifact
+    // built to test it.
+    //
+    // Cheap to add and impossible to reconstruct later — a dispatch that
+    // already happened cannot be re-scored, because quota and breaker state
+    // have moved on.
+    entry.scores = {
+      quota: decision.quotaScore,
+      quality: decision.qualityScore,
+      capability: decision.capabilityScore,
+      final: decision.finalScore,
+    };
   }
   return entry;
 }

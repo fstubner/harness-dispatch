@@ -531,6 +531,31 @@ describe("MCP tools — dispatch", () => {
     expect(jobDirs).toEqual([]);
   });
 
+  // `in` walks the prototype chain, so every inherited Object key passed the
+  // guard above: `"constructor" in config.services` is TRUE for a config that
+  // declares no such route. What comes back from `services[name]` is then
+  // Object's own constructor — a FUNCTION, so the `=== undefined` checks
+  // downstream do not catch it either, and a function travels on where a route
+  // config belongs. `status.ts` already uses `Object.hasOwn` for exactly this,
+  // with a comment naming `constructor`; the lesson never reached the two
+  // guards a caller can actually reach.
+  for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    it(`rejects the inherited key '${key}' as an unknown service`, async () => {
+      const holder = buildHolder(
+        { a: makeService("a") },
+        { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
+      );
+      const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+
+      await expect(
+        invokeTool("dispatch", { prompt: "hi", service: key, workingDir: workDir }, { holder }),
+      ).rejects.toThrow(/Unknown service/);
+
+      const jobDirs = readdirSync(jobsDir).filter((e) => e.startsWith("job-"));
+      expect(jobDirs, "a job directory was created for a route that does not exist").toEqual([]);
+    });
+  }
+
   it("forwards contextJobs to every fanout arm", async () => {
     // Fanout used to drop contextJobs silently, so a chained fanout ("get two
     // opinions building on job A") ran every arm without the context and

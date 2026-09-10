@@ -252,6 +252,11 @@ describe("every egress sink still redacts", () => {
     { file: "src/bin.ts", needle: "installOutputRedaction();", proven: false },
     { file: "src/job-runner.ts", needle: "installOutputRedaction();", proven: false },
     { file: "src/observability/spans.ts", needle: "redact(e.message)", proven: false },
+    // MCP progress notifications. `_meta.event` carries the raw dispatcher
+    // event — full stdout/stderr chunk text — and was the one MCP path with
+    // no redaction. Caught by accident over stdio by the stdout patch; over
+    // the HTTP MCP transport nothing caught it.
+    { file: "src/mcp/tools.ts", needle: "redact(JSON.stringify({ event, route }))", proven: false },
   ];
 
   for (const site of SINK_SITES) {
@@ -272,6 +277,6 @@ describe("every egress sink still redacts", () => {
     expect(SINK_SITES.filter((s) => s.proven)).toHaveLength(4);
     // Pinned so ADDING a sink without deciding proven-vs-guard is a failing
     // test rather than a silent gap.
-    expect(SINK_SITES).toHaveLength(15);
+    expect(SINK_SITES).toHaveLength(16);
   });
 });

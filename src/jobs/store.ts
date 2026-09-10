@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { stateRoot } from "../state-dir.js";
+import { dirFromEnv, stateRoot } from "../state-dir.js";
 import type { JobManifest, JobStatus } from "./types.js";
 
 /**
@@ -92,7 +92,7 @@ export function pollInstructions(jobId: string): string {
 }
 
 export function jobsRoot(): string {
-  return process.env.HARNESS_DISPATCH_JOBS_DIR ?? path.join(stateRoot(), "jobs");
+  return dirFromEnv("HARNESS_DISPATCH_JOBS_DIR", () => path.join(stateRoot(), "jobs"));
 }
 
 const DEFAULT_JOB_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -307,6 +307,18 @@ export const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
  * function is reachable from more than one caller. Validating only at the
  * schema would mean any future caller silently reintroduces the traversal.
  */
+/**
+ * The same test as `assertValidJobId`, as a predicate.
+ *
+ * For the caller that must REFUSE an id without failing the whole call:
+ * `buildContextPreamble` takes a list, and one unusable entry should not kill
+ * the dispatch the caller actually asked for. Sharing the regex is the point
+ * — a second copy of the pattern is how the two would drift.
+ */
+export function isValidJobId(jobId: string): boolean {
+  return JOB_ID_RE.test(jobId);
+}
+
 export function assertValidJobId(jobId: string): void {
   if (!JOB_ID_RE.test(jobId)) {
     throw new Error(

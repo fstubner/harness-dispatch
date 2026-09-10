@@ -10,7 +10,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { assertValidJobId, jobsRoot, readJson } from "./store.js";
+import { jobsRoot, readJson, isValidJobId } from "./store.js";
 import type { JobResultPayload } from "./types.js";
 
 /**
@@ -77,6 +77,11 @@ async function ranIn(jobId: string): Promise<string> {
   }
 }
 
+/** The section for an id nothing can be read for, valid or not. */
+function unresolvable(jobId: string): string {
+  return `### ${jobId}${NL}${NL}(no result available — this job is unknown, still running, or was pruned)`;
+}
+
 /**
  * A prior job's PARTIAL output, when it has no result.json.
  *
@@ -108,9 +113,30 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
   let budget = MAX_CONTEXT_CHARS;
 
   for (const [index, jobId] of contextJobs.entries()) {
+    // OUTSIDE the try, and that placement is the whole point.
+    //
+    // Inside it, a malformed id threw straight into the catch — which calls
+    // partialSection(jobId) with the id STILL UNVALIDATED, reading
+    // stdout.partial.log, prompt.md and manifest.json from
+    // path.join(jobsRoot(), jobId, ...). A security audit reproduced
+    // `../outside` reading both files and rendering them into the preamble
+    // that gets prepended to a delegate's prompt — straight into an LLM that
+    // may act on or repeat them.
+    //
+    // Not reachable from either public surface today: the MCP schema regexes
+    // every contextJobs entry and the HTTP surface refuses contextJobs
+    // outright. That is exactly the situation assertValidJobId's own docblock
+    // predicts — "validating only at the schema would mean any future caller
+    // silently reintroduces the traversal" — and one caller already had.
+    if (!isValidJobId(jobId)) {
+      // Refused WITHOUT touching disk, and reported rather than thrown: this
+      // is a list, and one unusable id must not fail the dispatch the caller
+      // actually asked for.
+      sections.push(unresolvable(jobId));
+      continue;
+    }
     let section: string;
     try {
-      assertValidJobId(jobId);
       const jobDir = path.join(jobsRoot(), jobId);
       const payload = await readJson<JobResultPayload>(
         path.join(jobDir, "output", "result.json"),
@@ -134,8 +160,7 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
       // exactly what a caller wants after an orphaned run. Reporting "no
       // result available" while that file sits on disk discards the trail
       // PRODUCT.md names as the thing that must never be lost.
-      section = await partialSection(jobId).catch(() => undefined) ??
-        `### ${jobId}${NL}${NL}(no result available — this job is unknown, still running, or was pruned)`;
+      section = (await partialSection(jobId).catch(() => undefined)) ?? unresolvable(jobId);
     }
     if (section.length > budget) section = clip(section, Math.max(0, budget));
     budget -= section.length;

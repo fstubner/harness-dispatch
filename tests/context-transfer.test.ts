@@ -89,6 +89,15 @@ describe("buildContextPreamble", () => {
   });
 
   it("rejects a traversal jobId as unresolvable rather than reading outside the jobs root", async () => {
+    // This passed for the wrong reason for months: it traversed to a path
+    // that held nothing, so "did not leak" and "there was nothing there"
+    // were indistinguishable. A security audit planted a file at the target
+    // and got both it and the prompt rendered into the preamble.
+    //
+    // The sibling test below now plants one. This one keeps the original
+    // assertion — one bad id degrades, it does not throw — because that is
+    // the other half of the contract: contextJobs is a list, and one unusable
+    // entry must not fail the dispatch the caller actually asked for.
     const preamble = await buildContextPreamble(["../../etc/passwd"]);
     expect(preamble).toMatch(/no result available/i);
     expect(preamble).not.toContain("root:");
@@ -290,5 +299,89 @@ describe("the omission notice with a repeated jobId", () => {
     expect(preamble).toContain(ids[3]!);
     const notice = preamble.slice(preamble.indexOf("earlier job(s) omitted"));
     expect(notice, "named a job whose output is right above the notice").not.toContain(ids[1]!);
+  });
+});
+
+describe("a malformed job id cannot read outside the jobs root", () => {
+  /**
+   * `assertValidJobId` used to sit INSIDE the try. A malformed id threw
+   * straight into the catch, which called `partialSection(jobId)` with the id
+   * still unvalidated and read three fixed filenames from
+   * `path.join(jobsRoot(), jobId, ...)`.
+   *
+   * A security audit reproduced `../outside` reading both the partial log and
+   * the prompt, and rendering them into the preamble that gets prepended to a
+   * delegate's prompt — into an LLM that may act on them or repeat them.
+   *
+   * Not reachable from either public surface: the MCP schema regexes every
+   * entry and HTTP refuses contextJobs outright. This is the second layer
+   * `assertValidJobId`'s docblock asks for, and it exists because relying on
+   * the schema alone is what let one caller route around it.
+   */
+  it("refuses a traversing id instead of reading through it", async () => {
+    const outside = path.join(jobsDir, "..", "outside");
+    await fs.mkdir(path.join(outside, "output"), { recursive: true });
+    await fs.writeFile(path.join(outside, "prompt.md"), "SECRET-PROMPT", "utf8");
+    await fs.writeFile(
+      path.join(outside, "output", "stdout.partial.log"),
+      "SECRET-PARTIAL",
+      "utf8",
+    );
+    try {
+      const preamble = await buildContextPreamble(["../outside"]).catch(
+        (err: Error) => `THREW: ${err.message}`,
+      );
+      expect(preamble).not.toContain("SECRET-PROMPT");
+      expect(preamble).not.toContain("SECRET-PARTIAL");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still refuses one that only the catch path would have read", async () => {
+    // No result.json anywhere, so the happy path cannot succeed and the catch
+    // is the only branch left — which is precisely where the unvalidated read
+    // used to happen.
+    const preamble = await buildContextPreamble(["../../etc"]).catch(
+      (err: Error) => `THREW: ${err.message}`,
+    );
+    expect(preamble).not.toContain("root:");
+  });
+});
+
+describe("a malformed job id cannot read outside the jobs root", () => {
+  /**
+   * `assertValidJobId` used to sit INSIDE the try. A malformed id threw
+   * straight into the catch, which called `partialSection(jobId)` with the id
+   * still unvalidated and read fixed filenames from
+   * `path.join(jobsRoot(), jobId, ...)`.
+   *
+   * A security audit reproduced `../outside` reading both the partial log and
+   * the prompt and rendering them into the preamble that gets prepended to a
+   * delegate's prompt — into an LLM that may act on them or repeat them.
+   *
+   * Not reachable from either public surface: the MCP schema regexes every
+   * entry and HTTP refuses contextJobs outright. This is the second layer
+   * `assertValidJobId`'s own docblock asks for, and it exists because relying
+   * on the schema alone is what let one caller route around it.
+   */
+  it("refuses a traversing id instead of reading through it", async () => {
+    const outside = path.join(jobsDir, "..", "hd-ctx-outside");
+    await fs.mkdir(path.join(outside, "output"), { recursive: true });
+    await fs.writeFile(path.join(outside, "prompt.md"), "SECRET-PROMPT", "utf8");
+    await fs.writeFile(
+      path.join(outside, "output", "stdout.partial.log"),
+      "SECRET-PARTIAL",
+      "utf8",
+    );
+    try {
+      const preamble = await buildContextPreamble(["../hd-ctx-outside"]).catch(
+        (err: Error) => `THREW: ${err.message}`,
+      );
+      expect(preamble).not.toContain("SECRET-PROMPT");
+      expect(preamble).not.toContain("SECRET-PARTIAL");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 });

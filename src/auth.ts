@@ -2,12 +2,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { promises as fs, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
-import { stateRoot } from "./state-dir.js";
+import { dirFromEnv, stateRoot } from "./state-dir.js";
 
 const TOKEN_ENV = "HARNESS_DISPATCH_HTTP_TOKEN";
 
 export function authDir(): string {
-  return process.env.HARNESS_DISPATCH_HOME ?? stateRoot();
+  return dirFromEnv("HARNESS_DISPATCH_HOME", stateRoot);
 }
 
 export function tokenPath(): string {
@@ -63,19 +63,50 @@ export function httpTokenMtimeMs(): number {
   }
 }
 
+/**
+ * Write the token, and make sure both it and its directory are owner-only.
+ *
+ * Two POSIX defects, both measured in a container by an audit:
+ *
+ * 1. This was the ONLY one of nine directory-creating sites passing no
+ *    `mode`, so the state root's permissions depended on which code path
+ *    created it first — 0755 at the default umask, 0777 at umask 000, where
+ *    every sibling produces 0700. `ensureHttpToken` runs at server startup,
+ *    so on a fresh install `serve` is the realistic first toucher. With the
+ *    root writable, another user planted a `config.yaml` there — and that
+ *    path is live, read last by config lookup, so a planted file steers
+ *    routes and credential references.
+ *
+ * 2. `mode:` on a write applies only when the file is CREATED. Rotating over
+ *    an existing 0644 token left it 0644 — and `auth rotate` is the command
+ *    you run BECAUSE the token leaked. `workspaces.ts` documents this exact
+ *    trap for directories and fixes it with an explicit chmod; the lesson
+ *    never reached the file writes.
+ *
+ * chmod is best-effort: a no-op on Windows, and a token we just wrote
+ * successfully should not fail the command because its mode could not be
+ * tightened.
+ */
+async function writeTokenFile(token: string): Promise<void> {
+  const dir = authDir();
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.writeFile(tokenPath(), `${token}\n`, { mode: 0o600 });
+  if (process.platform === "win32") return;
+  await fs.chmod(dir, 0o700).catch(() => undefined);
+  await fs.chmod(tokenPath(), 0o600).catch(() => undefined);
+}
+
 export async function ensureHttpToken(): Promise<string> {
   const existing = await readHttpToken();
   if (existing) return existing;
   const token = generateHttpToken();
-  await fs.mkdir(authDir(), { recursive: true });
-  await fs.writeFile(tokenPath(), `${token}\n`, { mode: 0o600 });
+  await writeTokenFile(token);
   return token;
 }
 
 export async function rotateHttpToken(): Promise<string> {
   const token = generateHttpToken();
-  await fs.mkdir(authDir(), { recursive: true });
-  await fs.writeFile(tokenPath(), `${token}\n`, { mode: 0o600 });
+  await writeTokenFile(token);
   return token;
 }
 

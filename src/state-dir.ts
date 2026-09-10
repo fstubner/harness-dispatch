@@ -17,6 +17,32 @@
 import { homedir } from "node:os";
 import path from "node:path";
 
+/**
+ * A directory from an environment variable, or a fallback.
+ *
+ * One rule, applied at one seam, because the alternative was tried and the
+ * usual thing happened. `stateRoot` was fixed for an EMPTY variable — the
+ * value a launcher or shell produces when it forwards something unset — and
+ * gained a careful comment explaining why. Its five siblings kept `??` and
+ * kept the bug: `HARNESS_DISPATCH_JOBS_DIR=""` put the jobs tree at the
+ * process's current directory, and `HARNESS_DISPATCH_LOG_DIR=""` wrote
+ * `dispatches.jsonl` into whatever directory the server started in. Both
+ * measured. An upgrade audit found two of them; there were five.
+ *
+ * Two rules in one:
+ *   - An empty or whitespace-only value means "not set", not "use the empty
+ *     string as a path".
+ *   - A relative value is resolved once, here. A detached job runner starts
+ *     with a different working directory than the server that spawned it, so
+ *     an unanchored relative path meant the two disagreed about where state
+ *     lived.
+ */
+export function dirFromEnv(name: string, fallback: () => string): string {
+  const configured = process.env[name];
+  if (configured !== undefined && configured.trim() !== "") return path.resolve(configured);
+  return fallback();
+}
+
 export function stateRoot(): string {
   // `??` alone treated an EMPTY variable as a real value, so
   // `HARNESS_DISPATCH_STATE_DIR=""` — which is what a launcher or shell
@@ -29,9 +55,9 @@ export function stateRoot(): string {
   // value was never anchored, so a job runner spawned with a different
   // working directory read a different state root than the server that
   // spawned it.
-  const configured = process.env.HARNESS_DISPATCH_STATE_DIR;
-  if (configured !== undefined && configured.trim() !== "") return path.resolve(configured);
-  return path.join(homedir(), ".harness-dispatch");
+  return dirFromEnv("HARNESS_DISPATCH_STATE_DIR", () =>
+    path.join(homedir(), ".harness-dispatch"),
+  );
 }
 
 /**
