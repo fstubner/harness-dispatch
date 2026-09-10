@@ -43,6 +43,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   hono 4.13.1 → 4.13.7 via the MCP SDK. Lockfile only; the declared ranges
   already allowed both.
 
+- **Naming an inherited JavaScript key as a route is refused.** `in` walks the
+  prototype chain, so `constructor`, `toString`, `__proto__` and
+  `hasOwnProperty` all satisfied guards asking "is this a configured route?",
+  and the lookups then returned a real function rather than `undefined`, so the
+  checks behind them did not catch it either. `dispatch` created the job
+  directory its guard exists to prevent and answered `completed: true` /
+  `success: false` with `error: "route is disabled"` — nothing was disabled and
+  no such route existed. `retry_job` did not refuse at all: it started a job and
+  reported a successful retarget for a route that does not exist. Both explicit
+  router paths meet at one guard, and that guard's revert had been invisible to
+  the whole suite until a test was added for it.
+
 ### Fixed
 
 - **A forced `workspace apply` says when it overwrote committed work.** The
@@ -87,6 +99,31 @@ pre-1.0, so minor versions can carry behaviour changes.
   the one shipped route that puts the prompt in argv while advertising a
   two-million-token input.
 
+- **Every streamed chunk carries the `id`, `object` and `created` an
+  OpenAI-compatible client requires.** A frame carried `choices` alone, while
+  the non-streaming reply from the same endpoint has always sent those fields —
+  so one request came back in two structurally different shapes depending on
+  `stream`, and a client reading `chunk.id` or switching on `object` got
+  `undefined` from the streaming half. One identity is minted per request, not
+  per frame, so a client grouping or deduping by id sees one response instead of
+  one per chunk.
+
+- **A missing isolated workspace no longer blames retention for being
+  missing.** Asking for the patch said workspaces are pruned once they age out
+  and you should have resolved the job sooner — but nothing records *why* a root
+  is gone, and every isolated dispatch returns a `cleanupHint` telling you to
+  remove the workspace yourself. Follow that advice and you were told off for
+  letting it expire. The message now names the possibilities and points at the
+  job directory, where the patch is written at dispatch time.
+
+- **An env reference to an inherited key is treated as unset, not
+  substituted.** Node's env object reports `constructor`, `toString`,
+  `__proto__` and `hasOwnProperty` as present and returns the inherited value,
+  so `base_url: https://host/${constructor}/v1` resolved to
+  `https://host/function () { [native code] }/v1` with no unset-variable
+  warning — native function source spliced into a config value, silently. Both
+  the warning and the substitution needed the same gate.
+
 ### Changed
 
 - **On Linux and macOS the default workspaces root is now per-user.**
@@ -101,6 +138,23 @@ pre-1.0, so minor versions can carry behaviour changes.
   `docs/interfaces.md` and `docs/operations.md`. The disclosure of what the
   tool does on your machine now sits above the install command rather than 128
   lines below it.
+
+- **The published package no longer ships source maps.** 130 map files went out
+  with every install — 65 `.js.map` and 65 `.d.ts.map` — measured at 583,408
+  bytes, 29% of unpacked content, and they led nowhere: the package publishes
+  `dist/` and no `src/`, so every `sources` entry named a `.ts` file the
+  consumer does not have. The package is now 136 files instead of 266,
+  1,414,790 bytes unpacked instead of 2,003,218, and 452,421 bytes packed
+  instead of 562,042. The `.d.ts` files themselves are unchanged — only the map
+  beside each one is gone.
+
+- **Every GitHub Action is pinned to a commit rather than a major tag.** A tag
+  is a pointer its owner can move, and these workflows run with the
+  repository's contents and, when publishing, with npm trusted publishing. Each
+  of the eleven references names a 40-character commit with its version in a
+  trailing comment, and a Dependabot entry for the `github-actions` ecosystem
+  now keeps them current — without it a commit pin never moves, and this
+  repository had no scheduled action updates at all.
 
 ### Added
 
