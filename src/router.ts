@@ -978,7 +978,10 @@ export class Router {
     opts: ExplicitDispatchOpts & { invoke?: DispatcherInvoke },
   ): AsyncGenerator<RouterStreamEvent> {
     const invoke = opts.invoke ?? STREAMING_INVOKE;
-    if (!(service in this.dispatchers)) {
+    // `Object.hasOwn`, not `in`: an inherited key resolves to a real function
+    // on the next line's lookup, so `dispatcher === undefined` would not catch
+    // it either.
+    if (!Object.hasOwn(this.dispatchers, service)) {
       yield {
         event: {
           type: "completion",

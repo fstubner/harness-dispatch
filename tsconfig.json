@@ -7,8 +7,24 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    // No maps in the published package.
+    //
+    // Measured on the tarball before this change: 130 map files, 583,408 bytes,
+    // 29.1% of unpacked content — 65 `.js.map` and 65 `.d.ts.map` against 65
+    // `.js` and 65 `.d.ts`. A map earns that by leading somewhere, and neither
+    // kind does here: `files` publishes `dist/`, `data/`, the default config
+    // and two markdown files, and NO `src/`, so every `sources` entry points at
+    // a `.ts` file the consumer does not have. They cost a third of the
+    // download to resolve to nothing.
+    //
+    // `declaration` stays: the `.d.ts` files are the typed surface consumers
+    // compile against. It is only the map BESIDE each one that is dead.
+    //
+    // This is a packaging decision, not a debugging one — `npm run build` in a
+    // checkout has the sources right there, and a stack trace from an installed
+    // copy names the `dist/` line, which is the code that actually ran.
+    "declarationMap": false,
+    "sourceMap": false,
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,

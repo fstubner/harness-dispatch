@@ -23,9 +23,11 @@ import { getAsyncJob, orphanStrandedSlotQueue, startAsyncJobTracked } from "../j
 import {
   BadRequestError,
   completionEnvelope,
+  newStreamIdentity,
   parseChatRequest,
   PayloadTooLargeError,
   readJson,
+  type StreamIdentity,
 } from "./parse.js";
 
 // Re-exported: BadRequestError is part of this module's public surface
@@ -255,8 +257,12 @@ async function handleChatCompletions(
         ? eligibleRoutes(
             parsed.models.length > 0
               ? parsed.models
-              : Object.keys(state.config.services).filter(
-                  (route) => route in state.dispatchers,
+              : Object.keys(state.config.services).filter((route) =>
+                  // `Object.hasOwn`, not `in` — same prototype-chain hazard as
+                  // the non-streaming branch below. Missed when the rest of
+                  // this class was fixed because the search pattern required a
+                  // closing paren and this call is wrapped across lines.
+                  Object.hasOwn(state.dispatchers, route),
                 ),
           )
         : undefined;
@@ -286,13 +292,30 @@ async function handleChatCompletions(
       "cache-control": "no-cache",
       connection: "keep-alive",
     });
+    // Send the headers NOW, not when the first chunk happens to arrive.
+    //
+    // For a CLI harness no delta exists until the run completes, so without
+    // this nothing reached the client — not even the status line. Measured:
+    // 3.0s to first byte for a fast prompt, 13.6s for a 12s one. Any client
+    // or proxy with a response-header timeout gives up on a live stream, and
+    // a streaming request creates no job record, so there is no jobId to
+    // recover with.
+    res.flushHeaders();
     sse.started = true;
+    // One identity for the whole stream, minted before the first frame.
+    //
+    // Every chunk of one streamed response must repeat the same `id` and
+    // `created`; a client that groups or dedupes by id would otherwise see one
+    // response per frame. The model starts as what the caller asked for and is
+    // filled in below once the router has picked a route, which is the same
+    // value the non-streaming branch reports.
+    const identity = newStreamIdentity(parsed.hints.model ?? "harness-dispatch");
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
       const rows = await runFanoutArms(holder, selected.routes, parsed);
       writeSse(
         res,
-        sseContent(JSON.stringify(rows), {
+        sseContent(identity, JSON.stringify(rows), {
           harness_dispatch: {
             mode: "fanout",
             skippedRoutes: selected.skippedRoutes,
@@ -343,11 +366,15 @@ async function handleChatCompletions(
         parsed.workingDir,
         { hints: parsed.hints, maxFallbacks: 2, signal: clientGone.signal },
       )) {
+        // The route that answered is not known until the router picks one, and
+        // the model it runs is what the non-streaming branch reports. Filled in
+        // before the first frame goes out, so the whole stream names it.
+        if (decision?.model !== undefined) identity.model = decision.model;
         const text = answer.next(event);
         if (text !== undefined) {
           writeSse(
             res,
-            sseContent(text, {
+            sseContent(identity, text, {
               harness_dispatch: decision ? { route: decision.service } : undefined,
             }),
           );
@@ -384,7 +411,7 @@ async function handleChatCompletions(
       // Nothing recovered it, so the failure was the outcome after all.
       if (!succeeded && pendingFailure !== undefined) writeSse(res, pendingFailure);
     }
-    writeSse(res, sseStop());
+    writeSse(res, sseStop(identity));
     res.write("data: [DONE]\n\n");
     res.end();
     return;
@@ -394,7 +421,14 @@ async function handleChatCompletions(
     const routes =
       parsed.models.length > 0
         ? parsed.models
-        : Object.keys(state.config.services).filter((route) => route in state.dispatchers);
+        : Object.keys(state.config.services).filter((route) =>
+            // `Object.hasOwn`, not `in` — the same prototype-chain hazard the
+            // service guards carry. Here the names come from config rather
+            // than a caller, so it takes a route literally named `constructor`
+            // in config.yaml, which would then be treated as having a
+            // dispatcher it never got.
+            Object.hasOwn(state.dispatchers, route),
+          );
     const selected = eligibleRoutes(routes);
     // An empty candidate set is a REFUSAL, not an empty success.
     //
@@ -471,9 +505,21 @@ async function handleChatCompletions(
     });
     return;
   }
+  // A dispatch that FAILED is not a 200.
+  //
+  // The error text was served as the assistant's answer with
+  // `finish_reason: "stop"`, and the failure was visible only in the vendor
+  // extension. Six hundred lines up, the fanout branch already establishes
+  // the opposite rule in as many words — "an empty candidate set is a
+  // REFUSAL, not an empty success… CI and cron read 200 as 'it worked'" —
+  // and the single-route branch beside it kept answering 200. The same defect
+  // one branch over, which is the shape this codebase keeps producing.
+  //
+  // 502: the router worked, the harness it delegated to did not.
+  const status = result.success ? 200 : 502;
   sendJson(
     res,
-    200,
+    status,
     completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
       harness_dispatch: {
         jobId: jobStatus.jobId,
@@ -501,17 +547,46 @@ async function handleChatCompletions(
  * the deepest nesting in this file appeared (a data shape indented under a
  * loop inside a branch) and how the streaming and non-streaming fanout
  * replies drifted apart in the first place. Built in one place now.
+ *
+ * `id`, `object` and `created` are REQUIRED on a streamed chunk and were all
+ * absent: a frame carried `choices` alone. The non-streaming envelope three
+ * functions up has always sent them, so one endpoint answered the same client
+ * two structurally different ways depending on one boolean — and a client that
+ * reads `chunk.id`, or asserts `object === "chat.completion.chunk"` before
+ * parsing, got `undefined` from the streaming half. `object` is the chunk type,
+ * NOT "chat.completion": they are different shapes (`delta` versus `message`)
+ * and a client switches on exactly this field to know which it is holding.
  */
-function sseContent(content: string, extra?: Record<string, unknown>): Record<string, unknown> {
+function sseContent(
+  identity: StreamIdentity,
+  content: string,
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
   return {
+    id: identity.id,
+    object: "chat.completion.chunk",
+    created: identity.created,
+    model: identity.model,
     choices: [{ index: 0, delta: { content }, finish_reason: null }],
     ...(extra ?? {}),
   };
 }
 
-/** The terminal frame every stream ends with, before `[DONE]`. */
-function sseStop(): Record<string, unknown> {
-  return { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+/**
+ * The terminal frame every stream ends with, before `[DONE]`.
+ *
+ * Carries the same identity as the content frames: this is the frame a client
+ * attributes `finish_reason` to, so an id that did not match the chunks it
+ * terminates would leave that verdict belonging to nothing.
+ */
+function sseStop(identity: StreamIdentity): Record<string, unknown> {
+  return {
+    id: identity.id,
+    object: "chat.completion.chunk",
+    created: identity.created,
+    model: identity.model,
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  };
 }
 
 // Sink. An SSE frame IS an HTTP response, and this was the one HTTP egress
