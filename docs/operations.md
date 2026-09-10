@@ -46,6 +46,13 @@ Workspace policy:
   worktree path plus changed-file metadata. This starts from `HEAD`, so
   uncommitted source-workspace changes are not copied.
 
+Known limitation of `copy`: a change to a file's permission bits alone — a
+`chmod +x` that leaves the contents byte-identical — is neither reported nor
+carried in the patch, because changed files are detected by comparing content
+hash and size. Under `git_worktree`, git tracks the mode itself, so this
+applies to `copy` only. If a delegated task makes a file executable, set the
+bit again after applying.
+
 Write-capable fanout is allowed only with `workspacePolicy: "copy"` or
 `workspacePolicy: "git_worktree"`. These modes isolate project state and process
 cwd. They are not hardened OS sandboxes: a route with broad shell permission can

@@ -184,8 +184,21 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
   const root = isolatedRoot(run);
   if (!existsSync(root)) {
     throw new Error(
-      `The isolated workspace for this job is gone (${root}). Workspaces are pruned ` +
-        `once they age out, so inspect and resolve a job before that happens.`,
+      // Do not assert WHY it is gone.
+      //
+      // Nothing records that: a root goes missing because retention pruned it,
+      // because the user deleted it, or because a worktree was removed through
+      // git — and `discardWorkspace` below documents all three. Naming
+      // retention alone blamed the clock for something this tool ASKS the user
+      // to do: every isolated dispatch returns a `cleanupHint` telling them to
+      // remove the workspace when they are done with it. Follow that advice,
+      // then ask for the patch, and the answer was that you should have
+      // resolved the job before it aged out — which it had not.
+      `The isolated workspace for this job is gone (${root}), so there is nothing left ` +
+        `to build a patch from. It was either pruned once it aged out of retention, or ` +
+        `removed — by hand, or by following the cleanupHint this job reported. The full ` +
+        `patch is written to the job directory at dispatch time, so check there before ` +
+        `re-running the work.`,
     );
   }
 
