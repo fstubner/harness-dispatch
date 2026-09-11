@@ -1,0 +1,76 @@
+# TEMPORARY — do not merge.
+#
+# Closes the one claim this project asserts without ever having run it: the npm
+# deprecation on harness-dispatch <0.9.0 says "Broken on Linux and macOS
+# (verified on Linux)". Linux was measured against the published tarball through
+# a real global symlink; macOS never was, on any version.
+#
+# CI's own bin-entrypoint test covers the SOURCE BUILD through a symlink on
+# macOS every PR. This probe covers what that cannot: the PUBLISHED artifact.
+#
+# Ubuntu runs as a control. It should reproduce the measured Linux result
+# (0.8.0 silent with exit 0, 0.10.0 printing help). If it does not, the probe is
+# wrong and its macOS answer means nothing.
+#
+# This job MEASURES and does not assert: 0.8.0 exiting 0 is the defect, so a
+# zero exit is not success and a non-zero exit is not a failure of this job.
+name: Probe (temporary)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Published entrypoint probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Probe published versions through a real global symlink
+        shell: bash
+        run: |
+          echo "ENV: $(uname -sr)  node $(node -v)  npm $(npm -v)"
+          for v in 0.8.0 0.10.0; do
+            p="$HOME/probe-$v"
+            rm -rf "$p"
+            if ! npm install -g --prefix "$p" "harness-dispatch@$v" >"$p-install.log" 2>&1; then
+              echo "RESULT $v: INSTALL FAILED :: $(tail -2 "$p-install.log" | tr '\n' ' ')"
+              continue
+            fi
+            b="$p/bin/harness-dispatch"
+            if [ ! -e "$b" ]; then
+              echo "RESULT $v: no bin entry at $b"
+              continue
+            fi
+            if [ -L "$b" ]; then
+              kind="SYMLINK -> $(readlink "$b")"
+            else
+              kind="regular file (NOT a symlink)"
+            fi
+            "$b" --help >"$p.out" 2>"$p.err"
+            code=$?
+            obytes=$(wc -c <"$p.out" | tr -d ' ')
+            ebytes=$(wc -c <"$p.err" | tr -d ' ')
+            echo "RESULT $v: bin=$kind"
+            echo "RESULT $v: exit=$code stdout_bytes=$obytes stderr_bytes=$ebytes"
+            echo "RESULT $v: first_stdout_line=[$(head -1 "$p.out")]"
+            if [ "$ebytes" != "0" ]; then
+              echo "RESULT $v: stderr_head=[$(head -c 160 "$p.err")]"
+            fi
+            # Control on the same machine: the identical file by its real path.
+            real="$p/lib/node_modules/harness-dispatch/dist/bin.js"
+            if [ -f "$real" ]; then
+              node "$real" --help >"$p.rout" 2>/dev/null
+              rcode=$?
+              echo "RESULT $v: via_real_path exit=$rcode stdout_bytes=$(wc -c <"$p.rout" | tr -d ' ')"
+            fi
+          done
