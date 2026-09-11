@@ -1,0 +1,75 @@
+# TEMPORARY — do not merge.
+#
+# Closes the last open item in acceptance/0.11.0.md: "this release's own tarball
+# has not been run on macOS". It now can be, because 0.11.0 is published.
+#
+# 0.8.0 is included as a NEGATIVE CONTROL, deliberately. A probe that invoked
+# the real file path instead of the symlink npm creates would make 0.11.0 look
+# fine for the wrong reason. 0.8.0 is known broken through a symlink — measured
+# on macOS, Linux CI and WSL — so it MUST come back silent here. If it prints
+# help, the probe is wrong and its 0.11.0 result means nothing.
+#
+# Measures rather than asserts: 0.8.0 exiting 0 with no output is the defect
+# itself, so a zero exit is not success and a non-zero exit is not job failure.
+name: Probe (temporary)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Published 0.11.0 entrypoint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Probe published versions through a real global symlink
+        shell: bash
+        run: |
+          echo "ENV: $(uname -sr)  node $(node -v)  npm $(npm -v)"
+          # 0.8.0 first: the control must fail before the subject is believed.
+          for v in 0.8.0 0.11.0; do
+            p="$HOME/probe-$v"
+            rm -rf "$p"
+            if ! npm install -g --prefix "$p" "harness-dispatch@$v" >"$p-install.log" 2>&1; then
+              echo "RESULT $v: INSTALL FAILED :: $(tail -2 "$p-install.log" | tr '\n' ' ')"
+              continue
+            fi
+            b="$p/bin/harness-dispatch"
+            if [ ! -e "$b" ]; then
+              echo "RESULT $v: no bin entry at $b"
+              continue
+            fi
+            if [ -L "$b" ]; then
+              kind="SYMLINK -> $(readlink "$b")"
+            else
+              kind="regular file (NOT a symlink)"
+            fi
+            "$b" --help >"$p.out" 2>"$p.err"
+            code=$?
+            echo "RESULT $v: bin=$kind"
+            echo "RESULT $v: --help exit=$code stdout_bytes=$(wc -c <"$p.out" | tr -d ' ') stderr_bytes=$(wc -c <"$p.err" | tr -d ' ') first=[$(head -1 "$p.out")]"
+            "$b" --version >"$p.v" 2>&1
+            vcode=$?
+            echo "RESULT $v: --version exit=$vcode output=[$(tr -d '\r\n' <"$p.v")]"
+            # Same file by its real path, on the same machine: isolates the
+            # symlink as the variable rather than the package being broken.
+            real="$p/lib/node_modules/harness-dispatch/dist/bin.js"
+            if [ -f "$real" ]; then
+              node "$real" --help >"$p.rout" 2>/dev/null
+              echo "RESULT $v: via_real_path exit=$? stdout_bytes=$(wc -c <"$p.rout" | tr -d ' ')"
+            fi
+            # Maps shipped by OUR package only — dist/, not the dependency tree
+            # nested beneath it. Counting the whole directory gave 4000 once and
+            # that was dependency maps, not ours.
+            echo "RESULT $v: maps_in_our_dist=$(find "$p/lib/node_modules/harness-dispatch/dist" -name '*.map' 2>/dev/null | wc -l | tr -d ' ')"
+          done
