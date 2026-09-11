@@ -4,7 +4,7 @@ Notable changes per release. Format follows [Keep a Changelog](https://keepachan
 this project uses [semantic versioning](https://semver.org/spec/v2.0.0.html) and is
 pre-1.0, so minor versions can carry behaviour changes.
 
-## [Unreleased]
+## [0.11.0] — 2026-09-11
 
 ### Security
 
@@ -2676,7 +2676,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/fstubner/harness-dispatch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/fstubner/harness-dispatch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/fstubner/harness-dispatch/compare/v0.7.9...v0.8.0
