@@ -370,6 +370,43 @@ describe("CLI parser", () => {
     ).rejects.toThrow(message);
   });
 
+  it("names the model it dispatched to, not just the route", async () => {
+    // A route id names a harness, not what answered: `local` is a route,
+    // `local-test` is the model. Every other surface already says which model
+    // ran — `--json` prints the whole decision, and the MCP and HTTP responses
+    // carry a top-level `model` field. The human line was the ONE surface that
+    // could not answer "which model ran", the question a routing tool exists to
+    // make answerable.
+    //
+    // The dispatch itself fails here, because the endpoint is 127.0.0.1:1 and
+    // refuses. That is deliberate and sufficient: the line prints because the
+    // route was CHOSEN, which needs no working upstream.
+    const config = await writeConfig();
+    const r = await capture(() =>
+      main(["dispatch", "--service", "local", "--config", config, "hi"]),
+    );
+    expect(r.stderr, "the route is no longer named").toContain("local");
+    expect(r.stderr, "the model it dispatched to is not named").toContain("model=local-test");
+    // An empty `model=` would read as a bug rather than as information.
+    expect(r.stderr).not.toMatch(/model=\s/);
+  });
+
+  // The OTHER branch — a route that declares no model, where the line says
+  // `model=<harness default>` — is deliberately not tested here.
+  //
+  // It cannot be reached with an endpoint route: one that omits `model:` is
+  // refused before dispatch as "required command or endpoint is unavailable",
+  // so no decision exists and the line never prints. Measured, after a first
+  // attempt at this test asserted against exactly that refusal.
+  //
+  // Only a CLI route reaches it, and putting a fake CLI on PATH is a fixture
+  // this file does not have — one built here would also behave differently on
+  // CI than on a machine with real harnesses installed. Extracting the
+  // formatting into a helper purely to test it would add a seam with one call
+  // site, which is not how this project earns an abstraction. So that branch is
+  // verified by running the built command against a real CLI route, and the
+  // delimiting it needs was found that way rather than here.
+
   it("names dispatch in help, with route still accepted as the older spelling", async () => {
     // The CLI called this `route` while the MCP tool called it `dispatch`, for
     // the same operation. `dispatch` is the name now; `route` keeps working

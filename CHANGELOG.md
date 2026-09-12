@@ -4,6 +4,21 @@ Notable changes per release. Format follows [Keep a Changelog](https://keepachan
 this project uses [semantic versioning](https://semver.org/spec/v2.0.0.html) and is
 pre-1.0, so minor versions can carry behaviour changes.
 
+## [Unreleased]
+
+### Changed
+
+- **`dispatch` says which model answered, not only which route.** The line read
+  `dispatch: claude_code_cli (explicit)`, and a route id names a harness — for
+  most routes the model is precisely the part you cannot infer from it. It now
+  reads `dispatch: claude_code_cli model=<harness default> (explicit)`, or names
+  the model where the route declares one. Every other surface already carried
+  it: `--json` prints the whole decision, and the MCP and HTTP responses have a
+  top-level `model` field, so the human line was the only one that could not
+  answer the question a routing tool exists to answer. A route that declares no
+  model says so in words rather than printing an empty value, and the value is
+  delimited because the reason that follows it is parenthesised.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security

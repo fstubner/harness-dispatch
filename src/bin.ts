@@ -1129,7 +1129,30 @@ async function cmdDispatch(
     const beat = decision.candidates?.length
       ? ` [${decision.candidates.map((c) => `${c.route} ${c.score}`).join(", ")}]`
       : "";
-    process.stderr.write(`dispatch: ${decision.service} (${decision.reason})${beat}\n`);
+    // Name the MODEL, not just the route.
+    //
+    // A route id names a harness, not what answered: `claude_code_cli` and
+    // `codex_cli` are routes, `gpt-5.6-terra` is a model, and the line said only
+    // the former. Every other surface already says which model ran — this
+    // command's own `--json` prints the whole decision, and the MCP and HTTP
+    // responses carry a top-level `model` field. The human line was the one
+    // surface that could not answer "which model did this use", which is the
+    // question asked of a routing tool.
+    //
+    // `model` is genuinely undefined for a route that configures none (three of
+    // four CLI routes here): the harness then runs its own default, which is a
+    // real answer and not a missing value. Said in words rather than printed
+    // blank, because an empty `model=` reads as a bug.
+    // Delimited, because the fallback is multi-word and the reason that follows
+    // is parenthesised. Undelimited it rendered as
+    // `model=harness default (none configured) (explicit)` — two bracketed
+    // groups in a row with no way to see where the value ended. Caught by
+    // running the built command rather than by the test, which uses a route
+    // that declares a model.
+    const model = decision.model !== undefined ? decision.model : "<harness default>";
+    process.stderr.write(
+      `dispatch: ${decision.service} model=${model} (${decision.reason})${beat}\n`,
+    );
   }
   process.stdout.write(result.output);
   if (!result.output.endsWith("\n")) process.stdout.write("\n");
