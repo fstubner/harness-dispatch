@@ -194,11 +194,15 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       // remove the workspace when they are done with it. Follow that advice,
       // then ask for the patch, and the answer was that you should have
       // resolved the job before it aged out — which it had not.
-      `The isolated workspace for this job is gone (${root}), so there is nothing left ` +
-        `to build a patch from. It was either pruned once it aged out of retention, or ` +
-        `removed — by hand, or by following the cleanupHint this job reported. The full ` +
-        `patch is written to the job directory at dispatch time, so check there before ` +
-        `re-running the work.`,
+      `The isolated workspace for this job is gone (${root}), and no saved patch was ` +
+        `found beside the job either, so there is nothing left to build a patch from. ` +
+        `It was pruned once it aged out of retention, removed by hand or by following ` +
+        `the cleanupHint this job reported, or lost with the OS temp directory — which ` +
+        `most Linux distributions clear on reboot, and WSL clears whenever its VM idles ` +
+        `out. A patch is saved beside the job when a run finishes, so this means the run ` +
+        `changed nothing, predates that, or the save failed. Set ` +
+        `HARNESS_DISPATCH_WORKSPACES_DIR to a real volume to stop temp-directory ` +
+        `clearing from reaching workspaces at all.`,
     );
   }
 
@@ -578,6 +582,10 @@ export interface PatchResult {
   patch: string;
   truncated: boolean;
   changedFiles?: WorkspaceRun["changedFiles"];
+  /** The workspace is gone; this came from the patch saved when the run finished. */
+  fromCache?: boolean;
+  /** Present with `fromCache`, saying so in words for a human reader. */
+  note?: string;
 }
 
 /** Build the patch, cache it next to the job, and return it (bounded). */
@@ -586,10 +594,38 @@ export async function workspaceDiff(
   jobDir: string,
   run: WorkspaceRun,
 ): Promise<PatchResult> {
-  const patch = await buildWorkspacePatch(run);
   const patchPath = path.join(jobDir, "output", "workspace.patch");
+
+  // The workspace is gone, but the patch outlives it.
+  //
+  // An isolated workspace lives under the OS temp directory, which is cleared
+  // on reboot on most Linux distributions and, on WSL, whenever the VM idles
+  // out — measured during a Linux acceptance pass, where an unapplied
+  // workspace vanished between two commands minutes apart. Retention could
+  // never explain it (24 h) and the user has no way to know why.
+  //
+  // `persistWorkspacePatch` now writes the patch when the run finishes, so
+  // there is something to fall back to, and diff/apply keep working from it.
+  // The file is written under the JOB directory, which lives in the state
+  // directory rather than temp — the whole point of the fallback.
+  if (!existsSync(isolatedRoot(run))) {
+    const cached = await cachedPatch(jobDir);
+    if (cached !== undefined) return fromPatchText(jobId, run, patchPath, cached, true);
+  }
+
+  const patch = await buildWorkspacePatch(run);
   await mkdir(path.dirname(patchPath), { recursive: true });
   await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  return fromPatchText(jobId, run, patchPath, patch, false);
+}
+
+function fromPatchText(
+  jobId: string,
+  run: WorkspaceRun,
+  patchPath: string,
+  patch: string,
+  fromCache: boolean,
+): PatchResult {
   const truncated = patch.length > MAX_PATCH_CHARS;
   return {
     jobId,
@@ -601,7 +637,43 @@ export async function workspaceDiff(
       : patch,
     truncated,
     ...(run.changedFiles !== undefined ? { changedFiles: run.changedFiles } : {}),
+    ...(fromCache
+      ? {
+          fromCache: true,
+          note:
+            `The isolated workspace itself is gone (${isolatedRoot(run)}), so this is the ` +
+            `patch saved when the run finished. Applying it still works; there is nothing ` +
+            `left to inspect by hand.`,
+        }
+      : {}),
   };
+}
+
+/**
+ * Save the patch as soon as the run finishes, before anyone asks for it.
+ *
+ * The missing-workspace error has always told the reader that "the full patch
+ * is written to the job directory at dispatch time" — and it was not: the
+ * patch appeared only when someone called `diff` or `apply`, so a user who
+ * lost the workspace was sent to a file that had never existed. Worse, the
+ * reader that would have recovered it, `cachedPatch`, was written and never
+ * called by anything.
+ *
+ * Best effort by construction: a dispatch that succeeded must not fail
+ * because its patch could not be cached, so every failure here is swallowed
+ * and the caller is no worse off than before this existed.
+ */
+export async function persistWorkspacePatch(jobDir: string, run: WorkspaceRun): Promise<void> {
+  try {
+    if (!existsSync(isolatedRoot(run))) return;
+    const patch = await buildWorkspacePatch(run);
+    if (patch.length === 0) return;
+    const patchPath = path.join(jobDir, "output", "workspace.patch");
+    await mkdir(path.dirname(patchPath), { recursive: true });
+    await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // Deliberately silent — see above.
+  }
 }
 
 /**

@@ -27,6 +27,7 @@ import {
   buildWorkspacePatch,
   MAX_PATCH_BYTES,
   discardWorkspace,
+  persistWorkspacePatch,
   workspaceDiff,
 } from "../src/workspace-resolve.js";
 import { eolDigest } from "../src/workspaces.js";
@@ -123,9 +124,67 @@ describe("copy workspaces", () => {
     expect(err, "a missing workspace produced no error at all").not.toBeNull();
     expect(err, "retention is still named as the only cause").toMatch(/removed/i);
     expect(err).toMatch(/cleanupHint/);
-    // The patch is written to the job directory at dispatch time, so the work
-    // is often still recoverable — the old message never said where to look.
-    expect(err, "nothing told the user where the patch already is").toMatch(/job directory/i);
+    // This used to require the words "job directory", because the message
+    // promised the patch had been written there at dispatch time. Measured on
+    // a Linux acceptance pass: it had not — the job directory held no
+    // workspace.patch until someone called diff or apply, so the sentence sent
+    // a user who had just lost their work to a file that never existed. The
+    // patch IS saved now (persistWorkspacePatch), which is why reaching this
+    // error at all means there was no saved patch either, and the message says
+    // that instead of promising one.
+    expect(err, "still promises a patch that may not exist").not.toMatch(
+      /patch is written to the job directory at dispatch time/i,
+    );
+    expect(err, "does not say a saved patch was looked for").toMatch(/no saved patch/i);
+  });
+
+  it("serves the saved patch after the workspace itself is gone", async () => {
+    // The temp directory is not durable storage: Linux clears it on reboot and
+    // WSL clears it whenever its VM idles out. Measured on an acceptance pass
+    // — an unapplied workspace vanished between two commands minutes apart,
+    // far inside the 24-hour retention window, and nothing could explain it to
+    // the user. The patch is saved beside the job when the run finishes, so
+    // losing the workspace stops meaning losing the work.
+    const run = await copyRun();
+    await persistWorkspacePatch(jobDir, run);
+    await fs.rm(run.workspaceRoot!, { recursive: true, force: true });
+
+    const diff = await workspaceDiff("job-1", jobDir, run);
+
+    expect(diff.fromCache, "the patch was rebuilt rather than recovered").toBe(true);
+    expect(diff.patch).toMatch(/added\.js/);
+    expect(diff.patch).toMatch(/const a = 2;/);
+    expect(diff.note, "nothing told the reader the workspace is gone").toMatch(/gone/i);
+  });
+
+  it("applies from the saved patch after the workspace is gone", async () => {
+    // The half that matters: recovering the patch is only useful if the work
+    // can still land in the project.
+    const run = await copyRun();
+    await persistWorkspacePatch(jobDir, run);
+    await fs.rm(run.workspaceRoot!, { recursive: true, force: true });
+
+    const applied = await applyWorkspace("job-1", jobDir, run);
+
+    expect(applied.applied, applied.message).toBe(true);
+    expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe("const a = 2;\n");
+    expect(await readNorm(path.join(run.originalWorkingDir, "added.js"))).toBe(
+      "export const b = 3;\n",
+    );
+  });
+
+  it("still fails honestly when there is no workspace AND no saved patch", async () => {
+    // The fallback must not turn a genuine loss into a silent empty success.
+    const run = await copyRun();
+    await fs.rm(run.workspaceRoot!, { recursive: true, force: true });
+
+    const err = await workspaceDiff("job-1", jobDir, run).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+
+    expect(err, "a lost workspace with no saved patch reported success").not.toBeNull();
+    expect(err).toMatch(/nothing left to build a patch from/i);
   });
 
   it("a forced apply names a COMMITTED divergence, not just an uncommitted one", async () => {

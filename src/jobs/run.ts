@@ -23,6 +23,7 @@ import {
   withOrphanCheck,
   writeJson,
 } from "./store.js";
+import { isResolvable, persistWorkspacePatch } from "../workspace-resolve.js";
 import type { JobDeps, JobManifest, JobResultPayload, JobStatus, StartJobInput } from "./types.js";
 export async function runJob(
   deps: JobDeps,
@@ -205,6 +206,19 @@ export async function runJob(
 
     finished = true;
     await pendingBeat;
+
+    // Save the patch now, while the workspace still exists.
+    //
+    // An isolated workspace lives under the OS temp directory, which Linux
+    // clears on reboot and WSL clears when its VM idles out. Until this call
+    // the patch was built only when someone asked for `diff` or `apply`, so
+    // anyone who asked after that point had lost the work outright — while
+    // being told, by the error itself, that a patch had been written here at
+    // dispatch time. Best effort: it never fails the job.
+    if (isResolvable(result.workspace)) {
+      await persistWorkspacePatch(jobDir, result.workspace);
+    }
+
     const payload: JobResultPayload = {
       jobId: manifest.jobId,
       result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },

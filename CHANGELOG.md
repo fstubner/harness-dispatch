@@ -8,6 +8,19 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Losing an isolated workspace no longer loses the work.** A `copy` or
+  `git_worktree` dispatch puts the agent's changes under the OS temp
+  directory, which Linux clears on reboot and WSL clears whenever its VM idles
+  out — so unapplied work could disappear with no explanation, well inside the
+  retention window. The patch is now written beside the job as soon as the run
+  finishes, and `workspace diff` and `apply` fall back to it, so the changes
+  still land in the project after the workspace itself is gone. The response
+  says when that happened rather than pretending the workspace is still there.
+  The failure message also stops promising something untrue: it claimed the
+  patch "is written to the job directory at dispatch time", which was not the
+  case — it appeared only when someone asked for a diff, and the reader that
+  would have recovered it was written and never called.
+
 - **An endpoint that ignores `stream: true` has its answer read.** Some
   OpenAI-compatible servers and gateways answer a streaming request with an
   ordinary completion body. Nothing in that body is a stream, so the call
