@@ -521,6 +521,21 @@ async function handleChatCompletions(
     res,
     status,
     completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
+      // The status above is 502 on a failure, and the body must not contradict
+      // it. Without this the payload was a plain completion — empty content,
+      // `finish_reason: "stop"` — with the reason buried in the vendor
+      // extension, so a client that reads the body before the status (or logs
+      // it) saw an empty successful answer. `error` is where an
+      // OpenAI-compatible client looks, and it is absent on success.
+      ...(result.success
+        ? {}
+        : {
+            error: {
+              message: result.error ?? "the route this was delegated to failed",
+              type: "upstream_error",
+              route: result.service,
+            },
+          }),
       harness_dispatch: {
         jobId: jobStatus.jobId,
         route: result.service,

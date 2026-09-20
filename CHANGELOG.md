@@ -8,6 +8,32 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **An endpoint that ignores `stream: true` has its answer read.** Some
+  OpenAI-compatible servers and gateways answer a streaming request with an
+  ordinary completion body. Nothing in that body is a stream, so the call
+  failed with `No answer in response body:` followed by the answer it was
+  discarding — a real failed job, and breaker credit against a route that had
+  answered correctly. The answer is now read with the same extractor the
+  non-streaming path uses, token usage included.
+
+- **A failed HTTP completion says so in the body, not only in the status.**
+  The status has been 502 for a while, but the payload was a normal-looking
+  completion with empty content, the reason tucked into a vendor field. It now
+  carries the standard top-level `error` object an OpenAI-compatible client
+  reads, and still carries none on success.
+
+- **A refusal names the route it is about.** `dispatch --service <route>`
+  printed the reason as a bare clause — "this is an HTTP model endpoint — …",
+  "route is disabled" — because those messages are written to be prefixed with
+  the route by the path that normally prints them. They are prefixed here too
+  now.
+
+- **`configure` on a machine with no harness CLI writes something usable.**
+  It printed, and wrote to disk, a file whose entire body was `{}`. Valid and
+  useless. It now explains that no routes were found and shows the two ways
+  forward, including the one that needs no CLI at all — comments only, so it
+  parses to exactly the same empty config.
+
 - **Naming a route now actually runs it.** Asking for a route by id — `model`
   on the HTTP surface, `hints.model` on MCP — only reordered routes inside the
   tier the router had already chosen, so a named route in a lower tier was

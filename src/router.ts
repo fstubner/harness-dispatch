@@ -1108,7 +1108,16 @@ export class Router {
         output: "",
         service,
         success: false,
-        error: policy.skipped?.message ?? "Route blocked by policy",
+        // Named, because a skip message is written as a CLAUSE about a route
+        // ("route is disabled", "this is an HTTP model endpoint — …") for the
+        // scored path, which prefixes it with the route it is about. Passed
+        // through verbatim here it reached the user as a sentence with no
+        // subject: `harness-dispatch dispatch --service x` answered "this is
+        // an HTTP model endpoint — …" and never said which route that was.
+        error:
+          policy.skipped !== undefined
+            ? `${service}: ${policy.skipped.message}`
+            : `${service}: route blocked by policy`,
       };
       if (policy.skipped) result.skippedRoutes = [policy.skipped];
       yield {

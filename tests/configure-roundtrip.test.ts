@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { main } from "../src/bin.js";
 import { loadConfig } from "../src/config.js";
+import { configToYaml } from "../src/configure-yaml.js";
 import { QuotaCache } from "../src/quota.js";
 
 let dir: string;
@@ -220,6 +221,29 @@ describe("detect: survives a regenerate", () => {
     await fs.writeFile(reloaded, out, "utf8");
     const cfg = await loadConfig(reloaded, { whichFn: pretendInstalled });
     expect(Object.keys(cfg.services)).toEqual([]);
+  });
+
+  it("writes a usable empty config instead of the literal {}", async () => {
+    // What a machine with no harness CLI got from `configure`, printed and
+    // written: a file whose entire body was `{}`. Valid YAML, and a dead end —
+    // it says nothing about why it is empty or what to put in it, and on Linux
+    // that is the ordinary first-run case. Measured on an acceptance pass
+    // there. The one thing that unblocks it, which `doctor` already says, is
+    // that an endpoints: entry needs no CLI.
+    // Straight at configToYaml: reaching this through `main` would need a
+    // machine with no harness installed, and this one has four.
+    const out = configToYaml({ services: {} }, { redactLiterals: false });
+    expect(out.trim()).not.toBe("{}");
+    expect(out).toContain("endpoints:");
+    expect(out).toContain("no CLI");
+
+    // Comments only: it must still parse to the same empty document, or the
+    // help text would be a behaviour change.
+    const reloaded = path.join(dir, "empty-out.yaml");
+    await fs.writeFile(reloaded, out, "utf8");
+    const cfg = await loadConfig(reloaded, { whichFn: async () => null });
+    expect(Object.keys(cfg.services)).toEqual([]);
+    expect(cfg.configWarnings ?? []).toEqual([]);
   });
 
   it("does not invent detect: for a config that never mentioned it", async () => {

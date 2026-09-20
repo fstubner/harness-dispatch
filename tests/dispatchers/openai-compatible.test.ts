@@ -851,10 +851,19 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     expect(completion?.result.error).toContain("Gateway parked");
   });
 
-  it("a gateway that ignored stream:true is reported with its body, not as empty", async () => {
-    // A real-world shape: a shim answers a streaming request with an ordinary
-    // buffered completion. It is still a failure on this path, but the reader
-    // needs to see that a whole answer came back in the wrong envelope.
+  it("a gateway that ignored stream:true has its answer read, not quoted back as a failure", async () => {
+    // This asserted the opposite until 0.11.x, and the reasoning was that the
+    // reader should see a whole answer arriving in the wrong envelope. What
+    // they actually saw, measured on a Linux acceptance pass, was `No answer
+    // in response body: {…"content":"pong"…}` — a message contradicting the
+    // body it quoted, a failed job, and breaker credit against a route that
+    // had answered correctly.
+    //
+    // So the answer is read instead, with the buffered path's own extractor
+    // and no inference from the body's shape: either a completion parses out
+    // of it or nothing happens, which is what keeps it clear of the
+    // classification attempts the cases above pin. A shim answering a
+    // streaming request with a buffered completion is a real-world shape.
     fetchMock.mockResolvedValue(sseResponse(JSON.stringify(chatCompletion("real answer here"))));
 
     const d = new OpenAICompatibleDispatcher(baseSvc());
@@ -862,10 +871,22 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     for await (const evt of d.stream("go", [], "")) events.push(evt);
 
     const completion = events.find((e) => e.type === "completion") as
-      | { result: { success: boolean; error?: string } }
+      | {
+          result: {
+            success: boolean;
+            output: string;
+            error?: string;
+            tokensUsed?: { input: number; output: number };
+          };
+        }
       | undefined;
-    expect(completion?.result.success).toBe(false);
-    expect(completion?.result.error).toContain("real answer here");
+    expect(completion?.result.success).toBe(true);
+    expect(completion?.result.output).toBe("real answer here");
+    expect(completion?.result.error).toBeUndefined();
+    // Usage comes off the same body, so the call is not counted as free.
+    expect(completion?.result.tokensUsed).toEqual({ input: 11, output: 13 });
+    // A consumer that renders only stdout events sees it too.
+    expect(events.filter((e) => e.type === "stdout").length).toBe(1);
   });
 
   it("includes stream_options.include_usage in streaming requests so servers return token usage", async () => {

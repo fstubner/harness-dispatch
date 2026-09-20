@@ -550,6 +550,23 @@ describe("Router.pickService", () => {
     expect(result.output, "a blocked route still produced output").toBe("");
   });
 
+  it("names the route in a refusal, because a skip message is a clause about one", async () => {
+    // Skip messages are written to be prefixed by the route they describe —
+    // the scored path does that. routeTo passed one through verbatim, so
+    // `dispatch --service <route>` printed "this is an HTTP model endpoint —
+    // …" and never said which route that was. Measured on a Linux acceptance
+    // pass, where the endpoint refusal is the one a user meets first.
+    const a = makeService({ name: "alpha", tier: 1 });
+    const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
+    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+
+    const { result } = await router.routeTo("alpha", "hi", [], process.cwd(), {
+      routePolicy: "blocked",
+    });
+
+    expect(result.error?.startsWith("alpha: "), result.error).toBe(true);
+  });
+
   it("refuses a streamTo whose routePolicy blocks the route", async () => {
     // The same check one method over, and the one that matters more: jobs.ts
     // dispatches through streamTo, so this is the path every MCP `dispatch`
