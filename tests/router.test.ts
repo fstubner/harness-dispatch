@@ -90,8 +90,19 @@ vi.mock("../src/quota.js", () => {
     async getQuotaScore(service: string): Promise<number> {
       return this.scores.get(service) ?? 1.0;
     }
-    recordResult(): void {
-      /* no-op for tests */
+    // Counted rather than no-op'd: the router now asks this stand-in whether a
+    // route has ever succeeded, and a mock that always answers "no calls" would
+    // make that branch untestable while looking fine.
+    private counts = new Map<string, { calls: number; successes: number }>();
+    recordResult(service?: string, result?: { success?: boolean }): void {
+      if (!service) return;
+      const c = this.counts.get(service) ?? { calls: 0, successes: 0 };
+      c.calls += 1;
+      if (result?.success) c.successes += 1;
+      this.counts.set(service, c);
+    }
+    localCountsFor(service: string): { calls: number; successes: number } {
+      return this.counts.get(service) ?? { calls: 0, successes: 0 };
     }
   }
   return { QuotaCache };
@@ -370,6 +381,77 @@ describe("Router.pickService", () => {
     expect(decision).not.toBeNull();
     expect(decision!.service).toBe("alpha");
     expect(decision!.tier).toBe(1);
+  });
+
+  describe("a route that has never succeeded", () => {
+    // Measured on a real install: `local_inference` was 0 for 8 against an
+    // endpoint that simply was not running, and still read as ready — the
+    // breaker decays, so a permanently misconfigured route keeps being chosen,
+    // failing, and costing an attempt before the fallback. `doctor` reported
+    // this and nothing acted on it.
+    function failNTimes(q: QuotaCache, route: string, n: number): void {
+      for (let i = 0; i < n; i++) {
+        q.recordResult(route, { output: "", service: route, success: false, error: "refused" });
+      }
+    }
+
+    it("is not scored once it has failed every call", async () => {
+      const dead = makeService({ name: "dead", tier: 1 });
+      const live = makeService({ name: "live", tier: 2 });
+      const dispatchers: Record<string, Dispatcher> = {
+        dead: new StubDispatcher("dead"),
+        live: new StubDispatcher("live"),
+      };
+      failNTimes(quota, "dead", 5);
+
+      const router = new Router(makeConfig([dead, live]), quota, dispatchers, leaderboard);
+      const decision = await router.pickService({ hints: { taskType: "execute" } });
+
+      expect(decision?.service, "the dead route was still chosen").toBe("live");
+      expect(
+        router.skippedRoutes().find((s) => s.route === "dead")?.code,
+        "nothing recorded why it was skipped",
+      ).toBe("never_succeeded");
+    });
+
+    it("is still scored one call below the threshold", async () => {
+      // The threshold exists because a route can legitimately fail its first
+      // few — a laptop that was asleep. Four failures is not yet evidence.
+      const nearly = makeService({ name: "nearly", tier: 1 });
+      const dispatchers: Record<string, Dispatcher> = { nearly: new StubDispatcher("nearly") };
+      failNTimes(quota, "nearly", 4);
+
+      const router = new Router(makeConfig([nearly]), quota, dispatchers, leaderboard);
+      const decision = await router.pickService({ hints: { taskType: "execute" } });
+
+      expect(decision?.service).toBe("nearly");
+    });
+
+    it("is still scored when it has one success among the failures", async () => {
+      const flaky = makeService({ name: "flaky", tier: 1 });
+      const dispatchers: Record<string, Dispatcher> = { flaky: new StubDispatcher("flaky") };
+      failNTimes(quota, "flaky", 6);
+      quota.recordResult("flaky", { output: "ok", service: "flaky", success: true });
+
+      const router = new Router(makeConfig([flaky]), quota, dispatchers, leaderboard);
+      const decision = await router.pickService({ hints: { taskType: "execute" } });
+
+      expect(decision?.service, "one success must re-admit it").toBe("flaky");
+    });
+
+    it("still runs when the caller names it, which is how it gets back in", async () => {
+      // The operator who fixes the endpoint needs a way to prove it works.
+      // Without this the skip is permanent: a route that is never scored never
+      // records a success, and a success is the only thing that clears it.
+      const dead = makeService({ name: "dead", tier: 1 });
+      const dispatchers: Record<string, Dispatcher> = { dead: new StubDispatcher("dead") };
+      failNTimes(quota, "dead", 9);
+
+      const router = new Router(makeConfig([dead]), quota, dispatchers, leaderboard);
+      const { result } = await router.routeTo("dead", "hi", [], "/tmp");
+
+      expect(result.success, "naming the route explicitly did not run it").toBe(true);
+    });
   });
 
   it("honors a forced service via hints.service", async () => {

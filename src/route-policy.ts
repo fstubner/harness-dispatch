@@ -15,6 +15,16 @@ export interface RoutePolicyResult {
   skipped?: RouteSkip;
 }
 
+/**
+ * Calls a route must have had before "0 successes" means anything.
+ *
+ * Exported because `doctor` reports the same condition and the two numbers
+ * must agree — a route doctor calls dead while the router still scores it, or
+ * the reverse, is worse than either behaviour alone. One constant, two
+ * readers.
+ */
+export const NEVER_SUCCEEDED_MIN_CALLS = 5;
+
 export function evaluateRoutePolicy(
   route: string,
   svc: ServiceConfig,
@@ -24,6 +34,14 @@ export function evaluateRoutePolicy(
     requestedSafetyProfile?: SafetyProfile;
     routePolicy?: RoutePolicy;
     taskType?: TaskType;
+    /**
+     * Lifetime counts for this route, passed ONLY by the scoring path.
+     *
+     * Omitted when the caller named the route, which is what makes naming it
+     * the way back in: a route the scorer refuses can still be run with an
+     * explicit `service`, and one success clears the condition for good.
+     */
+    localCounts?: { calls: number; successes: number };
   } = {},
 ): RoutePolicyResult {
   if (!svc.enabled) {
@@ -37,6 +55,29 @@ export function evaluateRoutePolicy(
   }
   if (opts.circuitBroken) {
     return skip(route, "circuit_broken", "route circuit breaker is open");
+  }
+  if (
+    opts.localCounts &&
+    opts.localCounts.calls >= NEVER_SUCCEEDED_MIN_CALLS &&
+    opts.localCounts.successes === 0
+  ) {
+    // A route that has failed every call it has ever been given is not a
+    // transient failure, which is what the breaker is for — it decays, so a
+    // permanently misconfigured route keeps being chosen, failing, and costing
+    // an attempt before the fallback. Measured on a real install:
+    // `local_inference` was 0 for 8 against an endpoint that was simply not
+    // running, and still read as ready.
+    //
+    // Not blocked outright: naming it with `service` bypasses this entirely,
+    // because the operator fixing the box needs a way to prove it works, and
+    // one success is what clears it.
+    return skip(
+      route,
+      "never_succeeded",
+      `route has failed every one of its ${opts.localCounts.calls} attempts, so it is not ` +
+        `being scored — name it with \`service\` to run it anyway (one success re-admits it), ` +
+        `or disable it in config`,
+    );
   }
 
   const billing = buildRouteBilling(svc);
