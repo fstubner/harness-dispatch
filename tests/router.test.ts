@@ -686,6 +686,57 @@ describe("Router.pickService", () => {
     expect(decision?.service).toBe("fast_local");
   });
 
+  it("runs a route named by hints.model even when it sits in a worse tier", async () => {
+    // The boost was a within-tier score bonus, so a named route below the best
+    // tier could never win it — tier selection happens first. Measured on a
+    // POSIX acceptance pass with three stub endpoints: naming the tier-4 route
+    // returned the tier-3 route's answer, and the named route's server logged
+    // no request at all, while the response still reported modelHintDropped.
+    //
+    // This is the same defect already fixed for the 'local' task-type bonus,
+    // and it matters most on the HTTP surface, where /v1/models advertises
+    // route ids as models and `service` is refused — so `model` is the only
+    // way an OpenAI client can choose a route.
+    const cheap = makeService({ name: "route_cheap", tier: 3, model: "cheap-model" });
+    const deep = makeService({ name: "route_deep", tier: 4, model: "deep-model" });
+    const dispatchers: Record<string, Dispatcher> = {
+      route_cheap: new StubDispatcher("route_cheap"),
+      route_deep: new StubDispatcher("route_deep"),
+    };
+    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers, leaderboard);
+
+    const unhinted = await router.pickService({});
+    expect(unhinted?.service, "the tier order this test depends on").toBe("route_cheap");
+
+    const decision = await router.pickService({ hints: { model: "route_deep" } });
+    expect(decision?.service).toBe("route_deep");
+    // The route runs its own model: a route id is not a model name.
+    expect(decision?.model).toBe("deep-model");
+    expect(decision?.modelHintDropped).toBe(true);
+    expect(decision?.reason).toContain("named by hints.model");
+  });
+
+  it("falls back normally when the route named by hints.model cannot run", async () => {
+    // The cross-tier rule must not become a way to force a route: `service`
+    // is that, with no fallback. A named route that is excluded — by a
+    // previous failed attempt here, by a tripped breaker or a policy refusal
+    // in the field — leaves the ordinary scoring untouched.
+    const cheap = makeService({ name: "route_cheap", tier: 3, model: "cheap-model" });
+    const deep = makeService({ name: "route_deep", tier: 4, model: "deep-model" });
+    const dispatchers: Record<string, Dispatcher> = {
+      route_cheap: new StubDispatcher("route_cheap"),
+      route_deep: new StubDispatcher("route_deep"),
+    };
+    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers, leaderboard);
+
+    const decision = await router.pickService({
+      hints: { model: "route_deep" },
+      exclude: new Set(["route_deep"]),
+    });
+    expect(decision?.service).toBe("route_cheap");
+    expect(decision?.model, "the loser's route id was forwarded as a model").toBe("cheap-model");
+  });
+
   it("passes a requested model through to a forced service even if it matches nothing configured", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };

@@ -6,6 +6,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Naming a route now actually runs it.** Asking for a route by id — `model`
+  on the HTTP surface, `hints.model` on MCP — only reordered routes inside the
+  tier the router had already chosen, so a named route in a lower tier was
+  never called while the response still reported the hint as honoured. Measured
+  on a Linux acceptance pass with three stub routes: naming the tier-4 route
+  returned the tier-3 route's answer, and the named route's server logged no
+  request at all. It now runs wherever it sits. This matters most over HTTP,
+  where `/v1/models` lists route ids as models and the `service` parameter is
+  refused, so naming a route in `model` was the only way to pick one. If the
+  named route cannot run, routing falls back as before — `service` is still how
+  you force one route with no fallback.
+
 ### Changed
 
 - **A route that has failed every call it has ever been given is no longer

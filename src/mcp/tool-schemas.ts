@@ -68,7 +68,11 @@ export const publicHintsSchema = z
           "'gpt-5.6-sol'). Routes that statically declare this model get a scoring " +
           "boost. A value that names a CONFIGURED ROUTE steers routing rather than " +
           "being sent on as a model — a route id is not a model name, and sending one " +
-          "cost real provider calls before this was separated. When you ALSO name a " +
+          "cost real provider calls before this was separated. Naming a route runs it " +
+          "wherever it sits, including a lower tier than the router would otherwise " +
+          "pick; if that route cannot run, routing falls back normally, so this is a " +
+          "preference and `service` is still how you force one route with no fallback. " +
+          "When you ALSO name a " +
           "route with the top-level `service` param, only a value naming THAT " +
           "route is dropped; one that merely collides with a different route's id is a " +
           "real model request and is still passed on. Anything else IS " +

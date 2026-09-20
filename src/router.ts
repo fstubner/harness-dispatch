@@ -35,8 +35,17 @@
  *    max_input_tokens and +0.15 for >=1M — declared context size, not
  *    harness name.
  *
- * One rule crosses tiers, and only one: task_type="local" picks the
- * best-scoring LOCAL route wherever it sits, falling back to normal tier order
+ * Two rules cross tiers, and only two.
+ *
+ * The first: a hints.model value that names a CONFIGURED ROUTE runs that route
+ * wherever it sits, falling through to normal tier order when it is not an
+ * eligible candidate. The +0.5 above could not do this on its own — a bonus
+ * only reorders within a tier — so a named route below the best tier was never
+ * called while the response still reported the hint as honoured. `service`
+ * remains the way to force a route with no fallback at all.
+ *
+ * The second, applied after it: task_type="local" picks the best-scoring
+ * LOCAL route wherever it sits, falling back to normal tier order
  * when none is eligible. Local means what `routePolicy: "local_only"` means —
  * declared provider/surface/auth/billing, and NOT a loopback URL. The "or a
  * loopback URL" half was deleted deliberately: a metered proxy on 127.0.0.1
@@ -713,6 +722,53 @@ export class Router {
       if (svc.enabled && svc.tier < minConfiguredTier) minConfiguredTier = svc.tier;
     }
 
+    // A ROUTE ID in `hints.model` crosses tiers. This and `taskType: "local"`
+    // below are the only two rules that do.
+    //
+    // Naming a route was implemented as `modelMatchBonus`, a +0.5 added to that
+    // route's score — and a bonus only reorders WITHIN a tier, which is the
+    // same defect written up twenty lines below for the old 'local' bonus.
+    // Measured on three stub routes: `model: "route_deep"` (tier 4) was
+    // answered by `route_cheap` (tier 3), and route_deep's server logged no
+    // request at all. The hint was reported as honoured — `modelHintDropped:
+    // true` — while the named route was never called.
+    //
+    // It lands hardest on the HTTP surface, which is why this is a defect
+    // rather than a preference: `/v1/models` advertises route ids as model
+    // ids, and `service` is refused there by name (see http/parse.ts, which
+    // rejects it precisely because "an explicit route choice was silently
+    // overridden by the router's pick"). So naming a route in `model` was an
+    // OpenAI client's only way to choose one, and it did not work across tiers.
+    //
+    // Ahead of the 'local' rule below, because naming a route is a specific
+    // instruction and a task type is a general preference. Falls through when
+    // the named route is not an eligible candidate — blocked, tripped, or
+    // excluded by a previous failed attempt — so fallback and every policy
+    // refusal behave exactly as before, and `service` remains the way to force
+    // a route with no fallback at all.
+    if (modelIsRouteId && preferredModel !== undefined) {
+      const named = [...tierCandidates.values()]
+        .flat()
+        .find((c) => sameModel(c.name, preferredModel));
+      if (named) {
+        const others = [...tierCandidates.values()]
+          .flat()
+          .filter((c) => c.name !== named.name)
+          .sort((a, b) => b.score - a.score);
+        return this.#decide(named, {
+          taskType,
+          reason: `route named by hints.model (tier ${named.tier})`,
+          compared: [named, ...others],
+          modelOverride,
+          preferredModel,
+          modelIsRouteId,
+          skippedRoutes,
+          requestedSafety,
+          requestedWorkspacePolicy,
+        });
+      }
+    }
+
     // `taskType: "local"` crosses tiers. Nothing else does.
     //
     // The schema says 'local' is for "trivial/mechanical" work and "prefers
@@ -738,36 +794,19 @@ export class Router {
         .sort((a, b) => b.score - a.score);
       const best = localCandidates[0];
       if (best) {
-        const svc = this.config.services[best.name]!;
-        const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
-        return {
-          service: best.name,
-          tier: best.tier,
-          quotaScore: best.quotaScore,
-          qualityScore: best.qualityScore,
-          cliCapability: best.cliCapability,
-          capabilityScore: best.capScore,
+        return this.#decide(best, {
           taskType,
-          model: modelOverride ?? resolveModel(svc, taskType),
-          ...(preferredModel !== undefined
-            ? { modelHintMatched: declaresModel(svc, preferredModel) }
-            : {}),
-          ...(modelIsRouteId && preferredModel !== undefined ? { modelHintDropped: true } : {}),
-          elo: best.elo ?? undefined,
-          finalScore: best.score,
           reason:
             `local route preferred for taskType 'local' ` +
             `(${localCandidates.length} local of ${localTiers.reduce((n, t) => n + (tierCandidates.get(t)?.length ?? 0), 0)} eligible)`,
-          candidates: localCandidates.slice(0, 4).map((c) => ({
-            route: c.name,
-            score: Math.round(c.score * 1000) / 1000,
-          })),
-          skippedRoutes: skippedRoutes.slice(),
-          safetyProfile: requestedSafetyProfile(svc, requestedSafety),
-          effectiveSafetyProfile: effectiveSafety,
-          billing: buildRouteBilling(svc),
-          workspacePolicy: workspacePolicyFor(svc, effectiveSafety, requestedWorkspacePolicy),
-        };
+          compared: localCandidates,
+          modelOverride,
+          preferredModel,
+          modelIsRouteId,
+          skippedRoutes,
+          requestedSafety,
+          requestedWorkspacePolicy,
+        });
       }
     }
 
@@ -778,51 +817,88 @@ export class Router {
 
       candidates.sort((a, b) => b.score - a.score);
       const best = candidates[0]!;
-      const svc = this.config.services[best.name]!;
 
       const reason =
         tier > minConfiguredTier
           ? `tier ${tier} fallback (all tier ${minConfiguredTier} services exhausted)`
           : `tier ${tier} best (${candidates.length} available)`;
 
-      // Capped, because this is for reading. Six candidates would bury the
-      // one comparison that matters — what the winner actually beat — under a
-      // list nobody scans. Rounded for the same reason: the choice turns on
-      // 0.92 vs 0.81, never on the fifteenth decimal place.
-      const compared = candidates.slice(0, 4).map((c) => ({
-        route: c.name,
-        score: Math.round(c.score * 1000) / 1000,
-      }));
-
-      const effectiveSafety = effectiveSafetyProfile(svc, requestedSafety);
-      return {
-        service: best.name,
-        tier,
-        quotaScore: best.quotaScore,
-        qualityScore: best.qualityScore,
-        cliCapability: best.cliCapability,
-        capabilityScore: best.capScore,
+      return this.#decide(best, {
         taskType,
-        // See the forced-service branch above for why this always prefers
-        // the requested model rather than gating on modelMatchesService.
-        model: modelOverride ?? resolveModel(svc, taskType),
-        ...(preferredModel !== undefined
-          ? { modelHintMatched: declaresModel(svc, preferredModel) }
-          : {}),
-        ...(modelIsRouteId && preferredModel !== undefined ? { modelHintDropped: true } : {}),
-        elo: best.elo ?? undefined,
-        finalScore: best.score,
         reason,
-        candidates: compared,
-        skippedRoutes: skippedRoutes.slice(),
-        safetyProfile: requestedSafetyProfile(svc, requestedSafety),
-        effectiveSafetyProfile: effectiveSafety,
-        billing: buildRouteBilling(svc),
-        workspacePolicy: workspacePolicyFor(svc, effectiveSafety, requestedWorkspacePolicy),
-      };
+        compared: candidates,
+        modelOverride,
+        preferredModel,
+        modelIsRouteId,
+        skippedRoutes,
+        requestedSafety,
+        requestedWorkspacePolicy,
+      });
     }
 
     return null;
+  }
+
+  /**
+   * Build the RoutingDecision for a winning candidate.
+   *
+   * One place, because there are now three scored paths that reach a winner —
+   * the named-route rule, the 'local' rule, and the tier loop — and they had
+   * been three near-identical 25-line object literals. The fields that were
+   * easiest to get wrong when copied are the two model-hint flags:
+   * `modelHintMatched` says the picked route declares the requested model,
+   * `modelHintDropped` says the value named a route and so was used for
+   * routing only. See the forced-service branch for why `model` always
+   * prefers the requested value rather than gating on modelMatchesService.
+   */
+  #decide(
+    best: Candidate,
+    o: {
+      taskType: TaskType;
+      reason: string;
+      /**
+       * Every candidate this one beat, best first. Capped at four here,
+       * because this is for reading: six would bury the one comparison that
+       * matters under a list nobody scans. Rounded for the same reason — the
+       * choice turns on 0.92 vs 0.81, never on the fifteenth decimal place.
+       */
+      compared: Candidate[];
+      modelOverride: string | undefined;
+      preferredModel: string | undefined;
+      modelIsRouteId: boolean;
+      skippedRoutes: RouteSkip[];
+      requestedSafety: RouteHints["safetyProfile"];
+      requestedWorkspacePolicy: RouteHints["workspacePolicy"];
+    },
+  ): RoutingDecision {
+    const svc = this.config.services[best.name]!;
+    const effectiveSafety = effectiveSafetyProfile(svc, o.requestedSafety);
+    return {
+      service: best.name,
+      tier: best.tier,
+      quotaScore: best.quotaScore,
+      qualityScore: best.qualityScore,
+      cliCapability: best.cliCapability,
+      capabilityScore: best.capScore,
+      taskType: o.taskType,
+      model: o.modelOverride ?? resolveModel(svc, o.taskType),
+      ...(o.preferredModel !== undefined
+        ? { modelHintMatched: declaresModel(svc, o.preferredModel) }
+        : {}),
+      ...(o.modelIsRouteId && o.preferredModel !== undefined ? { modelHintDropped: true } : {}),
+      elo: best.elo ?? undefined,
+      finalScore: best.score,
+      reason: o.reason,
+      candidates: o.compared.slice(0, 4).map((c) => ({
+        route: c.name,
+        score: Math.round(c.score * 1000) / 1000,
+      })),
+      skippedRoutes: o.skippedRoutes.slice(),
+      safetyProfile: requestedSafetyProfile(svc, o.requestedSafety),
+      effectiveSafetyProfile: effectiveSafety,
+      billing: buildRouteBilling(svc),
+      workspacePolicy: workspacePolicyFor(svc, effectiveSafety, o.requestedWorkspacePolicy),
+    };
   }
 
   /**
