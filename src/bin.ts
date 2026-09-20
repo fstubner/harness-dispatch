@@ -23,6 +23,7 @@ import { startMcpServer } from "./mcp/server.js";
 import { resolveRunnerPath } from "./jobs.js";
 import { initObservability } from "./observability/index.js";
 import { QuotaCache } from "./quota.js";
+import { NEVER_SUCCEEDED_MIN_CALLS } from "./route-policy.js";
 import { Router } from "./router.js";
 import { buildStatus, buildUsage, renderStatusText, renderUsageText } from "./status.js";
 import { startHttpServer } from "./http/server.js";
@@ -911,7 +912,6 @@ async function cmdDoctor(
   // route can legitimately fail its first few (a laptop that was asleep). The
   // threshold is about having enough evidence to be worth mentioning, not
   // about being sure.
-  const NEVER_SUCCEEDED_MIN_CALLS = 5;
   const deadRoutes = status.routes
     .filter((route) => status.ready.includes(route.id))
     .map((route) => ({
@@ -929,9 +929,9 @@ async function cmdDoctor(
         : deadRoutes
             .map(
               (r) =>
-                `${r.id} has never succeeded (${r.calls} calls, 0 successes) — it is still ` +
-                `being selected and failing, so every dispatch it wins costs an attempt ` +
-                `before falling back. Check the endpoint or credential, or disable it.`,
+                `${r.id} has never succeeded (${r.calls} calls, 0 successes), so the router ` +
+                `no longer scores it. Naming it with \`service\` still runs it and one ` +
+                `success re-admits it. Check the endpoint or credential, or disable it.`,
             )
             .join(" | "),
   });

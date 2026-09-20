@@ -615,6 +615,10 @@ export class Router {
         ...(requestedSafety !== undefined ? { requestedSafetyProfile: requestedSafety } : {}),
         ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
         taskType,
+        // Only here, and deliberately not on the two explicit paths above and
+        // below: a route the scorer will not choose must still run when the
+        // caller names it, or a fixed endpoint has no way of proving itself.
+        localCounts: this.quota.localCountsFor(name),
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);
       if (policy.blocked || dispatcher === undefined) continue;

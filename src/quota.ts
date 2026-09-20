@@ -372,6 +372,21 @@ export class QuotaCache {
     }
   }
 
+  /**
+   * Lifetime call/success counts for one route, without the async refresh
+   * `fullStatus` does.
+   *
+   * Read on the scoring path, once per candidate per dispatch, so it must not
+   * touch the network or the disk. These are the same counters `fullStatus`
+   * reports; this just reads them where waiting is not an option.
+   */
+  localCountsFor(service: string): { calls: number; successes: number } {
+    return {
+      calls: this.localCounts[service] ?? 0,
+      successes: this.localSuccessCounts[service] ?? 0,
+    };
+  }
+
   async fullStatus(): Promise<Record<string, QuotaStateJSON>> {
     this.refreshLocalCounts();
     const out: Record<string, QuotaStateJSON> = {};

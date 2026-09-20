@@ -8,6 +8,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Changed
 
+- **A route that has failed every call it has ever been given is no longer
+  chosen.** The circuit breaker decays, so a permanently misconfigured route
+  kept being picked, failing, and costing an attempt before the fallback —
+  measured on a real install where a local endpoint was 0 for 8 against a
+  machine that simply was not running, and still read as ready. `doctor` had
+  reported this for a while; nothing acted on it. From five calls with no
+  success, the router stops scoring it and says so in `skippedRoutes`.
+  Naming the route with `service` still runs it, which is how an operator who
+  has fixed the endpoint proves it works — and one success re-admits it. The
+  threshold lives in one place now, so `doctor` and the router cannot disagree
+  about which routes are dead.
+
 - **`dispatch` says which model answered, not only which route.** The line read
   `dispatch: claude_code_cli (explicit)`, and a route id names a harness — for
   most routes the model is precisely the part you cannot infer from it. It now

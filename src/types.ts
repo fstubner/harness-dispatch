@@ -156,6 +156,7 @@ export interface RouteSkip {
     | "approval_required"
     | "safety_incompatible"
     | "cannot_execute"
+    | "never_succeeded"
     | "workspace_isolation_required";
   message: string;
 }

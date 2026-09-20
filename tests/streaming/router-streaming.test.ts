@@ -55,7 +55,19 @@ vi.mock("../../src/quota.js", () => {
     async getQuotaScore(): Promise<number> {
       return 1.0;
     }
-    recordResult(): void {}
+    // Counted, not no-op: the router asks this stand-in whether a route has
+    // ever succeeded before scoring it.
+    private counts = new Map<string, { calls: number; successes: number }>();
+    recordResult(service?: string, result?: { success?: boolean }): void {
+      if (!service) return;
+      const c = this.counts.get(service) ?? { calls: 0, successes: 0 };
+      c.calls += 1;
+      if (result?.success) c.successes += 1;
+      this.counts.set(service, c);
+    }
+    localCountsFor(service: string): { calls: number; successes: number } {
+      return this.counts.get(service) ?? { calls: 0, successes: 0 };
+    }
   }
   return { QuotaCache };
 });
