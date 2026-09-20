@@ -161,6 +161,30 @@ relative link is dead on npmjs.com). Claude Code:
 `/plugin install harness-dispatch@harness-dispatch`. Codex:
 `node plugin/scripts/install-codex.mjs`.
 
+### Where to put the instructions that tell an agent to delegate
+
+In your user-level file — `~/.claude/CLAUDE.md`, or the equivalent for your
+client — not in a project file that gets committed.
+
+Two reasons, and the second bites even among people who all run this tool:
+
+- A teammate without it reads instructions for tools their agent does not have.
+- **Route ids do not travel.** `codex_cli`, `local_inference` and the rest are
+  whatever *your* config declares. Someone else's install has different ones, so
+  a committed `service:` or model name is wrong for them rather than merely
+  unused.
+
+A project's checked-in `CLAUDE.md` is for the codebase: how it builds, how it is
+tested, its conventions. Personal-but-project-specific notes go in
+`CLAUDE.local.md`, which is gitignored by convention.
+
+If a team does want a shared mention, keep it to one conditional sentence with
+no route ids, so it costs nothing to anyone who has not installed this. The
+[CLAUDE.md](CLAUDE.md) in this repository is written that way on purpose.
+
+Nothing here writes to a project file. `configure` and `connect` touch only
+user-level client configs, and they show you the change before making it.
+
 ## Billing, and what it can't promise
 
 **A configured harness runs automatically**, with nothing to switch on. Routes that
