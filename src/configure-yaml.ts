@@ -276,8 +276,43 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   const doc: Record<string, unknown> = { ...topLevelToYaml(config, definesRoutes) };
   if (clis.length > 0) doc.clis = clis;
   if (endpoints.length > 0) doc.endpoints = endpoints;
-  return yaml.dump(doc, { noRefs: true, lineWidth: 100 });
+  const body = yaml.dump(doc, { noRefs: true, lineWidth: 100 });
+  // `{}` is what js-yaml emits for an empty document, and it is what a machine
+  // with no harness CLI installed got from `configure` — printed by --print and
+  // written to disk by --yes. Valid YAML, and useless: the file says nothing
+  // about why it is empty or what to put in it, which on Linux is the ordinary
+  // first-run case rather than an edge one (measured on an acceptance pass
+  // there). `doctor` already says the thing that unblocks it — an endpoints:
+  // entry needs no CLI — so the file says it too, in the place someone who
+  // opens it is looking.
+  return body.trim() === "{}" ? EMPTY_CONFIG_BODY : body;
 }
+
+/**
+ * The body written in place of `{}`. Comments only, so it parses to the same
+ * empty document and `detect`/`disabled` are unaffected — nothing here changes
+ * what the router does, it just stops the file being a dead end.
+ */
+const EMPTY_CONFIG_BODY = `# This config defines no routes. On a fresh machine that means no harness CLI
+# was found on PATH (claude, codex, cursor-agent, agy). Two ways forward:
+#
+#   1. Install a harness CLI and re-run \`harness-dispatch configure\` — an
+#      unedited file like this one is regenerated from a fresh detection.
+#   2. Add an HTTP endpoint below. Endpoints need no CLI. They are read_only
+#      (no agent loop, no file access), so they serve plan and review work,
+#      never execute.
+#
+# endpoints:
+#   - name: ollama
+#     base_url: http://localhost:11434/v1
+#     model: llama3.2
+#     billing_kind: local_compute
+#     tier: 3
+#
+# \`harness-dispatch doctor\` says which of the two applies here. The shipped
+# config.default.yaml in the installed package carries a worked example of
+# every field.
+`;
 
 /**
  * `configure` stamps what it writes so a later run can tell its own unedited

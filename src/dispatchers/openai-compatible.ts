@@ -928,6 +928,31 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       if (evts.error !== undefined) streamError = evts.error;
     }
 
+    // An endpoint that ignores `stream: true` and answers with an ordinary
+    // completion body still answered.
+    //
+    // Nothing in that body is SSE, so no frame parses out of it and the stream
+    // yielded nothing — and the failure said "No answer in response body:
+    // {…"content":"pong"…}", quoting the answer it was about to throw away.
+    // Measured against a local endpoint during a Linux acceptance pass; real
+    // servers and gateways do ignore the flag.
+    //
+    // This reads the body with the SAME extractor the buffered path uses
+    // rather than inferring anything from its shape — the one thing that
+    // distinguishes it from the classification attempts documented below,
+    // each of which guessed at why a body was unusable and was wrong one case
+    // over. Here there is no guess: either the parser finds a completion in
+    // it or nothing happens.
+    if (streamError === undefined && chunks.length === 0 && buffer.trim()) {
+      const parsed = this.#parseBody(buffer);
+      const recovered = parsed ? this.#extractContent(parsed) : null;
+      if (recovered !== null && recovered !== "") {
+        chunks.push(recovered);
+        yield { type: "stdout", chunk: recovered };
+        if (parsed) mergeUsage(this.#extractUsage(parsed) ?? null);
+      }
+    }
+
     const output = chunks.join("");
     // A 200 that yields no answer is not a successful empty answer. jobs.ts
     // only ever streams, so the MCP surface (the primary one, and the one an

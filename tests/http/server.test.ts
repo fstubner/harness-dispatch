@@ -529,6 +529,62 @@ describe("HTTP server", () => {
     expect(chat.headers.get("x-harness-dispatch-job-id")).toBe(body.harness_dispatch.jobId);
   });
 
+  it("answers a failed dispatch with 502 AND an error the body itself states", async () => {
+    // The status has been 502 since the failure text stopped being served as
+    // the assistant's answer. The BODY still read as a success: a
+    // chat.completion with empty content and finish_reason "stop", the reason
+    // only in the vendor extension. Measured on a Linux acceptance pass
+    // against an endpoint returning 500 — a client that reads the body before
+    // the status, or logs it, saw an empty successful answer.
+    const failing: Server = createServer((_req, res) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "upstream exploded" } }));
+    });
+    await new Promise<void>((resolve) => failing.listen(0, "127.0.0.1", () => resolve()));
+    const addr = failing.address();
+    if (!addr || typeof addr !== "object") throw new Error("failing server did not bind");
+    fakes.push({ close: () => new Promise<void>((resolve) => failing.close(() => resolve())) });
+
+    const config = await writeConfig(`http://127.0.0.1:${addr.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const chat = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({ model: "local", messages: [{ role: "user", content: "ping" }] }),
+    });
+
+    expect(chat.status).toBe(502);
+    const body = (await chat.json()) as {
+      error?: { message: string; type: string; route: string };
+      harness_dispatch: { success: boolean; error?: string };
+    };
+    expect(body.harness_dispatch.success).toBe(false);
+    // `error` is where an OpenAI-compatible client looks.
+    expect(body.error?.message).toContain("upstream exploded");
+    expect(body.error?.route).toBe("local");
+  });
+
+  it("leaves error off a successful completion", async () => {
+    // The other half: an `error` key present on a 200 would make every
+    // ordinary answer look like a failure to a client that checks for it.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const chat = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({ model: "local", messages: [{ role: "user", content: "ping" }] }),
+    });
+
+    expect(chat.status).toBe(200);
+    expect(await chat.json()).not.toHaveProperty("error");
+  });
+
   it("surfaces skipped routes in REST chat completions", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);
