@@ -56,6 +56,35 @@ export function evaluateRoutePolicy(
   if (opts.circuitBroken) {
     return skip(route, "circuit_broken", "route circuit breaker is open");
   }
+  // A credential that is missing is knowable before the call, unlike health.
+  //
+  // The three checks that look like they should catch this cannot. The
+  // never-succeeded skip is a LIFETIME test, so a route that worked last week
+  // on a machine where the variable was exported is not dead. The breaker
+  // needs repeated failures, and one 401 per route is not repeated. And
+  // `doctor --live` is opt-in precisely because it spends quota. Meanwhile
+  // `usage` and `status` reported these routes as ready, the router scored
+  // them, and each returned an authentication error on the first call —
+  // measured on three routes at once.
+  //
+  // The config warning that named the unset variables existed all along; it
+  // was a line about the FILE, and nothing carried it down to the route. This
+  // does, so the route is skipped with the variable named, before a provider
+  // is ever contacted.
+  //
+  // Set only for endpoint routes (see markUnsetApiKeys). Its one false
+  // positive is a local server that ignores the key it is sent, where the
+  // honest fix — deleting an api_key line that does nothing — is also what
+  // this message asks for.
+  if (svc.apiKeyUnsetRef !== undefined) {
+    return skip(
+      route,
+      "credential_unset",
+      `its api_key is ${svc.apiKeyUnsetRef}, and that variable is not set here, so the ` +
+        `route has no credential and every call would fail to authenticate. Export the ` +
+        `variable, or remove the api_key line if this endpoint needs none.`,
+    );
+  }
   if (
     opts.localCounts &&
     opts.localCounts.calls >= NEVER_SUCCEEDED_MIN_CALLS &&

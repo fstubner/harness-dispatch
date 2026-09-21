@@ -274,3 +274,100 @@ describe("usage with no routes", () => {
     expect(text).toMatch(/claude|codex|cursor-agent|agy/);
   });
 });
+
+describe("the mark on a listed route reflects whether the router will use it", () => {
+  // `usage` is the surface an orchestrating agent is told to read before
+  // delegating, and it printed `ok` for every configured route — including
+  // ones the router was refusing to score at all. A user watching a route sit
+  // at `ok` while nothing routed to it had no way to connect the two, which is
+  // why `doctor` grew a separate route-health line saying what `status`
+  // contradicted one screen up.
+  it("marks a route the router refuses as skip, in usage and in status", () => {
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "groq_api",
+          type: "openai_compatible",
+          skipped: {
+            route: "groq_api",
+            code: "credential_unset",
+            message: "its api_key is ${GROQ_API_KEY}, and that variable is not set here",
+          },
+        }),
+      ],
+      [],
+    );
+
+    const usage = renderUsageText(buildUsage(status));
+    expect(usage).toMatch(/^skip groq_api/m);
+    // And the reason travels with it: the mark alone says "not this one"
+    // without saying what to do about it.
+    expect(usage).toContain("${GROQ_API_KEY}");
+    expect(renderStatusText(status)).toMatch(/^skip groq_api/m);
+  });
+
+  it("leaves a route skipped only for THIS request marked ok", () => {
+    // The listing surfaces evaluate policy with no safety profile, task type
+    // or route policy, so several skip codes answer a question nobody asked.
+    // cursor_cli declares full_auto, which exceeds the default requested
+    // profile — marking it skipped would call a route broken that a full_auto
+    // dispatch uses successfully, 11 times out of 14 on this machine.
+    const status = makeStatus(
+      [
+        makeRoute({
+          id: "cursor_cli",
+          skipped: {
+            route: "cursor_cli",
+            code: "safety_incompatible",
+            message: "effective safety full_auto exceeds requested safety",
+          },
+        }),
+      ],
+      ["cursor_cli"],
+    );
+
+    const usage = renderUsageText(buildUsage(status));
+    expect(usage).toMatch(/^ok cursor_cli/m);
+    // Still reported, because it is information — just not a verdict.
+    expect(usage).toContain("safety_incompatible");
+  });
+});
+
+describe("the listing and the router agree about a dead route", () => {
+  // `doctor` reported "local_inference has never succeeded (8 calls, 0
+  // successes), so the router no longer scores it" while `usage` and `status`
+  // printed `ok` for that same route one screen up. Both read the same policy
+  // function; only the router was passing it the call counts the check needs,
+  // so the listing could not see the skip at all.
+  it("marks a route with calls and no successes as skipped", async () => {
+    const { buildStatus } = await import("../src/status.js");
+    const svc = {
+      name: "dead_local", enabled: true, type: "openai_compatible",
+      baseUrl: "http://127.0.0.1:1234/v1", model: "m", tier: 3, weight: 1,
+      cliCapability: 1, capabilities: { execute: 0, plan: 1, review: 1 }, escalateOn: [],
+      provider: "local", surface: "local_endpoint", authSource: "local_network",
+      billingKind: "local_compute", paidUsagePossible: false, billingConfidence: "documented",
+    };
+    const status = await buildStatus(
+      { services: { dead_local: svc } } as never,
+      { dead_local: { isAvailable: () => true } } as never,
+      {
+        fullStatus: async () => ({
+          dead_local: { localCallCount: 8, localSuccessCount: 0, localFailureCount: 8 },
+        }),
+        getQuotaScore: async () => 1,
+        localCountsPersistError: () => undefined,
+      } as never,
+      {
+        circuitBreakerStatus: () => ({}),
+        breakerStateUnreadable: () => [],
+        pickService: () => undefined,
+        getBreaker: () => undefined,
+      } as never,
+      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
+    );
+
+    expect(status.routes[0]?.skipped?.code).toBe("never_succeeded");
+    expect(renderUsageText(buildUsage(status))).toMatch(/^skip dead_local/m);
+  });
+});

@@ -913,7 +913,18 @@ async function cmdDoctor(
   // threshold is about having enough evidence to be worth mentioning, not
   // about being sure.
   const deadRoutes = status.routes
-    .filter((route) => status.ready.includes(route.id))
+    // Ready routes AND routes skipped for exactly this reason.
+    //
+    // `ready` excludes anything the policy skipped, and the dead-route skip is
+    // a policy skip — so once `status` started applying it (it could not until
+    // it was given the call counts), the route this check exists to name
+    // stopped being in the list this check reads, and `doctor` fell silent
+    // about it. The advisory has to outlive the skip it describes: the whole
+    // point is telling the operator why a configured route is going unused.
+    .filter(
+      (route) =>
+        status.ready.includes(route.id) || route.skipped?.code === "never_succeeded",
+    )
     .map((route) => ({
       id: route.id,
       calls: route.quota.localCallCount ?? 0,

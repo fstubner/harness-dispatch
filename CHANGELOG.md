@@ -8,6 +8,28 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A route with no credential is skipped, instead of looking ready and
+  failing on contact.** An endpoint whose `api_key` is written as a `${VAR}`
+  reference with that variable unset has no key at all, yet `usage` and
+  `status` listed it as ok and the router kept choosing it — three routes here
+  did exactly that, each answering with an authentication error. None of the
+  existing guards could catch it: the dead-route check is a lifetime test and
+  these had all worked before, a single 401 is not enough to trip a breaker,
+  and the live probe is opt-in because it spends quota. The config warning
+  naming the unset variables existed all along, but it spoke about the file
+  and nothing carried it down to the route. The route is now skipped before a
+  provider is contacted, naming the variable to export. CLI routes are
+  untouched, where a missing key means "use the subscription login" and the
+  route works fine.
+
+- **`usage` and `status` stop printing `ok` for routes the router refuses to
+  use.** They now mark such a route `skip` and print the reason underneath —
+  including the dead-route case, where `doctor` was reporting a route as
+  unusable one screen below a listing that called it fine. A skip that depends
+  on the request rather than the route (a safety profile that suits one
+  dispatch and not another) still reads `ok`, because it is not a verdict on
+  the route.
+
 - **Losing an isolated workspace no longer loses the work.** A `copy` or
   `git_worktree` dispatch puts the agent's changes under the OS temp
   directory, which Linux clears on reboot and WSL clears whenever its VM idles

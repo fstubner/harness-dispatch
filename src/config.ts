@@ -625,6 +625,34 @@ function addClis(
  * all, overwriting a correct config with one whose key was simply gone. Keyed
  * by route name, which is unique per shape and is what configure has in hand.
  */
+/**
+ * Record, per route, that its `api_key: ${VAR}` resolved to nothing.
+ *
+ * The config-level warning for unset variables has existed for a while and
+ * names every one of them, but it is one line in `doctor` about the FILE:
+ * `usage` and `status` still listed each affected route as ready, and the
+ * router still scored it. Measured — three routes reported ok, were picked,
+ * and came back `HTTP 401: Invalid API Key` and "Missing or invalid
+ * Authorization header", one call each.
+ *
+ * ENDPOINT ROUTES ONLY, deliberately. A CLI route that declares
+ * `api_key: ${ANTHROPIC_API_KEY}` is asking for API billing *instead of* its
+ * subscription login, and with the variable unset the harness simply uses the
+ * login it already has — a working route that must not be skipped. For an
+ * openai_compatible endpoint the key is the only credential there is.
+ */
+function markUnsetApiKeys(
+  services: Record<string, ServiceConfig>,
+  apiKeyRefs: ReadonlyMap<string, string>,
+): void {
+  for (const [name, ref] of apiKeyRefs) {
+    const svc = services[name];
+    if (!svc || svc.type !== "openai_compatible") continue;
+    if (svc.apiKey !== undefined && svc.apiKey !== "") continue;
+    svc.apiKeyUnsetRef = ref;
+  }
+}
+
 function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {
   const refs = new Map<string, string>();
   const note = (name: unknown, value: unknown): void => {
@@ -1094,6 +1122,7 @@ async function loadConfigInner(
   }
   addClis(services, raw, apiKeys, warnings);
   addEndpoints(services, raw, apiKeys, warnings);
+  markUnsetApiKeys(services, apiKeyRefs);
 
   warnUnknownSafetyEnums(raw, warnings);
   warnUnknownTopLevelKeys(raw, warnings);
