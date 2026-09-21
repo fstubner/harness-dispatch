@@ -1397,3 +1397,76 @@ overrides:
     expect(warningText).not.toContain("weight");
   });
 });
+
+describe("an api_key whose ${VAR} is not set", () => {
+  // The config warning for unset variables names them, and stops there: it is
+  // one line about the FILE. Nothing marked the ROUTE, so `usage` and `status`
+  // listed it ready and the router scored it — measured, three routes at once,
+  // each returning an authentication error on its first call.
+  it("marks the endpoint route it belongs to", async () => {
+    delete process.env["HR_TEST_UNSET_KEY"];
+    const p = await writeTmpYaml(
+      "unset.yaml",
+      [
+        "endpoints:",
+        "  - name: needs_key",
+        "    base_url: https://api.example.test/v1",
+        "    model: m",
+        "    api_key: ${HR_TEST_UNSET_KEY}",
+        "    billing_kind: free_quota",
+        "",
+      ].join(NL),
+    );
+
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+    expect(cfg.services["needs_key"]?.apiKeyUnsetRef).toBe("${HR_TEST_UNSET_KEY}");
+  });
+
+  it("leaves a CLI route alone, where a missing key means 'use the login'", async () => {
+    // claude/codex/cursor read an api_key to switch to API billing INSTEAD of
+    // their subscription login. With the variable unset the harness uses the
+    // login it already has — a working route, which must not be skipped.
+    delete process.env["HR_TEST_UNSET_KEY"];
+    const p = await writeTmpYaml(
+      "unset-cli.yaml",
+      [
+        "clis:",
+        "  - name: claude_code_cli",
+        "    harness: claude_code",
+        "    command: claude",
+        "    api_key: ${HR_TEST_UNSET_KEY}",
+        "",
+      ].join(NL),
+    );
+
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+
+    expect(cfg.services["claude_code_cli"]?.apiKeyUnsetRef).toBeUndefined();
+  });
+
+  it("says nothing about a route whose variable IS set", async () => {
+    process.env["HR_TEST_SET_KEY"] = "sk-present";
+    try {
+      const p = await writeTmpYaml(
+        "set.yaml",
+        [
+          "endpoints:",
+          "  - name: has_key",
+          "    base_url: https://api.example.test/v1",
+          "    model: m",
+          "    api_key: ${HR_TEST_SET_KEY}",
+          "    billing_kind: free_quota",
+          "",
+        ].join(NL),
+      );
+
+      const cfg = await loadConfig(p, { whichFn: noCliFound });
+
+      expect(cfg.services["has_key"]?.apiKeyUnsetRef).toBeUndefined();
+      expect(cfg.services["has_key"]?.apiKey).toBe("sk-present");
+    } finally {
+      delete process.env["HR_TEST_SET_KEY"];
+    }
+  });
+});

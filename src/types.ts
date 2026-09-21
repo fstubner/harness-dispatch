@@ -157,6 +157,7 @@ export interface RouteSkip {
     | "safety_incompatible"
     | "cannot_execute"
     | "never_succeeded"
+    | "credential_unset"
     | "workspace_isolation_required";
   message: string;
 }
@@ -365,6 +366,15 @@ export interface ServiceConfig {
   harness?: string;
   command?: string;
   apiKey?: string;
+  /**
+   * The `${VAR}` this route's `api_key` was written as, when that variable is
+   * not set in the environment and the key therefore resolved to nothing.
+   *
+   * Set at config load, where the raw text and the resolved value are both in
+   * hand — `apiKey` alone cannot tell "no key configured" from "a key was
+   * configured and the variable is missing", and those need opposite answers.
+   */
+  apiKeyUnsetRef?: string;
   baseUrl?: string;
   model?: string;
   tier: number;

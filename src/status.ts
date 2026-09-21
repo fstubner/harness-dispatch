@@ -313,6 +313,15 @@ export async function buildStatus(
     const policy = evaluateRoutePolicy(id, svc, {
       ...(dispatcher !== undefined ? { dispatcher } : {}),
       circuitBroken: Boolean(route.breaker.tripped),
+      // The same counts the router scores with, so this reports the same
+      // verdict. Without them the never-succeeded skip cannot fire here, and a
+      // route the router had stopped scoring was still listed as `ok` on both
+      // surfaces — the reason `doctor` grew a separate route-health line to
+      // say what `status` was contradicting one screen up.
+      localCounts: {
+        calls: q?.localCallCount ?? 0,
+        successes: q?.localSuccessCount ?? 0,
+      },
     });
     if (policy.skipped) {
       route.skipped = policy.skipped;
@@ -459,6 +468,15 @@ export interface RouteUsage {
   quotaResetAt?: string;
   breakerTripped: boolean;
   breakerFailures: number;
+  /**
+   * Why the router will not choose this route, when it will not.
+   *
+   * `usage` is the surface an orchestrating agent is told to consult before
+   * delegating, and it printed `ok` for every configured route — including
+   * ones the router was refusing to score. Someone watching a route sit at
+   * `ok` while nothing ever routed to it had no way to connect the two.
+   */
+  skipped?: RouteSkip;
 }
 
 export interface HarnessDispatchUsage {
@@ -491,6 +509,7 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
         breakerTripped: route.breaker.tripped,
         breakerFailures: route.breaker.failures,
       };
+      if (route.skipped !== undefined) usage.skipped = route.skipped;
       if (route.model !== undefined) usage.model = route.model;
       if (route.models !== undefined) usage.models = route.models;
       const hint = modelDiscoveryHint(route);
@@ -501,6 +520,42 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
       return usage;
     }),
   };
+}
+
+/**
+ * Skips that hold whatever the next call asks for.
+ *
+ * The listing surfaces have no request in hand, so they evaluate policy with
+ * no safety profile, task type or route policy — and several skip codes answer
+ * a question that was never asked. `safety_incompatible` is the one that bites:
+ * cursor_cli declares full_auto, which exceeds the DEFAULT requested profile,
+ * so a listing that marked it skipped would be calling a route broken that a
+ * full_auto dispatch uses successfully. Measured: 11 of its 14 calls here
+ * succeeded.
+ *
+ * So the mark reflects only the codes that are a property of the route or its
+ * environment. Every skip, conditional or not, still prints its reason on the
+ * line below — the reason is information; the mark is a verdict.
+ */
+const UNCONDITIONAL_SKIPS: ReadonlySet<RouteSkip["code"]> = new Set([
+  "disabled",
+  "no_dispatcher",
+  "unavailable",
+  "circuit_broken",
+  "credential_unset",
+  "never_succeeded",
+  "unknown_billing",
+  "paid_blocked",
+]);
+
+function routeMark(route: {
+  enabled: boolean;
+  available: boolean;
+  skipped?: RouteSkip;
+}): "ok" | "off" | "skip" {
+  if (!route.enabled || !route.available) return "off";
+  if (route.skipped && UNCONDITIONAL_SKIPS.has(route.skipped.code)) return "skip";
+  return "ok";
 }
 
 export function renderUsageText(usage: HarnessDispatchUsage): string {
@@ -521,7 +576,7 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
     return lines.join("\n");
   }
   for (const route of usage.routes) {
-    const mark = route.available && route.enabled ? "ok" : "off";
+    const mark = routeMark(route);
     const quota =
       route.quotaRemaining !== undefined && route.quotaLimit !== undefined
         ? `${route.quotaRemaining}/${route.quotaLimit}`
@@ -541,6 +596,7 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
     if (route.inputTokens > 0 || route.outputTokens > 0) {
       lines.push(`  tokens: in=${fmtTokens(route.inputTokens)} out=${fmtTokens(route.outputTokens)}`);
     }
+    if (route.skipped) lines.push(`  skipped=${route.skipped.code}: ${route.skipped.message}`);
     if (route.modelHint) lines.push(`  models: ${route.modelHint}`);
   }
   return lines.join("\n");
@@ -557,7 +613,7 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   const lines: string[] = [];
   lines.push("harness-dispatch status", "");
   for (const route of status.routes) {
-    const mark = route.available && route.enabled ? "ok" : "off";
+    const mark = routeMark(route);
     // `leaderboard_model` is a SCORING key, not what gets dispatched. Showing
     // it bare as `model=` made status and usage disagree — against this repo's
     // own config.yaml, status read `model=zzz-no-such-model-force-fallback-tier`

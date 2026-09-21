@@ -453,3 +453,43 @@ describe("billing_confidence: unknown on a route that cannot bill you", () => {
     expect(r.skipped?.message).toMatch(/allow_paid_usage: true/);
   });
 });
+
+describe("a route whose api_key variable is not set", () => {
+  // Three routes reported `ok` in `usage`, were scored, and came back `HTTP
+  // 401: Invalid API Key` and "Missing or invalid Authorization header", one
+  // call each. None of the existing guards could have caught it: the
+  // never-succeeded skip is a LIFETIME test and all three had worked before,
+  // one 401 is not enough failures to trip a breaker, and `doctor --live` is
+  // opt-in because it spends quota. The config warning that named the unset
+  // variables was a line about the FILE, and nothing carried it to the route.
+  function endpointWithUnsetKey(over: Record<string, unknown> = {}): never {
+    return {
+      name: "ep", enabled: true, type: "openai_compatible",
+      baseUrl: "https://api.example.test/v1", model: "m",
+      apiKeyUnsetRef: "${EXAMPLE_API_KEY}",
+      tier: 3, weight: 1, cliCapability: 1,
+      capabilities: { execute: 0, plan: 1, review: 1 }, escalateOn: [],
+      provider: "custom", surface: "openai_compatible", authSource: "api_key",
+      billingKind: "free_quota", paidUsagePossible: false, billingConfidence: "documented",
+      ...over,
+    } as never;
+  }
+  const avail = { dispatcher: { isAvailable: () => true } as never };
+
+  it("is refused before a provider is contacted", () => {
+    const out = evaluateRoutePolicy("ep", endpointWithUnsetKey(), { ...avail, taskType: "review" });
+    expect(out.blocked).toBe(true);
+    expect(out.skipped?.code).toBe("credential_unset");
+    // The variable by name: "set your API key" leaves the reader guessing
+    // which of several this route wanted.
+    expect(out.skipped?.message).toContain("${EXAMPLE_API_KEY}");
+  });
+
+  it("does not touch a route whose key is actually present", () => {
+    const out = evaluateRoutePolicy("ep", endpointWithUnsetKey({ apiKeyUnsetRef: undefined, apiKey: "sk-real" }), {
+      ...avail,
+      taskType: "review",
+    });
+    expect(out.blocked).toBe(false);
+  });
+});
