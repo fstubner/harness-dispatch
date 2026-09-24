@@ -368,3 +368,109 @@ describe("an orphaned job can still be cancelled", () => {
     expect(out.outcome).toBe("already_finished");
   });
 });
+
+describe("a cancelled isolated run keeps its work reachable", () => {
+  /**
+   * A cancel abandons the stream before any completion arrives, and the
+   * completion is where an isolated workspace's record is produced. So
+   * cancelling a `copy` run left the agent's edits in a workspace nothing
+   * pointed at: `workspace` answered "no isolated workspace (policy: shared)"
+   * and retention deleted it a day later. Found in an audit.
+   *
+   * The dispatcher here edits a file in the workspace it is given, then goes
+   * quiet until aborted — the shape of a real agent cancelled mid-run.
+   */
+  it("can still be diffed and applied after the cancel", async () => {
+    const { startAsyncJobTracked, getAsyncJob } = await import("../src/jobs.js");
+    const { resolveJobWorkspace } = await import("../src/jobs/lifecycle.js");
+    const { RuntimeHolder } = await import("../src/mcp/config-hot-reload.js");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const editsThenHangs: any = {
+      id: "editor",
+      async dispatch() {
+        throw new Error("not used");
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stream(_p: string, _f: string[], cwd: string, opts?: { signal?: AbortSignal }): AsyncIterable<any> {
+        let started = false;
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => {
+              if (!started) {
+                started = true;
+                await fs.writeFile(path.join(cwd, "app.js"), "const a = 2;\n", "utf8");
+                await fs.writeFile(path.join(cwd, "added.js"), "export const b = 3;\n", "utf8");
+              }
+              // Silent until aborted; then the "process" is gone and the
+              // stream ends, as a killed child's would.
+              await new Promise<void>((resolve) => {
+                if (opts?.signal?.aborted) return resolve();
+                opts?.signal?.addEventListener("abort", () => resolve());
+              });
+              return { value: undefined, done: true as const };
+            },
+            return: async () => ({ value: undefined, done: true as const }),
+          }),
+        };
+      },
+      async checkQuota() {
+        return { service: "editor", source: "unknown" as const };
+      },
+      isAvailable: () => true,
+    };
+
+    const svc = {
+      name: "editor", enabled: true, type: "cli" as const, harness: "editor", command: "editor",
+      tier: 1, weight: 1, cliCapability: 1, capabilities: { execute: 1, plan: 1, review: 1 },
+      escalateOn: [], maxOutputTokens: 1000, maxInputTokens: 1000,
+      provider: "local" as const, surface: "local_endpoint" as const, authSource: "local_network" as const,
+      billingKind: "local_compute" as const, paidUsagePossible: false, billingConfidence: "documented" as const,
+    };
+    const { Router } = await import("../src/router.js");
+    const { QuotaCache } = await import("../src/quota.js");
+    const { LeaderboardCache } = await import("../src/leaderboard.js");
+    const config = { services: { editor: svc } };
+    const dispatchers = { editor: editsThenHangs } as never;
+    const quota = new QuotaCache(dispatchers, { stateFile: ":memory-cancel-ws:" });
+    const leaderboard = new LeaderboardCache();
+    const router = new Router(config as never, quota, dispatchers, leaderboard);
+    const holder = new RuntimeHolder({
+      config, dispatchers, quota, router, leaderboard, mtimeMs: 0,
+    } as never);
+
+    const workDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "hr-cancel-ws-")));
+    await fs.writeFile(path.join(workDir, "app.js"), "const a = 1;\n", "utf8");
+    try {
+      const { status, completion } = await startAsyncJobTracked({ holder } as never, {
+        prompt: "edit then hang",
+        service: "editor",
+        workingDir: workDir,
+        workspacePolicy: "copy",
+        hints: { safetyProfile: "full_auto" },
+      } as never);
+
+      await new Promise((r) => setTimeout(r, 400));
+      await cancelJob(status.jobId, "changed my mind");
+      await completion;
+
+      const job = await getAsyncJob(status.jobId);
+      expect(job.status.status).toBe("cancelled");
+
+      // The project was never touched: isolation held through the cancel.
+      expect(await fs.readFile(path.join(workDir, "app.js"), "utf8")).toBe("const a = 1;\n");
+
+      const diff = (await resolveJobWorkspace(status.jobId, "diff")) as { patch: string };
+      expect(diff.patch, "the cancelled run's edits are not in its patch").toMatch(/added\.js/);
+      expect(diff.patch).toMatch(/const a = 2;/);
+
+      const applied = (await resolveJobWorkspace(status.jobId, "apply")) as { applied: boolean };
+      expect(applied.applied).toBe(true);
+      expect((await fs.readFile(path.join(workDir, "app.js"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+        "const a = 2;\n",
+      );
+    } finally {
+      await fs.rm(workDir, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+});

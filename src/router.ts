@@ -104,6 +104,7 @@ import { acquireWorkspaceLock } from "./workspace-lock.js";
 import {
   prepareWorkspace,
   workspacePolicyFor,
+  type PreparedWorkspace,
 } from "./workspaces.js";
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,15 @@ export interface ExplicitDispatchOpts {
    * not set this and keeps the dispatcher's own short default.
    */
   defaultTimeoutMs?: number;
+  /**
+   * Called once the run's workspace exists, with a single-use `finish`.
+   *
+   * For the job runner only: a cancelled job abandons the stream before any
+   * completion arrives, and the completion is where an isolated workspace's
+   * record — its changed files, its patch — is produced. Without this, a
+   * cancelled `copy`/`git_worktree` run left edits nobody could diff or apply.
+   */
+  onWorkspace?: (workspace: PreparedWorkspace) => void;
 }
 
 function resolveModel(svc: ServiceConfig, taskType: TaskType): string | undefined {
@@ -331,6 +341,21 @@ const BUFFERED_INVOKE: DispatcherInvoke = async function* (
   yield { type: "completion", result };
 };
 
+/**
+ * A prepared workspace whose `finish` runs at most once, however many callers
+ * reach it.
+ *
+ * Two can: the stream below finishes it when the dispatcher completes, and a
+ * cancelled job finishes it itself (see `onWorkspace`), because a cancel
+ * abandons the stream before any completion arrives. They can race — the
+ * completion may land just as the cancel does — and a second `finish` would
+ * fingerprint, or try to remove, a workspace the first already dealt with.
+ */
+function finishOnce(workspace: PreparedWorkspace): PreparedWorkspace {
+  let done: Promise<DispatchResult> | undefined;
+  return { ...workspace, finish: (result) => (done ??= workspace.finish(result)) };
+}
+
 async function* streamWithWorkspacePolicy<T>(
   svc: ServiceConfig,
   serviceName: string,
@@ -339,17 +364,21 @@ async function* streamWithWorkspacePolicy<T>(
   workingDir: string,
   files: string[],
   makeStream: (effectiveWorkingDir: string, effectiveFiles: string[]) => AsyncIterable<T>,
+  onWorkspace?: (workspace: PreparedWorkspace) => void,
 ): AsyncGenerator<T> {
   const policy = workspacePolicyFor(svc, safetyProfile, requestedPolicy);
   if (policy === "shared_locked") {
     const release = await acquireWorkspaceLock(workingDir);
     try {
-      const workspace = await prepareWorkspace({
-        routeName: serviceName,
-        policy,
-        workingDir,
-        files,
-      });
+      const workspace = finishOnce(
+        await prepareWorkspace({
+          routeName: serviceName,
+          policy,
+          workingDir,
+          files,
+        }),
+      );
+      onWorkspace?.(workspace);
       for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
         if (
           typeof event === "object" &&
@@ -376,17 +405,20 @@ async function* streamWithWorkspacePolicy<T>(
 
   const shouldLockSnapshot = safetyProfile !== "read_only" && (policy === "copy" || policy === "git_worktree");
   const release = shouldLockSnapshot ? await acquireWorkspaceLock(workingDir) : undefined;
-  let workspace: Awaited<ReturnType<typeof prepareWorkspace>>;
+  let workspace: PreparedWorkspace;
   try {
-    workspace = await prepareWorkspace({
-      routeName: serviceName,
-      policy,
-      workingDir,
-      files,
-    });
+    workspace = finishOnce(
+      await prepareWorkspace({
+        routeName: serviceName,
+        policy,
+        workingDir,
+        files,
+      }),
+    );
   } finally {
     release?.();
   }
+  onWorkspace?.(workspace);
   for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
     if (
       typeof event === "object" &&
@@ -914,7 +946,13 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; defaultTimeoutMs?: number; signal?: AbortSignal } = {},
+    opts: {
+      hints?: RouteHints;
+      maxFallbacks?: number;
+      defaultTimeoutMs?: number;
+      signal?: AbortSignal;
+      onWorkspace?: (workspace: PreparedWorkspace) => void;
+    } = {},
   ): AsyncIterable<RouterStreamEvent> {
     return this.#runStream(prompt, files, workingDir, opts);
   }
@@ -929,6 +967,7 @@ export class Router {
       defaultTimeoutMs?: number;
       signal?: AbortSignal;
       invoke?: DispatcherInvoke;
+      onWorkspace?: (workspace: PreparedWorkspace) => void;
     },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
@@ -1008,6 +1047,7 @@ export class Router {
         files,
         (effectiveWorkingDir, effectiveFiles) =>
           invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+        opts.onWorkspace,
       )) {
         yield { event, decision };
         if (event.type === "completion") {
@@ -1179,6 +1219,7 @@ export class Router {
       files,
       (effectiveWorkingDir, effectiveFiles) =>
         invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
+      opts.onWorkspace,
     )) {
       yield { event, decision };
       if (event.type === "completion") finalResult = event.result;

@@ -24,6 +24,7 @@ import {
   writeJson,
 } from "./store.js";
 import { isResolvable, persistWorkspacePatch } from "../workspace-resolve.js";
+import type { PreparedWorkspace } from "../workspaces.js";
 import type { JobDeps, JobManifest, JobResultPayload, JobStatus, StartJobInput } from "./types.js";
 export async function runJob(
   deps: JobDeps,
@@ -80,6 +81,11 @@ export async function runJob(
     // agent CLI gone quiet is never — so the only thing that reliably stops a
     // silent run is aborting the subprocess (or fetch) directly.
     const cancelController = new AbortController();
+    // The latest attempt's workspace, so a cancellation can still record it.
+    let workspace: PreparedWorkspace | undefined;
+    const onWorkspace = (ws: PreparedWorkspace): void => {
+      workspace = ws;
+    };
     const events = input.service
       ? state.router.streamTo(input.service, input.prompt, files, workingDir, {
           ...(hints.safetyProfile !== undefined
@@ -96,12 +102,14 @@ export async function runJob(
           ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
           signal: cancelController.signal,
+          onWorkspace,
         })
       : state.router.stream(input.prompt, files, workingDir, {
           hints,
           maxFallbacks: 2,
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
           signal: cancelController.signal,
+          onWorkspace,
         });
 
     let finalResult: DispatchResult | null = null;
@@ -175,13 +183,21 @@ export async function runJob(
       }
     }
     if (cancelled) {
-      // Terminal, and deliberately NOT routed through the result/failure path:
-      // no result.json is written and the router never sees a failure, so a
+      // Terminal, and deliberately NOT routed through the router's
+      // result/failure path: the router never sees a failure, so a
       // cancellation cannot charge the route's breaker or failure count for
       // the caller changing their mind.
       finished = true;
       await pendingBeat;
       const reason = await cancelReason(jobDir);
+      const cancelError =
+        reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it finished.";
+      await recordCancelledWorkspace(jobDir, manifest.jobId, workspace, pending, {
+        output: "",
+        service: finalDecision?.service ?? input.service ?? "none",
+        success: false,
+        error: cancelError,
+      }, finalDecision);
       await updateStatus(jobDir, {
         jobId: manifest.jobId,
         status: "cancelled",
@@ -190,7 +206,7 @@ export async function runJob(
         jobDir,
         ...(input.service !== undefined ? { service: input.service } : {}),
         success: false,
-        error: reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it finished.",
+        error: cancelError,
         ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
         durationMs: Date.now() - started,
       });
@@ -311,6 +327,52 @@ export const JOB_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
  * so execution can happen in a process that wasn't there when the job was
  * created.
  */
+/**
+ * Keep a cancelled isolated run's work reachable.
+ *
+ * A cancel abandons the stream before any completion arrives, and the
+ * completion is where an isolated workspace's record — which files changed,
+ * and so what the patch is — gets produced. Without this, cancelling a
+ * `copy`/`git_worktree` run left the agent's edits in a workspace nothing
+ * pointed at: `workspace` answered "no isolated workspace (policy: shared)",
+ * and retention deleted it a day later. Found in an audit.
+ *
+ * Only the router's breaker accounting is skipped for a cancel; the result is
+ * written, so `workspace diff`/`apply` work on it like on any other run.
+ */
+async function recordCancelledWorkspace(
+  jobDir: string,
+  jobId: string,
+  workspace: PreparedWorkspace | undefined,
+  pending: Promise<unknown> | undefined,
+  cancelled: DispatchResult,
+  decision: RoutingDecision | null,
+): Promise<void> {
+  if (workspace === undefined || !workspace.isolated) return;
+  // The abort has only been SENT. Give the child a bounded moment to die, so
+  // the fingerprint below sees its last write rather than racing it — the
+  // in-flight read settles once the process is gone.
+  if (pending !== undefined) {
+    await Promise.race([pending.catch(() => undefined), delay(10_000, undefined, { ref: false })]);
+  }
+  let finished: DispatchResult;
+  try {
+    // Single-use: if the dispatcher's own completion got there first, this
+    // returns that same record rather than finishing the workspace twice.
+    finished = await workspace.finish(cancelled);
+  } catch {
+    return;
+  }
+  if (!isResolvable(finished.workspace)) return;
+  await persistWorkspacePatch(jobDir, finished.workspace);
+  const payload: JobResultPayload = {
+    jobId,
+    result: { ...finished, success: false, error: cancelled.error ?? "Cancelled." },
+    decision,
+  };
+  await writeJson(path.join(jobDir, "output", "result.json"), payload);
+}
+
 export async function executeJobDir(deps: JobDeps, jobDir: string): Promise<void> {
   const manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
   const prompt = await readFile(manifest.promptPath, "utf8");

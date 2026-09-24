@@ -14,8 +14,20 @@
  * attempt at each of these fixes ineffective.
  */
 
-import { mkdirSync, renameSync, rmdirSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+
+/**
+ * The file inside a lock directory that says who holds it.
+ *
+ * Release used to be a bare `rmdir` of the lock path. If the lock had been
+ * stolen as stale in the meantime, that path held the NEW holder's lock, and
+ * removing it let a third process straight in — two writers doing the
+ * read-modify-write this exists to serialise. `workspace-lock.ts` already
+ * checked ownership before releasing; this one did not. Found in an audit.
+ */
+const OWNER_FILE = "owner";
 
 /**
  * How long a held lock may go unrefreshed before another process steals it.
@@ -48,7 +60,7 @@ function stealStaleLock(lockDir: string): void {
     return; // lost the steal race to another waiter
   }
   try {
-    rmdirSync(tomb);
+    rmSync(tomb, { recursive: true, force: true });
   } catch {
     // Leftover tombstone; nothing reads `*.stale-*` names.
   }
@@ -108,6 +120,22 @@ function sleepSync(ms: number): void {
   }
 }
 
+/**
+ * Remove the lock only if it is still the one this call took.
+ *
+ * The check and the removal are two steps, so a steal landing exactly between
+ * them can still be undone — a window of one file read, against the previous
+ * behaviour of removing whatever lock was there, unconditionally.
+ */
+function releaseIfOurs(lockDir: string, token: string | undefined): void {
+  try {
+    if (token !== undefined && readFileSync(path.join(lockDir, OWNER_FILE), "utf8") !== token) return;
+    rmSync(lockDir, { recursive: true, force: true });
+  } catch {
+    // Gone already, or never marked: either way not ours to remove.
+  }
+}
+
 export function withFileLock<T>(
   file: string,
   fn: () => T,
@@ -127,11 +155,19 @@ export function withFileLock<T>(
     return fn();
   }
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
   let held = false;
+  let marked = false;
   for (;;) {
     try {
       mkdirSync(lockDir);
       held = true;
+      try {
+        writeFileSync(path.join(lockDir, OWNER_FILE), token, "utf8");
+        marked = true;
+      } catch {
+        // Could not mark it; released the old, unconditional way below.
+      }
       break;
     } catch {
       try {
@@ -167,13 +203,7 @@ export function withFileLock<T>(
   try {
     return fn();
   } finally {
-    if (held) {
-      try {
-        rmdirSync(lockDir);
-      } catch {
-        // Already stolen as stale; the next acquirer owns it.
-      }
-    }
+    if (held) releaseIfOurs(lockDir, marked ? token : undefined);
   }
 }
 

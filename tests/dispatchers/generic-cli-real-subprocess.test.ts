@@ -152,3 +152,26 @@ describe("GenericCliDispatcher against a real process", () => {
     ).toBeGreaterThan(1);
   });
 });
+
+describe("a harness that exceeds the output limit", () => {
+  // stream-subprocess kills a child that writes past the 10 MB cap and flags
+  // the run as truncated. Nothing here read the flag, so the caller got a bare
+  // `Exit code N` with no hint the run had been stopped for volume — or, if
+  // the child exited before the kill landed, a SUCCESS whose answer was
+  // silently cut short. Found in an audit.
+  it("reports that it was stopped at the limit, and keeps what arrived", async () => {
+    // 12 MB in 1 MB writes, then a clean exit: the cap is hit either way, and
+    // whether the kill lands first is a race this must not depend on.
+    const script = [
+      `const mb = "x".repeat(1024 * 1024);`,
+      `for (let i = 0; i < 12; i++) process.stdout.write(mb);`,
+    ].join("");
+    const d = new GenericCliDispatcher(nodeRoute(script));
+
+    const res = await d.dispatch("ignored", [], process.cwd());
+
+    expect(res.success, "a run cut off at the output limit reported success").toBe(false);
+    expect(res.error).toMatch(/output limit/);
+    expect(res.output.length, "what arrived before the limit was dropped").toBeGreaterThan(0);
+  }, 60_000);
+});

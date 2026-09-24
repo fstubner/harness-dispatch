@@ -13,7 +13,15 @@
  * creates its own parent.
  */
 
-import { promises as fs, existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  promises as fs,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -66,6 +74,26 @@ describe("withFileLock", () => {
     const started = Date.now();
     expect(withFileLock(target, () => "stolen")).toBe("stolen");
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("does not release a lock that was stolen from it and taken by someone else", () => {
+    // A holder that stalls past the staleness window has its lock stolen, and
+    // the thief takes a fresh one at the same path. Release used to be a bare
+    // rmdir of that path — so the stalled holder, finishing late, removed the
+    // THIEF's lock and let a third writer straight in: two processes in the
+    // read-modify-write this lock exists to serialise. Found in an audit.
+    //
+    // Simulated inside the critical section: the lock is renamed away (a
+    // steal) and a new one created with another owner (the thief).
+    const target = path.join(dir, "contended.json");
+    const lock = `${target}.lock`;
+    withFileLock(target, () => {
+      renameSync(lock, `${lock}.stale-simulated`);
+      mkdirSync(lock);
+      writeFileSync(path.join(lock, "owner"), "the-thief", "utf8");
+    });
+    expect(existsSync(lock), "the late holder removed the thief's lock").toBe(true);
+    expect(readFileSync(path.join(lock, "owner"), "utf8")).toBe("the-thief");
   });
 
   it("still runs the body if the lock cannot be acquired at all", () => {

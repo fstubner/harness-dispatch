@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { generateHttpToken, isAuthorized, maskToken } from "../src/auth.js";
 
@@ -55,5 +55,32 @@ describe("generateHttpToken / maskToken", () => {
 
   it("returns short tokens unmasked", () => {
     expect(maskToken("short")).toBe("short");
+  });
+});
+
+describe("rotating while the token comes from the environment", () => {
+  // HARNESS_DISPATCH_HTTP_TOKEN wins over the token file wherever the token is
+  // read, so rotating the file changed nothing: `auth rotate` printed a new
+  // token the server refused, while the old one — the one being rotated
+  // because it leaked — kept working. Measured in an audit.
+  it("refuses, naming the variable, and writes no token file", async () => {
+    const { promises: fs } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { rotateHttpToken, tokenPath } = await import("../src/auth.js");
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "hr-auth-env-"));
+    vi.stubEnv("HARNESS_DISPATCH_HOME", home);
+    vi.stubEnv("HARNESS_DISPATCH_HTTP_TOKEN", "hr_value_from_env");
+    try {
+      await expect(rotateHttpToken()).rejects.toThrow(/HARNESS_DISPATCH_HTTP_TOKEN/);
+      const wrote = await fs
+        .stat(tokenPath())
+        .then(() => true)
+        .catch(() => false);
+      expect(wrote, "a token file was written that nothing will ever read").toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(home, { recursive: true, force: true });
+    }
   });
 });
