@@ -62,15 +62,13 @@ export function evaluateRoutePolicy(
   // never-succeeded skip is a LIFETIME test, so a route that worked last week
   // on a machine where the variable was exported is not dead. The breaker
   // needs repeated failures, and one 401 per route is not repeated. And
-  // `doctor --live` is opt-in precisely because it spends quota. Meanwhile
-  // `usage` and `status` reported these routes as ready, the router scored
-  // them, and each returned an authentication error on the first call —
-  // measured on three routes at once.
+  // `doctor --live` is opt-in precisely because it spends quota. Without this,
+  // `usage` and `status` call such a route ready, the router scores it, and it
+  // returns an authentication error on the first call.
   //
-  // The config warning that named the unset variables existed all along; it
-  // was a line about the FILE, and nothing carried it down to the route. This
-  // does, so the route is skipped with the variable named, before a provider
-  // is ever contacted.
+  // The config warning about unset variables is a line about the FILE; this
+  // carries it down to the route, so the route is skipped with the variable
+  // named before a provider is ever contacted.
   //
   // Set only for endpoint routes (see markUnsetApiKeys). Its one false
   // positive is a local server that ignores the key it is sent, where the
@@ -93,9 +91,7 @@ export function evaluateRoutePolicy(
     // A route that has failed every call it has ever been given is not a
     // transient failure, which is what the breaker is for — it decays, so a
     // permanently misconfigured route keeps being chosen, failing, and costing
-    // an attempt before the fallback. Measured on a real install:
-    // `local_inference` was 0 for 8 against an endpoint that was simply not
-    // running, and still read as ready.
+    // an attempt before the fallback, while still reading as ready.
     //
     // Not blocked outright: naming it with `service` bypasses this entirely,
     // because the operator fixing the box needs a way to prove it works, and
@@ -120,19 +116,15 @@ export function evaluateRoutePolicy(
   ) {
     // Two different conditions reach here and they need different words.
     // `billingIsUnknown` is true when the KIND is unknown OR the CONFIDENCE
-    // is. Saying "billing source is unknown" for both told an operator that
-    // about a route `status` prints as `billing=metered_api` — the kind is
-    // known perfectly well; what is unknown is how sure we are of it. An
-    // acceptance pass caught the two surfaces contradicting each other.
-    // A KNOWN kind that has declared it cannot bill you gets the remedy that
-    // works, and it has to be given HERE.
+    // is. Saying "billing source is unknown" for both contradicts `status`,
+    // which prints such a route as `billing=metered_api` — the kind is known
+    // perfectly well; what is unknown is how sure we are of it.
     //
-    // The same advice was added to the `billingIsBlocked` branch below and was
-    // unreachable for any non-included kind, because this branch catches those
-    // first — so a `metered_api` route with `paid_usage_possible: false` was
-    // still told to add `allow_paid_usage: true`, which is "yes, bill me" for
-    // a route the operator has said cannot. The fix that was supposed to stop
-    // that was one branch too late.
+    // The remedy for a KNOWN kind that has declared it cannot bill you has to
+    // be given HERE: this branch catches those before the `billingIsBlocked`
+    // branch below, which would otherwise tell a `metered_api` route with
+    // `paid_usage_possible: false` to add `allow_paid_usage: true` — "yes,
+    // bill me" for a route the operator has said cannot.
     if (billing.kind !== "unknown" && !billing.paidUsagePossible) {
       return skip(
         route,
@@ -157,17 +149,14 @@ export function evaluateRoutePolicy(
     );
   }
   if (billingIsBlocked(billing)) {
-    // THREE conditions reach `billingIsBlocked`, and the message below fitted
-    // only two of them.
-    //
-    // A route with `paid_usage_possible: false` and a KNOWN kind is blocked
-    // solely because its `billing_confidence` is `unknown` — a deliberate
-    // operator signal meaning "I do not trust this classification", kept on
-    // purpose. But it was told "route can incur paid usage" (contradicting
-    // `paid=no` on the same screen) and handed `paid_usage_possible: false` as
-    // the remedy, which it already had. An acceptance pass measured the
-    // recommended fix producing byte-identical output: the only working escape
-    // was `allow_paid_usage: true` — "yes, bill me" — for a free local model.
+    // THREE conditions reach `billingIsBlocked`, and the message below fits
+    // only two of them. A route with `paid_usage_possible: false` and a KNOWN
+    // kind is blocked solely because its `billing_confidence` is `unknown` — a
+    // deliberate operator signal meaning "I do not trust this classification".
+    // Telling it "route can incur paid usage" contradicts `paid=no` on the
+    // same screen and offers a remedy it already has, leaving
+    // `allow_paid_usage: true` — "yes, bill me" — as the only escape for a
+    // free local model.
     if (billing.kind !== "unknown" && !billing.paidUsagePossible) {
       return skip(
         route,
@@ -199,13 +188,12 @@ export function evaluateRoutePolicy(
   }
 
   // An HTTP endpoint cannot execute, structurally: no agent loop, no file
-  // access, no shell. PRODUCT.md states this as design rather than gap — and
-  // routing still sent `execute` work to one, because an undeclared capability
-  // defaults to 1.0 and NO endpoint example in config.default.yaml declares
-  // any. An acceptance pass measured a `--task-type execute` dispatch routed to
-  // an endpoint returning prose and exit 0: execution reported as succeeded
-  // when none happened. It surfaces exactly when the CLI routes are busy or
-  // tripped — the degraded case the caller is least able to check.
+  // access, no shell. Nothing else stops `execute` work reaching one, because
+  // an undeclared capability defaults to 1.0 and no endpoint example in
+  // config.default.yaml declares any — and the endpoint answers with prose and
+  // exit 0, reporting execution that never happened. It happens exactly when
+  // the CLI routes are busy or tripped, the degraded case the caller is least
+  // able to check.
   //
   // A REFUSAL rather than a capability score, for two reasons. A score of 0
   // still leaves the route selectable when it is the only candidate, which is
@@ -241,10 +229,9 @@ export function evaluateRoutePolicy(
  * when scores are otherwise close. Local routes (free, on this machine) pay
  * nothing. Included-plan/free-quota-but-remote routes pay a small penalty
  * (prefer local when close). Routes that can incur real per-use cost
- * (metered API, unknown billing) must pay MORE than that, not less — they
- * were previously falling through to the same 0 penalty as local routes,
- * which meant the router could prefer spending real money over using a
- * subscription you're already paying for or a free local model.
+ * (metered API, unknown billing) must pay MORE than that, not less, or the
+ * router can prefer spending real money over using a subscription you're
+ * already paying for or a free local model.
  */
 export function nonLocalIncludedRoutePenalty(billing: RouteBilling): number {
   if (isLocalRoute(billing)) return 0;
@@ -292,12 +279,9 @@ function evaluateOperationalRoutePolicy(
 
 /**
  * Exported because `taskType: "local"` needs the SAME answer this file gives
- * `routePolicy: "local_only"`. It had its own narrower test — a loopback
- * hostname — so a route declaring provider `local`, surface `local_endpoint`,
- * auth `local_network` and billing `local_compute` was "local" enough to be
- * the only thing `local_only` would run, and not local enough for the task
- * type named after it. One word, two meanings, and the narrow one silently
- * excluded a real local box on a LAN or tailnet address.
+ * `routePolicy: "local_only"`. A narrower test — a loopback hostname — makes
+ * one word mean two things, and silently excludes a real local box on a LAN or
+ * tailnet address from the task type named after it.
  */
 export function isLocalRoute(billing: RouteBilling): boolean {
   return (

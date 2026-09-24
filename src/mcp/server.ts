@@ -120,19 +120,18 @@ export interface McpHandle {
  *
  * A slot-queued job is exempt from orphan detection — nothing heartbeats for
  * it, so the staleness rule would misreport every job that waits more than 90
- * seconds. But the only things that drained the queue were a runner exiting
- * and a new dispatch arriving, so a server that died with jobs queued left
- * them reading `queued` forever, where a RUNNING job in the same situation is
- * reported orphaned within 90s.
+ * seconds. The only things that drain the queue are a runner exiting and a new
+ * dispatch arriving, so without this a server that died with jobs queued
+ * leaves them reading `queued` forever, where a RUNNING job in the same
+ * situation is reported orphaned within 90s.
  *
- * The first attempt at this drained the queue here instead, which was worse
- * than the gap it closed. An acceptance pass demonstrated the consequence:
- * kill a server with a job queued, restart it, and that job runs to
- * completion — in its original workingDir, at whatever safety profile the
- * manifest recorded, up to `workspace_edit` or `full_auto`, with nobody
- * watching and no confirmation. Bounded only by the 7-day retention window.
- * Starting an editor is not an action anyone associates with "run yesterday's
- * abandoned agent job against my repository".
+ * Draining the queue here instead would be worse than the gap it closes: kill
+ * a server with a job queued, restart it, and that job runs to completion — in
+ * its original workingDir, at whatever safety profile the manifest recorded,
+ * up to `workspace_edit` or `full_auto`, with nobody watching and no
+ * confirmation, bounded only by the 7-day retention window. Starting an editor
+ * is not an action anyone associates with "run yesterday's abandoned agent job
+ * against my repository".
  *
  * So: any job still slot-queued when a server starts belongs to a session that
  * is gone — this process has not queued anything yet — and it is marked

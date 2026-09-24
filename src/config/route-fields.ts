@@ -2,21 +2,16 @@
  * One field contract shared by every route shape.
  *
  * THE DEFECT THIS EXISTS TO RETIRE. `clis:`, `endpoints:` and the legacy
- * `services:` block each resolved route fields with their own hand-written
- * list, so a key added to one was easy to forget in the others. That produced
- * five separate silent-drop defects in one file, each the same shape: a
- * correctly-spelled, correctly-valued setting written in config and read by
- * nobody —
+ * `services:` block would otherwise each resolve route fields with their own
+ * hand-written list, so a key added to one is easy to forget in the others:
+ * a correctly-spelled, correctly-valued setting written in config and read by
+ * nobody.
  *
- *   workspace_policy   honoured for services:/endpoints:, dropped for clis:
- *   api_keys           honoured for clis:,               dropped for endpoints:
- *   effective_safety   honoured for clis:/services:,      dropped for endpoints:
- *   escalate_model     honoured for clis:,               dropped for endpoints:
- *
- * These are safety and isolation controls, so "silently absent" means
- * "silently less restrictive" — a route asked to run `read_only` running with
- * write access, a route asked to run in an isolated copy running in the user's
- * repository. Nothing warns, because nothing is wrong with what was written.
+ * Several of these keys are safety and isolation controls, so "silently
+ * absent" means "silently less restrictive" — a route asked to run
+ * `read_only` running with write access, a route asked to run in an isolated
+ * copy running in the user's repository. Nothing warns, because nothing is
+ * wrong with what was written.
  *
  * WHY A TABLE RATHER THAN A SHARED FUNCTION. The obvious unification — have
  * the CLI builder call the endpoint builder's `billingFields()` — is wrong,
@@ -24,7 +19,7 @@
  * `entry.X ?? harnessDefaults.X` against the defaults shipped in
  * config.default.yaml, and `billingFields(raw)` has no defaults layer at all.
  * Collapsing them would silently drop the fallback every built-in harness
- * relies on — trading five silent-drop bugs for a bigger one. A table carries
+ * relies on, which is a bigger version of the same bug. A table carries
  * the defaults layer explicitly: each field says how to parse it AND where its
  * fallback comes from, and a shape with no defaults (endpoints) simply passes
  * none.
@@ -37,9 +32,8 @@
  * declared kind says). Those stay in their builders. Pretending they are
  * shared would be the same mistake in the other direction.
  *
- * tests/route-field-parity.test.ts still pins every key here against both
- * shapes. It is no longer the only thing standing between a new field and a
- * silent drop, but it is what proves this table is actually wired into both.
+ * tests/route-field-parity.test.ts pins every key here against both shapes,
+ * which is what proves this table is actually wired into both.
  */
 
 import { normalizeSafetyProfile } from "../safety.js";
@@ -97,7 +91,7 @@ function booleanOnly(raw: unknown): boolean | undefined {
 
 /**
  * `effective_safety` is either one profile for every request, or a per-request
- * map. Shared by all three shapes; lived in config.ts before this table.
+ * map. Shared by all three shapes.
  */
 export function effectiveSafetyFrom(
   raw: unknown,
@@ -119,9 +113,8 @@ export function effectiveSafetyFrom(
  *
  * Adding a route setting means adding ONE row here (plus its key to
  * KNOWN_ROUTE_KEYS in validation.ts, which is what catches misspellings) and
- * it works on `clis:`, `endpoints:` and `services:` at once. That is the whole
- * point: the old failure mode was a field that existed in one list and not the
- * others.
+ * it works on `clis:`, `endpoints:` and `services:` at once — rather than
+ * existing in one shape's list and not the others.
  */
 const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "leaderboard_model", field: "leaderboardModel", parse: str, fromDefaults: (d) => d.leaderboardModel },
@@ -131,7 +124,7 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "max_input_tokens", field: "maxInputTokens", parse: numberOnly, fromDefaults: (d) => d.maxInputTokens },
   { key: "timeout_ms", field: "timeoutMs", parse: numberOnly },
   { key: "resource_weight", field: "resourceWeight", parse: numberOnly },
-  // Safety and isolation. Four of the five original silent drops were here.
+  // Safety and isolation — the rows where a silent drop is least tolerable.
   { key: "safety_profile", field: "safetyProfile", parse: normalizeSafetyProfile },
   { key: "effective_safety", field: "effectiveSafety", parse: effectiveSafetyFrom, fromDefaults: (d) => d.effectiveSafety },
   { key: "workspace_policy", field: "workspacePolicy", parse: workspacePolicyFrom },
