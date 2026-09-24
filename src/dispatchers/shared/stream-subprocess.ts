@@ -210,6 +210,15 @@ export function streamSubprocess(
     return buildIterable();
   }
   if (opts.stdin !== undefined) {
+    // A child that exits without reading its stdin makes this write fail
+    // (EPIPE; `write EOF` on Windows). With no listener, Node raises that as
+    // an uncaught `error` event and the WHOLE process dies — the supervisor
+    // and every job it holds, or the HTTP server. Measured in an audit: a
+    // 256 KB prompt to a child that exits at once crashed the process; 64 KB
+    // fit in the pipe buffer and did not. The failed write needs no handling
+    // of its own: the child's exit is what ends the run, and its exit code
+    // and output already say what happened.
+    child.stdin?.on("error", () => undefined);
     child.stdin?.end(opts.stdin);
   }
 

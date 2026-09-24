@@ -13,6 +13,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { streamSubprocess, drainSubprocessStream } from "../../src/dispatchers/shared/stream-subprocess.js";
 
@@ -321,4 +322,53 @@ describe("multi-byte characters split across reads", () => {
   it("leaves plain ASCII exactly as it was", async () => {
     expect(await collect('process.stdout.write("hello world")')).toBe("hello world");
   }, 20_000);
+});
+
+describe("a child that exits without reading its stdin", () => {
+  // The prompt goes to stdin for codex and claude. A child that exits before
+  // reading it makes the write fail (EPIPE; `write EOF` on Windows), and with
+  // no listener on the stream Node raises that as an uncaught `error` event:
+  // the whole process dies — in production, the supervisor and every job it
+  // holds, or the HTTP server. Measured in an audit: 64 KB fit the pipe buffer
+  // and survived, 256 KB crashed. 1 MB is used here to stay well past that on
+  // every platform.
+  //
+  // Run in a CHILD process against the built module, because the failure is a
+  // process crash: in-process it would surface as a stray unhandled error
+  // attributed to whichever test happened to be running, not as this test
+  // failing.
+  const DIST = path.join(process.cwd(), "dist", "dispatchers", "shared");
+
+  async function survives(moduleFile: string, call: string): Promise<string> {
+    const url = pathToFileURL(path.join(DIST, moduleFile)).href;
+    const script = [
+      `import * as m from ${JSON.stringify(url)};`,
+      `const big = "x".repeat(1024 * 1024);`,
+      `const quit = ["-e", "process.exit(0)"];`,
+      call,
+    ].join("\n");
+    const { stdout } = await execFileAsync(NODE, ["--input-type=module", "-e", script], {
+      timeout: 30_000,
+    });
+    return stdout.trim();
+  }
+
+  it.skipIf(!existsSync(DIST))("streamSubprocess ends normally instead of crashing", async () => {
+    const out = await survives(
+      "stream-subprocess.js",
+      `for await (const ev of m.streamSubprocess(process.execPath, quit, { stdin: big })) {
+         if (ev.kind === "end") console.log("END " + ev.exitCode);
+       }`,
+    );
+    expect(out).toBe("END 0");
+  }, 60_000);
+
+  it.skipIf(!existsSync(DIST))("runSubprocess resolves instead of crashing", async () => {
+    const out = await survives(
+      "subprocess.js",
+      `const r = await m.runSubprocess(process.execPath, quit, { stdin: big });
+       console.log("EXIT " + r.exitCode);`,
+    );
+    expect(out).toBe("EXIT 0");
+  }, 60_000);
 });

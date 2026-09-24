@@ -519,6 +519,21 @@ async function drainSlotQueueLocked(
     // reasoning as the earlier fix for a job whose own queued status counted
     // against its own admission.
     if (limit !== null && active > 0 && active + weight > limit) break;
+    // Never release more jobs than the pool can actually pick up.
+    //
+    // The budget above is WEIGHTED, so ten 0.1-weight endpoint jobs cost 1.0 of
+    // a limit of 4 — but each supervisor runs only jobsPerSupervisor(limit)
+    // jobs at once, which is ceil(4/4) = 1 at the default, and there are
+    // SUPERVISOR_POOL_SIZE of them. So at the default settings the drainer
+    // released up to forty jobs that only four processes could run. A released
+    // job loses its slotQueued exemption and has no heartbeat until a
+    // supervisor claims it, so after 90 s it read as `orphaned — Nothing will
+    // advance it now`, which was false (it is still claimed later) and invites
+    // a retry that runs the same task twice. Measured in an audit: six
+    // 0.1-weight jobs, default limit, at 105 s four running and two orphaned.
+    // Held here, the excess stays slotQueued — reported as waiting, which is
+    // true — and is released as supervisors free up.
+    if (limit !== null && activeJobs >= SUPERVISOR_POOL_SIZE * jobsPerSupervisor(limit)) break;
     const { slotQueued: _dropped, ...cleared } = status;
     await updateStatus(jobDir, {
       ...cleared,

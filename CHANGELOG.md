@@ -8,6 +8,33 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A remote endpoint is no longer mistaken for a free local one because of
+  its URL.** Any `base_url` merely *containing* "ollama" or "lmstudio" was
+  classified as local compute that cannot bill — so `https://ollama.com/v1`,
+  Ollama's paid cloud, skipped the `allow_paid_usage` gate and was allowed
+  under `routePolicy: local_only`, whose promise is that the prompt never
+  leaves the machine. Only the default Ollama and LM Studio ports on loopback
+  are now inferred local. **Behaviour change:** a remote box that really is
+  free — a LAN or tailnet Ollama whose hostname happens to contain "ollama" —
+  must now say so with `billing_kind: local_compute` on its route, as any other
+  remote endpoint already had to.
+
+- **Jobs waiting for a turn are no longer reported dead.** At the default
+  `max_concurrent_runs: 4`, endpoint jobs (which count as a tenth of a slot)
+  were admitted far beyond what the four supervisors could actually run. The
+  excess had no heartbeat, so after 90 seconds `job_status` called them
+  `orphaned — Nothing will advance it now`, although they still ran later —
+  and following its advice to retry ran the task twice. Jobs are now admitted
+  only as fast as the pool can pick them up; the rest are reported as waiting,
+  which is true.
+
+- **A large prompt can no longer crash the process.** For routes that take the
+  prompt on stdin (Codex, Claude Code), a harness that exited without reading
+  a prompt larger than the pipe buffer — around 256 KB on the machine where it
+  was measured — raised an unhandled error that killed the whole process: the
+  supervisor and every job it was running, or the HTTP server. The failed
+  write is now ignored and the run ends on the harness's own exit status.
+
 - **A route with no credential is skipped, instead of looking ready and
   failing on contact.** An endpoint whose `api_key` is written as a `${VAR}`
   reference with that variable unset has no key at all, yet `usage` and
