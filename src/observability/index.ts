@@ -12,22 +12,18 @@
  * Override with `OTEL_EXPORTER_OTLP_ENDPOINT` (standard env var) or by passing
  * `otlpUrl` to `initObservability`.
  *
- * Instrumentation is explicit, not `@opentelemetry/auto-instrumentations-node`
- * (dropped 2026-07-25): that meta-package bundles instrumentation for
- * MongoDB, MySQL, Postgres, Kafka, Restify, Hapi, Koa, Connect, plus
- * AWS/GCP/Azure/Alibaba Cloud resource detectors — none of which
- * harness-dispatch touches, all of which still ship on every install
- * regardless of whether telemetry is ever enabled. Worse, several of those
- * unused branches (gaxios/gcp-metadata via the GCP detector, glob/minimatch/
- * rimraf/brace-expansion via transitive tooling) carried real CVEs that
- * `package.json`'s `overrides` could never fix for anyone who installs this
- * package as a dependency — `overrides` only apply to the root project doing
- * the installing, never downstream. Only `http` and `fs` are instrumented
- * directly: http covers dispatcher fetch calls and this server's own HTTP
+ * Instrumentation is explicit rather than
+ * `@opentelemetry/auto-instrumentations-node`: that meta-package bundles
+ * instrumentation for MongoDB, MySQL, Postgres, Kafka, Restify, Hapi, Koa and
+ * Connect plus AWS/GCP/Azure/Alibaba Cloud resource detectors, none of which
+ * harness-dispatch touches and all of which ship on every install whether or
+ * not telemetry is ever enabled. Several of those unused branches carry CVEs
+ * that `package.json`'s `overrides` cannot fix downstream — overrides apply
+ * only to the root project doing the installing. So only `http` and `fs` are
+ * instrumented: http covers dispatcher fetch calls and this server's own HTTP
  * surface; fs covers config/job-file reads. Subprocess spawns are covered by
- * our own manual dispatcher/router/MCP spans (see spans.ts), not an OTel
- * core auto-instrumentation — no `child_process` instrumentation package
- * exists in the OTel JS ecosystem.
+ * our own manual dispatcher/router/MCP spans (see spans.ts) — no
+ * `child_process` instrumentation package exists in the OTel JS ecosystem.
  */
 
 import type { Span } from "@opentelemetry/api";
@@ -39,9 +35,7 @@ const SERVICE_VERSION = VERSION;
 export interface InitObservabilityOpts {
   /**
    * Explicitly enable/disable. Telemetry is OFF unless this is true or the
-   * env opt-in `HARNESS_DISPATCH_TELEMETRY=1|true` is set — it only produces
-   * anything useful when the operator runs a local OTLP collector, so
-   * initializing by default is dead weight for everyone else. Config:
+   * env opt-in `HARNESS_DISPATCH_TELEMETRY=1|true` is set. Config:
    * `telemetry: { enabled: true }`.
    */
   enabled?: boolean;
@@ -49,7 +43,7 @@ export interface InitObservabilityOpts {
   otlpUrl?: string;
   /** Override the service name attached to spans. Defaults to harness-dispatch. */
   serviceName?: string;
-  /** Inject instrumentations for tests — production uses auto-instrumentations. */
+  /** Inject instrumentations for tests; otherwise http + fs are used. */
   instrumentations?: unknown[];
 }
 

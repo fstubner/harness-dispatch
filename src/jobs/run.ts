@@ -1,10 +1,4 @@
-/**
- * Running one job: the work a runner process actually does.
- *
- * Split out of jobs.ts, which had grown to hold five concerns at 1,600 lines
- * — this one, admission and the supervisor pool, the start/read verbs, and
- * the lifecycle verbs. Nothing here was rewritten; the code moved.
- */
+/** Running one job: the work a runner process actually does. */
 
 import { existsSync } from "node:fs";
 import { redact } from "../redaction.js";
@@ -132,8 +126,7 @@ export async function runJob(
     // again queues a second pull whose result is the one we read — the first
     // event resolves into nothing. Losing a `completion` that way leaves a
     // finished run with no result.json, so the job never reaches a terminal
-    // state and the caller polls a corpse. Caught by the slot-queue test,
-    // which waits for a queued job to actually complete.
+    // state and the caller polls a corpse.
     let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
     for (;;) {
       pending ??= iterator.next() as Promise<
@@ -223,14 +216,10 @@ export async function runJob(
     finished = true;
     await pendingBeat;
 
-    // Save the patch now, while the workspace still exists.
-    //
-    // An isolated workspace lives under the OS temp directory, which Linux
-    // clears on reboot and WSL clears when its VM idles out. Until this call
-    // the patch was built only when someone asked for `diff` or `apply`, so
-    // anyone who asked after that point had lost the work outright — while
-    // being told, by the error itself, that a patch had been written here at
-    // dispatch time. Best effort: it never fails the job.
+    // Save the patch now, while the workspace still exists: an isolated
+    // workspace lives under the OS temp directory, which Linux clears on
+    // reboot and WSL clears when its VM idles out, so building it lazily on
+    // `diff`/`apply` can find nothing left. Best effort — never fails the job.
     if (isResolvable(result.workspace)) {
       await persistWorkspacePatch(jobDir, result.workspace);
     }
@@ -266,9 +255,8 @@ export async function runJob(
     await pendingBeat;
     const message = err instanceof Error ? err.message : String(err);
     try {
-      // The sibling of the success path 25 lines up, which redacts. Missing
-      // this one is the same one-branch-of-a-pair miss the chokepoint exists
-      // to make impossible, found in the very file the chokepoint edited.
+      // Redacted like the success path above — both branches write the same
+      // log and must scrub it the same way.
       await writeFile(path.join(jobDir, "output", "stderr.log"), redact(message), {
         encoding: "utf8",
         mode: 0o600,
@@ -289,8 +277,7 @@ export async function runJob(
       // The job directory can be GONE by the time a failure is recorded —
       // retention pruning, or a caller that tore down its state mid-run.
       // There is nowhere to write and no reader left to care; throwing here
-      // would reject `completion`, which is documented to never reject (and
-      // surfaced in CI as an unhandled rejection out of a finished test).
+      // would reject `completion`, which is documented to never reject.
     }
   } finally {
     clearInterval(heartbeat);
@@ -305,11 +292,10 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
  * Fallback dispatch timeout for jobs. Dispatchers hard-code a short default
  * (10 min for CLI harnesses, 2 min for openai_compatible) meant to catch a
  * genuinely hung process — waiting on stdin that'll never come, a stalled
- * network call — not to cap a slow-but-healthy run. That default made sense
- * as-is for `code`, which blocks an MCP call anyway, but `job` runs in the
- * background and is polled, so nothing about it requires killing a process
- * that's still making progress after 10 minutes. Below both an explicit
- * `hints.timeoutMs` and the route's own configured `timeoutMs` in
+ * network call — not to cap a slow-but-healthy run. A background job is
+ * polled rather than blocking a caller, so nothing about it requires killing
+ * a process that's still making progress after 10 minutes. Below both an
+ * explicit `hints.timeoutMs` and the route's own configured `timeoutMs` in
  * precedence, so this only fills the gap when nobody set either.
  *
  * Router.stream() treats this specific value as a budget for the WHOLE call
@@ -333,9 +319,8 @@ export const JOB_DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
  * A cancel abandons the stream before any completion arrives, and the
  * completion is where an isolated workspace's record — which files changed,
  * and so what the patch is — gets produced. Without this, cancelling a
- * `copy`/`git_worktree` run left the agent's edits in a workspace nothing
- * pointed at: `workspace` answered "no isolated workspace (policy: shared)",
- * and retention deleted it a day later. Found in an audit.
+ * `copy`/`git_worktree` run leaves the agent's edits in a workspace nothing
+ * points at, which retention then deletes a day later.
  *
  * Only the router's breaker accounting is skipped for a cancel; the result is
  * written, so `workspace diff`/`apply` work on it like on any other run.
@@ -393,12 +378,10 @@ export async function executeJobDir(deps: JobDeps, jobDir: string): Promise<void
 export function resolveRunnerPath(): string | undefined {
   // Resolved against THIS module's own location, which is a trap worth
   // stating: the candidates below have to be updated whenever this function
-  // moves between directories. Splitting jobs.ts moved it from `dist/` down
-  // into `dist/jobs/`, both candidates missed, and the function returned
-  // undefined — which is not an error anywhere, it is the signal to run the
-  // job IN-PROCESS. So every dispatch quietly stopped being detached and the
-  // concurrency gate stopped firing, with nothing failing until the job
-  // concurrency tests ran.
+  // moves between directories. Returning undefined is not an error anywhere,
+  // it is the signal to run the job IN-PROCESS — so a stale candidate list
+  // silently stops every dispatch being detached, and the concurrency gate
+  // with it.
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     // dist/jobs/run.js -> dist/job-runner.js (the built layout today)
@@ -423,19 +406,13 @@ const TERMINAL_WATCH_INTERVAL_MS = 300;
 export async function watchUntilTerminal(jobDir: string): Promise<void> {
   const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
   while (Date.now() < deadline) {
-    // Waits for a terminal STATUS, deliberately not for result.json.
-    //
-    // runJob writes result.json and then updates the status, so returning on
-    // result.json alone let this resolve in the window between the two: a
-    // caller could `await` a job and then read `status: "running"` from the
-    // job it had just been told was finished. Observed on Windows CI as
-    // "expected 'running' to be 'completed'".
-    //
-    // Because the status write comes last, a terminal status implies the
-    // result is already on disk — the ordering does the synchronising, so no
-    // extra check is needed here. A runner that dies between the two writes
-    // is covered by withOrphanCheck below, which is the same exit path as any
-    // other dead runner.
+    // Waits for a terminal STATUS, deliberately not for result.json: runJob
+    // writes result.json and then updates the status, so returning on
+    // result.json alone resolves in the window between the two and a caller
+    // can read `status: "running"` from the job it was just told had
+    // finished. Because the status write comes last, a terminal status
+    // implies the result is already on disk. A runner that dies between the
+    // two writes is covered by withOrphanCheck below.
     try {
       const status = withOrphanCheck(
         await readJson<JobStatus>(path.join(jobDir, "status.json")),

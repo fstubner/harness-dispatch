@@ -1,13 +1,9 @@
 /**
  * Parsing an OpenAI-style request into something the router can act on.
  *
- * Split out of http/server.ts, which mixed this with transport wiring. The
- * separation is worth making because this file is the HTTP surface's half of
- * the safety boundary, and it has repeatedly been the half that drifted: the
- * MCP tool rejected an unknown fanout target by name while this one silently
- * returned fewer arms, capped context files while this one accepted an
- * unbounded list, and rejected misplaced hint keys while this one ignored
- * them. Every one of those was found as "same input, two answers".
+ * This file is the HTTP surface's half of the safety boundary, and it is the
+ * half that drifts: where it is more lenient than MCP, the same input gets two
+ * different answers and the looser one is usually the unsafe one.
  *
  * Anything rejected here must be rejected the same way the MCP schema
  * rejects it (see mcp/tool-schemas.ts). BadRequestError is what maps a
@@ -63,21 +59,13 @@ export const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
  * A request the CALLER can fix — malformed JSON, a missing required field, a
  * working directory that does not exist.
  *
- * Everything except the 413 was returned as 500. PRODUCT.md names CI and cron
- * as consumers of this surface, and retry-on-5xx will happily retry a request
- * that can never succeed. A 4xx says "stop and fix the request", which is the
- * true statement.
+ * PRODUCT.md names CI and cron as consumers of this surface, and retry-on-5xx
+ * will happily retry a request that can never succeed. A 4xx says "stop and
+ * fix the request", which is the true statement.
  */
 export class BadRequestError extends Error {}
 
-/**
- * The MCP surface's own limit, imported rather than copied.
- *
- * This was a second `= 64` under a comment saying "mirrors MAX_CONTEXT_FILES
- * in mcp/tools.ts — the two surfaces must agree". The constant does not live
- * in that file, and a comment cannot make two numbers agree; the module next
- * door was already importing MAX_TIMEOUT_MS from the same place.
- */
+/** The MCP surface's own limit, imported rather than copied so it cannot drift. */
 export const MAX_CONTEXT_FILES_HTTP = MAX_CONTEXT_FILES;
 
 export async function readJson(
@@ -144,9 +132,7 @@ const SAFETY_PROFILES = ["read_only", "workspace_edit", "full_auto"] as const;
 const WORKSPACE_POLICIES = ["shared", "shared_locked", "copy", "git_worktree"] as const;
 // "standard" belongs here: it is in the RoutePolicy type, it is the router's
 // own default, and the MCP description advertises it as `'standard'
-// (default)`. Omitting it meant a caller copying the documented default into
-// an HTTP body got `invalid value "standard"` for naming the thing that
-// already happens.
+// (default)`, so a caller can reasonably send it explicitly.
 const ROUTE_POLICIES = ["standard", "local_only", "approval_required", "blocked"] as const;
 
 const MODES = ["single", "fanout"] as const;
@@ -160,10 +146,8 @@ const MODES = ["single", "fanout"] as const;
  * easily.
  */
 function timeoutField(value: unknown, field: string): number | undefined {
-  // `null` is a VALUE, refused like any other wrong one. enumField already
-  // refuses it, so treating it as absent here made the same key at the same
-  // placement answer two different ways — the accept-then-discard shape, in
-  // the block written to remove it.
+  // `null` is a VALUE, refused like any other wrong one — enumField refuses it
+  // too, so the same key at the same placement answers the same way.
   if (value === undefined) return undefined;
   if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > MAX_TIMEOUT_MS) {
     throw new BadRequestError(
@@ -187,8 +171,6 @@ function boolField(value: unknown, field: string): boolean {
  * grants, `models` as route ids, `hints.model` as `--model`. A NUL fails deep
  * inside cross-spawn with "The argument 'args[N]' must be a string without
  * null bytes", which is the raw Node internal a boundary rejection replaces.
- * The prompt was guarded and these three were not, on BOTH surfaces — so
- * parity held while both were wrong, which no parity row can catch.
  */
 export function noNul(value: string, field: string): void {
   if (value.includes("\u0000")) {
@@ -216,17 +198,11 @@ function stringArray(value: unknown, field: string): string[] {
  * An enum-valued field: accepted when it is one of the listed values, REJECTED
  * when it is anything else.
  *
- * Each of these used to be an `if (v === a || v === b)` that simply did not
- * assign on a miss, so a typo was DROPPED and the default applied. For
- * safetyProfile that default is less restrictive than what the caller was
- * reaching for: `"read_onlyy"` returned 200 and ran the dispatch
- * write-capable, while the MCP surface rejects the identical input by name.
- *
- * The unknown-KEY check further down was added for precisely this failure and
- * covers only half of it. The config loader gets the value case right and says
- * so loudly ("IGNORED, and the default applies instead, which is less
- * restrictive than what this looks like it was meant to set"); this surface is
- * the one PRODUCT.md points CI and cron at, and it was the one failing open.
+ * Dropping a value that misses and applying the default fails OPEN: for
+ * safetyProfile the default is less restrictive than whatever the caller was
+ * reaching for, so `"read_onlyy"` would return 200 and run the dispatch
+ * write-capable, while MCP rejects the identical input by name. The
+ * unknown-KEY check further down covers only the other half of this.
  */
 function enumField<T extends string>(
   value: unknown,
@@ -248,25 +224,21 @@ function enumField<T extends string>(
  * MCP refuses top-level placement outright (misplacedTopLevelKeys), because
  * there a stripped key is a safety setting that silently does nothing. This
  * surface speaks the OpenAI wire format, where bodies are flat and callers
- * reasonably reach for a flat key — and it already honoured `safetyProfile`
- * and `workspacePolicy` there, which taught exactly that. The other four were
- * DROPPED on a 200: `{"routePolicy":"local_only"}` returned success and the
- * dispatch left the machine anyway.
- *
- * So the placement rule diverges from MCP deliberately and the guarantee does
- * not: on both surfaces a hint you set either takes effect or you are told.
+ * reasonably reach for a flat key, so all seven are honoured there. The
+ * placement rule diverges from MCP deliberately; the guarantee does not — on
+ * both surfaces a hint you set either takes effect or you are told.
  *
  * When BOTH placements are given, nested wins — the more specific one — with
  * one exception: `workspacePolicy` takes the top-level value, because there it
  * is a real MCP parameter rather than a trap and `workspacePolicyFromInput`
- * has always resolved it that way. Both surfaces agree on all seven, which is
- * what matters; the exception is pinned by a test so it stays a decision.
+ * resolves it that way. The exception is pinned by a test so it stays a
+ * decision.
  */
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
   // `escalate` is honoured nowhere: escalation is per-route config
-  // (escalate_model / escalate_on), never per call. MCP says so by name; this
-  // surface swallowed it, so a caller could believe they had asked for it.
+  // (escalate_model / escalate_on), never per call. Named rather than
+  // swallowed, so a caller cannot believe they asked for it.
   if ((body as Record<string, unknown>)["escalate"] !== undefined) {
     throw new BadRequestError(
       "escalate is not a dispatch field — escalation is configured per route in " +
@@ -276,19 +248,15 @@ function parseHints(body: ChatRequest): RouteHints {
   // The config.yaml spelling of a hint, at the TOP level.
   //
   // `hints` is .strict() on both surfaces because `hints: { safety_profile }`
-  // silently disabled a safety limit. The outer object cannot be strict — MCP
+  // silently disables a safety limit. The outer object cannot be strict — MCP
   // carries `_meta`, and this surface must tolerate OpenAI's own fields — so
-  // the same slip one level up stayed silent on BOTH surfaces. Parity held
-  // while both were wrong, which is the one shape a parity row cannot catch.
+  // the same slip one level up needs this named list. A list rather than a
+  // general rule, because an unknown top-level key is legitimate here and a
+  // near-miss is not.
   //
-  // It also got more reachable, not less: this surface now honours top-level
-  // hints, so a caller who learns that placement works is a caller who can
-  // make this exact mistake. A named list rather than a general rule, because
-  // an unknown top-level key is legitimate here and a near-miss is not.
-  // The advice is per key. Naming a landing spot that also refuses just costs
-  // the caller the second round trip this check exists to save — `contextJobs`
-  // is not implemented on this surface at all, so pointing at it would be
-  // worse than saying nothing.
+  // The advice is per key: naming a landing spot that also refuses would cost
+  // the caller the second round trip this check exists to save, and
+  // `contextJobs` is not implemented on this surface at all.
   for (const [wrong, advice] of [
     ["safety_profile", "this API spells it safetyProfile"],
     ["route_policy", "this API spells it routePolicy"],
@@ -299,18 +267,15 @@ function parseHints(body: ChatRequest): RouteHints {
     ["working_dir", "this API spells it workingDir"],
     ["context_jobs", "contextJobs is an MCP tool parameter and is not supported here"],
     // The key this endpoint uses in its OWN responses (http/server.ts), so
-    // wrapping a request's hints in it is the natural wrong guess — an
-    // acceptance pass reached for it first. Wrapped that way every hint
-    // vanished on a 200, and the dispatch ran at the default workspace_edit:
-    // more access than the caller asked for, with no signal.
+    // wrapping a request's hints in it is the natural wrong guess. Wrapped
+    // that way every hint would vanish on a 200 and the dispatch would run at
+    // the default workspace_edit: more access than the caller asked for.
     ["harness_dispatch", "put hints at the top level or inside `hints`"],
     ["harnessDispatch", "put hints at the top level or inside `hints`"],
     // This product's OWN CLI flag is `--safety`, which makes the bare name the
     // most plausible slip anyone will make here — and it is seven edits from
-    // `safetyProfile`, so the near-miss rule correctly declines to guess. It
-    // was accepted and dropped, and the dispatch ran at the default profile:
-    // the "more access than you asked for" class this whole mechanism exists
-    // for, reachable by typing the name the CLI taught you.
+    // `safetyProfile`, so the near-miss rule below correctly declines to guess
+    // and it has to be named here instead.
     ["safety", "this API spells it safetyProfile"],
   ] as const) {
     if ((body as Record<string, unknown>)[wrong] !== undefined) {
@@ -324,12 +289,12 @@ function parseHints(body: ChatRequest): RouteHints {
   // A near-miss of a hint name, at the top level.
   //
   // The named list above catches the snake_case spellings, which are the
-  // predictable slip. A plain typo is not predictable and had the same
-  // consequence: `safteyProfile` was accepted and dropped, so the dispatch ran
-  // at the looser default and answered 200. The outer object cannot be strict
-  // — it carries OpenAI's own fields — so this asks a narrower question: is
-  // this key ALMOST one of ours? None of OpenAI's field names come near one,
-  // and a key that is genuinely unrelated stays legitimate.
+  // predictable slip. A plain typo is not predictable and has the same
+  // consequence: `safteyProfile` dropped means the dispatch runs at the looser
+  // default behind a 200. The outer object cannot be strict — it carries
+  // OpenAI's own fields — so this asks a narrower question: is this key ALMOST
+  // one of ours? None of OpenAI's field names come near one, and a key that is
+  // genuinely unrelated stays legitimate.
   for (const key of Object.keys(body as Record<string, unknown>)) {
     const meant = nearMissHintKey(key);
     if (meant !== undefined) {
@@ -338,12 +303,10 @@ function parseHints(body: ChatRequest): RouteHints {
       throw new BadRequestError(nearMissMessage(key, meant, { surface: "http" }));
     }
   }
-  // MCP parameters this surface does not implement. Both were accepted and
-  // DISCARDED on a 200: `contextJobs` meant the delegate ran without the prior
-  // work the caller believed it had sent — the same harm that justified
-  // rejecting a non-string `files` entry — and `service` meant an explicit
-  // route choice was silently overridden by the router's pick. Refused by name
-  // until this surface implements them; saying so is the whole contract.
+  // MCP parameters this surface does not implement, refused by name rather
+  // than discarded: a dropped `contextJobs` means the delegate runs without
+  // prior work the caller believed it had sent, and a dropped `service` means
+  // an explicit route choice is silently overridden by the router's pick.
   for (const key of ["contextJobs", "service"] as const) {
     if ((body as Record<string, unknown>)[key] !== undefined) {
       throw new BadRequestError(
@@ -364,27 +327,24 @@ function parseHints(body: ChatRequest): RouteHints {
   // Dropped rather than rejected, unlike `hints.model` below: this is the
   // OpenAI protocol's own field, which clients fill in unconditionally and
   // often with a placeholder, so leniency is the point. Whitespace is dropped
-  // for the same reason "" always was — it is not a model name, and it is
-  // TRUTHY, so it survived to `--model "   "` on a CLI route and cost a real
-  // provider call, a route failure and breaker credit on an HTTP 200.
+  // like "" — it is not a model name, and being TRUTHY it would otherwise
+  // survive to `--model "   "` on a CLI route and cost a real provider call,
+  // a route failure and breaker credit behind an HTTP 200.
   if (typeof body.model === "string" && body.model.trim() !== "") hints.model = body.model;
   const topSafety = enumField(body.safetyProfile, SAFETY_PROFILES, "safetyProfile");
   if (topSafety !== undefined) hints.safetyProfile = topSafety;
   if (body.hints !== undefined && body.hints !== null) {
-    // `hints: "x"` / `[]` / `7` used to fall through this branch and vanish,
-    // so every hint in it — including the safety ones — was silently ignored
-    // on a 200. Arrays are typeof "object", so they got in and then matched no
-    // key. MCP rejects each by name.
+    // `hints: "x"` / `[]` / `7` would otherwise fall through and vanish, so
+    // every hint in it — including the safety ones — would be silently ignored
+    // behind a 200. Arrays are typeof "object", hence the explicit check. MCP
+    // rejects each by name.
     if (typeof body.hints !== "object" || Array.isArray(body.hints)) {
       throw new BadRequestError(`hints: must be an object, got ${JSON.stringify(body.hints)}.`);
     }
     const raw = body.hints as Record<string, unknown>;
-    // A known key with the WRONG TYPE was dropped by the if-chain below, the
-    // same half-measure the unknown-KEY rule was added to close: parse.ts's
-    // header requires anything rejected here to be rejected the way the MCP
-    // schema rejects it, and MCP answers invalid_type for each of these.
-    // enumField already does this for the safety-bearing fields; these three
-    // are the ones it does not cover.
+    // A known key with the WRONG TYPE would be dropped by the if-chain below,
+    // while MCP answers invalid_type for each of these. enumField covers the
+    // safety-bearing fields; these three are the ones it does not.
     for (const [key, expected] of [
       ["model", "string"],
       ["preferLargeContext", "boolean"],
@@ -397,11 +357,10 @@ function parseHints(body: ChatRequest): RouteHints {
         );
       }
     }
-    // Blank is REJECTED, matching the MCP surface — for the same reason the
-    // unknown-key rule below exists. An empty string is not "no preference":
-    // it beat the route's configured model, so the harness ran with no model
-    // flag and the response reported model: "". Rejected rather than dropped
-    // because this key is harness-dispatch's own, not the OpenAI protocol's:
+    // Blank is REJECTED, matching the MCP surface. An empty string is not "no
+    // preference": it beats the route's configured model, so the harness runs
+    // with no model flag and reports model: "". Rejected rather than dropped
+    // because this key is harness-dispatch's own, not the OpenAI protocol's —
     // nobody sets it by accident, so a blank one is a mistake worth naming.
     if (typeof raw.model === "string") {
       if (raw.model.trim() === "") {
@@ -425,25 +384,21 @@ function parseHints(body: ChatRequest): RouteHints {
       "hints.workspacePolicy",
     );
     if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
-    // routePolicy was never read here at all. evaluateRoutePolicy implements
-    // local_only, approval_required and blocked in full, and on this surface
-    // they were wired to nothing: POST {"hints":{"routePolicy":"blocked"}}
-    // returned 200 and dispatched. PRODUCT.md names CI and cron as this
-    // surface's consumers, and calls a guarantee that reads correctly and does
-    // nothing at runtime its own counter-signal.
+    // evaluateRoutePolicy implements local_only, approval_required and blocked
+    // in full, so this surface has to read the hint or those guarantees are
+    // wired to nothing here — PRODUCT.md names CI and cron as its consumers.
     const routePolicy = enumField(raw.routePolicy, ROUTE_POLICIES, "hints.routePolicy");
     if (routePolicy !== undefined) hints.routePolicy = routePolicy;
-    // The VALUE, not just the type. `0` is not nullish, so it won every
-    // coalesce down to setTimeout, fired on the first tick, SIGTERMed the
-    // child, and came back "Timed out after 0ms" — recorded as a route failure
-    // with breaker credit, behind an HTTP 200. See timeoutField for the upper
-    // bound, which does the same damage from the other end.
+    // The VALUE, not just the type. `0` is not nullish, so it wins every
+    // coalesce down to setTimeout, fires on the first tick and SIGTERMs the
+    // child — "Timed out after 0ms", recorded as a route failure with breaker
+    // credit behind an HTTP 200. See timeoutField for the upper bound, which
+    // does the same damage from the other end.
     const nestedTimeout = timeoutField(raw.timeoutMs, "hints.timeoutMs");
     if (nestedTimeout !== undefined) hints.timeoutMs = nestedTimeout;
-    // Unknown keys are REJECTED, matching the MCP surface. The whole point of
-    // making hints strict there was that `safety_profile` (the config
-    // spelling) silently disabled a safety limit; accepting it here left the
-    // identical typo failing open on the other surface.
+    // Unknown keys are REJECTED, matching the MCP surface: `safety_profile`
+    // (the config spelling) accepted here would silently disable a safety
+    // limit.
     const known = new Set([
       "model",
       "taskType",
@@ -476,9 +431,8 @@ export function parseChatRequest(raw: unknown): {
   hints: RouteHints;
 } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    // Was a plain Error, so `null`, `"hello"` and `42` all returned 500. The
-    // BadRequestError mapping was added for JSON PARSE failures only — same
-    // fix, one of two paths, which is the pattern this file keeps repeating.
+    // A plain Error here would make `null`, `"hello"` and `42` return 500;
+    // they are all caller-fixable, like a JSON parse failure.
     throw new BadRequestError("request body must be a JSON object");
   }
   const body = raw as ChatRequest;
@@ -487,24 +441,20 @@ export function parseChatRequest(raw: unknown): {
       ? body.prompt
       : messagesToPrompt(body.messages);
   if (!prompt.trim()) throw new BadRequestError("messages or prompt is required");
-  // MCP refuses this at the boundary; here it reached cross-spawn and surfaced
-  // as `The argument 'args[2]' must be a string without null bytes` — a raw
-  // Node internal where a boundary rejection belongs, which is exactly what
-  // the MCP refine was added to replace.
+  // Refused at the boundary like MCP does; otherwise it reaches cross-spawn
+  // and surfaces as `The argument 'args[2]' must be a string without null
+  // bytes` — a raw Node internal where a boundary rejection belongs.
   if (prompt.includes("\u0000")) {
     throw new BadRequestError("prompt must not contain NUL bytes");
   }
-  // MCP validates this; HTTP did not, so `workingDir: "Z:/nope"` surfaced as
-  // `spawn node.EXE ENOENT` — verbatim the wrong-cause error working-dir.ts
-  // exists to prevent, on the surface CI uses.
-  // A non-string workingDir is REJECTED, not quietly treated as absent.
+  // Validated here as MCP validates it: unchecked, `workingDir: "Z:/nope"`
+  // surfaces as `spawn node.EXE ENOENT`, the wrong-cause error working-dir.ts
+  // exists to prevent.
   //
-  // The ternary turned `workingDir: 123` into "not provided", so the request
-  // succeeded 200 and a write-capable agent ran in the SERVER's own directory
-  // — while the warning said workingDir "was not provided", which was false:
-  // it was provided, as the wrong type. MCP rejects the same argument by
-  // name, and `files`/`models`/`hints.model` are all type-checked one screen
-  // away. This is the rule this module sets for itself at the top of the file.
+  // A non-string workingDir is REJECTED, not quietly treated as absent: read
+  // as "not provided", `workingDir: 123` would run a write-capable agent in
+  // the SERVER's own directory behind a 200, under a warning claiming the
+  // value was never provided.
   const rawWorkingDir = (body as { workingDir?: unknown }).workingDir;
   if (rawWorkingDir !== undefined && rawWorkingDir !== null && typeof rawWorkingDir !== "string") {
     throw new BadRequestError(
@@ -517,24 +467,23 @@ export function parseChatRequest(raw: unknown): {
   if (workingDirError !== undefined) throw new BadRequestError(workingDirError);
   // Same cap as the MCP surface, and for the same reason: each file's parent
   // directory becomes an --add-dir grant on CLI routes, so an unbounded list
-  // is an unbounded set of directories handed to a coding agent. The cap was
-  // added at the MCP boundary only; this surface accepted 500.
+  // is an unbounded set of directories handed to a coding agent.
   if (Array.isArray(body.files) && body.files.length > MAX_CONTEXT_FILES_HTTP) {
     throw new BadRequestError(
       `files: ${body.files.length} entries exceeds the maximum of ${MAX_CONTEXT_FILES_HTTP}.`,
     );
   }
-  // Non-string entries are REJECTED, not filtered out. `files: [1, "a"]`
-  // returned 200 having quietly dropped an entry, so the delegate ran without
-  // context the caller believed it had sent — and `models` decides which
-  // fanout arms run, so a dropped entry is an opinion the caller asked for and
-  // never got. MCP rejects both arrays by name.
+  // Non-string entries are REJECTED, not filtered out: a quietly dropped
+  // `files` entry means the delegate runs without context the caller believed
+  // it had sent, and `models` decides which fanout arms run, so a dropped
+  // entry is an opinion the caller asked for and never got. MCP rejects both
+  // arrays by name.
   const files = stringArray(body.files, "files");
   const models = stringArray(body.models, "models");
-  // An explicit `models: []` is refused here exactly as MCP refuses it: it
-  // fell through to the same branch as "omitted" and fanned out to every
-  // eligible route. A caller who sent an empty array built a list that came
-  // out empty; omitting the field is how you ask for everything.
+  // An explicit `models: []` is refused here exactly as MCP refuses it:
+  // treated like "omitted" it fans out to every eligible route, when a caller
+  // who sent an empty array built a list that came out empty. Omitting the
+  // field is how you ask for everything.
   if (Array.isArray(body.models) && models.length === 0) {
     throw new BadRequestError(
       "models: [] selects no routes. Omit `models` entirely to fan out to every " +
@@ -551,12 +500,10 @@ export function parseChatRequest(raw: unknown): {
     files,
     workingDir: resolvedWorkingDir.workingDir,
     ...(warning !== undefined ? { workingDirWarning: warning } : {}),
-    // `mode` and `stream` are enum/boolean fields, not truthiness tests. A
-    // typo used to DOWNGRADE silently on a 200: {"mode":"fanou"} ran one
-    // dispatch and never said so, and a CI caller asking for independent
-    // opinions got a single answer it could not tell apart from a real one.
-    // {"stream":"true"} likewise returned a non-streaming response. This is
-    // the class enumField was written for, three screens up.
+    // `mode` and `stream` are enum/boolean fields, not truthiness tests: a
+    // typo would DOWNGRADE silently behind a 200, so {"mode":"fanou"} runs one
+    // dispatch and a CI caller asking for independent opinions gets a single
+    // answer it cannot tell apart from a real one.
     stream: boolField(body.stream, "stream"),
     mode: enumField(body.mode, MODES, "mode") ?? "single",
     models,

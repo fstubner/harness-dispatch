@@ -1,11 +1,10 @@
 /**
  * Config hot-reload for the MCP server.
  *
- * Ported from Python `server.py:_maybe_reload_config`. Rather than file-system
- * watchers (which are flaky on Windows + WSL mounts), we poll the config
- * file's mtime between tool calls. A reload rebuilds the dispatcher map,
- * quota cache, and router — while preserving circuit-breaker state for any
- * service that still exists in the new config.
+ * Rather than file-system watchers (which are flaky on Windows + WSL mounts),
+ * we poll the config file's mtime between tool calls. A reload rebuilds the
+ * dispatcher map, quota cache, and router — while preserving circuit-breaker
+ * state for any service that still exists in the new config.
  *
  * Concurrency: the reload is guarded by a mutex so that simultaneous
  * tool-calls can't race on global state replacement. Only the first caller
@@ -16,9 +15,8 @@
 import { promises as fs } from "node:fs";
 
 import { loadConfig } from "../config.js";
-// From the module that DEFINES it, not the barrel that re-exports it.
-// Importing it from ../jobs.js closed a cycle (jobs -> this file -> jobs)
-// which jobs.ts then had to dodge with a dynamic import at runtime.
+// From the module that DEFINES it, not the barrel that re-exports it:
+// importing it from ../jobs.js closes a cycle (jobs -> this file -> jobs).
 import { setJobRetentionDays } from "../jobs/store.js";
 import { LeaderboardCache } from "../leaderboard.js";
 import { QuotaCache } from "../quota.js";
@@ -112,9 +110,7 @@ class Mutex {
  * Reload helper — pairs with a RuntimeHolder for in-place swap.
  *
  * If the config file's mtime is UNCHANGED since we last reloaded, the call is
- * a cheap no-op. Any difference — forwards or backwards — counts as a change:
- * this said "has not moved" while testing "has not increased", so a config
- * restored from a backup or extracted from an archive never reloaded.
+ * a cheap no-op. Any difference — forwards or backwards — counts as a change.
  * Circuit-breaker state from the previous router is preserved for every
  * service that still exists in the new config.
  *
@@ -141,13 +137,10 @@ export class ConfigHotReloader {
     if (!this.configPath) return false;
     const mtimeMs = await statMtime(this.configPath);
     if (mtimeMs === 0) return false;
-    // `!==`, not `<=`.
-    //
-    // Comparing "newer than" meant a config whose mtime went BACKWARDS was
-    // invisible forever: restored from a backup, copied with `cp -p`,
-    // extracted from an archive, or renamed in from an older temp file. Each
-    // is an ordinary way to change a config, and each left the server routing
-    // on the previous one with nothing said. Any difference is a change.
+    // `!==`, not `<=`: a config's mtime can go BACKWARDS — restored from a
+    // backup, copied with `cp -p`, extracted from an archive, renamed in from
+    // an older temp file — and each of those is an ordinary way to change a
+    // config. Any difference is a change.
     if (mtimeMs === this.holder.state.mtimeMs) return false;
 
     return this.mutex.run(async () => {
@@ -164,14 +157,10 @@ export class ConfigHotReloader {
         if (this.configPath !== undefined) bootOpts.configPath = this.configPath;
         next = await bootstrapRuntime(bootOpts);
       } catch (err) {
-        // Malformed edits shouldn't crash the server — keep the old state.
-        //
-        // But SAY SO. A bare `catch {}` here meant a config with a typo was
-        // silently ignored: the server kept routing on the previous version
-        // with nothing on stderr and nothing in status to say the file on disk
-        // was not the file in effect. The edit looks applied because the
-        // server is still up and still working — just not the way the file
-        // now reads.
+        // Malformed edits shouldn't crash the server — keep the old state, but
+        // SAY SO. Reported silently, the server keeps routing on the previous
+        // version and the edit looks applied because the server is still up and
+        // still working, just not the way the file now reads.
         //
         // Rate-limited to one line per distinct message, because the reloader
         // re-checks on a timer and a broken file would otherwise print on
@@ -179,9 +168,8 @@ export class ConfigHotReloader {
         const message = err instanceof Error ? err.message : String(err);
         // Also onto the config that is still in effect, so `status` can say the
         // file on disk is not the one being routed on. stderr is invisible to
-        // every MCP client and every HTTP caller — which is most of the ways
-        // this server is used, and the comment above claimed status coverage
-        // this code did not have.
+        // every MCP client and every HTTP caller, which is most of the ways
+        // this server is used.
         (this.holder.state.config as { reloadError?: string }).reloadError = message;
         if (message !== this.lastReloadError) {
           this.lastReloadError = message;
