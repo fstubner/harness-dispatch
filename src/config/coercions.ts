@@ -188,8 +188,21 @@ export function inferEndpointProvider(baseUrl: string | undefined): EndpointProv
     if ((host === "localhost" || host === "127.0.0.1" || host === "::1") && port === "1234") {
       return "lmstudio";
     }
+    // A URL that parsed and is not on loopback is not known to be local,
+    // whatever its text contains.
+    //
+    // The substring checks below used to run for EVERY URL, so any host with
+    // "ollama" in it — `https://ollama.com/v1`, Ollama's paid cloud, included —
+    // came back as provider "ollama", which config.ts turns into local compute
+    // that cannot bill. That route then skipped the allow_paid_usage gate and
+    // passed `routePolicy: local_only`, whose whole promise is that the prompt
+    // never leaves the machine. Measured in an audit: ollama.com reported
+    // `billing=local_compute paid=false ready=true`. A remote box that really
+    // is free says so with `billing_kind: local_compute` on its route.
+    return "custom";
   } catch {
-    // Fall through to substring checks for partial or nonstandard URLs.
+    // Not a parseable URL, so there is no host to check; the substring test
+    // below is all that is left.
   }
   const lower = baseUrl.toLowerCase();
   if (lower.includes("ollama")) return "ollama";

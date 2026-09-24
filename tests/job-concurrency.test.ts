@@ -57,6 +57,31 @@ async function writeConfig(maxConcurrentRuns: number, sleepMs: number): Promise<
   return file;
 }
 
+/** Same, with a resource weight of 0.1 — what an endpoint route gets by default. */
+async function writeLightConfig(maxConcurrentRuns: number, sleepMs: number): Promise<string> {
+  const file = path.join(tmpDir, "config.yaml");
+  const script = `setTimeout(() => console.log('done ' + process.argv[1]), ${sleepMs})`;
+  await fs.writeFile(
+    file,
+    [
+      `max_concurrent_runs: ${maxConcurrentRuns}`,
+      "clis:",
+      "  - name: light_node",
+      "    harness: generic",
+      "    command: node",
+      "    tier: 3",
+      "    resource_weight: 0.1",
+      "    billing_kind: local_compute",
+      "    paid_usage_possible: false",
+      "    protocol:",
+      `      args: ["-e", ${JSON.stringify(script)}, "{{prompt}}"]`,
+      "      output: { mode: text }",
+    ].join("\n"),
+    "utf8",
+  );
+  return file;
+}
+
 async function deps(): Promise<JobDeps> {
   const config = await loadConfig(configPath);
   const holder = { state: { config, configPath } } as unknown as RuntimeHolder;
@@ -222,6 +247,35 @@ describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
     expect(done.result?.result.success).toBe(true);
     expect(done.result?.result.output).toContain("done two");
   }, 90_000);
+
+  it("never releases more light jobs than the supervisor pool can run", async () => {
+    // The budget is weighted: a 0.1-weight job (the endpoint default) costs a
+    // tenth of a slot, so at the default limit of 4 the drainer released up to
+    // forty of them. But the pool is four supervisors running
+    // ceil(4/4) = 1 job each, so the rest sat released-but-unclaimed with no
+    // heartbeat — and after 90 s read as `orphaned — Nothing will advance it
+    // now`, which was false, and which invites a retry that runs the task
+    // twice. Measured in an audit: six such jobs, 105 s in, four running and
+    // two "orphaned". The excess must stay slotQueued, which is reported as
+    // waiting and is exempt from the orphan rule.
+    configPath = await writeLightConfig(4, 2_000);
+    const d = await deps();
+
+    const jobs = [];
+    for (const p of ["a", "b", "c", "d", "e", "f"]) {
+      jobs.push(await startAsyncJobTracked(d, { prompt: p, workingDir: tmpDir, service: "light_node" }));
+    }
+
+    const released = jobs.filter((j) => j.status.slotQueued !== true);
+    expect(released.length, "more jobs were released than four supervisors can run").toBe(4);
+
+    // And the held ones are not stranded: each is released as a slot frees.
+    await Promise.all(jobs.map((j) => j.completion));
+    for (const j of jobs) {
+      const done = await getAsyncJob(j.status.jobId);
+      expect(done.status.status, `${j.status.jobId} did not complete`).toBe("completed");
+    }
+  }, 120_000);
 
   it("max_concurrent_runs: 0 disables the bound entirely", async () => {
     configPath = await writeConfig(0, 200);

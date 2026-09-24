@@ -1470,3 +1470,74 @@ describe("an api_key whose ${VAR} is not set", () => {
     }
   });
 });
+
+describe("a remote endpoint is never inferred local from its URL text", () => {
+  // Any base_url CONTAINING "ollama" or "lmstudio" used to be classified as
+  // that local runtime — so `https://ollama.com/v1`, Ollama's paid cloud, came
+  // back as local compute that cannot bill. It then skipped the
+  // allow_paid_usage gate and passed `routePolicy: local_only`, whose promise
+  // is that the prompt never leaves the machine. Measured in an audit:
+  // `billing=local_compute paid=false ready=true` for ollama.com.
+  async function load(baseUrl: string) {
+    const p = await writeTmpYaml(
+      "remote-ollama.yaml",
+      [
+        "endpoints:",
+        "  - name: ep",
+        `    base_url: ${baseUrl}`,
+        "    model: m",
+        "    api_key: sk-test-not-real",
+        "",
+      ].join(NL),
+    );
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    return cfg.services["ep"]!;
+  }
+
+  it.each([
+    "https://ollama.com/v1",
+    "https://my-ollama-proxy.example.com/v1",
+    "https://lmstudio.example.com/v1",
+  ])("%s is not local compute", async (url) => {
+    const svc = await load(url);
+    expect(svc.billingKind, "a remote host was declared free local compute").not.toBe("local_compute");
+    expect(svc.provider).not.toBe("local");
+  });
+
+  it("is refused under routePolicy: local_only, for that reason", async () => {
+    // Paid usage allowed and billing declared, so the ONLY thing left that can
+    // refuse this route is local_only itself — otherwise the paid-usage gate
+    // would block it first and this test would pass without local_only doing
+    // anything.
+    const { evaluateRoutePolicy } = await import("../src/route-policy.js");
+    const p = await writeTmpYaml(
+      "remote-ollama-paid-ok.yaml",
+      [
+        "endpoints:",
+        "  - name: ep",
+        "    base_url: https://ollama.com/v1",
+        "    model: m",
+        "    api_key: sk-test-not-real",
+        "    billing_kind: metered_api",
+        "    paid_usage_possible: true",
+        "    allow_paid_usage: true",
+        "",
+      ].join(NL),
+    );
+    const svc = (await loadConfig(p, { whichFn: noCliFound })).services["ep"]!;
+    const avail = { dispatcher: { isAvailable: () => true } as never };
+    expect(evaluateRoutePolicy("ep", svc, avail).blocked, "fixture is blocked for another reason").toBe(false);
+
+    const out = evaluateRoutePolicy("ep", svc, { ...avail, routePolicy: "local_only" });
+    expect(out.blocked, "local_only let a request go to ollama.com").toBe(true);
+    expect(out.skipped?.code).toBe("route_policy");
+  });
+
+  it("still recognises a real local Ollama on loopback", async () => {
+    // The half that must not regress: the default Ollama and LM Studio ports
+    // on loopback are what this inference exists for.
+    const svc = await load("http://localhost:11434/v1");
+    expect(svc.billingKind).toBe("local_compute");
+    expect(svc.provider).toBe("local");
+  });
+});

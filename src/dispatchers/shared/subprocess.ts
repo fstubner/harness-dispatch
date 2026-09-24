@@ -60,6 +60,10 @@ export function runSubprocess(
       return;
     }
     if (opts.stdin !== undefined) {
+      // Same as stream-subprocess.ts: without a listener, a child that exits
+      // before reading its stdin crashes this process with an unhandled
+      // `error` event. Its exit is what ends the run either way.
+      child.stdin?.on("error", () => undefined);
       child.stdin?.end(opts.stdin);
     }
 
