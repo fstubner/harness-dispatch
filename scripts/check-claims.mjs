@@ -134,8 +134,15 @@ const USER_FACING = new Set([
   // Every refusal message a caller reads, and the rendered status body.
   "src/route-policy.ts",
   "src/status.ts",
-  // The CLI's own help and error text.
+  // The CLI's own help and error text: the entrypoint and every command.
   "src/bin.ts",
+  "src/cli/common.ts",
+  "src/cli/configure.ts",
+  "src/cli/connect.ts",
+  "src/cli/dispatch.ts",
+  "src/cli/doctor.ts",
+  "src/cli/report.ts",
+  "src/cli/serve.ts",
   "README.md",
   "CHANGELOG.md",
   "OPERATIONS.md",
