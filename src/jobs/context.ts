@@ -1,10 +1,7 @@
 /**
- * Rendering earlier jobs' results into a new prompt.
- *
- * Split out of jobs.ts, which had grown to 1357 lines doing five unrelated
- * things. This is the self-contained one: given some jobIds, read what those
- * runs produced and render it as a preamble. It reads the job store and
- * nothing in the dispatch path calls back into it, so it lifts out whole.
+ * Rendering earlier jobs' results into a new prompt: given some jobIds, read
+ * what those runs produced and render it as a preamble. It reads the job store
+ * and nothing in the dispatch path calls back into it.
  */
 
 import { readFile } from "node:fs/promises";
@@ -16,16 +13,14 @@ import type { JobResultPayload } from "./types.js";
 /**
  * Total characters of prior-job context injected into one prompt.
  *
- * Every character here is a character the delegate's model must read before it
- * reaches the actual instruction, and agent CLIs are already carrying a system
- * prompt and file contents. 24k is roughly six pages: enough for several prior
- * results, small enough that it cannot crowd out the task itself.
+ * Every character here is one the delegate's model must read before reaching
+ * the actual instruction, on top of a system prompt and file contents. 24k is
+ * roughly six pages: enough for several prior results, small enough that it
+ * cannot crowd out the task.
  *
  * Entries are filled in the order the CALLER listed them, and it is the LAST
- * ones that get truncated or omitted when the budget runs out. This comment
- * claimed the opposite — "oldest entries are truncated first" — which was
- * never true of the loop below and would be the wrong policy to infer: the
- * caller controls the order, so put the job you most want carried first.
+ * ones truncated or omitted when the budget runs out — so put the job you most
+ * want carried first.
  */
 /** Newline, named so the templates below stay readable. */
 const NL = "\n";
@@ -51,19 +46,14 @@ function clip(text: string, limit: number): string {
  * Where a prior job ran, as a header suffix — or "" when it cannot be read.
  *
  * `contextJobs` takes any jobId from the machine-wide jobs root and inlines
- * that job's prompt and output verbatim, with no working-directory scoping.
- * Reproduced: a job recorded against one project chained cleanly into a
- * dispatch for another, its prompt and output carried across with nothing
- * saying they came from somewhere else.
+ * that job's prompt and output verbatim, with no working-directory scoping, so
+ * a job recorded against one project chains cleanly into a dispatch for another.
  *
- * Deliberately DISCLOSED rather than blocked. Chaining across projects is a
- * legitimate thing to want — a review job informing work in a sibling
- * checkout — and the jobId has to be passed explicitly by the orchestrator, so
- * this is a missing guardrail, not an injection route. What was actually
- * wrong is that neither the orchestrator nor the delegate could SEE it: an
- * agent that passed the wrong id got another project's source in its prompt
- * and no hint of it. Naming the directory is also plainly useful when the
- * chaining is intended.
+ * Deliberately DISCLOSED rather than blocked: cross-project chaining is a
+ * legitimate thing to want, and the jobId has to be passed explicitly. What
+ * matters is that both the orchestrator and the delegate can SEE it, since an
+ * agent that passed the wrong id would otherwise get another project's source
+ * in its prompt with no hint of it.
  */
 async function ranIn(jobId: string): Promise<string> {
   try {
@@ -113,25 +103,19 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
   let budget = MAX_CONTEXT_CHARS;
 
   for (const [index, jobId] of contextJobs.entries()) {
-    // OUTSIDE the try, and that placement is the whole point.
+    // OUTSIDE the try, and that placement is the whole point: inside it, a
+    // malformed id throws straight into the catch, which calls
+    // partialSection(jobId) with the id STILL UNVALIDATED and reads from
+    // path.join(jobsRoot(), jobId, ...). `../outside` then renders into the
+    // preamble prepended to a delegate's prompt — straight into an LLM that may
+    // act on or repeat it.
     //
-    // Inside it, a malformed id threw straight into the catch — which calls
-    // partialSection(jobId) with the id STILL UNVALIDATED, reading
-    // stdout.partial.log, prompt.md and manifest.json from
-    // path.join(jobsRoot(), jobId, ...). A security audit reproduced
-    // `../outside` reading both files and rendering them into the preamble
-    // that gets prepended to a delegate's prompt — straight into an LLM that
-    // may act on or repeat them.
-    //
-    // Not reachable from either public surface today: the MCP schema regexes
-    // every contextJobs entry and the HTTP surface refuses contextJobs
-    // outright. That is exactly the situation assertValidJobId's own docblock
-    // predicts — "validating only at the schema would mean any future caller
-    // silently reintroduces the traversal" — and one caller already had.
+    // Not reachable from either public surface today (the MCP schema regexes
+    // every entry, the HTTP surface refuses contextJobs outright), for the
+    // reason assertValidJobId's own docblock gives.
     if (!isValidJobId(jobId)) {
-      // Refused WITHOUT touching disk, and reported rather than thrown: this
-      // is a list, and one unusable id must not fail the dispatch the caller
-      // actually asked for.
+      // Refused WITHOUT touching disk, and reported rather than thrown: one
+      // unusable id must not fail the dispatch the caller asked for.
       sections.push(unresolvable(jobId));
       continue;
     }
@@ -157,34 +141,18 @@ export async function buildContextPreamble(contextJobs: string[]): Promise<strin
     } catch {
       // No result.json — but a job whose supervisor died leaves its progress
       // in stdout.partial.log, and chaining on "what the last job got to" is
-      // exactly what a caller wants after an orphaned run. Reporting "no
-      // result available" while that file sits on disk discards the trail
-      // PRODUCT.md names as the thing that must never be lost.
+      // exactly what a caller wants after an orphaned run.
       section = (await partialSection(jobId).catch(() => undefined)) ?? unresolvable(jobId);
     }
     if (section.length > budget) section = clip(section, Math.max(0, budget));
     budget -= section.length;
     sections.push(section);
     if (budget <= 0) {
-      // Name what did not fit, rather than stopping silently.
-      //
-      // This loop dropped every remaining job with no header and no note —
-      // measured with five 8KB results: three appeared, jobs 4 and 5 were
-      // absent from the output entirely. That contradicts this module's own
-      // contract two functions up: "Unknown or unfinished jobs are reported
-      // inline rather than skipped silently: a delegate ... would reason from
-      // an incomplete picture and never know." A job dropped for want of
-      // budget is exactly that case, and it is worse than an unknown one,
-      // because the caller explicitly asked for it.
-      // Slice from the LOOP's position, not `indexOf`.
-      //
-      // `indexOf` returns the FIRST occurrence, so a repeated jobId made the
-      // notice describe the wrong point in the list: with [j1,j2,j1,j3,j4] it
-      // named four jobs omitted — including j1 and j2, whose output was
-      // rendered directly above it — and told the delegate to fetch them.
-      // Only j3 and j4 were actually dropped. A duplicate id is a plausible
-      // thing for an orchestrator to pass, and the notice was added in this
-      // same release, so this is that fix being wrong one case over.
+      // Name what did not fit, rather than stopping silently: a job dropped for
+      // want of budget is worse than an unknown one, because the caller
+      // explicitly asked for it. Slice from the LOOP's position, not `indexOf`,
+      // which returns the FIRST occurrence — a repeated jobId would make the
+      // notice name jobs whose output was rendered directly above it.
       const dropped = contextJobs.slice(index + 1);
       if (dropped.length > 0) {
         sections.push(

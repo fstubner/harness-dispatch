@@ -17,7 +17,7 @@ export * from "./types.js";
 export type { Dispatcher, DispatchOpts } from "./dispatchers/base.js";
 export { BaseDispatcher, drainDispatcherStream } from "./dispatchers/base.js";
 
-// Shared streaming subprocess helper (R3)
+// Shared streaming subprocess helper
 export {
   streamSubprocess,
   drainSubprocessStream,
@@ -27,7 +27,7 @@ export {
   type StreamSubprocessOpts,
 } from "./dispatchers/shared/stream-subprocess.js";
 
-// MCP surface (R2)
+// MCP surface
 export {
   buildMcpServer,
   startMcpServer,
@@ -47,7 +47,7 @@ export { ensureHttpToken, readHttpToken, rotateHttpToken } from "./auth.js";
 export { buildRouteBilling, billingIsBlocked, billingIsUnknown } from "./billing.js";
 export { evaluateRoutePolicy } from "./route-policy.js";
 
-// Observability (R3)
+// Observability
 export {
   initObservability,
   shutdownObservability,

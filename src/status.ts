@@ -20,25 +20,23 @@ import { workspacePolicyFor } from "./workspaces.js";
 
 /**
  * Where to find the authoritative, current model catalog for a route.
- * hints.model routing is unvalidated by this server — a mismatched or
- * unsupported name is passed straight to the harness and fails at dispatch
- * time with that harness's real error, so these hints let a caller pick a
- * real model up front or self-correct after a failure.
+ * hints.model routing is unvalidated by this server — a mismatched name is
+ * passed straight to the harness and fails at dispatch time with that harness's
+ * real error — so these hints let a caller pick a real model up front.
  *
- * The hint itself is DECLARED CONFIG (`model_hint:` on the route or its
- * harness's shipped-config entry) — no per-harness table lives in code. The
- * one structural fallback: OpenAI-compatible endpoints all support the
- * standard GET /models catalog, hint or no hint.
+ * The hint is DECLARED CONFIG (`model_hint:` on the route or its harness's
+ * shipped-config entry); no per-harness table lives in code. The one structural
+ * fallback: OpenAI-compatible endpoints all support GET /models.
  */
 /**
  * Replace a private endpoint host with a stable placeholder for output that
  * gets shared.
  *
- * `usage` output, the model-discovery hint and endpoint fetch errors all
- * quoted the full base_url, so a private host — a `.ts.net` tailnet name, an
- * internal DNS entry — travelled into anything a user pastes into an issue.
- * The scheme, port and path carry all the diagnostic value; the hostname
- * carries none of it and is the only part that identifies infrastructure.
+ * `usage` output, the model-discovery hint and endpoint fetch errors all quote
+ * the base_url, so an unredacted private host — a `.ts.net` tailnet name, an
+ * internal DNS entry — travels into anything a user pastes into an issue. The
+ * scheme, port and path carry all the diagnostic value; the hostname carries
+ * none of it and is the only part that identifies infrastructure.
  *
  * Loopback is left intact: "localhost" tells the reader something useful and
  * discloses nothing.
@@ -47,34 +45,22 @@ import { workspacePolicyFor } from "./workspaces.js";
 const REDACTED_HOST = "<endpoint-host>";
 
 export function redactEndpointHost(baseUrl: string): string {
-  // Idempotent: an already-redacted string comes back unchanged.
-  //
-  // Without this, redacting twice was actively worse than redacting once —
-  // `https://<endpoint-host>/v1` is not a parseable URL, so the second call
-  // fell to the catch and returned the bare `<endpoint>` placeholder, throwing
-  // away the scheme, port and path the comment below calls the diagnostic
-  // value. An acceptance pass found that as a regression in `usage`'s model
-  // hint. The alternative — asking every caller to know whether redaction has
-  // already happened — is how the leak this function exists for got in.
+  // Idempotent, so callers never have to know whether redaction already
+  // happened: `https://<endpoint-host>/v1` is not a parseable URL, so a second
+  // call would fall to the catch and return the bare `<endpoint>` placeholder,
+  // throwing away the scheme, port and path.
   if (baseUrl.includes(REDACTED_HOST)) return baseUrl;
   try {
     const url = new URL(baseUrl);
     const host = url.hostname.toLowerCase();
     const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
-    // Built as a string rather than by assigning to `url.hostname`.
-    //
-    // That assignment was the whole implementation and it did NOTHING: the
-    // WHATWG URL setter silently rejects a value containing `<` and `>`, so
-    // every "redacted" string was the input verbatim. An acceptance pass
-    // measured a failed dispatch reporting
-    // `https://api.secret-internal.example.com/v1?key=SECRETKEY123` into an
-    // error the calling comment describes as safe to paste into a bug report,
-    // and into the dispatch log. A silent no-op setter is exactly the kind of
-    // thing a test would have caught, and there was no test.
+    // Built as a string rather than by assigning to `url.hostname`: the WHATWG
+    // URL setter silently rejects a value containing `<` and `>`, so assigning
+    // the placeholder leaves the input verbatim.
     //
     // Userinfo, query and fragment are dropped on every path, loopback
     // included: a key embedded in the URL is a credential wherever the host
-    // points, and the original kept them even when it did replace the host.
+    // points.
     const port = url.port === "" ? "" : `:${url.port}`;
     const shown = loopback ? url.hostname : REDACTED_HOST;
     return `${url.protocol}//${shown}${port}${url.pathname}`.replace(/\/+$/, "");
@@ -100,22 +86,16 @@ export function redactSecretValue(text: string, secret: string | undefined): str
  *
  * `redactEndpointHost` only cleans a URL a caller hands it. An exception
  * message is a different problem: undici embeds the URL it was given, so
- * wrapping such a message and appending a redacted URL beside it produced
- *
- *   Request cannot be constructed from a URL that includes credentials:
- *   https://user:pw@host:8443/v1?key=SECRET/v1/chat/completions
- *   (https://<endpoint-host>:8443/v1)
- *
- * — the redacted form sitting next to the raw one, in the terminal AND in
- * `logs/dispatches.jsonl`, under a doc comment promising it was safe to paste
- * into a bug report. Reproduced by an acceptance pass.
+ * wrapping such a message and appending a redacted URL beside it leaves the
+ * redacted form sitting next to the raw one — in the terminal AND in
+ * `logs/dispatches.jsonl`.
  *
  * Each credential-bearing piece is removed by value, so it does not matter how
- * the message happened to assemble them: the configured api key, then the
- * whole base URL, then origin, hostname, userinfo, and every query value on
- * their own. Pass `apiKey` wherever it is known — for most routes the key is
- * sent as a header and is not part of the URL at all, so omitting it leaves
- * the commonest credential unscrubbed.
+ * the message assembled them: the configured api key, then the whole base URL,
+ * then origin, hostname, userinfo, and every query value on their own. Pass
+ * `apiKey` wherever it is known — for most routes the key is sent as a header
+ * and is not part of the URL, so omitting it leaves the commonest credential
+ * unscrubbed.
  */
 export function scrubEndpointSecrets(
   text: string,
@@ -127,15 +107,10 @@ export function scrubEndpointSecrets(
     if (needle.length === 0) return;
     out = out.split(needle).join(with_);
   };
-  // The configured key, first, and it is NOT a part of the URL for most
-  // routes: every endpoint in this project's own config authenticates with an
-  // `Authorization: Bearer` or `x-api-key` header. This function's contract is
-  // to strip credentials out of text we did not write, and it was stripping
-  // only the credential-bearing pieces of the base URL — so an endpoint that
-  // echoed the request HEADER back in its error ("invalid api key: Bearer
-  // sk-…") passed the key through untouched, to the terminal and into
-  // `logs/dispatches.jsonl`. Found by an acceptance pass, reproduced against
-  // the built artifact.
+  // The configured key first, and it is NOT part of the URL for most routes —
+  // every endpoint in this project's config authenticates with a header. An
+  // endpoint that echoes the request HEADER back in its error ("invalid api
+  // key: Bearer sk-…") would otherwise pass the key through untouched.
   out = redactSecretValue(out, apiKey);
   replaceAll(baseUrl, redactEndpointHost(baseUrl));
   try {
@@ -242,10 +217,10 @@ export interface HarnessDispatchStatus {
   ready: string[];
   skippedRoutes: RouteSkip[];
   /**
-   * Config problems that change behaviour. `doctor` reported these and
-   * `status` did not, so a route with a typo'd safety_profile showed a plain
-   * `ok` line while silently running under the looser default — and `status`
-   * is the surface people actually run.
+   * Config problems that change behaviour. Reported here as well as by
+   * `doctor` because `status` is the surface people actually run: a route with
+   * a typo'd safety_profile would otherwise show a plain `ok` line while
+   * silently running under the looser default.
    */
   configWarnings?: readonly string[];
   /**
@@ -315,9 +290,7 @@ export async function buildStatus(
       circuitBroken: Boolean(route.breaker.tripped),
       // The same counts the router scores with, so this reports the same
       // verdict. Without them the never-succeeded skip cannot fire here, and a
-      // route the router had stopped scoring was still listed as `ok` on both
-      // surfaces — the reason `doctor` grew a separate route-health line to
-      // say what `status` was contradicting one screen up.
+      // route the router has stopped scoring would still be listed as `ok`.
       localCounts: {
         calls: q?.localCallCount ?? 0,
         successes: q?.localSuccessCount ?? 0,
@@ -328,19 +301,12 @@ export async function buildStatus(
       skippedRoutes.push(policy.skipped);
     }
     if (svc.command !== undefined) route.command = svc.command;
-    // Redacted HERE too, not only in the text rendering and the error paths.
-    //
-    // `redactEndpointHost` lives in this file and was wired into the usage
-    // hint and the failure messages, and never into the structured payload —
-    // so `status --json` and the `harness-dispatch://status.json` resource
-    // emitted `base_url` verbatim, twice. An acceptance pass measured a key in
-    // the URL (`?key=SUPERSECRET123`, which is Google AI Studio's own shape)
-    // reaching both, and that resource is one this server's own instructions
-    // tell agents to read — so the credential lands in an agent's context.
-    //
-    // An earlier pass recorded "endpoint redaction — verified"; it had checked
-    // the text surface only, which is how a fix to one rendering of a value
-    // leaves the other rendering untouched.
+    // Redacted HERE too, not only in the text rendering and the error paths:
+    // `status --json` and the `harness-dispatch://status.json` resource read
+    // this payload, and a key in the URL (`?key=…`, which is Google AI
+    // Studio's own shape) would otherwise reach both. That resource is one
+    // this server's own instructions tell agents to read, so the credential
+    // would land in an agent's context.
     if (svc.baseUrl !== undefined) route.baseUrl = redactEndpointHost(svc.baseUrl);
     if (svc.endpointMode !== undefined) {
       route.endpoint = {
@@ -378,22 +344,17 @@ export async function buildStatus(
     .filter((route) => route.enabled && route.available && !route.breaker.tripped && !route.skipped)
     .map((route) => route.id);
   const decision = await router.pickService();
-  // An unreadable record whose name is not a configured route has nowhere to
-  // be shown — the per-route line it would appear on does not exist. That is
-  // every corrupt legacy blob (which has no route name at all) and any record
-  // left behind by a route since renamed or removed. Reporting them here keeps
-  // the fix from being silent in exactly the cases it was added for.
+  // An unreadable record whose name is not a configured route has nowhere else
+  // to be shown — the per-route line it would appear on does not exist. That is
+  // every corrupt legacy blob and any record left by a renamed or removed route.
   //
-  // Reported separately from configWarnings, which says "these change
-  // behaviour" and means config entries that were ignored. A lost cooldown is
-  // neither: nothing was misconfigured and nothing was ignored. Filing it
-  // there put a true sentence under a false heading, and `doctor` and the
-  // CLI's "ignored config entries" list both read configWarnings directly, so
-  // it would have reached them mislabelled.
+  // Separate from configWarnings, which means config entries that were ignored:
+  // `doctor` and the CLI's "ignored config entries" list both read that field
+  // directly, so a lost cooldown filed there would reach them mislabelled.
   //
   // `Object.hasOwn`, not `=== undefined`: a record named `constructor` or
-  // `toString` would otherwise find a match on Object.prototype and suppress
-  // its own warning.
+  // `toString` would otherwise match on Object.prototype and suppress its own
+  // warning.
   const quotaPersistError = quota.localCountsPersistError();
   const stateWarnings = [
     ...(quotaPersistError !== undefined
@@ -454,11 +415,10 @@ export interface RouteUsage {
   /**
    * Tokens the harness reported, summed across this route's calls.
    *
-   * The honest answer to "what has this cost me": a measured quantity rather
-   * than a currency figure. Money is NOT derivable — subscription CLIs have no
-   * per-call price, and pricing tokens would mean shipping a rate card that
-   * goes stale silently. Zero means the harness reported nothing, not that
-   * nothing was spent.
+   * A measured quantity rather than a currency figure: money is NOT derivable —
+   * subscription CLIs have no per-call price, and pricing tokens would mean
+   * shipping a rate card that goes stale silently. Zero means the harness
+   * reported nothing, not that nothing was spent.
    */
   inputTokens: number;
   outputTokens: number;
@@ -472,9 +432,9 @@ export interface RouteUsage {
    * Why the router will not choose this route, when it will not.
    *
    * `usage` is the surface an orchestrating agent is told to consult before
-   * delegating, and it printed `ok` for every configured route — including
-   * ones the router was refusing to score. Someone watching a route sit at
-   * `ok` while nothing ever routed to it had no way to connect the two.
+   * delegating. Without this, a route the router refuses to score still prints
+   * `ok`, and nobody watching it can connect that to nothing ever routing
+   * there.
    */
   skipped?: RouteSkip;
 }
@@ -525,17 +485,14 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
 /**
  * Skips that hold whatever the next call asks for.
  *
- * The listing surfaces have no request in hand, so they evaluate policy with
- * no safety profile, task type or route policy — and several skip codes answer
- * a question that was never asked. `safety_incompatible` is the one that bites:
+ * The listing surfaces have no request in hand, so they evaluate policy with no
+ * safety profile, task type or route policy — and several skip codes answer a
+ * question that was never asked. `safety_incompatible` is the one that bites:
  * cursor_cli declares full_auto, which exceeds the DEFAULT requested profile,
- * so a listing that marked it skipped would be calling a route broken that a
- * full_auto dispatch uses successfully. Measured: 11 of its 14 calls here
- * succeeded.
- *
- * So the mark reflects only the codes that are a property of the route or its
- * environment. Every skip, conditional or not, still prints its reason on the
- * line below — the reason is information; the mark is a verdict.
+ * so marking it skipped would call a route broken that a full_auto dispatch
+ * uses successfully. The mark therefore reflects only codes that are a property
+ * of the route or its environment; every skip still prints its reason on the
+ * line below — the reason is information, the mark is a verdict.
  */
 const UNCONDITIONAL_SKIPS: ReadonlySet<RouteSkip["code"]> = new Set([
   "disabled",
@@ -562,9 +519,8 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
   const lines: string[] = ["harness-dispatch usage", ""];
   if (usage.routes.length === 0) {
     // A bare header and nothing else reads as "this command is broken", which
-    // is the one thing it does not mean. Carried as an open item across three
-    // releases because it looked cosmetic; it is the first thing a user with
-    // no routes sees, and it told them nothing about why or what to do.
+    // is the one thing it does not mean — and it is the first thing a user
+    // with no routes sees.
     lines.push(
       "No routes configured.",
       "",
@@ -588,11 +544,9 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
         ` quota=${quota} ` +
         `billing=${route.billingKind} breaker=${route.breakerTripped ? "open" : "closed"}`,
     );
-    // Tokens were reaching `usage --json` and the MCP tool but never the text
-    // output a human reads, so the one surface people actually type at was the
-    // one that never showed them. Omitted when both are zero: a harness that
-    // reports nothing would otherwise print "tokens: in=0 out=0" and read as
-    // "nothing was spent", which is a different claim.
+    // Omitted when both are zero: a harness that reports nothing would
+    // otherwise print "tokens: in=0 out=0" and read as "nothing was spent",
+    // which is a different claim.
     if (route.inputTokens > 0 || route.outputTokens > 0) {
       lines.push(`  tokens: in=${fmtTokens(route.inputTokens)} out=${fmtTokens(route.outputTokens)}`);
     }
@@ -615,10 +569,8 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   for (const route of status.routes) {
     const mark = routeMark(route);
     // `leaderboard_model` is a SCORING key, not what gets dispatched. Showing
-    // it bare as `model=` made status and usage disagree — against this repo's
-    // own config.yaml, status read `model=zzz-no-such-model-force-fallback-tier`
-    // while usage showed no model for the same route. Marked when it is the
-    // scoring key standing in, so the two surfaces no longer give two answers.
+    // it bare as `model=` makes status and usage disagree, so it is marked
+    // when it is the scoring key standing in.
     const model =
       route.model ?? (route.leaderboardModel ? `${route.leaderboardModel} (scoring key; no model set)` : "not set");
     lines.push(`${mark} ${route.id} / ${route.harness}`);
@@ -643,9 +595,9 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
         route.quota.localSuccessCount ?? 0
       } failed=${route.quota.localFailureCount ?? 0}` +
         // Shown separately, and only when non-zero, because a busy route is
-        // not a broken one. Folding these into `failed` told a reader — and an
+        // not a broken one. Folded into `failed`, they tell a reader — and an
         // orchestrating agent choosing where to delegate — that a healthy
-        // route was unreliable.
+        // route is unreliable.
         (route.quota.localRateLimitedCount
           ? ` rate_limited=${route.quota.localRateLimitedCount}`
           : ""),
@@ -679,8 +631,8 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   }
   lines.push(`Ready to route: ${status.ready.length ? status.ready.join(", ") : "none"}`);
   if (status.routes.length === 0) {
-    // doctor has a good empty state; status had none, and status is the
-    // command people reach for first.
+    // status is the command people reach for first, so it carries the same
+    // empty-state guidance doctor gives.
     lines.push(
       "",
       "No routes configured. Install a harness CLI (claude, codex, cursor-agent, agy)",

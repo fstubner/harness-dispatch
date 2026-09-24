@@ -1,10 +1,8 @@
 /**
- * The job surface, assembled from the modules that own each concern.
- *
- * This file was 1,600 lines holding all of them at once: running a job,
- * admission and the supervisor pool, the start/read verbs, and the lifecycle
- * verbs. It is a barrel now, which is what it had already half become — every
- * consumer imports from here, so the split is invisible outside src/jobs/.
+ * The job surface, assembled from the modules that own each concern: running a
+ * job, admission and the supervisor pool, the start/read verbs, and the
+ * lifecycle verbs. A barrel — every consumer imports from here, so the split
+ * is invisible outside src/jobs/.
  */
 
 export { executeJobDir, resolveRunnerPath, runJob } from "./jobs/run.js";

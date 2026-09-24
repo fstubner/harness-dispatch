@@ -2,9 +2,8 @@
  * Parsing for a route's `protocol:` block — how a CLI harness is actually
  * invoked and how its output is read.
  *
- * Split out of config.ts. This is the largest single concern in that file and
- * the most self-contained: it turns YAML into a CliProtocolConfig and knows
- * nothing about routes, billing, or defaults merging.
+ * It turns YAML into a CliProtocolConfig and knows nothing about routes,
+ * billing, or defaults merging.
  *
  * It is also the reason `harness: generic` works at all — every CLI harness,
  * built-in or user-added, is driven by this structure rather than by
@@ -61,8 +60,7 @@ export function stringArrayFrom(raw: unknown): string[] | undefined {
  *    overrides only the fields present, for the common "95% the same, one
  *    flag different" case. safety merges per-profile (overriding just
  *    full_auto doesn't erase read_only/workspace_edit from the preset).
- *  - A plain object — the full protocol, no preset involved (unchanged
- *    behavior from before presets existed).
+ *  - A plain object — the full protocol, no preset involved.
  *
  * Returns undefined — with a warning — for anything malformed, so a broken
  * block degrades to "route unusable" (isAvailable() checks for a missing
@@ -73,10 +71,9 @@ export function protocolFrom(
   raw: unknown,
   routeLabel: string,
   warnings: string[],
-  // REQUIRED, deliberately not defaulted to {}. A default made a forgotten
-  // argument resolve every preset name to nothing — silently, at runtime,
-  // which is the exact failure mode this file's own history is made of. As a
-  // required parameter the compiler catches it instead.
+  // REQUIRED, deliberately not defaulted to {}: a default lets a forgotten
+  // argument resolve every preset name to nothing, silently and at runtime.
+  // As a required parameter the compiler catches it instead.
   presets: ProtocolPresets,
 ): CliProtocolConfig | undefined {
   if (typeof raw === "string") {
@@ -292,9 +289,8 @@ export function eventRuleFrom(raw: unknown, label: string, warnings: string[]): 
     return undefined;
   }
   const r = raw as Record<string, unknown>;
-  // "when" is optional — omitted or {} means "matches every line" (e.g. a
-  // usage rule that should fire regardless of event type, matching Codex's
-  // original unconditional `if (event.usage) {...}` check).
+  // "when" is optional — omitted or {} means "matches every line", e.g. a
+  // usage rule that should fire regardless of event type.
   const whenRaw = r.when ?? {};
   if (whenRaw === null || typeof whenRaw !== "object" || Array.isArray(whenRaw)) {
     warnings.push(`${label}: "when" must be a {field: value} map — ignored.`);

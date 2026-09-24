@@ -29,14 +29,11 @@ export function effectiveSafetyProfile(
   // The flag-gap check runs FIRST, ahead of any declared floor, because no
   // declaration can conjure a flag that does not exist.
   //
-  // It used to run last, so `effective_safety` returned before ever reaching
-  // it — and a route pinning `effective_safety: read_only` while defining
-  // flags for only `workspace_edit` launched its harness with NO safety
-  // argument, reported `read_only` on every surface including the dispatch
-  // log, and wrote a file into the project under a read_only dispatch. An
-  // acceptance pass measured the argv and the resulting file. Worse, this
-  // file's own comment below offered pinning as the REMEDY for a flag gap,
-  // when it was the way to silence the check.
+  // Run last, it would never be reached for a route that declares
+  // `effective_safety` — so a route pinning `effective_safety: read_only`
+  // while defining flags for only `workspace_edit` would launch its harness
+  // with NO safety argument, report `read_only` on every surface including the
+  // dispatch log, and still write files into the project.
   //
   // A pin is still honoured for a route that is not flag-controlled at all
   // (`protocol.safety` undefined) — that is a route saying "I am capped by
@@ -50,13 +47,10 @@ export function effectiveSafetyProfile(
   // stricter request — the safe direction: a route that cannot prove it
   // constrains anything is treated as constraining nothing.
   //
-  // NOT true of every shipped harness, and this comment said it was:
-  // `cursor_cli` declares `safety:` with `read_only` only, deliberately (the
-  // other profiles run print mode with no extra flags). So the gap check
-  // fires on a SHIPPED route for two of the three profiles, reporting
-  // `full_auto` — the safe direction, and the reason it is not a defect, but
-  // an operator reading "the shipped harnesses are unaffected" would not
-  // expect it and could not explain what they were seeing.
+  // This fires on a SHIPPED route: `cursor_cli` declares `safety:` with
+  // `read_only` only, deliberately (the other profiles run print mode with no
+  // extra flags), so two of its three profiles report `full_auto`. That is the
+  // safe direction rather than a defect, but it is worth expecting.
   if (svc.protocol?.safety !== undefined) {
     const request = requestedSafetyProfile(svc, requested);
     if (svc.protocol.safety[request] === undefined) return "full_auto";
