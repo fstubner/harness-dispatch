@@ -488,9 +488,9 @@ export class Router {
    * Breakers are named only when one is actually tripped; an untripped blob is
    * noise that reads as evidence.
    */
-  private noEligibleRouteError(): string {
+  private noEligibleRouteError(skips: readonly RouteSkip[]): string {
     const byCode = new Map<string, string[]>();
-    for (const skip of this.lastSkippedRoutes) {
+    for (const skip of skips) {
       const routes = byCode.get(skip.code) ?? [];
       routes.push(skip.route);
       byCode.set(skip.code, routes);
@@ -516,6 +516,13 @@ export class Router {
     prompt?: string;
     files?: string[];
     exclude?: Set<string>;
+    /**
+     * Where this call records the routes it skipped. The router instance is
+     * shared by concurrent requests, so a caller that reports skips must read
+     * its OWN list rather than the instance-wide `skippedRoutes()`, which is
+     * whatever call ran last.
+     */
+    skipped?: RouteSkip[];
   } = {}): Promise<RoutingDecision | null> {
     const hints = opts.hints ?? {};
     const exclude = opts.exclude ?? new Set<string>();
@@ -538,7 +545,7 @@ export class Router {
     const filterHarness = hints.harness;
     const requestedSafety = hints.safetyProfile;
     const requestedWorkspacePolicy = hints.workspacePolicy;
-    const skippedRoutes: RouteSkip[] = [];
+    const skippedRoutes: RouteSkip[] = opts.skipped ?? [];
     this.lastSkippedRoutes = skippedRoutes;
 
     if (forceService) {
@@ -879,11 +886,13 @@ export class Router {
     const callStart = Date.now();
 
     for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
+      const skipped: RouteSkip[] = [];
       const decision = await this.pickService({
         hints,
         prompt,
         files,
         exclude: tried,
+        skipped,
       });
 
       if (decision === null) {
@@ -892,8 +901,8 @@ export class Router {
             output: "",
             service: "none",
             success: false,
-            error: this.noEligibleRouteError(),
-            skippedRoutes: this.skippedRoutes(),
+            error: this.noEligibleRouteError(skipped),
+            skippedRoutes: skipped.slice(),
           };
           yield { event: { type: "completion", result }, decision: null };
         }

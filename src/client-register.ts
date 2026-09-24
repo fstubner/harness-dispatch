@@ -17,7 +17,7 @@
  * hooks, no behavioural configuration.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -196,7 +196,9 @@ export function planClientWrites(
  */
 async function backup(file: string, stamp: string): Promise<string> {
   const dest = `${file}.harness-dispatch-backup-${stamp}`;
-  await copyFile(file, dest);
+  // EXCL: an entry already at this name — a symlink planted by anyone who can
+  // write to the directory — would otherwise receive a copy of the keys.
+  await copyFile(file, dest, fsConstants.COPYFILE_EXCL);
   await pruneOwnBackups(file);
   return dest;
 }
@@ -279,7 +281,17 @@ async function writeJsonAtomic(
   const mode = await stat(file)
     .then((s) => s.mode & 0o777)
     .catch(() => opts.createMode);
-  await writeFile(tmp, text, mode === undefined ? "utf8" : { encoding: "utf8", mode });
+  // Exclusive create, after clearing any leftover: a pre-existing entry at the
+  // temp name — a crashed earlier run's file, or a symlink planted in the
+  // directory — would otherwise be written THROUGH, and would keep its own
+  // mode rather than the one set above. `rm` removes a symlink itself, never
+  // its target.
+  await rm(tmp, { force: true });
+  await writeFile(tmp, text, {
+    encoding: "utf8",
+    flag: "wx",
+    ...(mode === undefined ? {} : { mode }),
+  });
   try {
     JSON.parse(await readFile(tmp, "utf8"));
   } catch (err) {

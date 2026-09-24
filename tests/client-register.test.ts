@@ -453,3 +453,46 @@ describe("a client that is installed but has never written its config file", () 
     await expect(fs.stat(claudeFile())).rejects.toThrow();
   });
 });
+
+describe("writing another client's config never goes through a planted entry", () => {
+  // The temp file and the backup were written to predictable names with no
+  // exclusive-create, so an entry already sitting at either name was written
+  // THROUGH. A hard link stands in for a planted link here: it needs no
+  // privileges on any platform, and writing through one changes the file it
+  // points at exactly as a symlink would. Found in an audit.
+  async function victim(): Promise<string> {
+    const file = path.join(home, "victim.txt");
+    await fs.writeFile(file, "untouched\n", "utf8");
+    return file;
+  }
+
+  it("replaces a leftover at the temp name instead of writing through it", async () => {
+    await writeJson(claudeFile(), { mcpServers: {} });
+    const target = await victim();
+    await fs.link(target, `${claudeFile()}.harness-dispatch-tmp-${process.pid}`);
+
+    const outcome = await writeClientEntry(planFor("claude-code"), { stamp: "s" });
+
+    expect(outcome.action).toBe("written");
+    expect(await fs.readFile(target, "utf8"), "the write went through the planted link").toBe(
+      "untouched\n",
+    );
+    expect((await readJson(claudeFile())).mcpServers?.[ENTRY_KEY]).toBeDefined();
+  });
+
+  it("refuses to back up onto an entry that already exists", async () => {
+    // An outdated entry of ours, so the write takes the backup path.
+    await writeJson(claudeFile(), {
+      mcpServers: { [ENTRY_KEY]: { command: "old-command", args: [] } },
+    });
+    const target = await victim();
+    await fs.link(target, `${claudeFile()}.harness-dispatch-backup-s`);
+
+    await expect(
+      writeClientEntry(planFor("claude-code"), { stamp: "s", consented: true }),
+    ).rejects.toThrow(/EEXIST/);
+    expect(await fs.readFile(target, "utf8"), "the backup went through the planted link").toBe(
+      "untouched\n",
+    );
+  });
+});

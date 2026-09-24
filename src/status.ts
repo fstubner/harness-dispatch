@@ -1,3 +1,7 @@
+import { statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { Dispatcher } from "./dispatchers/base.js";
 import type { LeaderboardCache } from "./leaderboard.js";
 import type { QuotaCache } from "./quota.js";
@@ -13,6 +17,45 @@ import { buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy } from "./route-policy.js";
 import { workspacePolicyFor } from "./workspaces.js";
+
+// ---------------------------------------------------------------------------
+// Stale-code detection
+// ---------------------------------------------------------------------------
+
+/**
+ * This module's own file, and when it was written as this process loaded it.
+ *
+ * A long-lived MCP server reloads its CONFIG on every call but keeps running
+ * the code it started with, and an unreleased rebuild or an upgrade keeps the
+ * same version string. So after an update nothing told anyone the server was
+ * still on the old code — its `usage` reported routes ready that the freshly
+ * built CLI was skipping. Every build and every install rewrites this file,
+ * so a newer mtime than the one seen at load means newer code is installed.
+ */
+const OWN_FILE = fileURLToPath(import.meta.url);
+const LOADED_MTIME_MS = mtimeMsOf(OWN_FILE);
+
+function mtimeMsOf(file: string): number | undefined {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A warning when the installed code is newer than what this process runs. */
+export function staleCodeWarning(
+  file: string = OWN_FILE,
+  loadedMtimeMs: number | undefined = LOADED_MTIME_MS,
+): string | undefined {
+  const now = mtimeMsOf(file);
+  if (loadedMtimeMs === undefined || now === undefined || now <= loadedMtimeMs) return undefined;
+  return (
+    `this server is running older code than is now installed (${path.dirname(file)} was ` +
+    `rebuilt or upgraded at ${new Date(now).toISOString()}, after this process started) — ` +
+    `restart it to pick up the new build; config changes reload on their own, code does not`
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Model discovery hints
@@ -356,7 +399,9 @@ export async function buildStatus(
   // `toString` would otherwise match on Object.prototype and suppress its own
   // warning.
   const quotaPersistError = quota.localCountsPersistError();
+  const stale = staleCodeWarning();
   const stateWarnings = [
+    ...(stale !== undefined ? [stale] : []),
     ...(quotaPersistError !== undefined
       ? [
           `usage counters are not reaching disk (${quotaPersistError}) — the numbers ` +
@@ -443,6 +488,12 @@ export interface HarnessDispatchUsage {
   name: "harness-dispatch";
   generatedAt: string;
   routes: RouteUsage[];
+  /**
+   * The same state problems `status` reports. `usage` is what an orchestrating
+   * agent reads before delegating, so a problem that changes what the numbers
+   * mean — counters not persisting, a server on stale code — belongs here too.
+   */
+  warnings?: readonly string[];
 }
 
 /** Narrows full status down to just the fields relevant to "how much have I used this?". */
@@ -450,6 +501,9 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
   return {
     name: "harness-dispatch",
     generatedAt: status.generatedAt,
+    ...(status.stateWarnings && status.stateWarnings.length > 0
+      ? { warnings: status.stateWarnings }
+      : {}),
     routes: status.routes.map((route) => {
       const usage: RouteUsage = {
         id: route.id,
@@ -517,6 +571,9 @@ function routeMark(route: {
 
 export function renderUsageText(usage: HarnessDispatchUsage): string {
   const lines: string[] = ["harness-dispatch usage", ""];
+  // First, not last: these change how every number below should be read.
+  for (const w of usage.warnings ?? []) lines.push(`! ${w}`);
+  if (usage.warnings && usage.warnings.length > 0) lines.push("");
   if (usage.routes.length === 0) {
     // A bare header and nothing else reads as "this command is broken", which
     // is the one thing it does not mean — and it is the first thing a user

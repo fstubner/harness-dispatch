@@ -1085,6 +1085,31 @@ clis:
     expect(svc.protocol?.output.eventRules?.length).toBeGreaterThan(0);
   });
 
+  it("protocol.extends keeps the preset's event rules when output is restated", async () => {
+    // Restating `output:` to change one thing used to rebuild it from scratch,
+    // dropping the preset's event rules and error detection — so a Codex
+    // `turn.failed` frame stopped being recognised and the run read as a
+    // success. Found in an audit.
+    const yamlText = `
+clis:
+  - name: my_cli
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      output:
+        mode: jsonl_stream
+        fields: [result]
+`;
+    const p = await writeTmpYaml("clis-generic-extends-output.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const svc = cfg.services.my_cli!;
+    // The restated field:
+    expect(svc.protocol?.output.fields).toEqual(["result"]);
+    // And what the route did not mention, still inherited:
+    expect(svc.protocol?.output.eventRules?.length, "the preset's event rules were dropped").toBeGreaterThan(0);
+  });
+
   it("protocol.extends merges safety per-profile instead of replacing the whole map", async () => {
     const yamlText = `
 clis:

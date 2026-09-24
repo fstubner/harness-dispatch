@@ -8,6 +8,27 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A server running old code now says so.** A long-lived MCP server reloads
+  its config on every call but keeps the code it started with, and an
+  upgrade or unreleased rebuild keeps the same version number — so nothing
+  showed that a server was still running the old build. `usage` and `status`
+  now warn when the installed code is newer than what the process loaded, and
+  say to restart it.
+
+- **Registering with another MCP client never writes through a planted
+  file.** The temporary file and the backup made while editing a client's
+  config (such as `~/.claude.json`, which holds API keys) used predictable
+  names and would write through anything already sitting there. The temp file
+  is now created fresh and exclusively, and the backup refuses to overwrite.
+
+- **`protocol: { extends: … }` keeps the preset's output rules when `output:`
+  is restated.** Changing one output setting dropped the preset's event rules
+  and error detection, so a failure the preset recognises could read as a
+  success.
+
+- **`doctor` no longer aborts if a harness login check cannot even start.** It
+  now reports the login state as unknown, as intended.
+
 - **`auth rotate` refuses instead of pretending, when the token comes from the
   environment.** `HARNESS_DISPATCH_HTTP_TOKEN` wins over the token file, so
   rotating the file printed a new token the server refused while the old one

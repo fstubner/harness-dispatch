@@ -62,3 +62,15 @@ describe("codexLoginState", () => {
     expect(await codexLoginState(path.join(dir, "does-not-exist"))).toBe("unknown");
   });
 });
+
+describe("codexLoginState when spawn throws synchronously", () => {
+  // cross-spawn throws synchronously for a command it cannot even attempt (a
+  // NUL byte in it, for one). The catch path called `finish`, which cleared a
+  // timer declared with `const` further down — a temporal-dead-zone
+  // ReferenceError, so the promise REJECTED instead of answering "unknown",
+  // and `doctor`, which awaits every probe together, aborted. Found in an
+  // audit.
+  it("answers unknown rather than rejecting", async () => {
+    await expect(codexLoginState("codex\u0000broken")).resolves.toBe("unknown");
+  });
+});
