@@ -8,6 +8,39 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`auth rotate` refuses instead of pretending, when the token comes from the
+  environment.** `HARNESS_DISPATCH_HTTP_TOKEN` wins over the token file, so
+  rotating the file printed a new token the server refused while the old one
+  — usually the one being rotated because it leaked — kept working. It now
+  exits with an error naming the variable to change.
+
+- **A `clis:` or `endpoints:` block in the wrong shape no longer turns on
+  every installed harness.** Written as a mapping instead of a list, its
+  entries were dropped with a warning — and the config was then treated as
+  defining no routes, so auto-detection added every harness on the machine.
+  A config naming one route produced four. The warning stays; detection no
+  longer runs.
+
+- **Cancelling an isolated run no longer strands its work.** A cancelled
+  `copy` or `git_worktree` run left the agent's edits in a workspace nothing
+  pointed at: `workspace` answered "no isolated workspace", and retention
+  deleted it a day later. The workspace is now recorded on cancel, so `diff`
+  and `apply` work as for any other run. Cancelling still does not count
+  against the route. A cancel can take a few seconds longer to show as
+  `cancelled`, because it now waits briefly for the agent to exit before
+  recording what it changed.
+
+- **The lock around usage counters and breaker state only releases its own
+  lock.** A holder that stalled long enough to have its lock stolen would,
+  on finishing, remove the new holder's lock and let a third process in —
+  two writers in a read-modify-write that can erase a breaker trip.
+
+- **Hitting the output limit is reported.** A harness that wrote more than
+  10 MB was killed and shown as a bare exit-code failure — or, if it exited
+  before the kill landed, as a success with its answer silently cut short.
+  It now fails with a message saying the limit was hit, keeping the output up
+  to that point.
+
 - **A remote endpoint is no longer mistaken for a free local one because of
   its URL.** Any `base_url` merely *containing* "ollama" or "lmstudio" was
   classified as local compute that cannot bill — so `https://ollama.com/v1`,

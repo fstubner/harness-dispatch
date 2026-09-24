@@ -1541,3 +1541,22 @@ describe("a remote endpoint is never inferred local from its URL text", () => {
     expect(svc.provider).toBe("local");
   });
 });
+
+describe("a route block in the wrong shape does not turn detection on", () => {
+  // `clis:` written as a mapping drops every entry under it, with a warning.
+  // It also used to leave the config counted as defining no routes, so
+  // auto-detection ran and a config naming ONE route produced every installed
+  // harness — measured in an audit: one mapping-form route became four.
+  it("adds no detected harnesses when clis: is a mapping", async () => {
+    const p = await writeTmpYaml(
+      "mapping-clis.yaml",
+      ["clis:", "  my_route:", "    harness: codex", ""].join(NL),
+    );
+    // Every harness binary "installed", so detection has something to add.
+    const cfg = await loadConfig(p, { whichFn: allCliFound });
+    expect(Object.keys(cfg.services), "detection ran and added installed harnesses").toEqual([]);
+    expect((cfg.configWarnings ?? []).join(" "), "the dropped entries went unreported").toMatch(
+      /must be a LIST/,
+    );
+  });
+});

@@ -105,6 +105,18 @@ export async function ensureHttpToken(): Promise<string> {
 }
 
 export async function rotateHttpToken(): Promise<string> {
+  // The environment variable wins over the file everywhere the token is read,
+  // so rotating the file while it is set changes nothing: the printed token is
+  // refused and the old one — the one being rotated because it leaked — keeps
+  // working. Measured in an audit. Refusing is the only honest answer, since
+  // this process cannot change the environment of a server already running.
+  if (process.env[TOKEN_ENV]) {
+    throw new Error(
+      `auth rotate: the token in use comes from ${TOKEN_ENV}, so rotating the token ` +
+        `file would change nothing — the current token would keep working. Put a new ` +
+        `value in ${TOKEN_ENV} (or unset it to use the file) and restart serve.`,
+    );
+  }
   const token = generateHttpToken();
   await writeTokenFile(token);
   return token;

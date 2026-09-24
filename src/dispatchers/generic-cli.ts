@@ -25,7 +25,7 @@ import type {
   ServiceConfig,
 } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
-import { streamSubprocess } from "./shared/stream-subprocess.js";
+import { DEFAULT_MAX_OUTPUT_BYTES, streamSubprocess } from "./shared/stream-subprocess.js";
 import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
 import { commandAvailable } from "./shared/which-available.js";
@@ -921,6 +921,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let exitCode = -1;
     let durationMs = 0;
     let timedOut = false;
+    let truncated = false;
 
     const eventDriven = protocol.output.mode === "jsonl_stream" && protocol.output.eventRules;
     const acc = eventDriven ? new JsonlAccumulator(protocol.output.eventRules!) : undefined;
@@ -934,6 +935,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
         exitCode = evt.exitCode;
         durationMs = evt.durationMs;
         timedOut = evt.timedOut;
+        truncated = evt.truncated;
         continue;
       }
 
@@ -969,6 +971,29 @@ export class GenericCliDispatcher extends BaseDispatcher {
           service: this.id,
           success: false,
           error: `Timed out after ${timeoutMs}ms`,
+          durationMs,
+        },
+      };
+      return;
+    }
+
+    // The output cap stopped this run. stream-subprocess kills the child and
+    // flags it, and nothing here used to read the flag: the caller got a bare
+    // `Exit code N` with no hint the run was killed for volume — or, if the
+    // child exited before the kill landed, a success whose answer was quietly
+    // cut off. Found in an audit. What arrived before the cap is kept.
+    if (truncated) {
+      const capMb = Math.round(DEFAULT_MAX_OUTPUT_BYTES / (1024 * 1024));
+      yield {
+        type: "completion",
+        result: {
+          output: stdout,
+          service: this.id,
+          success: false,
+          error:
+            `Stopped: the harness wrote more than the ${capMb} MB output limit, so the run ` +
+            `was killed and everything after the limit was discarded. The output up to the ` +
+            `limit is kept here.`,
           durationMs,
         },
       };

@@ -84,7 +84,7 @@ export interface StreamSubprocessOpts {
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
-const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUFFERED_CHUNKS = 1000;
 const DEFAULT_KILL_GRACE_MS = 2_000;
 

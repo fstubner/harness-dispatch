@@ -1081,13 +1081,17 @@ async function loadConfigInner(
   // `clis: []` returned all four real CLIs, so the fix did not cover its own
   // motivating example, and this project's test suite still leans on
   // `disabled:` naming every route to stay off them.
-  const definesRoutes = Array.isArray(raw.clis) || Array.isArray(raw.endpoints);
-  // A `clis:` written as a MAPPING rather than a list is the same silent-drop
-  // class this module exists to prevent, and it fails in the worst direction:
-  // the entries vanish, `definesRoutes` is false, detection runs, and the user
-  // who was trying to name their own routes gets every installed paid harness
-  // instead — under a warning telling them their config "defines no routes",
-  // which contradicts the file in front of them.
+  // A block that is PRESENT counts as defining routes even when it is the wrong
+  // shape. The warning below tells the user their entries were ignored; that
+  // must not also turn detection on, or a config that names one route runs
+  // every installed harness instead (measured in an audit: a mapping-form
+  // `clis:` naming one route produced four).
+  const present = (v: unknown): boolean => v !== undefined && v !== null;
+  const definesRoutes = present(raw.clis) || present(raw.endpoints);
+  // A `clis:` written as a MAPPING rather than a list drops every entry under
+  // it. Say so loudly — and, per `definesRoutes` above, without falling back
+  // to detection, which would hand the user every installed harness instead of
+  // the routes they were trying to name.
   for (const key of ["clis", "endpoints"] as const) {
     const value = raw[key];
     if (value !== undefined && value !== null && !Array.isArray(value)) {
