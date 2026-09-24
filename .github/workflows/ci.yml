@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only: CI checks out and tests, and never needs to write to the repo.
+# Without this the job gets whatever the repository's default token grants.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, node ${{ matrix.node }})

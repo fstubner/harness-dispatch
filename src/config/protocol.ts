@@ -130,7 +130,11 @@ export function parseProtocolFields(
       );
       return undefined;
     }
-    output = { mode: o.mode };
+    // Starts from the preset's output under `extends:`, like every other field
+    // here: a route that restates `output:` to change one thing must not lose
+    // the preset's event rules and error detection, which would turn a run the
+    // preset reports as failed into a success.
+    output = { ...base?.output, mode: o.mode };
     const fields = stringArrayFrom(o.fields);
     if (fields !== undefined) output.fields = fields;
     const usageRaw = o.usage;

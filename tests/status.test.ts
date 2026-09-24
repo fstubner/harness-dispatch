@@ -371,3 +371,38 @@ describe("the listing and the router agree about a dead route", () => {
     expect(renderUsageText(buildUsage(status))).toMatch(/^skip dead_local/m);
   });
 });
+
+describe("a server running older code than is installed says so", () => {
+  // A long-lived MCP server reloads config but not code, and unreleased builds
+  // share a version string, so nothing revealed a server still on old code:
+  // its `usage` reported routes ready that the rebuilt CLI skipped. Found in
+  // an audit.
+  it("warns when the module file is newer than when it was loaded", async () => {
+    const { promises: fs } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { staleCodeWarning } = await import("../src/status.js");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-stale-"));
+    const file = path.join(dir, "status.js");
+    await fs.writeFile(file, "// loaded", "utf8");
+    try {
+      const loaded = (await fs.stat(file)).mtimeMs;
+      expect(staleCodeWarning(file, loaded), "warned with nothing changed").toBeUndefined();
+
+      // A rebuild or upgrade rewrites it.
+      const later = new Date(loaded + 60_000);
+      await fs.utimes(file, later, later);
+      expect(staleCodeWarning(file, loaded)).toMatch(/restart/);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reaches usage, which is what an orchestrator reads", () => {
+    const status = makeStatus([makeRoute({ id: "codex" })], ["codex"]);
+    status.stateWarnings = ["this server is running older code than is now installed"];
+    const usage = buildUsage(status);
+    expect(usage.warnings).toEqual(status.stateWarnings);
+    expect(renderUsageText(usage)).toMatch(/^! this server is running older code/m);
+  });
+});

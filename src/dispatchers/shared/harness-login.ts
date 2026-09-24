@@ -25,6 +25,10 @@ export type LoginState = "logged_in" | "logged_out" | "unknown";
 export function codexLoginState(command: string, timeoutMs = 15_000): Promise<LoginState> {
   return new Promise((resolve) => {
     let settled = false;
+    // Declared before `finish`, which clears it: a spawn that throws
+    // synchronously calls `finish` before any timer exists, and reading a
+    // `const` declared further down would throw instead of resolving.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (state: LoginState): void => {
       if (settled) return;
       settled = true;
@@ -41,7 +45,7 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
       finish("unknown");
       return;
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill();
       finish("unknown");
     }, timeoutMs);
