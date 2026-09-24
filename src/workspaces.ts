@@ -51,14 +51,12 @@ interface FileFingerprint {
   hash: string;
   size: number;
   /**
-   * Digest over content with CRLF collapsed to LF, kept ALONGSIDE the exact
-   * hash rather than replacing it.
+   * Digest over content with CRLF collapsed to LF, kept ALONGSIDE `hash`.
    *
-   * `hash` decides whether the AGENT changed a file and must stay exact: an
-   * edit that only rewrites line endings is a real edit. `eolHash` answers a
-   * different question — has the USER's copy moved since the dispatch started
-   * — where a checkout whose eol settings rewrote the file on the way in must
-   * NOT read as a change. One value cannot serve both.
+   * `hash` decides whether the AGENT changed a file, where an edit that only
+   * rewrites line endings is a real edit. `eolHash` answers whether the USER's
+   * copy has moved since the dispatch started, where a checkout whose eol
+   * settings rewrote the file on the way in must NOT read as a change.
    */
   eolHash: string;
 }
@@ -95,13 +93,8 @@ function safeName(value: string): string {
 
 /**
  * Exported for tests, which must build run directories with the SAME function
- * that makes real ones rather than by hand.
- *
- * Three separate tests in this repo used a hand-written name the product
- * cannot generate — run directories with four-character suffixes where a real
- * one has eight hex — and each therefore asserted something about an input
- * that never occurs. Two of them passed while the bug they claimed to cover
- * was live. A fixture is only evidence if it is the thing.
+ * that makes real ones rather than by hand: a name this function cannot
+ * generate asserts something about an input that never occurs.
  */
 export function workspaceRunId(routeName: string): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -113,43 +106,20 @@ function resolveDir(workingDir: string): string {
 }
 
 /**
- * Isolated workspaces live OUTSIDE the project, for both policies.
- *
- * `copy` used to put its workspace at `<project>/.harness-dispatch/workspaces/`
- * — inside the very directory it was isolating from. That one decision
- * produced a defect in every acceptance pass of the 0.6 series, because
- * `git diff --no-index <project> <copy>` then walks into the copy while
- * scanning the project:
- *
- *   - a file the agent CREATED appeared on both sides with identical content,
- *     so rename detection paired them and emitted nothing at all (0.6.3);
- *   - SIBLING workspaces from other jobs, retained for 24h by design, leaked
- *     in as deletions — so applying one job's patch emptied another job's
- *     workspace, destroying the only copy of a second delegate's work, and
- *     then offered to delete the user's own files (0.6.6 acceptance, BLOCK);
- *   - the project root had to be stripped out of the patch text, which
- *     silently rewrote CONTENT lines that happened to contain that path.
- *
- * Each was fixed with a filter, and each filter turned out to have a gap. The
- * copy being nested is the shared cause, so it is the thing that changes here.
- * git_worktree already lived out of tree — which is exactly why none of the
- * above ever affected it — and both now use one root.
- *
- * The trade is copy-on-write: COPYFILE_FICLONE only reflinks within a
- * filesystem, so a temp dir on another volume falls back to a real copy. That
- * is a bounded, measurable cost; silently losing a delegate's work is not.
- * HARNESS_DISPATCH_WORKSPACES_DIR overrides it for anyone who wants the
- * workspaces on the project's volume.
- */
-/**
  * The directory all per-project workspace roots hang off.
  *
+ * Isolated workspaces live OUTSIDE the project, for both policies. A copy
+ * nested inside the project it isolates from is walked by
+ * `git diff --no-index <project> <copy>` while it scans the project, so
+ * created files pair up as renames and sibling jobs' retained workspaces show
+ * up as deletions — applying one job's patch then destroys another delegate's
+ * only copy of its work. The cost is that a temp dir on another volume cannot
+ * reflink; HARNESS_DISPATCH_WORKSPACES_DIR overrides the location for anyone
+ * who wants the copy on the project's volume.
+ *
  * Exported because the apply-time dirty check has to know it too: with the
- * override pointed inside the project — which README recommends, to keep the
- * copy on one volume for reflinks — the workspaces directory is itself an
- * untracked change, so `apply` refused on an otherwise pristine tree, every
- * time. The same "feature blocked by its own leftovers" the recursion guard
- * above was written for, one step further along.
+ * override pointed inside the project, the workspaces directory is itself an
+ * untracked change and `apply` would refuse on an otherwise pristine tree.
  */
 export function workspacesBase(): string {
   return dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () =>
@@ -161,22 +131,12 @@ export function workspacesBase(): string {
  * `harness-dispatch` on Windows, `harness-dispatch-<uid>` on POSIX.
  *
  * On Windows `os.tmpdir()` is already per-user, so a bare name is correct
- * there and has always worked. On Linux `/tmp` is shared, and the ownership
- * guard that protects the tree then has a side effect nobody had measured:
- * whoever dispatches FIRST owns `/tmp/harness-dispatch` 0700, and every other
- * user on the machine is refused `copy` and `git_worktree` outright —
- *
- *   /tmp/harness-dispatch is owned by another user (uid 2001, this process is uid 2002)
- *
- * — until they discover the override. An audit reproduced it with two
- * ordinary unprivileged users, neither doing anything wrong. The same
- * mechanism locks a user out of their own tool after one `sudo` run leaves
- * the directory owned by root.
- *
- * A uid segment gives each user their own root, which is what the guard
- * assumes it is protecting. It does not weaken the guard: the per-user
- * directory is still created 0700 and still ownership-checked, so a
- * pre-created or symlinked trap is refused exactly as before.
+ * there. On Linux `/tmp` is shared, and without a uid segment whoever
+ * dispatches FIRST owns `/tmp/harness-dispatch` 0700 and the ownership guard
+ * then refuses `copy` and `git_worktree` to every other user on the machine —
+ * including the user themselves, after one `sudo` run leaves the directory
+ * owned by root. The per-user directory is still created 0700 and still
+ * ownership-checked, so the guard is unweakened.
  */
 function defaultWorkspacesFolder(): string {
   if (process.platform === "win32") return "harness-dispatch";
@@ -187,28 +147,20 @@ function defaultWorkspacesFolder(): string {
 /** Exported for tests, for the same reason as `workspaceRunId`. */
 export function workspaceRootFor(originalWorkingDir: string): string {
   const base = workspacesBase();
-  // The per-project segment applies to the override too. Without it, every
-  // project pointed at one HARNESS_DISPATCH_WORKSPACES_DIR shared a flat
-  // directory, so a dispatch in project B pruned project A's aged workspaces —
-  // and with both policies now under one root, could strand A's git metadata.
-  //
-  // Keyed on the full path, not just the basename: two checkouts both called
-  // `api` are a normal thing to have, and sharing a directory would make each
-  // one's retention depend on how recently the other was dispatched into. The
-  // basename stays in the name so the directory is still recognisable by eye.
+  // The per-project segment applies to the override too: without it, every
+  // project pointed at one HARNESS_DISPATCH_WORKSPACES_DIR shares a flat
+  // directory, so a dispatch in project B prunes project A's aged workspaces
+  // and can strand A's git metadata. Keyed on the full path rather than the
+  // basename, because two checkouts both called `api` are a normal thing to
+  // have; the basename stays in the name to keep it recognisable by eye.
   return path.join(base, `${safeName(path.basename(originalWorkingDir))}-${pathKey(originalWorkingDir)}`);
 }
 
 /**
  * Written into every project root this tool creates, so reclamation can delete
- * a directory because it KNOWS it made it rather than because the name looks
- * about right.
- *
- * The previous attempt matched the generated name shape, `-[0-9a-f]{8}$`. Eight
- * decimal digits are valid hex, so any `<name>-<YYYYMMDD>` collided: a second
- * acceptance pass planted `backup-20260401/data.bin` beside directories that
- * survived and watched one dispatch delete it recursively. A heuristic cannot
- * answer "did I create this" — only a mark can.
+ * a directory because it KNOWS it made it. A name shape cannot answer that:
+ * eight decimal digits are valid hex, so `-[0-9a-f]{8}$` matches any
+ * `<name>-<YYYYMMDD>`, someone else's `backup-20260401` included.
  */
 const ROOT_MARKER = ".harness-dispatch-root";
 
@@ -220,80 +172,24 @@ const ROOT_MARKER = ".harness-dispatch-root";
 const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
 
 /**
- * Bring an existing workspace root up to 0700, and refuse one we do not own.
+ * Refuse one already-existing workspace path segment we cannot vouch for, and
+ * bring the ones we can up to 0700.
  *
- * Two separate problems, both POSIX-only, both found by an acceptance pass
- * measuring the shipped `mode:` fix on real Linux rather than trusting it:
+ * A workspace path is fully deterministic inside a possibly SHARED
+ * `os.tmpdir()`, so another local user can create it first. Then it is theirs:
+ * chmod fails, and copying the project into it would hand them the source —
+ * not a mode to fix but a directory to refuse. The chmod is needed as well as
+ * `mkdir`'s `mode:`, which applies only to directories mkdir creates.
  *
- *   ALREADY THERE — `mkdir`'s mode applies only to directories it creates, so
- *     an existing 0755 root stayed 0755. Every pre-existing user was
- *     unaffected by the "fix". An explicit chmod is the only thing that
- *     changes them.
- *   SOMEBODY ELSE'S — the root path is fully deterministic
- *     (`<tmp>/harness-dispatch/workspaces/<basename>-<hash of path>`) inside a
- *     SHARED `os.tmpdir()`, so on the multi-user machine this whole guard
- *     exists for, another local user can create it first. Then it is theirs:
- *     chmod fails, and copying the project into it would hand them the
- *     source. That is not a mode to fix, it is a directory to refuse.
- *
- * Throws on the second case. `markProjectRoot`'s caller treats a marker
- * failure as harmless — correctly, a root without its marker is merely not
- * auto-reclaimed — but "another user owns the directory I am about to copy
- * your code into" is not in that category and must not be swallowed.
- *
- * Windows is skipped deliberately: `uid` is 0 for every process, Node ignores
- * mode, and `os.tmpdir()` is already per-user there.
- */
-/**
- * Build the workspace root one segment at a time, and hand back the path that
- * was actually created.
- *
- * THIS REPLACES A CHECK-THEN-USE GUARD, and the replacement is the point. Four
- * consecutive releases patched a validator that inspected a path STRING and
- * then let the rest of the module re-resolve that same string on every write.
- * Each patch closed the hole it was shown and left the shape intact, so the
- * next pass found another one:
- *
- *   - `stat` followed the link it was checking (release 1);
- *   - the guard was applied to one of the two isolation policies (release 2);
- *   - it inspected only the last path segment (release 3);
- *   - it stopped AT `workspacesBase()` and never looked at that directory's
- *     own parent — the one the release notes said it now checked;
- *   - it compared with `startsWith` against an un-normalised base, so a
- *     trailing slash or a `..` in HARNESS_DISPATCH_WORKSPACES_DIR turned the
- *     whole guard off silently;
- *   - and validating once left every later write re-resolving the string, so
- *     swapping a directory for a link DURING the copy redirected it (3,877
- *     files landed in an attacker's directory in the reproduction).
- *
- * So the rule is no longer "look at the path and then trust it". Every segment
- * from the anchor down is CREATED BY US with a non-recursive mkdir, which
- * cannot traverse a link we did not make: if something is already there,
- * `mkdir` fails and we inspect it deliberately rather than following it. The
- * verified, fully-resolved directory is then RETURNED, and callers use that
- * value instead of re-deriving the string.
- *
- * The anchor is the directory the user chose (HARNESS_DISPATCH_WORKSPACES_DIR)
- * or the system temp directory. Above it is not ours to police —
- * `os.tmpdir()` is legitimately a symlink on macOS (`/var` -> `/private/var`),
- * which is exactly why the anchor is RESOLVED rather than refused. Everything
- * below it is ours, and a link there is refused.
- *
- * What this still does not give: `mkdir`/`lstat` name a path, not an open
- * handle, so a sufficiently fast swap between two syscalls remains
- * theoretically possible — Node exposes no `openat`/`O_NOFOLLOW`. The window
- * is now one syscall rather than the whole dispatch, and every destructive
- * operation re-verifies (see `assertStillOurs`) instead of trusting a check
- * made minutes earlier.
+ * Ownership and mode are POSIX-only: `uid` is 0 for every process on Windows,
+ * Node ignores mode there, and `os.tmpdir()` is already per-user.
  */
 async function verifySegment(dir: string): Promise<void> {
   const info = await lstat(dir);
-  // Symlink check on EVERY platform. This was skipped entirely on Windows for
-  // a stated reason that covers only the ownership half — uid is 0 there and
-  // mode is ignored. Junctions need no privileges, `lstat` reports them as
-  // symbolic links, and a junction planted at the workspace path was measured
-  // taking a whole project into the victim's directory on this maintainer's
-  // own machine.
+  // Symlink check on EVERY platform, unlike the ownership and mode checks
+  // below. Junctions need no privileges on Windows and `lstat` reports them as
+  // symbolic links, so one planted at the workspace path takes a whole project
+  // into the attacker's directory.
   if (info.isSymbolicLink()) {
     throw new Error(
       `${dir} is a symbolic link, and this tool never creates one there. Refusing to use ` +
@@ -324,10 +220,8 @@ async function verifySegment(dir: string): Promise<void> {
  * Re-check, immediately before a destructive or bulk operation, that a
  * directory verified earlier is still the one we verified.
  *
- * The old code validated once at the start of a dispatch and then trusted the
- * path string for everything that followed. This is the narrow version of that
- * trust: it costs one `lstat` and it turns "checked minutes ago" into "checked
- * a syscall ago".
+ * Costs one `lstat`, and turns "checked minutes ago" into "checked a syscall
+ * ago".
  */
 export async function assertStillOurs(dir: string): Promise<void> {
   await verifySegment(dir);
@@ -336,10 +230,9 @@ export async function assertStillOurs(dir: string): Promise<void> {
 /**
  * The anchor, resolved. Above this we do not police; below it we do.
  *
- * `path.resolve` is what fixes the guard being silently inert for a
+ * `path.resolve` rather than a `startsWith` against the raw string: a
  * HARNESS_DISPATCH_WORKSPACES_DIR written with a trailing slash or containing
- * `..` — the old comparison was `startsWith` against the raw string, so those
- * spellings failed to match and the loop body never ran even once.
+ * `..` would otherwise fail to match and turn the guard off silently.
  */
 async function resolvedAnchor(): Promise<{ declared: string; resolved: string }> {
   // Same rule as everywhere else: an empty value means "not set". Read
@@ -347,17 +240,10 @@ async function resolvedAnchor(): Promise<{ declared: string; resolved: string }>
   // configured directory itself, not the `workspaces` subdirectory under it.
   const anchor = dirFromEnv("HARNESS_DISPATCH_WORKSPACES_DIR", () => os.tmpdir());
 
-  // VERIFY THE NEAREST EXISTING ANCESTOR BEFORE CREATING ANYTHING.
-  //
-  // Creating the anchor first was still a "touch, then check": with a link at
-  // `<tmp>/hd`, a recursive mkdir of `<tmp>/hd/workspaces` traversed it and
-  // left an empty directory inside the attacker's tree before the refusal
-  // arrived. Small, but it is the same mistake in miniature — and this
-  // function exists to stop making it.
-  //
-  // Walking up to what already exists, resolving THAT, and checking who owns
-  // it means the first thing we create is created somewhere we have already
-  // vouched for.
+  // VERIFY THE NEAREST EXISTING ANCESTOR BEFORE CREATING ANYTHING. Creating
+  // the anchor first would be a "touch, then check": with a link at
+  // `<tmp>/hd`, a recursive mkdir of `<tmp>/hd/workspaces` traverses it and
+  // leaves a directory inside the attacker's tree before the refusal arrives.
   let existing = anchor;
   while (!existsSync(existing)) {
     const parent = path.dirname(existing);
@@ -365,9 +251,8 @@ async function resolvedAnchor(): Promise<{ declared: string; resolved: string }>
     existing = parent;
   }
   // realpath here, not lstat: the anchor is allowed to BE a link, because
-  // os.tmpdir() is one on macOS (`/var` -> `/private/var`) and a user pointing
-  // the override at a link is making a choice about their own machine. What
-  // must hold is that wherever it lands belongs to us.
+  // os.tmpdir() is one on macOS (`/var` -> `/private/var`). What must hold is
+  // that wherever it lands belongs to us.
   const resolvedExisting = await realpath(existing);
   const info = await lstat(resolvedExisting);
   const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -379,11 +264,9 @@ async function resolvedAnchor(): Promise<{ declared: string; resolved: string }>
     );
   }
   // Segments computed in DECLARED space and created in DECLARED space.
-  //
   // Computing them between the resolved ancestor and the declared anchor
-  // produced `..` components whenever the two differed — i.e. on every macOS
-  // machine — and the loop then walked upwards creating nonsense. The resolve
-  // happens once, at the end, after the chain exists.
+  // yields `..` components whenever the two differ — i.e. on every macOS
+  // machine. The resolve happens once, at the end, after the chain exists.
   const relative = path.relative(existing, path.resolve(anchor));
   let current = existing;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
@@ -395,22 +278,34 @@ async function resolvedAnchor(): Promise<{ declared: string; resolved: string }>
       await verifySegment(current);
     }
   }
-  // BOTH values are returned, and the distinction is load-bearing.
-  //
-  // `declared` is what the rest of the module derives paths from
-  // (`workspacesBase()` builds on the unresolved `os.tmpdir()`), and
-  // `resolved` is where those paths actually land. Comparing a declared target
-  // against the RESOLVED anchor is wrong on macOS, where `os.tmpdir()` is
-  // `/var/folders/...` and resolves to `/private/var/folders/...`: every
+  // BOTH values are returned, and the distinction is load-bearing. `declared`
+  // is what the rest of the module derives paths from (`workspacesBase()`
+  // builds on the unresolved `os.tmpdir()`), `resolved` is where those paths
+  // actually land. Comparing a declared target against the RESOLVED anchor is
+  // wrong on macOS, where `os.tmpdir()` resolves through `/private`: every
   // legitimate run then looks like it is outside the anchor and is refused.
-  // Caught in a container before CI, by running the macOS path shape
-  // deliberately rather than assuming POSIX is POSIX.
   return { declared: path.resolve(anchor), resolved: await realpath(current) };
 }
 
 /**
  * Create and verify every segment from the anchor down to `root`, and return
  * the verified path.
+ *
+ * Not a check-then-use guard: inspecting a path string and then letting later
+ * writes re-resolve it lets a directory swapped for a symlink mid-copy
+ * redirect the rest of it. Every segment from the anchor down is created here
+ * with a non-recursive mkdir, which cannot traverse a link we did not make,
+ * and the verified fully-resolved directory is RETURNED so callers use that
+ * value rather than re-deriving the string.
+ *
+ * The anchor is HARNESS_DISPATCH_WORKSPACES_DIR or the system temp directory.
+ * Above it is not ours to police, which is why it is RESOLVED rather than
+ * refused; everything below it is ours, and a link there is refused.
+ *
+ * `mkdir`/`lstat` name a path, not an open handle, and Node exposes no
+ * `openat`/`O_NOFOLLOW`, so a swap between two syscalls remains possible. The
+ * window is one syscall rather than the whole dispatch, and every destructive
+ * operation re-verifies via `assertStillOurs`.
  */
 export async function prepareVerifiedRoot(root: string): Promise<string> {
   const anchor = await resolvedAnchor();
@@ -431,10 +326,8 @@ export async function prepareVerifiedRoot(root: string): Promise<string> {
   let current = anchor.resolved;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);
-    // Non-recursive on purpose: a recursive mkdir traverses whatever is
-    // already there, including a link. This creates each level itself, so the
-    // only way a link enters the chain is if it existed first — in which case
-    // mkdir fails with EEXIST and we inspect it rather than following it.
+    // A link can only enter the chain by existing first, and then mkdir fails
+    // with EEXIST and we inspect it rather than following it.
     try {
       await mkdir(current, { mode: 0o700 });
     } catch (err) {
@@ -450,15 +343,11 @@ export async function prepareVerifiedRoot(root: string): Promise<string> {
  * Create the project's workspace root and mark it as ours, returning the
  * VERIFIED path that was actually created.
  *
- * Callers must use the returned value rather than the string they passed in.
- * That is the whole change: the old signature returned nothing, so every
- * caller went on using its own copy of the path and re-resolved it on each
- * write — which is how a directory swapped for a symlink mid-copy redirected
- * the rest of it.
- *
- * The MARKER stays best effort: a root without one is merely not reclaimed
- * automatically, which is the safe direction to fail in. Creating and
- * verifying the directory is not, and must not be swallowed.
+ * Callers must use the returned value rather than the string they passed in: a
+ * caller that re-resolves its own copy of the path on each write can be
+ * redirected by a directory swapped for a symlink mid-copy. The MARKER is best
+ * effort; creating and verifying the directory is not, and must not be
+ * swallowed.
  */
 async function markProjectRoot(root: string): Promise<string> {
   const verified = await prepareVerifiedRoot(root);
@@ -473,8 +362,7 @@ async function markProjectRoot(root: string): Promise<string> {
       );
     }
   } catch {
-    // A root without its marker is merely not reclaimed automatically, which
-    // is the safe direction to fail in.
+    // A root without its marker is merely not reclaimed automatically.
   }
   return verified;
 }
@@ -484,31 +372,20 @@ async function markProjectRoot(root: string): Promise<string> {
  *
  * The marker settles it. The fallback covers roots created before the marker
  * existed: every child must be a generated run directory, and there must be at
- * least one — an empty unmarked directory is somebody else's empty directory,
- * not ours. A foreign directory passes only if everything inside it happens to
- * be named like a timestamped run, which is not a thing that happens by
- * accident. This deletes recursively and has now been wrong twice, so it takes
- * positive evidence rather than the absence of a reason to stop.
+ * least one — an empty unmarked directory is somebody else's. This deletes
+ * recursively, so it takes positive evidence rather than the absence of a
+ * reason to stop.
  */
 const PROJECT_ROOT_RE = /^.+-[0-9a-f]{8}$/;
 
 function isOurProjectRoot(full: string, children: string[]): boolean {
-  // The NAME must fit too, not just the marker.
-  //
-  // The marker is an ordinary file, and anything that can write to the
-  // workspaces base can create one — including a delegated agent, when
-  // HARNESS_DISPATCH_WORKSPACES_DIR points inside the project, which README
-  // recommends and the walkthrough exercises. An acceptance pass used exactly
-  // that to get an unrelated directory holding the only copy of its contents
-  // recursively deleted.
-  //
-  // Requiring the generated shape as WELL as the marker does not make this
-  // unforgeable — a name is guessable and the marker is writable — but it
-  // turns "create a file called .harness-dispatch-root" into "also name the
-  // directory the way pathKey would have". Combined with the reclamation only
-  // ever running inside our own base, that is the honest limit of what a
-  // same-uid check can promise here: the caller and the attacker are the same
-  // user, so no permission check can separate them.
+  // The NAME must fit too, not just the marker: the marker is an ordinary file
+  // and anything that can write to the workspaces base can create one,
+  // including a delegated agent when HARNESS_DISPATCH_WORKSPACES_DIR points
+  // inside the project. Requiring the generated shape as well does not make
+  // this unforgeable — same uid means no permission check can separate the
+  // caller from the attacker — but combined with reclamation only ever running
+  // inside our own base, it is the honest limit of what is checkable here.
   if (!PROJECT_ROOT_RE.test(path.basename(full))) return false;
   if (existsSync(path.join(full, ROOT_MARKER))) return true;
   const runs = children.filter((name) => name !== ROOT_MARKER);
@@ -532,31 +409,23 @@ function workspaceMaxAgeMs(): number {
 /**
  * Delete this project's aged run directories, whatever policy made them.
  *
- * There were two of these, one per policy, ~55 lines each and identical but
- * for whether a git root was required. That duplication is the direct cause of
- * the symlink-guard class needing four releases to close: the `lstat` refusal,
- * the secure-before-prune ordering and this sweep's own name check were each
- * applied to the copy copy, shipped as "fixed", and found still exploitable
- * through the worktree copy by the next review. The comment left behind said
- * "two policies, one hazard: whenever one of these gets a guard, check the
- * other in the same edit" — a process rule standing in for a shared function.
- * This is the shared function.
+ * Shared by both isolation policies, so a guard added here cannot be added to
+ * one policy and missed on the other.
  *
  * `gitRoot` is optional because only a project under git has worktrees to
  * unregister; the filesystem sweep is the same either way.
  */
 async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
   const maxAgeMs = workspaceMaxAgeMs();
-  // Before the early return below: a project dispatching for the FIRST time
-  // has no root of its own to sweep, and that is exactly the caller most
-  // likely to be running on a machine full of other projects' leftovers.
+  // Before the early return below, because a project dispatching for the FIRST
+  // time has no root of its own to sweep and is the caller most likely to be on
+  // a machine full of other projects' leftovers.
   //
-  // The base is derived from `root`, NOT from workspacesBase(). `root` is the
-  // VERIFIED, fully-resolved path while `workspacesBase()` returns the
-  // DECLARED one, and on any machine where the two differ — every macOS box,
-  // since `os.tmpdir()` resolves through `/private` — the "exclude our own
-  // root" comparison below compared strings from two different spaces, failed
-  // to match, and deleted the directory the dispatch had just created.
+  // The base is derived from `root`, NOT from workspacesBase(): `root` is the
+  // VERIFIED, fully-resolved path and workspacesBase() the DECLARED one, so
+  // where the two differ (every macOS box) the "exclude our own root"
+  // comparison below would compare two different spaces, fail to match, and
+  // delete the directory the dispatch just created.
   await pruneAbandonedProjectRoots(path.dirname(root), root);
   let entries;
   try {
@@ -568,16 +437,10 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
   let removedWorktree = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    // Only directories WE named. This loop deletes recursively and had no
-    // check of any kind — not a name, not a marker, not an owner — while its
-    // sibling `pruneAbandonedProjectRoots` has all three under a comment
-    // saying "this deletes directories nothing else is watching". With a
-    // symlink planted at the root, that gap swept a user's own files.
-    //
-    // The same guard `pruneStaleJobs` already uses, and for the same reason:
-    // a recursive delete takes positive evidence that the thing is ours,
-    // rather than the absence of a reason to stop. `RUN_DIR_RE` is the exact
-    // shape `workspaceRunId` generates.
+    // Only directories WE named. A recursive delete takes positive evidence
+    // that the thing is ours, rather than the absence of a reason to stop:
+    // with a symlink planted at the root, an unchecked sweep reaches a user's
+    // own files. `RUN_DIR_RE` is the exact shape `workspaceRunId` generates.
     if (!RUN_DIR_RE.test(entry.name)) continue;
     const workspaceRoot = path.join(root, entry.name);
     try {
@@ -590,9 +453,9 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
           await git(["worktree", "remove", "--force", worktreeRoot], gitRoot);
           removedWorktree = true;
         } catch {
-          // Registered against a different repo, or already gone: the
-          // filesystem sweep below still reclaims the disk, and the prune
-          // afterwards clears whatever metadata this repo can see.
+          // Registered against a different repo, or already gone: the sweep
+          // below still reclaims the disk and the prune afterwards clears
+          // whatever metadata this repo can see.
         }
       }
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -609,31 +472,26 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
  * Create this run's directory, with every guard the path needs, in the order
  * they have to happen.
  *
- * SECURE BEFORE PRUNING. The order was once the other way round, and the guard
- * could not protect the one operation that deletes: the sweep ran first and
- * `rm -rf`d every aged subdirectory of a root nothing had yet looked at. With
- * a symlink planted at that path, the victim's own directory was swept —
- * reproduced end to end, as two real users.
+ * SECURE BEFORE PRUNING. Sweeping first would `rm -rf` every aged
+ * subdirectory of a root nothing had yet looked at, so a symlink planted at
+ * that path takes the sweep into the victim's own directory.
  *
- * Both policies ran this same five-step sequence from their own copy. Each
- * step is here once now, so a guard cannot be added to one policy and missed
- * on the other, which is how the class stayed open across four releases.
+ * Shared by both isolation policies, so a guard cannot be added to one and
+ * missed on the other.
  */
 async function secureRunDirectory(
   projectRoot: string,
   routeName: string,
   gitRoot?: string,
 ): Promise<string> {
-  // markProjectRoot creates and secures the root and RETURNS the verified
-  // path: everything below uses that, never the string computed by the
-  // caller. Re-deriving the string is what let a swapped directory redirect
-  // the copy after the check had passed.
+  // Everything below uses the verified path markProjectRoot returns, never the
+  // string the caller computed.
   const verifiedRoot = await markProjectRoot(projectRoot);
   await pruneStaleRuns(verifiedRoot, gitRoot);
   const workspaceRoot = path.join(verifiedRoot, workspaceRunId(routeName));
-  // Created here, non-recursively, and verified — rather than left to a later
-  // recursive mkdir. This run's directory is the segment an attacker would
-  // swap between the prune and the write that follows.
+  // This run's directory is the segment an attacker would swap between the
+  // prune and the write that follows, so it is created non-recursively here and
+  // verified rather than left to a later recursive mkdir.
   await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
   await assertStillOurs(workspaceRoot);
   return workspaceRoot;
@@ -645,15 +503,9 @@ async function secureRunDirectory(
  * The sweep above only ever looks INSIDE one project's root, and only runs
  * when a dispatch happens for that same project. So a project dispatched once
  * and then renamed, deleted, or — most commonly — created as a temp directory
- * by the test suite keeps its stale runs forever: the code that would reclaim
- * them is reachable only by the project that no longer exists.
- *
- * Measured on the maintainer's machine before this existed: 840 project roots,
- * 839 of them still holding run directories five days past a 24-hour
- * retention window. This project has already lost a disk to leaked scratch
- * directories once — tests/setup-env.ts records 2,605 orphans and 0 bytes free
- * on a 931 GB volume — which is why an unbounded leak gets fixed rather than
- * noted.
+ * by the test suite keeps its stale runs forever, and they accumulate without
+ * bound: the code that would reclaim them is reachable only by the project
+ * that no longer exists.
  *
  * Deliberately conservative, because this deletes directories nothing else is
  * watching:
@@ -662,9 +514,7 @@ async function secureRunDirectory(
  *    project root alive;
  *  - an empty root is removed only if it carries our marker. Unmarked and
  *    empty means there is nothing to identify it by, and an unidentified
- *    directory is somebody else's — measured, because this line previously
- *    claimed empty roots are removed full stop, which stopped being true when
- *    ownership moved from a name shape to a marker;
+ *    directory is somebody else's;
  *  - best effort throughout — a prune failure must never fail a dispatch.
  *
  * A git_worktree root is left alone here. Removing one behind git's back
@@ -686,11 +536,9 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
     if (path.resolve(full) === path.resolve(currentRoot)) continue;
     try {
       const runs = await readdir(full, { withFileTypes: true });
-      // Age is not evidence of ownership, and this deletes recursively.
-      // HARNESS_DISPATCH_WORKSPACES_DIR is a setting the README actively
-      // recommends ("on the project's own volume, for instance"), so the base
-      // is not necessarily ours alone and anything else living there is
-      // somebody's data.
+      // Age is not evidence of ownership, and this deletes recursively. With
+      // HARNESS_DISPATCH_WORKSPACES_DIR set, the base is not necessarily ours
+      // alone and anything else living there is somebody's data.
       if (!isOurProjectRoot(full, runs.map((r) => r.name))) continue;
       let allStale = true;
       for (const run of runs) {
@@ -726,17 +574,14 @@ function shouldExclude(relPath: string, direntName: string): boolean {
 /**
  * Never copy the workspace area into itself.
  *
- * shouldExclude covers ONE hard-coded path, which is fine for the default
- * (workspaces live outside the project) and catastrophic for the override that
- * README and the 0.7.0 notes actively recommend: point
- * HARNESS_DISPATCH_WORKSPACES_DIR at a directory inside the project — to keep
- * the copy on the same volume, where a reflink is possible — and the copy
- * walks into the workspace it is currently writing. Measured on a six-file
- * project: 201 levels of nesting and an 11,800-character path before the run
- * was killed, all of it inside the user's project.
+ * shouldExclude covers ONE hard-coded path, which is enough for the default
+ * but not for HARNESS_DISPATCH_WORKSPACES_DIR pointed inside the project (to
+ * keep the copy on one volume, where a reflink is possible): there the copy
+ * walks into the workspace it is currently writing, nesting until the path
+ * length kills the run.
  *
- * Compared as resolved absolute paths, so it does not matter how the override
- * was spelled, and it covers the whole workspaces root rather than this run's
+ * Compared as resolved absolute paths, so the override's spelling does not
+ * matter, and it covers the whole workspaces root rather than this run's
  * directory alone — a sibling run's workspace is no more copyable than our own.
  */
 export function isUnderOrEqual(candidate: string, root: string): boolean {
@@ -750,22 +595,13 @@ export function isUnderOrEqual(candidate: string, root: string): boolean {
 /**
  * Recreate one symlink in the copy, but only if it stays inside the workspace.
  *
- * The previous version read the target and recreated it verbatim, with no
- * containment check, under a comment saying "preserve relative symlinks" over
- * code that preserved absolute ones just as happily. A link pointing at /etc
- * or a home directory was faithfully rebuilt inside the "isolated" copy, so an
- * agent writing through it wrote to the real host path — isolation defeated by
- * a link the agent may itself have created on an earlier turn.
+ * A link pointing at /etc or a home directory, rebuilt verbatim inside the
+ * "isolated" copy, means an agent writing through it writes to the real host
+ * path. Windows is no exception: a directory JUNCTION needs no privileges and
+ * readdir reports it as a symlink.
  *
- * On Windows this happened to be inert: unprivileged fs.symlink fails EPERM
- * and the old bare `catch {}` swallowed it. That is an accident of platform
- * permissions, not a defence, and it does not hold on Linux or macOS where the
- * call succeeds. Verified on Windows with a directory JUNCTION, which needs no
- * privileges and which readdir reports as a symlink.
- *
- * Escaping links are dropped rather than followed. Copying the TARGET's
- * contents in would smuggle host files into the workspace — the same leak
- * pointing the other way.
+ * Escaping links are dropped rather than followed — copying the TARGET's
+ * contents in would smuggle host files into the workspace instead.
  */
 async function copyLink(
   sourceRoot: string,
@@ -804,13 +640,10 @@ async function copyTree(
   excludeRoots: string[] = [],
   /**
    * EXCLUDED_DIRS entries that actually existed and were left out. Collected
-   * because the omission was invisible: `bin`, `dist`, `build`, `target`,
-   * `obj` and `.venv` are all on that list and all plausible SOURCE
-   * directories, and an acceptance pass watched a delegate "edit" a committed
-   * `bin/tool.sh` that was never in its workspace — the run then reported one
-   * changed file, the patch held one file, and apply landed one file, with
-   * nothing anywhere saying the rest of the tree had been withheld. The agent
-   * also reasons from an incomplete tree, which is the worse half.
+   * because the omission is otherwise invisible: `bin`, `dist`, `build`,
+   * `target`, `obj` and `.venv` are all on that list and all plausible SOURCE
+   * directories, so a delegate can "edit" a committed file that was never in
+   * its workspace — and reasons from an incomplete tree either way.
    */
   excludedDirs: string[] = [],
 ): Promise<void> {
@@ -838,17 +671,15 @@ async function copyTree(
         continue;
       }
       if (entry.isFile()) {
-        // COPYFILE_FICLONE asks the filesystem for a copy-on-write reflink:
-        // the new file shares the original's blocks until one of them is
-        // written to. On APFS, Btrfs/XFS and ReFS/Dev Drive that makes a
-        // workspace clone near-instant and free of duplicate allocation,
-        // which matters because `copy` duplicates a whole project per
-        // dispatch and fanout does it per arm.
+        // COPYFILE_FICLONE asks the filesystem for a copy-on-write reflink, so
+        // on APFS, Btrfs/XFS and ReFS/Dev Drive a workspace clone is
+        // near-instant and allocates nothing — which matters because `copy`
+        // duplicates a whole project per dispatch and fanout does it per arm.
         //
         // FICLONE, deliberately NOT FICLONE_FORCE: the plain flag falls back
-        // to an ordinary copy when the filesystem cannot reflink (plain NTFS,
-        // ext4, or a cross-device copy), while FORCE fails outright. A
-        // best-effort speedup must never turn a working copy into an error.
+        // to an ordinary copy where reflinks are unavailable (plain NTFS, ext4,
+        // a cross-device copy), while FORCE fails outright. A best-effort
+        // speedup must never turn a working copy into an error.
         await copyFile(
           path.join(sourceRoot, childRel),
           path.join(destRoot, childRel),
@@ -860,14 +691,13 @@ async function copyTree(
         await copyLink(sourceRoot, destRoot, childRel, skipped);
       }
     } catch (err) {
-      // A working directory is LIVE while it is being copied. readdir gives a
-      // listing, and by the time each entry is read it may be gone — an editor
-      // saving over a temp file, a build watcher cleaning output, another
-      // fanout arm writing into the same tree (write-capable fanout REQUIRES
-      // copy, so concurrent copies of one directory are the documented case,
-      // not an edge one). Failing the whole dispatch on a raw ENOENT because
-      // one incidental file blinked out is the wrong trade: the caller loses
-      // real work over a file they did not care about.
+      // A working directory is LIVE while it is being copied: by the time each
+      // readdir entry is read it may be gone — an editor saving over a temp
+      // file, a build watcher cleaning output, another fanout arm writing into
+      // the same tree (write-capable fanout REQUIRES copy, so concurrent copies
+      // of one directory are the documented case). Failing the whole dispatch
+      // because one incidental file blinked out loses the caller real work over
+      // a file they did not care about.
       //
       // Only "it disappeared" is tolerated. A permission error or a full disk
       // still fails loudly, because those mean the copy is not the snapshot it
@@ -951,10 +781,10 @@ function mapFiles(files: string[], originalWorkingDir: string, effectiveWorkingD
     if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
       return path.join(effectiveWorkingDir, rel);
     }
-    // Deliberately passed through unmapped: there is nothing inside the
-    // isolated workspace that corresponds to a file from outside it, and
-    // rewriting the path would hand the agent a path that doesn't exist.
-    // The cost is real though — see escapedFiles() — so callers warn.
+    // Deliberately passed through unmapped: nothing inside the isolated
+    // workspace corresponds to a file from outside it, so rewriting the path
+    // would hand the agent one that doesn't exist. The cost is real — see
+    // escapedFiles() — so callers warn.
     return file;
   });
 }
@@ -966,12 +796,10 @@ function mapFiles(files: string[], originalWorkingDir: string, effectiveWorkingD
  * These are not merely "still readable at their original path". On CLI routes
  * each such file's PARENT DIRECTORY is passed to the spawned agent as an
  * access grant (generic-cli.ts includedDirectories -> {{file_dirs}} ->
- * `--add-dir`), so under workspace_policy copy/git_worktree a single
- * out-of-tree entry silently widens the "isolated" workspace to include a
- * host directory. files: ["~/.ssh/id_rsa"] grants ~/.ssh.
- *
- * Isolation is the caller's stated intent, so this is surfaced as a warning
- * rather than silently honoured or silently dropped.
+ * `--add-dir`), so under copy/git_worktree a single out-of-tree entry widens
+ * the "isolated" workspace to include a host directory: files:
+ * ["~/.ssh/id_rsa"] grants ~/.ssh. Surfaced as a warning rather than silently
+ * honoured or silently dropped, because isolation was the caller's intent.
  */
 export function escapedFiles(files: string[], originalWorkingDir: string): string[] {
   const root = resolveDir(originalWorkingDir);
@@ -994,10 +822,8 @@ function diffSummary(changes: WorkspaceFileChange[]): string {
 
 /**
  * Note appended to an isolated run when `files` reach outside workingDir.
- *
- * Silence here would be the worst option: the caller asked for isolation and
- * would reasonably assume they got it, while the agent was handed host
- * directories via --add-dir.
+ * Silence would leave the caller assuming they got the isolation they asked
+ * for while the agent was handed host directories via --add-dir.
  */
 function escapeNote(files: string[], originalWorkingDir: string): string[] {
   const dirs = escapedFiles(files, originalWorkingDir);
@@ -1056,17 +882,9 @@ async function prepareSharedWorkspace(
           policy === "shared_locked"
             ? "Write-capable shared workspace dispatches are serialized across ALL processes, not just within one."
             : "Shared workspace dispatches run directly in the caller's working directory.",
-          // The `files` schema says "the response carries a warning naming the
-          // directories when that happens" — unconditionally, as a caller
-          // reads it. It was wired into the copy and worktree paths only, so
-          // under `shared`, WHICH IS THE DEFAULT, a path outside workingDir
-          // still granted its parent directory via --add-dir and nothing said
-          // so. A security audit reproduced a single `files` entry handing the
-          // agent a user home subdirectory, with no warning in the reply.
-          //
-          // The wording differs because the fact differs: nothing was isolated
-          // here to widen. What the caller needs to know is that naming one
-          // file granted the agent its whole directory.
+          // The `files` schema promises this warning unconditionally, and
+          // `shared` is the default: a path outside workingDir grants its
+          // parent directory via --add-dir here too.
           ...grantNote(files, originalWorkingDir),
         ],
       });
@@ -1090,9 +908,9 @@ async function prepareCopyWorkspace(
   const vanishedFiles: string[] = [];
   const excludedDirs: string[] = [];
   // The whole workspaces BASE, not this run's directory and not even this
-  // project's root under it. A sibling run's workspace is no more copyable
-  // than our own, and another project's is no more copyable than a sibling's —
-  // all of them sit inside the source tree whenever the override points there.
+  // project's root under it: whenever the override points inside the project,
+  // every run's workspace — ours, a sibling's, another project's — sits in the
+  // source tree and none of them is copyable.
   await copyTree(
     originalWorkingDir,
     effectiveWorkingDir,
@@ -1160,12 +978,11 @@ async function prepareCopyWorkspace(
 /**
  * Decline git's OPTIONAL locks.
  *
- * git runs background maintenance, which creates and removes
+ * git's background maintenance creates and removes
  * `.git/objects/maintenance.lock` underneath whatever else is reading the
- * repository. A CI leg failed with `stat '.../maintenance.lock': No such file
- * or directory` from an ordinary diff — the lock vanished mid-command. We only
- * ever ask git to read, or to apply a patch we already hold, so declining
- * optional locks costs nothing and removes a race we do not control.
+ * repository, so an ordinary diff can fail with `stat '.../maintenance.lock':
+ * No such file or directory`. We only ever ask git to read, or to apply a patch
+ * we already hold, so declining optional locks costs nothing.
  */
 export const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
 
@@ -1180,15 +997,11 @@ async function prepareGitWorktreeWorkspace(
   files: string[],
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
-  // Preconditions answered as themselves, not as whatever git printed.
-  //
-  // The resolve path (`workspace diff`/`apply`) explains a missing git and a
-  // long path; the DISPATCH path had none of it, so the three ordinary ways
-  // this cannot start reached the caller as raw git internals with no route
-  // taken and no mention of the alternative — an acceptance pass measured
-  // `spawn git ENOENT`, `fatal: not a git repository`, and
-  // `fatal: ambiguous argument 'HEAD'` on a freshly-initialised project, which
-  // is an ordinary state rather than an error.
+  // Preconditions answered as themselves, not as whatever git printed. The
+  // three ordinary ways this cannot start — no git on PATH, not a repository,
+  // no commits yet — would otherwise reach the caller as raw git internals
+  // (`spawn git ENOENT`, `fatal: not a git repository`,
+  // `fatal: ambiguous argument 'HEAD'`) with no mention of the alternative.
   const gitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir).catch(
     (err: unknown) => {
       if ((err as { code?: unknown } | null)?.code === "ENOENT") {
@@ -1234,30 +1047,19 @@ async function prepareGitWorktreeWorkspace(
 
       // A failed attempt that changed nothing leaves nothing to inspect, and
       // its worktree is a registration inside the USER's repository that
-      // retention will never reclaim — the sweep deliberately refuses to
-      // remove worktrees, because unregistering one needs git and only the
-      // owning repo can do it.
+      // retention will never reclaim — the sweep refuses to remove worktrees,
+      // because unregistering one needs git and only the owning repo can do
+      // it. They accumulate per attempt, and a fallback arm that fails is not
+      // named in the response at all, so its worktree has no cleanupHint
+      // anywhere.
       //
-      // So they accumulate per attempt, and the ones nobody knows about are
-      // the worst: a fallback arm that fails is not named in the response at
-      // all, so its worktree has no cleanupHint anywhere. An acceptance pass
-      // measured one HTTP request leaving TWO entries in `git worktree list`.
-      // This project has already paid for one unbounded directory leak.
-      //
-      // Only when the attempt both failed AND changed nothing. A failure that
-      // wrote files may still hold work worth recovering, and deleting that
-      // to tidy up would be the trade this codebase keeps refusing.
+      // Only when the attempt both failed AND changed nothing: a failure that
+      // wrote files may still hold work worth recovering.
       if (!result.success && changedFiles.length === 0) {
-        // The directory goes only if GIT let go of it first.
-        //
-        // The first version swallowed the result of `git worktree remove`,
-        // deleted the directory regardless, and reported "unregistered and
-        // removed" either way. When git fails — an index lock, a concurrent
-        // git operation — that strands `.git/worktrees/<name>` inside the
-        // user's repository, which is the exact outcome the comment above
-        // says this refuses to cause, while telling them it did not happen.
-        // An acceptance pass caught it by reading, inside the fix that
-        // introduced it.
+        // The directory goes only if GIT let go of it first: when
+        // `git worktree remove` fails — an index lock, a concurrent git
+        // operation — deleting it anyway strands `.git/worktrees/<name>`
+        // inside the user's repository.
         const unregistered = await git(["worktree", "remove", "--force", worktreeRoot], gitRoot)
           .then(() => true)
           .catch(() => false);

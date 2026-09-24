@@ -5,11 +5,10 @@
  * implements this. The router picks one via scoring; the MCP server awaits
  * `dispatch()` or iterates `stream()`.
  *
- * R3 change: `stream()` is now the canonical primitive. `dispatch()` is
- * implemented by consuming the stream and buffering its events — concrete
- * dispatchers can either inherit the default via `BaseDispatcher` or
- * override `dispatch()` directly when there's a buffered fast-path that's
- * worth preserving.
+ * `stream()` is the canonical primitive. `dispatch()` is implemented by
+ * consuming the stream and buffering its events — concrete dispatchers can
+ * either inherit the default via `BaseDispatcher` or override `dispatch()`
+ * directly when there's a buffered fast-path worth preserving.
  */
 
 import type { DispatchResult, DispatcherEvent, QuotaInfo, SafetyProfile } from "../types.js";
@@ -79,8 +78,7 @@ export abstract class BaseDispatcher implements Dispatcher {
  * The stream is guaranteed (by contract) to yield exactly one terminal
  * `completion` or `error` event. This helper captures the terminal event
  * and returns its embedded result, accumulating stdout/stderr chunks so
- * they survive even when the dispatcher forgets to set `result.output`
- * (shouldn't happen, but is a defensive fallback).
+ * they survive a dispatcher that never set `result.output`.
  */
 export async function drainDispatcherStream(
   iter: AsyncIterable<DispatcherEvent>,

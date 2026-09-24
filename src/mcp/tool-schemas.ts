@@ -1,14 +1,11 @@
 /**
  * The MCP input contract: what the six tools accept, and what they refuse.
  *
- * Split out of tools.ts, which had grown to 1040 lines mixing the contract
- * with the handlers that run after it. This half earns its own file rather
- * than merely being long: these schemas ARE the safety boundary. The SDK
- * validates arguments against them BEFORE any handler runs, so a key absent
- * here is a key silently stripped — which is exactly how a top-level
- * `safetyProfile` once ran a dispatch with more access than the caller
- * asked for. Being able to read the whole accepted surface, and every
- * deliberate refusal, in one place is the point.
+ * These schemas ARE the safety boundary, which is why they live apart from the
+ * handlers that run after them: the SDK validates arguments against them BEFORE
+ * any handler runs, so a key absent here is a key silently stripped — and a
+ * stripped safety setting runs the dispatch with more access than the caller
+ * asked for.
  */
 
 import { z } from "zod";
@@ -18,18 +15,15 @@ import { z } from "zod";
  * CLAMPS TO 1ms, so the longest timeout a caller can ask for becomes the
  * shortest one possible: the child is SIGTERMed on the first tick and the run
  * is recorded as a route failure with breaker credit. `.int()` alone stops at
- * Number.MAX_SAFE_INTEGER, far past the point it breaks.
- *
- * Lives here because this file is the contract; http/parse.ts mirrors it.
+ * Number.MAX_SAFE_INTEGER, far past the point it breaks. http/parse.ts mirrors
+ * this.
  */
 export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * A string that ends up in an argv array. A NUL fails deep inside cross-spawn
  * with "The argument 'args[N]' must be a string without null bytes" — the raw
- * Node internal these boundary rejections exist to replace. `prompt` was
- * guarded and the rest were not, on BOTH surfaces, so parity held while both
- * were wrong.
+ * Node internal these boundary rejections exist to replace.
  */
 const noNul = (v: string) => !v.includes("\u0000");
 const NO_NUL_MESSAGE = "must not contain NUL bytes";
@@ -43,16 +37,14 @@ export const publicHintsSchema = z
   .object({
     model: z
       .string()
-      // Blank is not "no preference" — it survived as a value and won the `??`
-      // against the route's configured model, so the route ran with no --model
-      // flag at all and reported model: "". Nothing said so. Whitespace does
-      // the same thing while also reaching the harness as a real argument.
+      // Blank is not "no preference" — it survives as a value and wins the `??`
+      // against the route's configured model, so the route runs with no --model
+      // flag and reports model: "". Whitespace does the same while also reaching
+      // the harness as a real argument.
       //
       // BOTH, not just the refine: .min(1) is the only half that reaches the
-      // advertised JSON Schema as `minLength: 1`. A refine alone emits a bare
-      // {"type":"string"}, so a schema-validating client stops catching "" and
-      // spends a round trip on a -32602 — the same "an agent following the
-      // schema burns a call" cost this file's `service` wording was fixed for.
+      // advertised JSON Schema as `minLength: 1`, so without it a
+      // schema-validating client spends a round trip on a -32602.
       .min(1, "hints.model must not be empty — omit it entirely for no preference")
       // `v === ""` short-circuits so .min(1) is the only rule that reports on
       // an empty string; without it both fire and the caller reads the same
@@ -126,11 +118,6 @@ export const publicHintsSchema = z
       .number()
       .int()
       .positive()
-      // setTimeout CLAMPS anything above this to 1ms after emitting
-      // TimeoutOverflowWarning, so the longest timeout a caller can ask for
-      // becomes the shortest one possible: the child is killed on the first
-      // tick and the run is recorded as a route failure. `.int()` alone stops
-      // at Number.MAX_SAFE_INTEGER, which is far past the point it breaks.
       .max(
         MAX_TIMEOUT_MS,
         `timeoutMs must be at most ${MAX_TIMEOUT_MS} (setTimeout clamps anything larger to 1ms)`,
@@ -144,17 +131,11 @@ export const publicHintsSchema = z
           "gives up, not how long the inline grace window waits (that's `graceSeconds`).",
       ),
   })
-  // STRICT, and this is a safety control, not tidiness.
-  //
-  // zod drops unknown keys by default. The same setting is spelled
-  // `safety_profile` in config.yaml and `safetyProfile` here, so the obvious
-  // slip was silently discarded — `hints: { safety_profile: "read_only" }` ran
-  // a full_auto route at full_auto, while the correctly-spelled key refused
-  // it. A caller asking to be restricted got no restriction and no warning.
-  //
-  // config.ts already treats this class as a root cause (it warns on ANY
-  // unrecognised route key). This is the same fix at the MCP boundary, which
-  // PRODUCT.md calls the actual product surface.
+  // STRICT, and this is a safety control, not tidiness. zod drops unknown keys
+  // by default, and the same setting is spelled `safety_profile` in config.yaml
+  // and `safetyProfile` here, so without this the slip is silently discarded:
+  // `hints: { safety_profile: "read_only" }` runs a full_auto route at
+  // full_auto, with no restriction and no warning.
   .strict()
   .describe("Public routing hints.");
 
@@ -167,13 +148,10 @@ export const workingDirDescription =
 export const DEFAULT_GRACE_SECONDS = 25;
 
 /**
- * Cap on `files` per dispatch.
- *
- * Not a performance limit — each entry's parent directory becomes an
- * `--add-dir` grant on CLI routes (generic-cli.ts includedDirectories ->
- * {{file_dirs}}), so an unbounded list is an unbounded set of directories
- * handed to a coding agent. 64 is far above any real prompt and low enough
- * that a runaway caller is stopped at the boundary rather than at the CLI.
+ * Cap on `files` per dispatch. Not a performance limit — each entry's parent
+ * directory becomes an `--add-dir` grant on CLI routes (generic-cli.ts
+ * includedDirectories -> {{file_dirs}}), so an unbounded list is an unbounded
+ * set of directories handed to a coding agent. 64 is far above any real prompt.
  */
 /** The only jobId shape jobs.ts produces; shared by both tools. */
 export const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
@@ -181,39 +159,32 @@ export const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
 export const MAX_CONTEXT_FILES = 64;
 
 /**
- * Cap on prior jobs referenced by one dispatch.
- *
- * Each one costs a disk read and a slice of the delegate's context window.
- * jobs.ts caps the rendered TEXT as well; this bounds the work done to produce
- * it, so a caller naming hundreds of jobs is stopped at the boundary rather
- * than after the reads.
+ * Cap on prior jobs referenced by one dispatch. Each one costs a disk read and
+ * a slice of the delegate's context window; jobs.ts caps the rendered TEXT as
+ * well, and this bounds the work done to produce it.
  */
 export const MAX_CONTEXT_JOBS = 16;
 
 /**
  * Keys that mean nothing at the top level, trapped IN THE SCHEMA.
  *
- * `hints` is .strict(), so `hints: { safety_profile: ... }` is rejected — but
- * the OUTER object was still permissive, so moving the same key up one level
- * made it vanish silently instead:
+ * `hints` is .strict(), so `hints: { safety_profile: ... }` is rejected. The
+ * OUTER object cannot be, so without these traps moving the same key up one
+ * level makes it vanish silently instead:
  *
  *   hints.safetyProfile = read_only      -> honoured
- *   TOP-LEVEL safetyProfile = read_only  -> dropped, ran with write access
+ *   TOP-LEVEL safetyProfile = read_only  -> dropped, runs with write access
  *
- * WHY SCHEMA FIELDS AND NOT A GUARD FUNCTION. The MCP SDK validates arguments
+ * Schema fields and not a guard function: the MCP SDK validates arguments
  * against this shape in strip mode BEFORE the registered handler runs, so no
- * code inside a handler can ever see a misplaced key — it is already gone. A
- * previous version of this trap was a guard function, and it guarded a path
- * nothing shipped: the registered tools stripped the key silently while only
- * the test-only entry point rejected it. z.never() fields make the SDK's own
- * validation throw the guidance message on every surface that parses this
- * shape, and advertise as {"not":{}} in the tool's JSON schema, so a client
- * reading the schema sees the key as unacceptable rather than merely absent.
+ * code inside a handler can ever see a misplaced key — it is already gone.
+ * z.never() fields make the SDK's own validation throw the guidance message on
+ * every surface that parses this shape, and advertise as {"not":{}} in the
+ * tool's JSON schema.
  *
  * Full .strict() on the outer object is deliberately NOT used: MCP clients may
- * attach their own fields (_meta and similar) and rejecting those would break
- * legitimate callers. Naming the specific misplaced keys closes the trap
- * without guessing at what else may legitimately arrive.
+ * attach their own fields (_meta and similar). Naming the specific misplaced
+ * keys closes the trap without guessing at what else may legitimately arrive.
  */
 function misplacedKeyTrap(message: string) {
   return z.never({ error: message }).optional().describe(message);
@@ -230,18 +201,15 @@ function hintKeyTrap(key: string) {
 /**
  * A snake_case near-miss at the top level.
  *
- * `hints` is .strict() because `hints: { safety_profile }` silently disabled a
- * safety limit. The OUTER object cannot be strict — the SDK carries `_meta`
- * here and the HTTP surface must tolerate OpenAI's own fields — so the same
- * slip one level up stayed silent on both surfaces, and parity held while both
- * were wrong. A named list, because an unknown top-level key is tolerated by
- * design and a near-miss is not.
+ * The OUTER object cannot be strict — the SDK carries `_meta` here and the
+ * HTTP surface must tolerate OpenAI's own fields — so a snake_case slip one
+ * level up would stay silent. A named list, because an unknown top-level key is
+ * tolerated by design and a near-miss is not.
  *
- * `where` is per key and not a constant. The first version said "inside
- * `hints`" for all eight, but `workingDir` and `contextJobs` are top-level
- * dispatch parameters — so following the advice produced a SECOND error
- * ("Unrecognized key"). A refusal that confidently points at the wrong landing
- * spot costs the round trip it exists to save.
+ * `where` is per key and not a constant: `workingDir` and `contextJobs` are
+ * top-level dispatch parameters, so telling a caller to move them "inside
+ * `hints`" produces a SECOND error ("Unrecognized key"), costing the round trip
+ * this exists to save.
  */
 function snakeCaseTrap(wrong: string, right: string, where: string) {
   return misplacedKeyTrap(
@@ -288,20 +256,17 @@ export const misplacedTopLevelKeys = {
 export const dispatchInputShape = {
   prompt: z
     .string()
-    // Rejected here rather than at the harness. An empty prompt used to reach
-    // a real CLI, which spawned, failed with its own usage message, and left a
-    // consumed route call behind — a wasted dispatch for something the schema
-    // can refuse for free.
+    // Rejected here rather than at the harness: an empty prompt otherwise
+    // reaches a real CLI, which spawns, fails with its own usage message, and
+    // leaves a consumed route call behind.
     .min(1, "prompt must not be empty")
-    // Whitespace is empty for this purpose, and the HTTP surface has always
-    // said so (`!prompt.trim()` → 400). Here it passed .min(1) and spent a
-    // real route call producing nothing — the exact waste the line above
-    // exists to prevent, on the one field that is required.
+    // Whitespace is empty for this purpose, as the HTTP surface also says
+    // (`!prompt.trim()` → 400). It passes .min(1) and spends a real route call
+    // producing nothing.
     .refine((v) => v === "" || v.trim() !== "", "prompt must not be empty")
-    // A NUL byte passed the schema and failed deep inside cross-spawn with
-    // "The argument 'args[2]' must be a string without null bytes" — caught,
-    // never a crash, and correctly not charged to the route's failure count,
-    // but a raw Node internal message where a boundary rejection belongs.
+    // A NUL byte otherwise fails deep inside cross-spawn with "The argument
+    // 'args[2]' must be a string without null bytes" — caught rather than a
+    // crash, but a raw Node internal where a boundary rejection belongs.
     .refine((v) => !v.includes("\u0000"), "prompt must not contain NUL bytes")
     .describe(
       "The coding task or question. Every dispatch starts as a background job " +
@@ -349,12 +314,11 @@ export const dispatchInputShape = {
   models: z
     .array(z.string().refine(noNul, NO_NUL_MESSAGE))
     // An EXPLICIT empty array is a caller mistake, and the most expensive one
-    // this field can carry: it fell through to the same branch as "omitted"
-    // and fanned out to every eligible route — measured at eight arms on one
-    // machine, one per configured route. A caller who wrote `models: []` built
-    // a list and it came out empty; they did not ask for everything. Omitting
-    // the field is how you ask for that, and it stays a deliberate keystroke
-    // rather than the result of a filter matching nothing.
+    // this field can carry: treated as "omitted" it fans out to every eligible
+    // route, one arm per configured route. A caller who wrote `models: []`
+    // built a list and it came out empty; they did not ask for everything.
+    // Omitting the field is how you ask for that, and it stays a deliberate
+    // keystroke rather than the result of a filter matching nothing.
     .min(
       1,
       "models: [] selects no routes. Omit `models` entirely to fan out to every " +
@@ -422,12 +386,10 @@ export const usageInputShape = {
 };
 
 /**
- * `cancel_job` takes the jobId and, optionally, why.
- *
- * The reason is not decoration: a cancelled run's status carries it, so
- * whoever finds the job later — often a different agent, or the same one
- * after a restart — learns it was stopped on purpose rather than that it
- * mysteriously died.
+ * `cancel_job` takes the jobId and, optionally, why. The reason is not
+ * decoration: a cancelled run's status carries it, so whoever finds the job
+ * later — often a different agent — learns it was stopped on purpose rather
+ * than that it mysteriously died.
  */
 export const cancelJobInputShape = {
   jobId: z
@@ -448,11 +410,10 @@ export const cancelJobInputShape = {
  * `workspace` — inspect or resolve the isolated result of a finished job.
  *
  * One tool with an action rather than three tools, because all three operate
- * on the SAME object (one job's workspace) with the same parameters. That is
- * the opposite of the dispatch/job_status split, where one tool covering both
- * "start work" and "check work" needed runtime guards against
- * mutually-exclusive params — a sign the boundary was wrong. Here the actions
- * are three verbs on one noun, and nothing is mutually exclusive.
+ * on the SAME object (one job's workspace) with the same parameters: three
+ * verbs on one noun, with nothing mutually exclusive. Contrast dispatch and
+ * job_status, which are separate tools because one covering both "start work"
+ * and "check work" needs runtime guards against mutually-exclusive params.
  */
 export const workspaceInputShape = {
   jobId: z

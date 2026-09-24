@@ -2,31 +2,20 @@
  * Cross-process persistence for circuit-breaker state.
  *
  * CircuitBreaker itself is in-memory only (Router constructs a fresh Map on
- * every boot) — a rate-limited route becomes eligible again the instant the
- * server process restarts, even though the provider's real cooldown hasn't
- * elapsed. Confirmed in production: a restart during an active Codex quota
- * cooldown let the router immediately retry the same exhausted route.
+ * every boot) — without this a rate-limited route becomes eligible again the
+ * instant the server process restarts, even though the provider's real
+ * cooldown hasn't elapsed.
  *
  * ONE FILE PER ROUTE, in a breaker_state/ directory.
  *
- * The first version of this mirrored QuotaCache's single-blob state file, and
- * inherited its read-modify-write: load the whole map, set one key, write the
- * whole map back. QuotaCache documents and accepts that race explicitly
- * because its counters are cosmetic and never consulted by routing. That
- * justification does not transfer here — breaker state gates routing, and the
- * writers are genuinely concurrent: every detached job runner bootstraps its
- * own Router and BreakerStore (mcp/config-hot-reload.ts) against the same
- * path, fanout starts one runner per route, and harness-dispatch is commonly
- * configured in two clients at once.
- *
- * Measured 2026-08-17: four processes with a synchronised start, 200 writes
- * each, lost 600 of 800 writes (75%). A rate-limit trip recorded by one runner
- * was erased by another — precisely the bug persistence was added to prevent.
- *
- * Per-route files remove the race by construction rather than by locking:
- * concurrent writers touch different files, and the existing atomic
- * temp-then-rename keeps each individual file readable at all times. No
- * lockfile, no retry loop, nothing to get wrong under contention.
+ * A single-blob state file would mean a read-modify-write of the whole map per
+ * update, and the writers here are genuinely concurrent: every detached job
+ * runner bootstraps its own Router and BreakerStore
+ * (mcp/config-hot-reload.ts) against the same path, fanout starts one runner
+ * per route, and harness-dispatch is commonly configured in two clients at
+ * once. Per-route files remove that race by construction — concurrent writers
+ * touch different files, and the atomic temp-then-rename keeps each file
+ * readable at all times.
  */
 
 import {
@@ -57,27 +46,21 @@ function defaultStateDir(): string {
  * still land in a filename, and a route called `../../etc/passwd` must not
  * escape the state directory.
  *
- * The encode and decode MUST be inverses. They were not: encoding used
- * `%${charCodeAt(0).toString(16)}` while decoding used decodeURIComponent,
- * which agree only for ASCII. A route named `café_cli` wrote `caf%e9_cli.json`
- * — `%e9` is not valid UTF-8 percent-encoding — and reading it threw
+ * The encode and decode MUST be inverses. A non-UTF-8 percent-encoding —
+ * `café_cli` written as `caf%e9_cli.json`, say — throws
  * `URIError: URI malformed` out of loadAll(), which the Router constructor
- * calls unguarded. One such route took down `status`, `doctor` and the MCP
- * server itself.
- *
- * encodeURIComponent produces UTF-8 percent-encoding that decodeURIComponent
- * reverses exactly. The extra replace covers the handful of characters it
- * leaves alone that are still illegal in a Windows filename. ASCII route names
- * are unchanged, so `codex_cli.json` stays readable to a human debugging it.
+ * calls unguarded, taking down `status`, `doctor` and the MCP server with it.
+ * encodeURIComponent round-trips exactly through decodeURIComponent; the extra
+ * replace covers the characters it leaves alone that are still illegal in a
+ * Windows filename. ASCII route names are unchanged, so `codex_cli.json` stays
+ * readable to a human debugging it.
  */
 function fileNameFor(service: string): string {
   // Case is encoded explicitly, because NTFS is case-INSENSITIVE: routes `A`
-  // and `a` produced A.json and a.json, which are one file on Windows — the
-  // second save clobbered the first and loadAll() returned only one of them.
-  // Linux kept both, so the same config behaved differently per platform on a
-  // product that calls Windows first-class. An uppercase letter becomes
-  // `~<lower>`, and `~` itself is escaped first so the mapping stays
-  // reversible.
+  // and `a` would write A.json and a.json, which are one file on Windows and
+  // two on Linux — so the same config would behave differently per platform.
+  // An uppercase letter becomes `~<lower>`, and `~` itself is escaped first so
+  // the mapping stays reversible.
   const caseFolded = service.replace(/~/g, "~~").replace(/[A-Z]/g, (c) => `~${c.toLowerCase()}`);
   const encoded = encodeURIComponent(caseFolded).replace(
     /[!*'()]/g,
@@ -109,30 +92,27 @@ function serviceFromFileName(entry: string): string | undefined {
   try {
     return unfoldCase(decodeURIComponent(entry.slice(0, -".json".length)));
   } catch {
-    // A file this module did not write, or wrote under the old broken scheme.
-    // Skipping it is right: loading breaker state is best-effort, and throwing
-    // here bricked every entry point in the tool.
+    // A file this module did not write. Skipping it is right: loading breaker
+    // state is best-effort, and throwing here bricks every entry point in the
+    // tool.
     return undefined;
   }
 }
 
 /**
  * Stand-in "route name" for a legacy blob that would not parse at all — there
- * are no route names to report in that case, and reporting nothing is what the
- * old behaviour did.
+ * are no route names to report in that case.
  */
 const LEGACY_BLOB_ROUTE = "(legacy breaker_state.json)";
 
 /**
  * One persisted record -> a snapshot, or undefined if the record is corrupt.
  *
- * Shared by the per-route files and the legacy blob's entries, because they
- * are the same data written twice and were being validated to two different
- * standards: the per-route reader gained type checks that the migration path
- * never got, so an upgrade — the one moment a live cooldown is most likely to
- * be sitting on disk — still coerced a bad record to healthy, skipped it as
- * "nothing to migrate", and deleted the blob. Reproduced by an acceptance
- * pass.
+ * Shared by the per-route files and the legacy blob's entries: they are the
+ * same data written twice, and validating them to two different standards lets
+ * an upgrade — the one moment a live cooldown is most likely to be sitting on
+ * disk — coerce a bad record to healthy, skip it as "nothing to migrate", and
+ * delete the blob.
  *
  * A PRESENT field of the wrong type is corruption; an ABSENT one is an older
  * build that wrote fewer fields, and stays tolerated.
@@ -143,37 +123,26 @@ function snapshotFromRecord(v: unknown): CircuitBreakerSnapshot | undefined {
   // A record naming NONE of the fields this understands is not a record this
   // understands, and must not be read as a healthy route.
   //
-  // Tolerating absent fields (for older builds that wrote fewer) had no floor,
-  // so `{}` and a foreign schema passed every guard and coerced to healthy.
-  // The per-route reader caught that via its healthy-is-a-contradiction rule,
-  // but the legacy blob has no such rule — healthy entries were legitimate
-  // there — so on the upgrade path both shapes were swallowed and the file
-  // deleted. This module's own header records that it was ported from a
-  // Python implementation keyed `consecutive_failures` / `blocked_until`,
-  // which is exactly that foreign shape, so it is a real one and not a
-  // hypothetical. Reproduced by an acceptance pass.
-  //
-  // Every snapshot this module has ever written carries both fields, so the
-  // floor costs nothing an older build would trip over.
+  // Tolerating absent fields (for older builds that wrote fewer) needs a
+  // floor, or `{}` and a foreign schema coerce to healthy. The per-route reader
+  // catches that via its healthy-is-a-contradiction rule, but the legacy blob
+  // has no such rule — healthy entries are legitimate there — so on the upgrade
+  // path both shapes would be swallowed and the file deleted. Every snapshot
+  // this module writes carries both fields, so the floor costs nothing.
   if (r.failures === undefined && r.blockedUntilMs === undefined) return undefined;
   if (r.failures !== undefined && typeof r.failures !== "number") return undefined;
   if (r.blockedUntilMs !== undefined && r.blockedUntilMs !== null) {
     if (typeof r.blockedUntilMs !== "number") return undefined;
-    // A deadline this module could never have WRITTEN.
-    //
-    // snapshot() only ever emits `null` or `Date.now() + remaining`, and
-    // cooldownRemaining is capped at MAX_COOLDOWN_SEC — so a real record's
-    // deadline is positive, finite, and at most a day ahead of when it was
-    // written. Values outside that were not produced here.
+    // A deadline this module could never have WRITTEN. snapshot() only emits
+    // `null` or `Date.now() + remaining`, and cooldownRemaining is capped at
+    // MAX_COOLDOWN_SEC, so a real record's deadline is positive, finite, and at
+    // most a day ahead of when it was written.
     //
     // Deliberately NOT "is it in the past": a genuine cooldown becomes past
     // simply by time passing, and calling that corrupt would report every
-    // expired record on disk. An acceptance pass found `blockedUntilMs: 0`
-    // reading as a healthy route and the CHANGELOG claiming the
-    // healthy-is-a-contradiction rule "catches every unrecognised shape" —
-    // it cannot, and a plausible-but-wrong timestamp stays indistinguishable
-    // from a real expired one by construction. This closes the impossible
-    // values only, and the claim is corrected rather than widened.
+    // expired record on disk. So this closes the impossible values only — a
+    // plausible-but-wrong timestamp stays indistinguishable from a real
+    // expired one by construction.
     if (!Number.isFinite(r.blockedUntilMs) || r.blockedUntilMs <= 0) return undefined;
     if (r.blockedUntilMs > Date.now() + MAX_COOLDOWN_SEC * 1000) return undefined;
   }
@@ -213,17 +182,14 @@ export class BreakerStore {
    * construction — save() deletes a fully-healthy record rather than writing
    * a no-op one.
    *
-   * A file that EXISTS but does not parse is a different thing, and used to
-   * be indistinguishable from that absence: readOne() returned undefined for
-   * both, so a truncated or half-written record rendered as `breaker=closed
-   * failures=0`, route Ready, with nothing said by `status` or `doctor`. One
-   * corrupt file silently un-tripped a route mid-cooldown — the exact failure
-   * this whole module was added to prevent, arrived at from the other side.
+   * A file that EXISTS but does not parse must not read as that absence: a
+   * truncated record rendering as `breaker=closed failures=0`, route Ready,
+   * silently un-trips a route mid-cooldown.
    *
-   * The lost state cannot be recovered, so this does not try to guess at it
-   * (failing closed would strand a route until someone deleted a file by
-   * hand). It records the route name instead, so the surfaces a person reads
-   * can say the state is unknown rather than assert that it is fine.
+   * The lost state cannot be recovered, so this does not guess at it (failing
+   * closed would strand a route until someone deleted a file by hand). It
+   * records the route name instead, so the surfaces a person reads can say the
+   * state is unknown rather than assert that it is fine.
    */
   loadAll(): Record<string, CircuitBreakerSnapshot> {
     const out: Record<string, CircuitBreakerSnapshot> = {};
@@ -286,20 +252,13 @@ export class BreakerStore {
    * Apply `mutate` to a route's PERSISTED snapshot, atomically across
    * processes.
    *
-   * save() alone was not enough and the reason is worth stating: each process
-   * holds its own in-memory CircuitBreaker loaded at boot, mutates it, and
-   * writes the result. Two concurrent failures therefore both read 0, both
-   * write 1, and one is lost. Measured before this fix: 8 concurrent failures
-   * on one route persisted as `failures: 1` and the breaker never tripped, so
-   * a dead route kept being selected.
-   *
-   * That is exactly the defect the per-route file split was meant to remove,
-   * and it did not — splitting removed contention BETWEEN routes while leaving
-   * the read-modify-write inside each file untouched. The probe that "proved"
-   * the split wrote to 800 distinct routes and so could never have caught it.
-   *
-   * Passing the on-disk value into `mutate` makes the persisted count the
-   * authority, so each process contributes exactly one event.
+   * save() alone is not enough: each process holds its own in-memory
+   * CircuitBreaker loaded at boot, mutates it, and writes the result, so two
+   * concurrent failures both read 0, both write 1, and one is lost — the
+   * breaker never trips and a dead route keeps being selected. The per-route
+   * file split removes contention BETWEEN routes only. Passing the on-disk
+   * value into `mutate` makes the persisted count the authority, so each
+   * process contributes exactly one event.
    */
   update(
     service: string,
@@ -309,13 +268,12 @@ export class BreakerStore {
     try {
       mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     } catch {
-      // Unwritable state directory. save() and QuotaCache.saveLocalCountsSync()
-      // both swallow persistence failures deliberately; this did not, so the
-      // throw propagated out of Router.handleResult and discarded a COMPLETED
-      // dispatch's result. The job then sat "running" until the 90s heartbeat
-      // window and reported "the dispatch server exited before the run
-      // finished" — which never happened. Losing breaker state is survivable;
-      // losing the user's finished work to report a false cause is not.
+      // Unwritable state directory, swallowed as save() and
+      // QuotaCache.saveLocalCountsSync() do. A throw here propagates out of
+      // Router.handleResult and discards a COMPLETED dispatch's result, which
+      // then sits "running" until the 90s heartbeat window reports the server
+      // exited. Losing breaker state is survivable; losing the user's finished
+      // work to report a false cause is not.
       return mutate(undefined);
     }
     return withFileLock(file, () => {
@@ -330,27 +288,20 @@ export class BreakerStore {
       const snapshot = snapshotFromRecord(JSON.parse(readFileSync(file, "utf-8")));
       if (snapshot === undefined) return undefined;
       // A record that reads back FULLY HEALTHY is a contradiction, because
-      // save() deletes such a record rather than writing one — see its
-      // "healthy install keeps an empty directory" contract. So the file
+      // save() deletes such a record rather than writing one. So the file
       // existing at all means something wrote a shape this does not
-      // understand, and the healthy reading is an artifact of the coercions in
-      // snapshotFromRecord rather than anything the file said.
+      // understand, and the healthy reading is an artifact of
+      // snapshotFromRecord's coercions rather than anything the file said.
       //
-      // This is the general form of that function's type guards, and it lives
-      // HERE rather than in it because the invariant is the per-route file's,
-      // not the record shape's: the legacy blob legitimately contained healthy
-      // entries, so applying this there would report every one of them as
-      // corrupt.
-      //
-      // It is the general form because the type guards were the wrong tool on
-      // their own — they enumerate the ways a record can be broken, and an
-      // acceptance pass kept finding entries missing from the list: `[]`, `{}`
-      // and a foreign nested schema all read back healthy in silence and
-      // un-tripped a live cooldown. Checking the module's own invariant needs
-      // no such list. The type guards still earn their place for the case this
-      // cannot see: a wrong-typed field on a record that is otherwise
-      // not-healthy, which reads back as a real cooldown at the wrong numbers
-      // rather than as healthy.
+      // This is the general form of that function's type guards, which
+      // enumerate the ways a record can be broken and can never be complete —
+      // `[]`, `{}` and a foreign nested schema all coerce to healthy. It lives
+      // HERE rather than in it because the invariant is the per-route file's:
+      // the legacy blob legitimately contains healthy entries, so applying it
+      // there would report every one of them as corrupt. The type guards still
+      // earn their place for the case this cannot see: a wrong-typed field on a
+      // record that is otherwise not-healthy, which reads back as a real
+      // cooldown at the wrong numbers.
       if (snapshot.failures === 0 && snapshot.blockedUntilMs === null) return undefined;
       return snapshot;
     } catch {
@@ -371,23 +322,16 @@ export class BreakerStore {
       : path.join(path.dirname(this.stateDir), "breaker_state.json");
     if (!existsSync(legacy)) return;
     // The blob is only deleted once everything in it is durably on disk in
-    // the per-route format. The first version of this migration merged into
-    // MEMORY and deleted the blob — no caller ever persisted the result, so
-    // the first process to call loadAll() after an upgrade (even a plain
-    // `status`) consumed every live cooldown: the exact failure the comment
-    // above it claimed to prevent.
-    // Entries this run could not consume. Everything else is migrated and
-    // dropped, so the blob shrinks to nothing on a clean upgrade and each
-    // entry is read exactly once.
+    // the per-route format: merging into MEMORY and deleting the blob would let
+    // the first loadAll() after an upgrade — even a plain `status` — consume
+    // every live cooldown.
     //
-    // The previous version kept the WHOLE blob whenever any entry was bad, and
-    // it is re-read on every loadAll(). Good entries were therefore re-injected
-    // forever — including after the route recovered and save() deleted its
-    // per-route file, which this then recreated from the stale blob. An
-    // acceptance pass measured a recovered route reading `failures=4` again
-    // after its record was deleted: one more failure from tripping, unable to
-    // heal, with nothing on any surface naming the blob. Keeping evidence of
-    // what could not be read must not mean replaying what could.
+    // `residual` holds only the entries this run could not consume, so the blob
+    // shrinks to nothing on a clean upgrade and each entry is read exactly once.
+    // Keeping the WHOLE blob whenever any entry is bad would replay the good
+    // entries on every loadAll(), including after a route recovered and save()
+    // deleted its per-route file — resurrecting a stale failure count the route
+    // cannot heal from.
     const residual: Record<string, unknown> = {};
     let readable = true;
     try {
@@ -396,11 +340,10 @@ export class BreakerStore {
       for (const [service, v] of Object.entries(data)) {
         const snapshot = snapshotFromRecord(v);
         if (snapshot === undefined) {
-          // Same reporting the per-route files get. This used to `continue`
-          // past a bad entry, and the blob was deleted at the end regardless —
-          // so a cooldown written in a shape this could not read was destroyed
-          // by the upgrade, silently, which is the failure the migration
-          // exists to prevent. Held back as evidence instead.
+          // Same reporting the per-route files get. Skipping a bad entry while
+          // still deleting the blob would destroy a cooldown written in a shape
+          // this cannot read, which is the failure the migration exists to
+          // prevent. Held back as evidence instead.
           this.unreadable.push(service);
           residual[service] = v;
           continue;
@@ -419,12 +362,10 @@ export class BreakerStore {
         }
       }
     } catch {
-      // A blob that will not parse at all. The old comment here said "nothing
-      // lost by deleting it below", which was an assumption about a file whose
-      // contents could not be read — it may well have held every live cooldown
-      // on the machine. Keep it and say so; a leftover blob costs one failed
-      // parse per read, and deleting the only copy costs the thing this module
-      // exists to protect. Nothing was parsed, so there is nothing to rewrite.
+      // A blob that will not parse at all may still hold every live cooldown on
+      // the machine, so it is kept and reported rather than deleted: a leftover
+      // blob costs one failed parse per read. Nothing was parsed, so there is
+      // nothing to rewrite.
       this.unreadable.push(LEGACY_BLOB_ROUTE);
       readable = false;
     }

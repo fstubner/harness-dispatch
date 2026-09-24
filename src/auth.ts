@@ -32,12 +32,9 @@ export async function readHttpToken(): Promise<string | null> {
 /**
  * The token as it is on disk RIGHT NOW, for a running server to consult.
  *
- * A server read the token once at startup and held it forever, so `auth
- * rotate` was a lie in both directions: an acceptance pass measured the old
- * token still returning 200 after rotation, and the newly issued one being
- * rejected with 401. Invalidating the old token is the entire reason anyone
- * rotates a credential, so telling the user it rotated while the leaked value
- * kept working is the worst possible outcome.
+ * A server that read the token once at startup and held it forever makes `auth
+ * rotate` a lie in both directions: the old token keeps returning 200 and the
+ * newly issued one is rejected with 401.
  *
  * Synchronous because it is consulted on the authorization path of every
  * request, which is not async. The file is a few dozen bytes on local disk and
@@ -66,26 +63,22 @@ export function httpTokenMtimeMs(): number {
 /**
  * Write the token, and make sure both it and its directory are owner-only.
  *
- * Two POSIX defects, both measured in a container by an audit:
+ * Two POSIX hazards, on the directory and on the file:
  *
- * 1. This was the ONLY one of nine directory-creating sites passing no
- *    `mode`, so the state root's permissions depended on which code path
- *    created it first — 0755 at the default umask, 0777 at umask 000, where
- *    every sibling produces 0700. `ensureHttpToken` runs at server startup,
- *    so on a fresh install `serve` is the realistic first toucher. With the
- *    root writable, another user planted a `config.yaml` there — and that
- *    path is live, read last by config lookup, so a planted file steers
- *    routes and credential references.
+ * 1. `ensureHttpToken` runs at server startup, so on a fresh install this is
+ *    the realistic first creator of the state root. Without an explicit
+ *    `mode`, that root is 0755 at the default umask and 0777 at umask 000 —
+ *    writable by another user, who can plant a `config.yaml` there. That path
+ *    is live and read last by config lookup, so a planted file steers routes
+ *    and credential references.
  *
- * 2. `mode:` on a write applies only when the file is CREATED. Rotating over
- *    an existing 0644 token left it 0644 — and `auth rotate` is the command
- *    you run BECAUSE the token leaked. `workspaces.ts` documents this exact
- *    trap for directories and fixes it with an explicit chmod; the lesson
- *    never reached the file writes.
+ * 2. `mode:` on a write applies only when the file is CREATED, so rotating
+ *    over an existing 0644 token leaves it 0644 — and `auth rotate` is the
+ *    command you run BECAUSE the token leaked. Only an explicit chmod changes
+ *    it.
  *
- * chmod is best-effort: a no-op on Windows, and a token we just wrote
- * successfully should not fail the command because its mode could not be
- * tightened.
+ * chmod is best-effort: a no-op on Windows, and a token written successfully
+ * should not fail the command because its mode could not be tightened.
  */
 async function writeTokenFile(token: string): Promise<void> {
   const dir = authDir();
@@ -108,8 +101,8 @@ export async function rotateHttpToken(): Promise<string> {
   // The environment variable wins over the file everywhere the token is read,
   // so rotating the file while it is set changes nothing: the printed token is
   // refused and the old one — the one being rotated because it leaked — keeps
-  // working. Measured in an audit. Refusing is the only honest answer, since
-  // this process cannot change the environment of a server already running.
+  // working. Refusing is the only honest answer, since this process cannot
+  // change the environment of a server already running.
   if (process.env[TOKEN_ENV]) {
     throw new Error(
       `auth rotate: the token in use comes from ${TOKEN_ENV}, so rotating the token ` +
@@ -128,12 +121,10 @@ export async function rotateHttpToken(): Promise<string> {
  * bearer token one byte at a time.
  *
  * On a length mismatch it still does comparison work rather than returning
- * early. That work is now sized by `expected`, not by `value`: the previous
- * version compared the caller-supplied buffer against ITSELF, so its cost
- * scaled with the length an attacker chose, and the comment claiming "a length
- * mismatch alone doesn't leak timing info either" asserted a property the code
- * did not have. The remaining signal is the same for every wrong length, which
- * is what that sentence was meant to say.
+ * early, sized by `expected` and not by `value` — comparing the
+ * caller-supplied buffer against itself would scale the cost with the length
+ * an attacker chose. Sized this way, the remaining signal is the same for
+ * every wrong length.
  */
 function safeEqual(value: string, expected: string): boolean {
   const valueBuf = Buffer.from(value, "utf8");
@@ -153,9 +144,6 @@ function safeEqual(value: string, expected: string): boolean {
  * cannot guarantee a token must not rely on it to deny anything. The HTTP
  * server can: it calls `ensureHttpToken()` at startup and falls back to the
  * token it read from disk on refresh, so null never reaches here from there.
- *
- * Spelled out because the fail-open branch is one line and reads like a
- * guard clause rather than the policy decision it is.
  */
 export function isAuthorized(
   authorizationHeader: string | string[] | undefined,
