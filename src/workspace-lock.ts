@@ -2,12 +2,8 @@
  * Mutual exclusion over a working directory, across processes.
  *
  * `workspace_policy: shared_locked` promises that two dispatches never edit
- * one workspace at the same time. Until now that promise was implemented as a
- * `Map` in module scope — real within a process, and every job used to get its
- * OWN process, so concurrent jobs sharing a directory were free to clobber
- * each other the entire time. The guarantee read correctly and did nothing.
- * Pooling supervisors made it bind for jobs sharing a supervisor, which
- * narrowed the hole to four ways instead of N but did not close it.
+ * one workspace at the same time. Jobs run in several supervisor processes, so
+ * an in-process `Map` cannot keep that promise on its own.
  *
  * Two layers, because they solve different halves:
  *
@@ -18,14 +14,13 @@
  *      POSIX.
  *
  * Lock files live in the state directory, keyed by a hash of the resolved
- * path, rather than inside the workspace: a dispatcher should not drop
- * bookkeeping files into a user's repository, where they would show up in
- * `git status` and in the workspace diff the caller is handed back.
+ * path, rather than inside the workspace: bookkeeping files in a user's
+ * repository would show up in `git status` and in the workspace diff the
+ * caller is handed back.
  *
  * A holder that dies must not wedge the directory forever, so the lock carries
  * a heartbeat refreshed while held, and a lock whose heartbeat has gone stale
- * is stolen. That is the same rule, and the same threshold, the job orphan
- * check already uses — one staleness concept in the system, not two.
+ * is stolen — the same rule and threshold the job orphan check uses.
  */
 
 import { createHash } from "node:crypto";
@@ -46,13 +41,11 @@ const RETRY_MS = 100;
 
 /**
  * How long an EXISTING-but-unreadable lock file is given before it is treated
- * as stealable. An unreadable record used to be stolen on sight, which made a
- * torn read of a mid-rewrite heartbeat sufficient to take a LIVE holder's lock
- * — two dispatches then edited the same workspace, the exact outcome
- * `shared_locked` exists to prevent. Heartbeats are written atomically now, so
- * within one build a torn read cannot happen; the grace keeps the steal honest
- * against writers from older builds (in-place heartbeat rewrites during a
- * rolling upgrade) and external interference.
+ * as stealable. Stealing on sight makes a torn read of a mid-rewrite heartbeat
+ * enough to take a LIVE holder's lock, so two dispatches edit the same
+ * workspace. Heartbeats here are written atomically, so the grace is for
+ * in-place rewrites by older builds during a rolling upgrade and for external
+ * interference.
  */
 const UNREADABLE_GRACE_MS = 1_000;
 
@@ -81,8 +74,8 @@ function readRecord(file: string): LockRecord | undefined {
     if (typeof parsed?.beatMs !== "number") return undefined;
     return { pid: Number(parsed.pid) || 0, key: String(parsed.key ?? ""), beatMs: parsed.beatMs };
   } catch {
-    // Unreadable or half-written: treat as absent, and let the staleness
-    // check below decide. A corrupt lock must not wedge the directory.
+    // Unreadable or half-written: treat as absent so a corrupt lock cannot
+    // wedge the directory; the staleness check decides what happens next.
     return undefined;
   }
 }
@@ -118,13 +111,12 @@ function tryCreate(file: string, key: string): boolean {
 /**
  * Take a stale lock out of the way — by RENAME, not delete.
  *
- * Delete-then-recreate let two waiters both decide the same record was stale:
- * the slower one's delete then removed the FASTER one's freshly created lock,
- * and both ended up holding the directory. Rename is atomic and names a
- * specific victim — whoever loses the rename gets ENOENT and simply goes
- * round the acquire loop again. Returns true if this process performed the
- * steal (the caller still has to win the `wx` create; a third waiter may get
- * there first, which is an honest race, not a double hold).
+ * Delete-then-recreate lets two waiters both decide the same record is stale:
+ * the slower one's delete removes the FASTER one's freshly created lock, and
+ * both end up holding the directory. Rename is atomic and names a specific
+ * victim — whoever loses it gets ENOENT and goes round the acquire loop again.
+ * Returns true if this process performed the steal; the caller still has to
+ * win the `wx` create.
  */
 function stealLock(file: string): boolean {
   const tomb = `${file}.stolen-${process.pid}-${Date.now().toString(36)}`;
@@ -151,8 +143,8 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
 
     const record = readRecord(file);
     if (record === undefined) {
-      // Exists but unreadable (or vanished between the two calls). Give it a
-      // grace window rather than stealing on sight — see UNREADABLE_GRACE_MS.
+      // Exists but unreadable, or vanished between the two calls — see
+      // UNREADABLE_GRACE_MS.
       unreadableSince ??= Date.now();
       if (Date.now() - unreadableSince >= UNREADABLE_GRACE_MS) {
         unreadableSince = undefined;
@@ -182,13 +174,12 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
   const beat = setInterval(() => {
     // Refresh ATOMICALLY (tmp + rename), never by rewriting in place: an
     // in-place rewrite truncates first, and a waiter reading in that window
-    // saw an empty record — grounds, under the old rules, to steal a lock
-    // whose holder was alive and mid-write.
+    // sees an empty record — grounds to steal a lock whose holder is alive.
     //
-    // Ownership is checked first: if the record is no longer ours, this
+    // Ownership is checked first: a record that is no longer ours means this
     // process froze past the stale window and was legitimately stolen.
-    // Overwriting would clobber the thief's record — and worse, make our own
-    // release() believe it still held the lock and delete it under the thief.
+    // Overwriting would clobber the thief's record, and make our own release()
+    // believe it still held the lock and delete it under the thief.
     try {
       const current = readRecord(file);
       if (current !== undefined && current.pid !== process.pid) {
@@ -197,9 +188,8 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       }
       if (current === undefined) {
         // Missing or unreadable while we believe we hold it: a steal may be
-        // mid-flight. Recreating it could re-take a lock someone else now
-        // owns, so stop refreshing and let release()'s ownership check
-        // decide what to delete.
+        // mid-flight, and recreating it could re-take a lock someone else now
+        // owns. Let release()'s ownership check decide what to delete.
         clearInterval(beat);
         return;
       }
@@ -249,7 +239,7 @@ export async function acquireWorkspaceLock(
 ): Promise<() => void> {
   const key = lockKey(workingDir);
 
-  // Layer 1: queue behind same-process waiters first, so a burst inside one
+  // Layer 1: queue behind same-process waiters, so a burst inside one
   // supervisor costs one filesystem acquisition rather than N spinning ones.
   const previous = inProcessLocks.get(key) ?? Promise.resolve();
   let releaseLocal!: () => void;
@@ -283,20 +273,12 @@ export async function acquireWorkspaceLock(
  * Delete lock files whose holder is definitely gone.
  *
  * A dead lock IS reclaimed correctly — but only when something contends for
- * that same working directory. Nothing contends for a path you dispatched
- * against once and moved on from, so its file stays forever: one per distinct
- * workspace, indefinitely. Found by a resource audit, which measured a
- * seven-day-old lock still sitting there.
- *
- * Tiny individually (a couple of hundred bytes), and the point is the count
- * rather than the size — this directory is walked when locks are examined, so
- * an unbounded file count is a cost paid later.
+ * that same working directory, and nothing contends for a path you dispatched
+ * against once and moved on from. The files are tiny; the cost is the count,
+ * since this directory is walked whenever locks are examined.
  *
  * Reuses `isDead` for a readable record, and honours the same
- * `UNREADABLE_GRACE_MS` the acquire path gives an unreadable one. The first
- * version of this claimed both and only did the first: it deleted an
- * unreadable lock on sight, measured at 25ms against the acquire path's
- * 1018ms, which is precisely the looser second rule the claim denied.
+ * `UNREADABLE_GRACE_MS` the acquire path gives an unreadable one.
  */
 export async function pruneDeadWorkspaceLocks(): Promise<void> {
   const dir = path.join(stateRoot(), "workspace-locks");
@@ -316,18 +298,10 @@ export async function pruneDeadWorkspaceLocks(): Promise<void> {
         await rm(file, { force: true });
         continue;
       }
-      // UNREADABLE, and this is where the claim that "the sweep uses exactly
-      // the rule that lets a waiter steal it" was FALSE — measured by an
-      // acceptance pass at 25ms here against 1018ms there.
-      //
-      // The acquire path gives an unreadable record UNREADABLE_GRACE_MS before
-      // treating it as stealable, because a torn read of a mid-rewrite
-      // heartbeat used to be enough to take a LIVE holder's lock. Deleting on
-      // sight here reintroduced exactly that: `tryCreate` opens with `wx` and
-      // then writes, so a real empty-file window exists, and an older build
-      // rewriting a heartbeat in place widens it. This sweep runs before every
-      // job start, so losing that race means two dispatches editing one
-      // `shared_locked` workspace — the outcome the lock exists to prevent.
+      // UNREADABLE: same grace the acquire path gives. `tryCreate` opens with
+      // `wx` and then writes, so a real empty-file window exists, and this
+      // sweep runs before every job start — deleting on sight would mean two
+      // dispatches editing one `shared_locked` workspace.
       const age = Date.now() - (await stat(file)).mtimeMs;
       if (age <= UNREADABLE_GRACE_MS) continue;
       await rm(file, { force: true });

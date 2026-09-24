@@ -8,21 +8,17 @@
  *                            other OpenAI-compatible endpoint.
  *   anthropic_messages       POST /messages — Anthropic's API directly, or
  *                            any third-party host that mirrors its Messages
- *                            API shape (different auth headers, request/
- *                            response body, and SSE event framing from
- *                            OpenAI's — see the wire-protocol-specific
+ *                            API shape (different auth headers, body and SSE
+ *                            framing from OpenAI's — see the wire-protocol
  *                            helpers below).
  *
  * Transport: global `fetch` (Node 24+). No subprocess, no extra deps.
  * Quota:     reactive — parses x-ratelimit- and anthropic-ratelimit- headers
- *            on every response. Local endpoints (Ollama, LM Studio) have no
- *            rate limits.
+ *            on every response. Local endpoints have no rate limits.
  *
- * R3: `dispatch()` retains the buffered POST for simplicity + compatibility
- * with tests that mock `fetch`. `stream()` switches to SSE streaming by
- * setting `stream: true` in the request body and parsing wire-protocol-
- * specific SSE frames as they arrive. The `completion` event is built from
- * the summed delta content across all events.
+ * `dispatch()` is a buffered POST; `stream()` sets `stream: true` and parses
+ * wire-protocol-specific SSE frames as they arrive, building its `completion`
+ * event from the summed delta content across all events.
  */
 
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
@@ -48,23 +44,15 @@ const RAW_HEAD_CHARS = 300;
  * path of its own.
  *
  * Exported so callers other than this dispatcher (e.g. the `usage` tool's
- * listModels, which hits GET {baseUrl}/models on the same endpoint) build URLs
- * the same way — a baseUrl configured bare must not 404 on one code path while
- * working on the other.
+ * listModels, which hits GET {baseUrl}/models) build URLs the same way — a bare
+ * baseUrl must not 404 on one code path while working on the other.
  *
- * The rule used to be "append /v1 unless it already ENDS in /v1", which
- * mangles any other path. This project's own config.default.yaml documents
- * `base_url: https://generativelanguage.googleapis.com/v1beta/openai` — Google's
- * OpenAI-compatible endpoint — and that produced
- * `/v1beta/openai/v1/chat/completions`, which is not a URL Google serves. An
- * acceptance pass noticed the same shape via `anthropic_messages`, whose
- * documented form is `POST {base_url}/messages`: a third-party host on a
- * non-/v1 path was simply unconfigurable.
- *
- * "You gave me a path, I use it" is the predictable rule, and every other
- * documented example already spells out its own `/v1` (`.../api/v1`,
- * `http://localhost:11434/v1`), so they are unaffected. A bare origin still
- * gets `/v1`, which is what makes `https://api.anthropic.com` work.
+ * "Append /v1 unless it already ENDS in /v1" mangles any other path:
+ * `https://generativelanguage.googleapis.com/v1beta/openai` becomes
+ * `/v1beta/openai/v1/chat/completions`, which Google does not serve, and a
+ * third-party `anthropic_messages` host on a non-/v1 path is unconfigurable.
+ * Every documented example already spells out its own `/v1`, and a bare origin
+ * still gets one, which is what makes `https://api.anthropic.com` work.
  */
 export function endpointUrl(baseUrl: string, path: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
@@ -73,8 +61,8 @@ export function endpointUrl(baseUrl: string, path: string): string {
     const parsed = new URL(trimmed);
     hasPath = parsed.pathname !== "" && parsed.pathname !== "/";
   } catch {
-    // Not parseable as a URL — fall back to the old suffix test rather than
-    // guessing, so a malformed base_url behaves as it always did.
+    // Not parseable as a URL — fall back to the suffix test rather than
+    // guessing.
     hasPath = trimmed.endsWith("/v1");
   }
   return hasPath ? `${trimmed}${path}` : `${trimmed}/v1${path}`;
@@ -87,7 +75,7 @@ const _MAX_FILE_BYTES = 512 * 1024; // 512 KB per file
 /**
  * Cap across ALL files in one prompt (2 MB).
  *
- * The per-file limit alone bounded nothing useful: 64 files just under 512 KB
+ * The per-file limit alone bounds nothing useful: 64 files just under 512 KB
  * each is a 32 MB prompt posted to a metered endpoint. This is the total that
  * actually reaches the wire.
  */
@@ -192,10 +180,9 @@ type ParsedResponse = ChatCompletionResponse | AnthropicMessageResponse;
  *
  * Node's undici says exactly "fetch failed" for DNS failures, refused
  * connections and TLS errors alike — no host, no port, no cause. For a router
- * whose whole job is choosing between endpoints, "which endpoint, and what
- * went wrong" is the entire content of the message. The host is redacted the
- * same way the rest of the output redacts it, so this stays safe to paste into
- * a bug report.
+ * choosing between endpoints, "which endpoint, and what went wrong" is the
+ * entire content of the message. The host is redacted, so this stays safe to
+ * paste into a bug report.
  */
 function describeFetchFailure(err: unknown, baseUrl: string, apiKey?: string): string {
   const message = err instanceof Error ? err.message : String(err);
@@ -212,12 +199,11 @@ function describeFetchFailure(err: unknown, baseUrl: string, apiKey?: string): s
             ? "TLS certificate rejected"
             : (cause?.message ?? undefined);
   const where = redactEndpointHost(baseUrl);
-  // The wrapped message is scrubbed too, not just the URL appended after it.
+  // The wrapped message is scrubbed too, not just the URL appended after it:
   // undici embeds the URL it was handed, so a base_url carrying userinfo or a
-  // key in the query put the raw credential straight into this string — and
-  // this string reaches the terminal and `logs/dispatches.jsonl`. The hint is
-  // scrubbed on the same grounds: it can be `cause.message`, which is equally
-  // not ours.
+  // key in the query would put the raw credential into this string, which
+  // reaches the terminal and `logs/dispatches.jsonl`. Same for the hint, which
+  // can be `cause.message`.
   const safe = (text: string): string => scrubEndpointSecrets(text, baseUrl, apiKey);
   return hint ? `${safe(message)} (${where}: ${safe(hint)})` : `${safe(message)} (${where})`;
 }
@@ -227,12 +213,8 @@ function describeFetchFailure(err: unknown, baseUrl: string, apiKey?: string): s
  * that "the two surfaces agree" is something the code enforces rather than
  * something a comment claims.
  *
- * It answers what was observed and nothing else. Earlier versions tried to
- * work out WHY a body was unusable, and each was wrong in ways only an
- * acceptance pass found: one called an HTML error page "no content", the next
- * discarded a real answer arriving in another SSE dialect, called a provider's
- * keepalives an unexpected shape, and classified the same bytes differently
- * depending on how the network split them.
+ * It reports what was observed and nothing else. Working out WHY a body is
+ * unusable means guessing, and every guess is wrong one case over.
  */
 function describeUnusableBody(raw: string, readError?: string): string {
   if (readError !== undefined) {
@@ -245,8 +227,7 @@ function describeUnusableBody(raw: string, readError?: string): string {
   return raw.length === 0
     ? "Empty response: the endpoint returned 200 with no body"
     : // Deliberately not a claim about the SHAPE being wrong — a well-formed
-      // stream that carried nothing lands here too. It says what it knows:
-      // nothing usable came out of this, and here is what arrived.
+      // stream that carried nothing lands here too.
       `No answer in response body: ${raw.slice(0, RAW_HEAD_CHARS)}`;
 }
 
@@ -306,27 +287,17 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   /**
    * Strip our credentials out of text the ENDPOINT wrote.
    *
-   * One method rather than a call per site, because per-site was how the leak
-   * survived: #210 scrubbed the two `HTTP <status>` paths and its changelog
-   * entry declared the class closed, while the two `describeUnusableBody`
-   * paths — a 200 carrying an unusable body, or an HTML error page from a
-   * gateway — went on returning the raw body verbatim, up to 300 characters
-   * of it, to the caller and into `logs/dispatches.jsonl`. An acceptance pass
-   * reproduced both against the built artifact.
+   * One method rather than a call per site: a per-site scrub is how an
+   * unscrubbed branch survives, returning up to 300 characters of raw
+   * endpoint body to the caller and into `logs/dispatches.jsonl`.
    *
-   * That sentence was first written as "every branch goes through here" while
-   * a fifth branch did not — the mid-stream SSE `error` event, where `#safe`
-   * had been applied to the fallback and not to the endpoint's own message.
-   * A verification pass caught it, which is twice now that a claim about this
-   * file has been wider than its code.
-   *
-   * So, enumerated rather than asserted. The branches that assign
-   * `DispatchResult.error` are: rate-limited (ours), `HTTP <status>` on both
-   * paths (scrubbed), the unusable-body describe on both paths (scrubbed),
-   * "No response body" (ours), the stream's thrown-error path (scrubbed), the
-   * mid-stream SSE error (scrubbed here), and the fetch-failure path, which
-   * scrubs inside `describeFetchFailure`. Anything added to that list that
-   * carries endpoint text belongs here too.
+   * Enumerated rather than asserted, because a claim like "every branch goes
+   * through here" is exactly what drifts. The branches assigning
+   * `DispatchResult.error`: rate-limited and "No response body" (ours, no
+   * endpoint text); `HTTP <status>`, the unusable-body describe, the stream's
+   * thrown error and the mid-stream SSE error (all scrubbed here); and the
+   * fetch-failure path, which scrubs inside `describeFetchFailure`. Anything
+   * added to that list that carries endpoint text belongs here too.
    */
   #safe(text: string): string {
     return scrubEndpointSecrets(text, this.baseUrl ?? "", this.apiKey);
@@ -357,9 +328,8 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     };
     if (this.thinkingLevel) body["reasoning_effort"] = this.thinkingLevel.toLowerCase();
     // Without this, most OpenAI-compatible servers omit the usage frame
-    // during streaming — tokensUsed would silently be missing for every
-    // `job` and progress-token `code` call (both always use stream()),
-    // while the buffered dispatch() path got it for free.
+    // during streaming, so tokensUsed would be silently missing for every
+    // call that goes through stream().
     if (stream) body["stream_options"] = { include_usage: true };
     return body;
   }
@@ -385,13 +355,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const msg = first.message;
     if (!msg || typeof msg !== "object") return null;
     const content = (msg as { content?: unknown }).content;
-    // An empty string is not an answer. The anthropic_messages branch above has
-    // always said so (`text.length > 0 ? text : null`); this one returned any
-    // string, so a well-formed 200 carrying `content: ""` was a SUCCESS with no
-    // output — the same silent-empty-success this dispatcher was just fixed for
-    // on the streaming side, still live here. An acceptance pass caught the
-    // fix's own claim ("the streaming path now refuses this the same way the
-    // buffered path does") asserting a guard that did not exist.
+    // An empty string is not an answer — as in the anthropic_messages branch
+    // above. Returning any string would make a well-formed 200 carrying
+    // `content: ""` a SUCCESS with no output.
     return typeof content === "string" && content.length > 0 ? content : null;
   }
 
@@ -431,23 +397,19 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   }
 
   /**
-   * Parse one SSE frame (`event:`/`data:` lines separated by a blank line)
-   * into DispatcherEvents. Anthropic frames carry a named `event:` line;
-   * OpenAI frames don't (only `data:`, with a `[DONE]` sentinel) — both use
-   * the same blank-line frame boundary, so the caller's chunking is shared.
-   */
-  /**
-   * `usage` is PARTIAL per frame on purpose — Anthropic splits input_tokens
-   * (message_start) and output_tokens (message_delta) across two different
-   * frames, unlike OpenAI which sends both together in its one usage-
-   * bearing frame. The caller merges partial updates across the whole
-   * stream rather than overwriting on each frame.
+   * Parse one SSE frame (`event:`/`data:` lines separated by a blank line) into
+   * DispatcherEvents. Anthropic frames carry a named `event:` line; OpenAI
+   * frames don't (only `data:`, with a `[DONE]` sentinel) — both use the same
+   * blank-line boundary, so the caller's chunking is shared.
    *
-   * `error`, when set, means the upstream sent a mid-stream error event
-   * AFTER already returning 200 and streaming some content — a case the
-   * HTTP-status checks earlier in #runStream never see. The caller must
-   * treat this as a failed completion (using whatever partial output
-   * accumulated so far), not silently report success.
+   * `usage` is PARTIAL per frame on purpose: Anthropic splits input_tokens
+   * (message_start) and output_tokens (message_delta) across two frames, where
+   * OpenAI sends both together. The caller merges rather than overwrites.
+   *
+   * `error`, when set, means the upstream sent a mid-stream error event AFTER
+   * returning 200 and streaming some content — a case the HTTP-status checks in
+   * #runStream never see. The caller must treat it as a failed completion,
+   * keeping whatever partial output accumulated, not report success.
    */
   #parseSseFrame(frame: string): {
     events: DispatcherEvent[];
@@ -495,12 +457,10 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   /**
    * Anthropic streams message_start (initial input_tokens),
    * content_block_delta (text_delta chunks), message_delta (final
-   * output_tokens), and (on failure) a named error event — accumulate
-   * across every `data:` line in the frame rather than keeping only the
-   * last one. That matters beyond just "a frame with two events": if frame
-   * boundaries ever get miscounted upstream (e.g. a proxy that coalesces
-   * writes), multiple real SSE events can land in what we treat as one
-   * frame — dropping all but the last would silently lose content or usage.
+   * output_tokens), and on failure a named error event. Every `data:` line in
+   * the frame accumulates rather than the last one winning: a proxy that
+   * coalesces writes can land several real SSE events in what we treat as one
+   * frame, and keeping only the last would silently lose content or usage.
    */
   #parseAnthropicSseFrame(frame: string): {
     events: DispatcherEvent[];
@@ -553,24 +513,14 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   // ---------------------------------------------------------------------
 
   /**
-   * Buffered one-shot: POST with stream=false, parse a single JSON body.
-   * Kept as a fast-path (no incremental parsing overhead) and to preserve
-   * existing mocked-fetch tests.
-   */
-  /**
-   * Everything both request paths do before they diverge, in one place.
+   * Everything both request paths do before they diverge, in one place: the
+   * URL, the headers, the timeout timer, the abort wiring, and the mapping of
+   * a thrown fetch into a failure. Kept together because two hand-synchronised
+   * copies drift — a credential leak fixed in one body-built error message and
+   * missed in the other is the shape this prevents.
    *
-   * The two were written out twice and stayed in step by hand: the URL, the
-   * headers, the timeout timer, the abort wiring, and the mapping of a thrown
-   * fetch into a failure. That is not theoretical drift — a credential leak
-   * was fixed in one of the two body-built error messages and missed in the
-   * other until a test went looking, and this file's own header records the
-   * same shape happening before.
-   *
-   * `streaming` stays a parameter rather than being collapsed away, because
-   * it is the one thing that genuinely differs: `dispatch()` sends
-   * `stream: false` and asks for JSON, and flipping that would change the
-   * request every buffered endpoint call puts on the wire.
+   * `streaming` stays a parameter because it is the one thing that genuinely
+   * differs: `dispatch()` sends `stream: false` and asks for JSON.
    *
    * The timer is handed back UNCLEARED on purpose — it has to span the body
    * read that follows, which is where a half-dead endpoint stalls. The caller
@@ -642,24 +592,18 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const { res, timer, start } = opened;
     // NOT cleared here — the timer must span the body read below.
     //
-    // Clearing on headers left `res.text()` unbounded, so a route configured
-    // with `timeout_ms: 120000` could sit far past it on a stalled body, with
-    // only undici's 300s inactivity default as a backstop. This is the
-    // BUFFERED path, which the router uses for its primary route, so the
-    // configured timeout was the one number a caller could set and the one
-    // the slow case ignored. Structurally identical to the leaderboard
-    // timeout fixed in the previous release; the streaming sibling below
-    // already spans its own read.
+    // Clearing on headers leaves `res.text()` unbounded, so a route configured
+    // with `timeout_ms: 120000` can sit far past it on a stalled body, with
+    // only undici's 300s inactivity default as a backstop. The streaming
+    // sibling below spans its own read the same way.
     const responseHeaders = headersToObject(res.headers);
     const durationMs = Date.now() - start;
 
     let rawBody = "";
-    // Distinguished from an empty body, because they are different events with
-    // different fixes and this path used to state the wrong one as fact: a
-    // server that sent 200 plus a partial body and then reset the connection
-    // was reported as "the endpoint returned 200 with no body". The streaming
-    // path said "terminated" and kept the partial output for the same socket,
-    // so the two paths did not agree — while a comment claimed they did.
+    // Distinguished from an empty body: they are different events with
+    // different fixes. A server that sends 200 plus a partial body and then
+    // resets the connection must not be reported as "the endpoint returned 200
+    // with no body", which is what the streaming path's own wording agrees on.
     let bodyReadError: string | undefined;
     try {
       rawBody = await res.text();
@@ -690,9 +634,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // dispatcher returns. An endpoint that echoes the request URL back in
       // its own error body — several do — otherwise hands the caller their
       // own key in the query string, and the same string is written to
-      // logs/dispatches.jsonl. The network-error paths above have always
-      // scrubbed; these two, built from a body rather than a thrown Error,
-      // did not.
+      // logs/dispatches.jsonl.
       const errMessage = this.#safe(
         this.#extractErrorMessage(parsedBody, rawBody),
       );
@@ -712,9 +654,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         output: "",
         service: this.id,
         success: false,
-        // Same questions the streaming path asks, in the same order. This path
-        // used to emit a dangling "Unexpected response shape: " with nothing
-        // after the colon for an empty body — technically true and useless.
+        // Same questions the streaming path asks, in the same order.
         error: this.#safe(describeUnusableBody(rawBody, bodyReadError)),
         durationMs,
         rateLimitHeaders: responseHeaders,
@@ -786,9 +726,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // dispatcher returns. An endpoint that echoes the request URL back in
       // its own error body — several do — otherwise hands the caller their
       // own key in the query string, and the same string is written to
-      // logs/dispatches.jsonl. The network-error paths above have always
-      // scrubbed; these two, built from a body rather than a thrown Error,
-      // did not.
+      // logs/dispatches.jsonl.
       const errMessage = this.#safe(
         this.#extractErrorMessage(parsedBody, rawBody),
       );
@@ -806,21 +744,20 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       return;
     }
 
-    // Stream body — SSE frames are separated by a blank line, which the
-    // spec allows as \n\n OR \r\n\r\n. A literal indexOf("\n\n") never
-    // matches CRLF-framed streams, so the whole body silently piles up in
-    // the trailing flush as one "frame" — use a regex boundary instead.
+    // SSE frames are separated by a blank line, which the spec allows as \n\n
+    // OR \r\n\r\n — hence a regex boundary: a literal indexOf("\n\n") never
+    // matches a CRLF-framed stream, so the whole body would silently pile up
+    // in the trailing flush as one "frame".
     const chunks: string[] = [];
     let buffer = "";
     // The head of the body exactly as it arrived, kept because `buffer` is
     // consumed frame by frame and is empty by the time a failure is reported.
     // Without it the failure message could only say what was NOT found.
     //
-    // Truncated to RAW_HEAD_CHARS, not "stopped once past it": the previous
-    // version appended whole chunks while under the limit, so one chunk could
-    // carry it to any length. That was invisible until it mattered — the same
-    // 2 KB body classified two different ways depending on how the network
-    // split it, decided by bytes the message never showed.
+    // Truncated to RAW_HEAD_CHARS, not "stopped once past it": appending whole
+    // chunks while under the limit lets one chunk carry it to any length, so
+    // the same 2 KB body would be classified differently depending on how the
+    // network split it.
     let rawSeen = "";
     // Merged across frames, not overwritten — Anthropic's input/output
     // token counts arrive on two DIFFERENT frames (see #parseSseFrame).
@@ -879,14 +816,11 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       }
     } catch (err) {
       clearTimeout(timer);
-      // Scrubbed, like every other error leaving this dispatcher.
-      //
-      // undici embeds the request URL in its failure messages, so a base_url
-      // carrying userinfo or an api key in the query string ended up verbatim
-      // in `result.error` — and from there in job status, stderr.log and
-      // dispatches.jsonl. The fetch-failure sibling routes through
-      // describeFetchFailure precisely to avoid that; this branch was the one
-      // that did not.
+      // Scrubbed, like every other error leaving this dispatcher. undici embeds
+      // the request URL in its failure messages, so a base_url carrying
+      // userinfo or an api key in the query string would land verbatim in
+      // `result.error` — and from there in job status, stderr.log and
+      // dispatches.jsonl.
       const errMsg = this.#safe(
         err instanceof Error ? err.message : String(err),
       );
@@ -932,17 +866,11 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     // completion body still answered.
     //
     // Nothing in that body is SSE, so no frame parses out of it and the stream
-    // yielded nothing — and the failure said "No answer in response body:
+    // yields nothing — the failure would read "No answer in response body:
     // {…"content":"pong"…}", quoting the answer it was about to throw away.
-    // Measured against a local endpoint during a Linux acceptance pass; real
-    // servers and gateways do ignore the flag.
-    //
-    // This reads the body with the SAME extractor the buffered path uses
-    // rather than inferring anything from its shape — the one thing that
-    // distinguishes it from the classification attempts documented below,
-    // each of which guessed at why a body was unusable and was wrong one case
-    // over. Here there is no guess: either the parser finds a completion in
-    // it or nothing happens.
+    // Real servers and gateways do ignore the flag. Read with the SAME
+    // extractor the buffered path uses rather than inferring from shape, so
+    // either the parser finds a completion or nothing happens.
     if (streamError === undefined && chunks.length === 0 && buffer.trim()) {
       const parsed = this.#parseBody(buffer);
       const recovered = parsed ? this.#extractContent(parsed) : null;
@@ -955,33 +883,18 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
 
     const output = chunks.join("");
     // A 200 that yields no answer is not a successful empty answer. jobs.ts
-    // only ever streams, so the MCP surface (the primary one, and the one an
-    // orchestrating agent branches on) reported `success: true` with an empty
-    // output. The breaker heals on a success, so a route serving nothing but
-    // empty 200s was recorded as healthy forever and never tripped.
+    // only ever streams, so `success: true` with empty output would reach the
+    // MCP surface an orchestrating agent branches on — and since the breaker
+    // heals on a success, a route serving nothing but empty 200s would be
+    // recorded as healthy forever and never trip.
     //
-    // The message asks one question — did ANYTHING come back? — and does not
-    // try to work out why what came back was unusable.
-    //
-    // Two previous versions did try, and both were wrong in ways nobody
-    // noticed until an acceptance pass went looking. The first reported "no
-    // content" for anything that yielded no text, so an HTML error page, plain
-    // prose and a gateway that ignored `stream: true` were all described as
-    // empty. The second tested whether the body looked like SSE, and got three
-    // more cases backwards: a stream in a dialect this parser does not read
-    // (Anthropic's, on a route configured as OpenAI's) has its real answer
-    // discarded and called empty; SSE comment keepalives — `: OPENROUTER
-    // PROCESSING`, sent by a real provider — are well-formed SSE carrying
-    // nothing and were called an unexpected shape; and an HTML page containing
-    // any `data:` line was called empty.
-    //
-    // Each fix was right about the case in front of it and wrong one case
-    // over, which is the signal that the classification itself does not belong
-    // here. This dispatcher knows one thing for certain: whether bytes
-    // arrived. Everything else is the reader's to judge, and showing them the
-    // body is what lets them. A well-formed empty stream now reports its own
-    // `data: [DONE]` rather than a friendlier sentence about it — less
-    // polished, and it cannot be wrong.
+    // The message asks one question — did ANYTHING come back? — and leaves the
+    // classifying to the reader. Guessing gets cases backwards: "no content"
+    // mislabels an HTML error page, and a looks-like-SSE test discards the real
+    // answer of a stream in a dialect this parser does not read, calls a
+    // provider's comment keepalives an unexpected shape, and reads an HTML page
+    // containing any `data:` line as empty. So a well-formed empty stream
+    // reports its own `data: [DONE]` — less polished, and it cannot be wrong.
     const emptyAnswer = streamError === undefined && output.length === 0;
     const result: DispatchResult =
       streamError !== undefined || emptyAnswer
@@ -1044,10 +957,8 @@ async function buildPromptWithFiles(
         continue;
       }
       if (totalBytes + info.size > _MAX_TOTAL_FILE_BYTES) {
-        // The per-file limit alone bounds nothing useful — this is the check
-        // that keeps 64 × ~500 KB from becoming a 32 MB post to a metered
-        // endpoint. Announced per skipped file so the delegate knows exactly
-        // which context it is missing.
+        // Announced per skipped file so the delegate knows exactly which
+        // context it is missing.
         parts.push(
           `\n# Skipped ${filePath}: total file budget exhausted ` +
             `(${_MAX_TOTAL_FILE_BYTES / 1024} KB across all files)`,

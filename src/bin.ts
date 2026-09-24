@@ -63,14 +63,10 @@ async function buildRuntime(configPath: string | undefined): Promise<Runtime> {
 }
 
 /**
- * Did this invocation ask for machine-readable output?
- *
- * Read from raw argv rather than the parsed flags because the two callers are
- * the unknown-command branch and the top-level error handler, both of which
- * run where parsing has either not happened or already failed. `--json=true`
- * counts: an acceptance pass measured that spelling getting JSON on success
- * and plain text on failure, which is the inconsistency the envelope exists to
- * remove.
+ * Did this invocation ask for machine-readable output? Read from raw argv
+ * rather than the parsed flags, because both callers — the unknown-command
+ * branch and the top-level error handler — run where parsing has either not
+ * happened or already failed. `--json=true` counts.
  */
 function wantsJsonOutput(): boolean {
   return process.argv.slice(2).some((a) => a === "--json" || a.startsWith("--json="));
@@ -140,7 +136,7 @@ async function cmdConfigure(
   // detection rather than loaded: loading it would make it authoritative and
   // hide the harness installed since — the reason the user is re-running.
   // Anything else on disk is the user's, loaded so its settings migrate, and
-  // guarded below. See stampGenerated for the natural-order story.
+  // guarded below.
   const existing = existsSync(target) ? await fs.readFile(target, "utf-8") : undefined;
   const regenerate = existing !== undefined && isUneditedGenerated(existing);
   const config = await loadConfig(regenerate ? undefined : configPath, { allowMissing: true });
@@ -158,9 +154,9 @@ async function cmdConfigure(
         config.envRefs?.get(svc.apiKey) === undefined &&
         config.apiKeyRefs?.get(svc.name) === undefined,
     );
-    // The note used to speak only for the api_key while the base_url beside it
-    // was printed whole, so a preview containing a URL password carried a
-    // sentence implying it had been sanitised. It now names what it did.
+    // The note has to name everything it redacted: a base_url can carry a
+    // password too, and a note speaking only for the api_key would imply the
+    // rest of the preview was sanitised when it was not.
     const urlRedacted = Object.values(config.services).some((svc) => {
       if (svc.baseUrl === undefined || svc.baseUrl === "") return false;
       if (config.envRefs?.get(svc.baseUrl) !== undefined) return false;
@@ -192,9 +188,8 @@ async function cmdConfigure(
   const yamlText = configToYaml(config, { redactLiterals: false });
 
   // "Detected" is only true when detection ran. Over an edited file that lists
-  // its own routes it does not (the file is authoritative), and an acceptance
-  // pass measured `configure --yes --force` printing "Detected 1 harness route"
-  // with a second harness on PATH that never appeared in the output.
+  // its own routes it does not — the file is authoritative — and claiming a
+  // detection there hides a harness on PATH that is not in the output.
   const plural = routeCount === 1 ? "" : "s";
   process.stdout.write(
     config.detectionRan === false
@@ -248,13 +243,9 @@ async function cmdConfigure(
     return 0;
   }
 
-  // Guard ANY existing file, however the path was supplied.
-  //
-  // This previously read `existsSync(target) && explicitConfigPath === undefined`,
-  // so passing --config skipped the protection entirely — and the message told
-  // you to pass --config, which is exactly what disabled it. Overwriting a
-  // hand-written config is not recoverable, so it now takes an explicit
-  // --force rather than an accident of which flag you happened to use.
+  // Guard ANY existing file, however the path was supplied. Overwriting a
+  // hand-written config is not recoverable, so it takes an explicit --force
+  // rather than an accident of which flag was used.
   if (existsSync(target) && !opts.force && !regenerate) {
     process.stderr.write(
       `configure: ${target} already exists and would be overwritten.\n` +
@@ -265,12 +256,8 @@ async function cmdConfigure(
   }
   // 0600, because this file can contain a LITERAL api_key: `apiKeyForYaml`
   // deliberately preserves one rather than replacing it with a `${VAR}`
-  // reference, so `configure` can write a real credential to disk. It was
-  // written with default permissions — 0644 under a typical umask — in a
-  // module family that is careful everywhere else (leaderboard 0600, state dir
-  // 0700, client-register carries the original file's mode). Found by an
-  // acceptance pass from reading, POSIX-only and not reproduced on Windows,
-  // where the mode is ignored.
+  // reference, so `configure` can write a real credential to disk. POSIX only;
+  // Windows ignores the mode.
   //
   // Applied on create only: `writeFile`'s mode does not change an existing
   // file's permissions, so re-running `configure` will not silently tighten a
@@ -282,10 +269,8 @@ async function cmdConfigure(
   const absoluteTarget = path.resolve(target);
   process.stdout.write(`Wrote ${absoluteTarget}.\n`);
 
-  // The last step of setup used to be "here is some JSON, paste it somewhere".
-  // Nobody owned the result, and the paths in it later moved — which is how one
-  // machine ended up running a dead entry, a dead hook, and a third client
-  // reading a different config, all silently. Offer to do it instead.
+  // Offer to register with clients rather than ending setup with JSON to
+  // paste: nobody owns a pasted entry, and the paths in it go stale silently.
   if (!opts.noClients) {
     process.stdout.write("\n");
     return cmdConnect(configPath, {
@@ -305,15 +290,9 @@ async function cmdConfigure(
       "directory the MCP client launches from — a relative path or none at all silently\n" +
       "falls back to the shipped defaults, ignoring every edit you make to this file):\n",
   );
-  // The SAME entry `connect` writes, built by the same function.
-  //
-  // This printed a hardcoded `harness-dispatch --config <path>` while connect
-  // writes whatever `launchCommand()` resolves to — `npx -y harness-dispatch
-  // --config <path>` without a global install. So pasting the snippet this
-  // command prints and then running `connect --remove` was answered "has an
-  // entry we did not write — left alone unless --force", and exit 1. The tool
-  // called its own documented output hand-edited, and blocked both update and
-  // removal on the manual-install path it had just recommended.
+  // The SAME entry `connect` writes, built by the same function — otherwise a
+  // pasted snippet does not match what `connect` recognises, and `connect
+  // --remove` treats it as a hand-edited entry it must not touch.
   printMcpSnippet(desiredEntry(absoluteTarget, launchCommand()));
   process.stdout.write("Or let `harness-dispatch connect` write it for you.\n");
   return 0;
@@ -329,12 +308,11 @@ function printMcpSnippet(entry: { command: string; args: string[] } | undefined)
 
 /**
  * Register this server with the MCP clients on this machine — the last step of
- * setup, which used to be "paste this snippet somewhere".
+ * setup.
  *
- * Interactive when a human is at a terminal, flag-driven otherwise. A prompt
- * that blocks is right in front of a person and wrong in CI, so with no TTY
- * and no `--clients` this reports what it WOULD do and writes nothing, rather
- * than hanging or guessing.
+ * Interactive when a human is at a terminal, flag-driven otherwise: with no
+ * TTY and no `--clients` it reports what it WOULD do and writes nothing,
+ * rather than hanging on a prompt or guessing.
  */
 async function cmdConnect(
   configPath: string | undefined,
@@ -358,7 +336,7 @@ async function cmdConnect(
 
   // `import.meta.url` is this running file — dist/bin.js for an installed or
   // built copy. "The build you are running now" is the only honest answer to
-  // which checkout --dev means, and it needs no flag value to get wrong.
+  // which checkout --dev means.
   const selfPath = fileURLToPath(import.meta.url);
   const plans = planClientWrites(
     target,
@@ -392,17 +370,15 @@ async function cmdConnect(
         "Nothing to register. Add this to whichever client you use, then re-run\n" +
         "`harness-dispatch connect` if you install one of the two above:\n",
     );
-    // Setup has to end with something you can act on. Without this, a machine
-    // with no client detected got a cheerful "nothing to do" and no way to
-    // finish wiring anything up — the snippet was the ONLY output this replaced.
+    // Setup has to end with something you can act on: with no client detected
+    // the snippet is the only way to finish wiring anything up.
     printMcpSnippet(plans[0]?.desired);
     return 0;
   }
 
   if (!opts.remove) {
-    // Stated once, up front, rather than only inside the diff for entries that
-    // happen to differ. What gets written should not be something you can only
-    // learn from a client being in a particular state.
+    // Stated once, up front: what gets written should not be learnable only
+    // from a client happening to be in a particular state.
     process.stdout.write(`Entry to write: ${JSON.stringify(plans[0]!.desired)}\n\n`);
   }
   process.stdout.write(`${opts.remove ? "Removing from" : "Registering with"} clients:\n`);
@@ -420,12 +396,9 @@ async function cmdConnect(
     : await chooseInteractively(installed, opts);
   // Consent to replace a HAND-EDITED entry comes from ANSWERING the
   // interactive prompt, which shows the difference first, or from --force.
-  //
-  // Neither `--clients` nor `--yes` counts. `--clients` says which client, not
+  // Neither `--clients` nor `--yes` counts: `--clients` says which client, not
   // "overwrite whatever I put there"; `--yes` skips the question rather than
-  // answering it. The first version of this gate accepted "no client named" as
-  // consent, which let `--yes` through — the same class it was written to
-  // close, one flag over.
+  // answering it.
   const prompted = requested === undefined && !opts.yes && process.stdin.isTTY === true;
   const consented = opts.force || prompted;
   if (chosen === undefined) {
@@ -467,9 +440,8 @@ async function cmdConnect(
 
 /**
  * The listing describes state from the point of view of what is about to
- * happen. Under `--remove`, "already registered correctly" describes the entry
- * accurately and reads as nonsense under the heading "Removing from clients",
- * where the same state means "this is the one that will go".
+ * happen: under "Removing from clients", the state that means "already
+ * registered correctly" means "this is the one that will go".
  */
 function describeState(state: ClientState, removing: boolean): string {
   if (removing) {
@@ -503,47 +475,36 @@ function summariseEntry(entry: unknown): unknown {
  * Ask, when there is someone to ask.
  *
  * Returns undefined for "write nothing". An entry that already differs is the
- * case that most needs a human: on the machine this was written for, the
- * differing entry was the WORKING one.
+ * case that most needs a human — the differing entry can well be the working
+ * one.
  */
 async function chooseInteractively(
   plans: ClientPlan[],
   opts: { yes: boolean; remove?: boolean },
 ): Promise<ClientPlan[] | undefined> {
-  // What counts as actionable INVERTS under --remove.
+  // What counts as actionable INVERTS under --remove. Registering: `matches`
+  // means the entry is already what we would write, so there is nothing to do.
+  // Removing: `matches` is exactly the entry being removed.
   //
-  // Registering: `matches` means the entry is already what we would write, so
-  // there is nothing to do. Removing: `matches` is exactly the entry being
-  // removed, so filtering it out left nothing actionable — and the command
-  // printed "our entry is here — will be removed", exited 0, and changed
-  // nothing. Reproduced byte-for-byte: same md5 before and after.
-  //
-  // Only the bare form was affected, because `--clients` bypasses this
-  // function entirely. That is the form README documents twice and
-  // OPERATIONS.md once, and no test covered this command at all.
   // Stated as what IS actionable rather than what is not: the states are
   // absent / unreadable / missing-entry / matches / differs, and under
   // --remove only the two that actually hold an entry qualify. Written as a
-  // negation, `absent` (no config file at all) slipped through.
+  // negation, `absent` (no config file at all) slips through.
   const actionable = plans.filter((p) =>
     opts.remove === true
       ? p.state === "matches" || p.state === "differs"
       : p.state !== "matches" && p.state !== "unreadable",
   );
   if (actionable.length === 0) return [];
-  // `--yes` skips the question; it does NOT answer it.
-  //
-  // The consent gate added for `--clients` treated "no client named" as
-  // "consented", and `--yes` takes that path — so an acceptance pass measured
-  // `connect --yes` overwriting a hand-edited entry with no prompt and no
-  // --force, exit 0, while the same flags on `--remove` correctly refused.
-  // "Do not ask me" is not the same answer as "yes, replace what I wrote".
+  // `--yes` skips the question; it does NOT answer it. "Do not ask me" is not
+  // the same answer as "yes, replace what I wrote" — the consent gate above is
+  // what decides that.
   if (opts.yes) return actionable;
   if (!process.stdin.isTTY) {
     process.stdout.write(
       // Names the command, not just the flags: this is reached from
-      // `configure --yes` too, where "or --yes" told the user to pass the flag
-      // they had already passed.
+      // `configure --yes` too, where "or --yes" would tell the user to pass a
+      // flag they already passed.
       "\nNot a terminal, so nothing was written. Run `harness-dispatch connect --clients " +
         `${actionable.map((p) => p.id).join(",")}\` (or \`connect --yes\`) to register.\n`,
     );
@@ -621,9 +582,9 @@ async function cmdUsage(
 
 /**
  * Can we actually persist state? Breaker cooldowns, quota counters and job
- * records all live here, and every write path deliberately swallows its own
- * failures so a dispatch is never lost to a bookkeeping problem. The cost of
- * that choice is silence, which is what this check buys back.
+ * records all live here, and every write path swallows its own failures so a
+ * dispatch is never lost to a bookkeeping problem — this check buys back the
+ * silence that costs.
  */
 function stateDirWritable(): { ok: boolean; detail: string } {
   const dir = stateRoot();
@@ -661,11 +622,8 @@ async function cmdDoctor(
     runtime.router,
     runtime.leaderboard,
   );
-  // Must agree with package.json engines (>=22.22.2) and the README. It said
-  // >= 24 while both of those said 22, so a user following the README's own
-  // install block hit `fail node` on the second command — on a runtime where
-  // dispatch works correctly. Three sources, two answers, and the one the
-  // user sees first was the wrong one.
+  // Must agree with package.json engines (>=22.22.2) and the README:
+  // disagreement fails `doctor` on a runtime where dispatch works correctly.
   const [nodeMajor, nodeMinor, nodePatch] = process.versions.node
     .split(".")
     .map((n) => Number(n) || 0);
@@ -696,35 +654,27 @@ async function cmdDoctor(
     {
       name: "config",
       ok: Object.keys(runtime.config.services).length > 0,
-      // Names the file, because "which config is this looking at" was the
-      // question: `configure` run from one directory and `doctor` from
-      // another used to load different things and neither said so.
+      // Names the file: `configure` run from one directory and `doctor` from
+      // another can load different things, so "which config is this looking
+      // at" has to be answerable from the output.
       detail:
         `${Object.keys(runtime.config.services).length} configured route(s)` +
         (configPath === undefined
           ? " (no config file found; shipped defaults with auto-detected harnesses)"
           : runtime.config.detectionRan === false
             ? ` from ${path.resolve(configPath)}`
-            : // Detection ran. Two different reasons, and saying the wrong one
-              // is confusing: a file may define no routes at all, or it may
-              // define some AND ask for detection with `detect: true`. The
-              // first version reported the former for both.
+            : // Detection ran, for one of two reasons: the file defines no
+              // routes at all, or it defines some AND asks for detection with
+              // `detect: true`.
               (runtime.config.detect === true
                 ? ` from ${path.resolve(configPath)} plus auto-detected harnesses (detect: true)`
                 : ` auto-detected — ${path.resolve(configPath)} defines no routes of its own`)),
     },
-    // This one DOES fail, unlike the advisory git check below.
-    //
-    // A client entry naming a path that is not there is not a preference or a
-    // missing optional tool — there is no setup in which it is intended. And
-    // it is invisible from the client side: one that cannot spawn its server
+    // This one DOES fail, unlike the advisory git check below: a client entry
+    // naming a path that is not there is intended by no setup, and is
+    // invisible from the client side — a client that cannot spawn its server
     // simply has no tools, which looks identical to never having installed
-    // anything. On this maintainer's machine that state survived a repo rename
-    // by months, silently, along with a hook pointing at the same dead
-    // directory.
-    //
-    // Not-configured is NOT a failure: a machine with no client entry gets
-    // "not registered with any client", ok. Only a broken one fails.
+    // anything. Not-configured is NOT a failure; only a broken entry is.
     (() => {
       const entries = inspectClientEntries();
       const broken = entries.filter((e) => e.missingPaths.length > 0);
@@ -758,10 +708,7 @@ async function cmdDoctor(
                     // "references", not "launches ... from": missingPaths
                     // holds any path the entry names that is not there, and
                     // that is routinely the `--config` argument rather than
-                    // the launch binary. An acceptance pass found the message
-                    // reaching the right conclusion by the wrong description —
-                    // a missing explicit --config does make the CLI exit 1,
-                    // but it is not where the client launches from.
+                    // the launch binary.
                     `${e.client} (${e.file}) references a path that does not exist: ` +
                     `${e.missingPaths.join(", ")} (entry: ${e.entry}) — that client has been ` +
                     "getting NO tools from this server, silently. `harness-dispatch connect` " +
@@ -770,24 +717,14 @@ async function cmdDoctor(
                 .join(" | "),
       };
     })(),
-    // Not required to dispatch — reported, never a hard fail.
-    //
-    // The `workspace` tool shells out to git for diff/apply, so without it a
-    // delegate's work COMPLETES in an isolated workspace and then the tool
-    // that retrieves it dies with `spawn git ENOENT` wrapped as "could not
-    // diff <file> for this workspace" — a message about a program the user was
-    // never told they needed. README lists the requirements as Node plus a
-    // harness. The changes are recoverable by hand via workspaceRoot in the
-    // response, which is why this warns here instead of failing the install.
+    // Not required to dispatch. The `workspace` tool shells out to git for
+    // diff/apply, so without it an isolated run's changes are recoverable
+    // only by hand via workspaceRoot in the response.
     //
     // `ok: true` UNCONDITIONALLY, matching http-auth / billing-policy /
     // safety-policy below: doctor's exit code is the sum of every check, so a
-    // false here made `doctor` exit 1 on a machine with no git — a
-    // configuration the README calls supported. Any install script or CI step
-    // gating on that exit code would fail a working install, and the code
-    // would stop distinguishing "your install is broken" from "an optional
-    // tool is missing". The advice belongs in `detail`, which is where the
-    // other advisory checks put theirs.
+    // false here would fail a supported install for any script gating on it.
+    // The advice belongs in `detail`.
     {
       name: "git",
       ok: true,
@@ -807,12 +744,9 @@ async function cmdDoctor(
           : "no unrecognized config entries",
     },
     {
-      // Saved state that could not be read, which is NOT a config problem and
-      // so never reached this list: `doctor` read `configWarnings` directly
-      // and stayed silent about an unreadable breaker record or usage counters
-      // that are not reaching disk. Two acceptance passes recorded that
-      // silence as an open item; `status` grew a "State problems" heading and
-      // `doctor` did not follow.
+      // Saved state that could not be read — an unreadable breaker record, or
+      // usage counters that are not reaching disk. Not a config problem, so
+      // `configWarnings` above does not cover it.
       name: "saved-state",
       ok: (status.stateWarnings?.length ?? 0) === 0,
       detail:
@@ -835,9 +769,8 @@ async function cmdDoctor(
             `${Object.values(AUTO_DETECT_COMMANDS).join(", ")}. ` +
             `Install one, or add a route to config.yaml (endpoints: need no CLI).`) +
         // A config that lists its own routes is authoritative, so a harness
-        // installed later is simply absent — and this line said "1 ready
-        // route(s)" with a second CLI on PATH and no hint. The hint about PATH
-        // above only fired at zero routes.
+        // installed later is simply absent. The PATH hint above only fires at
+        // zero routes, which would leave that case unexplained.
         (unconfiguredHarnesses.length > 0
           ? ` Installed but not in this config: ${unconfiguredHarnesses.join(", ")} — add ` +
             `\`detect: true\` to ${configPath !== undefined ? path.resolve(configPath) : "the config"} ` +
@@ -845,13 +778,11 @@ async function cmdDoctor(
           : ""),
     },
     {
-      // Nothing checked this, so an unwritable state directory surfaced only
-      // as jobs mysteriously reported "the dispatch server exited before the
-      // run finished" — a false cause, 90s after the work had actually
-      // succeeded.
+      // Unchecked, an unwritable state directory surfaces only as jobs
+      // reporting "the dispatch server exited before the run finished" — a
+      // false cause, 90s after the work actually succeeded.
       name: "state-dir",
-      // Called ONCE: each call creates and deletes a probe file, and this
-      // asked the same question twice to fill two fields.
+      // Called ONCE: each call creates and deletes a probe file.
       ...stateDirWritable(),
     },
     {
@@ -861,9 +792,8 @@ async function cmdDoctor(
       // signal to run the job IN-PROCESS, which is right for an unbuilt
       // checkout and wrong everywhere else: the concurrency cap is enforced by
       // the supervisor pool, so in-process mode silently removes the bound
-      // that exists because of a measured OOM. It prints one line on stderr at
-      // dispatch time and nothing checked it, so "am I actually capped?" had
-      // no answer. An audit noticed; this is that answer.
+      // that exists to prevent an OOM. Dispatch says so once on stderr, which
+      // is not somewhere "am I actually capped?" can be answered from.
       name: "job-runner",
       ok: resolveRunnerPath() !== undefined,
       detail:
@@ -884,13 +814,12 @@ async function cmdDoctor(
   const blocked = status.skippedRoutes.filter(
     (skip) => skip.code === "paid_blocked" || skip.code === "unknown_billing",
   );
-  // A ready route is one whose CLI is on PATH. That said nothing about whether
-  // the CLI could actually make a request: an installed, never-logged-in Codex
-  // passed routes, billing and safety, and the first dispatch then failed with
-  // a raw OpenAI 401 that never mentioned `codex login`. The cold-install walk
-  // in acceptance/0.8.0.md is where that was seen. The CLI is asked directly
-  // (see harness-login.ts for why not the credential file), and only a
-  // definite "not logged in" fails the check.
+  // A ready route is one whose CLI is on PATH, which says nothing about
+  // whether the CLI can actually make a request: an installed,
+  // never-logged-in Codex passes routes, billing and safety, then fails the
+  // first dispatch with a raw OpenAI 401 that never mentions `codex login`.
+  // The CLI is asked directly (see harness-login.ts for why not the
+  // credential file), and only a definite "not logged in" fails the check.
   const codexRoutes = status.routes.filter(
     (route) => status.ready.includes(route.id) && route.harness === "codex" && route.command,
   );
@@ -898,29 +827,20 @@ async function cmdDoctor(
     codexRoutes.map(async (route) => ({ route, state: await codexLoginState(route.command!) })),
   );
   const loggedOut = loginStates.filter((entry) => entry.state === "logged_out");
-  // A route that has NEVER succeeded is worth saying out loud.
-  //
-  // The breaker is about recent failure and forgets after its cooldown, so a
-  // route that is simply dead — a host that no longer resolves, a key that was
-  // revoked — keeps being selected, failing, and falling back, forever. On the
-  // maintainer's own machine a local endpoint sat at 8 calls and 0 successes
-  // while being tier-3-preferred for `review`, so every review dispatch paid
-  // for one doomed attempt before falling back. Nothing reported it: `usage`
-  // showed the counts and nobody reads `usage` when things merely feel slow.
+  // A route that has NEVER succeeded is worth saying out loud: the breaker is
+  // about recent failure and forgets after its cooldown, so a route that is
+  // simply dead — a host that no longer resolves, a key that was revoked —
+  // keeps being selected, failing, and falling back forever, costing every
+  // dispatch one doomed attempt.
   //
   // Advisory, never a failure: a fresh install has no calls at all, and a
-  // route can legitimately fail its first few (a laptop that was asleep). The
-  // threshold is about having enough evidence to be worth mentioning, not
-  // about being sure.
+  // route can legitimately fail its first few. The threshold is about having
+  // enough evidence to mention it, not about being sure.
   const deadRoutes = status.routes
-    // Ready routes AND routes skipped for exactly this reason.
-    //
-    // `ready` excludes anything the policy skipped, and the dead-route skip is
-    // a policy skip — so once `status` started applying it (it could not until
-    // it was given the call counts), the route this check exists to name
-    // stopped being in the list this check reads, and `doctor` fell silent
-    // about it. The advisory has to outlive the skip it describes: the whole
-    // point is telling the operator why a configured route is going unused.
+    // Ready routes AND routes skipped for exactly this reason: `ready`
+    // excludes anything the policy skipped, and the dead-route skip is a
+    // policy skip, so reading `ready` alone would drop the very route this
+    // check exists to name.
     .filter(
       (route) =>
         status.ready.includes(route.id) || route.skipped?.code === "never_succeeded",
@@ -1077,25 +997,17 @@ async function cmdAuth(action: string | undefined): Promise<number> {
     }
     default:
       // Thrown, not written: the top-level handler is the one place that
-      // knows whether --json was asked for. Written here it bypassed the
-      // envelope, so `auth --json` reported failure as a bare sentence.
+      // knows whether --json was asked for, so writing here would bypass the
+      // envelope and report failure as a bare sentence.
       throw new UsageError("auth: expected show or rotate");
   }
 }
 
 /**
  * One dispatch from the command line — the CLI half of the `dispatch` MCP
- * tool, named to match it (`route` stays as an alias).
- *
- * It took flags because it had none and that made it unusable for the one job
- * it is most needed for. An acceptance pass has to exercise the build IN THE
- * WORKING TREE; the MCP tool runs in whatever server process is already
- * connected, which is a different artifact from a different moment. So the CLI
- * is the honest path there — and it hardcoded taskType "execute" with two
- * fallbacks, meaning a pass asking for one read-only call on one route could
- * silently get an execute-profile run on up to three. The first acceptance
- * pass to attempt a live dispatch wrote its own Node script against dist/
- * rather than use this, which is the tell.
+ * tool, named to match it (`route` stays as an alias). This is the only way to
+ * exercise the build in the WORKING TREE: the MCP tool runs in whatever server
+ * process is already connected, a different artifact from a different moment.
  */
 async function cmdDispatch(
   prompt: string,
@@ -1140,26 +1052,12 @@ async function cmdDispatch(
     const beat = decision.candidates?.length
       ? ` [${decision.candidates.map((c) => `${c.route} ${c.score}`).join(", ")}]`
       : "";
-    // Name the MODEL, not just the route.
-    //
-    // A route id names a harness, not what answered: `claude_code_cli` and
-    // `codex_cli` are routes, `gpt-5.6-terra` is a model, and the line said only
-    // the former. Every other surface already says which model ran — this
-    // command's own `--json` prints the whole decision, and the MCP and HTTP
-    // responses carry a top-level `model` field. The human line was the one
-    // surface that could not answer "which model did this use", which is the
-    // question asked of a routing tool.
-    //
-    // `model` is genuinely undefined for a route that configures none (three of
-    // four CLI routes here): the harness then runs its own default, which is a
-    // real answer and not a missing value. Said in words rather than printed
-    // blank, because an empty `model=` reads as a bug.
-    // Delimited, because the fallback is multi-word and the reason that follows
-    // is parenthesised. Undelimited it rendered as
-    // `model=harness default (none configured) (explicit)` — two bracketed
-    // groups in a row with no way to see where the value ended. Caught by
-    // running the built command rather than by the test, which uses a route
-    // that declares a model.
+    // Name the MODEL, not just the route: a route id names a harness, not
+    // what answered. `model` is genuinely undefined for a route that
+    // configures none — the harness runs its own default, a real answer and
+    // not a missing value — so it is said in words rather than printed as an
+    // empty `model=`, and delimited so it does not run into the
+    // parenthesised reason that follows.
     const model = decision.model !== undefined ? decision.model : "<harness default>";
     process.stderr.write(
       `dispatch: ${decision.service} model=${model} (${decision.reason})${beat}\n`,
@@ -1182,8 +1080,8 @@ const TASK_TYPES = ["execute", "plan", "review", "local"] as const;
  * values, never silently dropped to a default.
  *
  * `--safety read_onlyy` dropping to workspace_edit would hand a delegate MORE
- * access than the caller asked for — the same failure the MCP and HTTP
- * surfaces were both hardened against, and the reason `hints` is strict there.
+ * access than the caller asked for — the same reason `hints` is strict on the
+ * MCP and HTTP surfaces.
  */
 function enumFlag<T extends string>(
   value: unknown,
@@ -1215,9 +1113,9 @@ class UsageError extends Error {}
 function serveOpts(values: { port?: unknown; host?: unknown }): { port?: number; host?: string } {
   const out: { port?: number; host?: string } = {};
   if (values.port !== undefined) {
-    // `--port abc` used to fall back to 0, which binds a RANDOM free port and
-    // prints it as though it were what was asked for. A typo'd port silently
-    // serving somewhere else is worse than refusing to start.
+    // A typo'd port must not fall back to 0, which binds a RANDOM free port
+    // and prints it as though it were what was asked for. Silently serving
+    // somewhere else is worse than refusing to start.
     const port = parsePositiveInt(values.port, 0);
     if (port === 0 || !Number.isInteger(port) || port > 65535) {
       throw new UsageError(
@@ -1266,10 +1164,10 @@ export async function main(argv: string[]): Promise<number> {
   });
 
   // parseArgs runs with strict:false so positionals and subcommand shapes stay
-  // flexible — the cost is that an unknown flag is silently accepted. `status
-  // --jsonn` printed human text and exited 0, so a cron job piping it to jq
-  // got garbage AND a success code. PRODUCT.md names automation as a user, and
-  // a wrong exit code is the one thing automation cannot recover from.
+  // flexible — the cost is that an unknown flag is silently accepted, so
+  // `status --jsonn` would print human text and exit 0. PRODUCT.md names
+  // automation as a user, and a wrong exit code is the one thing automation
+  // cannot recover from.
   const knownFlags = new Set([
     "help", "version", "config", "json", "live", "allow-paid", "watch", "interval",
     "port", "host", "print", "yes", "force", "http",
@@ -1287,11 +1185,6 @@ export async function main(argv: string[]): Promise<number> {
   // Before --help, and before anything that can fail: a version is what you
   // ask for when something is already wrong, so it must not depend on config
   // loading, a readable jobs root, or any route being reachable.
-  //
-  // The MCP handshake has always reported this in serverInfo, so an agent
-  // consumer could see it. A human diagnosing an install had no way to ask —
-  // `--version` exited 1 with "unknown option", which reads like the binary is
-  // broken rather than like the flag is missing.
   if (values.version) {
     process.stdout.write(`${VERSION}\n`);
     return 0;
@@ -1305,11 +1198,10 @@ export async function main(argv: string[]): Promise<number> {
   await initObservability();
 
   const [command, ...rest] = positionals;
-  // `--config` with no value: parseArgs yields boolean true, which reached
-  // path.join and threw ERR_INVALID_ARG_TYPE as a raw Node stack trace.
-  // `--config=` (empty) is the same mistake with a string type: it resolved to
-  // "", loadConfig treated it as no path, and doctor reported the auto-detected
-  // routes as loaded "from" the current directory.
+  // `--config` with no value: parseArgs yields boolean true, which reaches
+  // path.join and throws ERR_INVALID_ARG_TYPE as a raw Node stack trace.
+  // `--config=` (empty) is the same mistake with a string type: it resolves
+  // to "", which loadConfig reads as no path at all.
   if (values.config !== undefined && (typeof values.config !== "string" || values.config === "")) {
     throw new UsageError("--config needs a path, e.g. --config ./config.yaml");
   }
@@ -1372,9 +1264,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdServe(configPath, serveOpts(values));
     case "auth":
       return cmdAuth(rest[0]);
-    // `route` kept as an alias: it was the name for two years of history, and
-    // `dispatch` matches the MCP tool that does the same thing. Same pattern
-    // as status/dashboard/list-services above.
+    // `route` kept as an alias for `dispatch`, which matches the MCP tool that
+    // does the same thing. Same pattern as status/dashboard/list-services.
     case "dispatch":
     case "route": {
       const safety = enumFlag(values.safety, SAFETY_PROFILES, "--safety");
@@ -1393,13 +1284,10 @@ export async function main(argv: string[]): Promise<number> {
       }
       return main(configPath !== undefined ? ["--config", configPath] : []);
     default:
-      // Usage goes to STDERR here, not stdout. An unknown command is an
-      // error, and printing the help block on stdout meant
-      // `harness-dispatch frobnicate --json | jq` got the usage text as
-      // its input — the exact pipe the --json envelope keeps parseable.
-      // Suppressed under --json: the caller asked for machine-readable
-      // output, and a help block ahead of the envelope makes stderr
-      // unparseable in the same way stdout was.
+      // Usage goes to STDERR here, not stdout: an unknown command is an
+      // error, and a help block on stdout would become the input of any pipe
+      // the --json envelope exists to keep parseable. Suppressed under --json
+      // for the same reason, one stream over.
       if (!wantsJsonOutput()) printUsage(process.stderr);
       throw new UsageError(`unknown command: ${command}`);
   }
@@ -1410,20 +1298,13 @@ export async function main(argv: string[]): Promise<number> {
  *
  * `process.exit(code)` tears the loop down mid-flight, and on Windows that
  * aborts: `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win * async.c` and an exit status of 127, which every shell reads as "command not
- * found". It fired AFTER a correct answer had been printed, so the work was
- * done and the report of it was a crash.
+ * found" — after a correct answer has already been printed. It takes two
+ * in-flight HTTP connections to hit (a fallback from one endpoint route to
+ * another), so it looks intermittent.
  *
- * Reproduced 3/3 across three acceptance passes, and confirmed here: two
- * endpoint routes, the first answering 200 with an unusable body and the
- * second succeeding. The fallback is what makes it two in-flight HTTP
- * connections; `--no-fallback` and a refused connection both exited 1 cleanly,
- * which is why it looked intermittent. Setting `exitCode` instead removes it,
- * measured on the same probe.
- *
- * The force-exit is the safety net `process.exit` was providing: if something
- * still holds the loop open after a grace window, leave anyway rather than
- * hanging a CLI. It is `unref`d, so it does not itself keep the process alive
- * — every command measured here exits in under a second without it firing.
+ * The force-exit is the safety net `process.exit` provided: if something still
+ * holds the loop open after a grace window, leave anyway rather than hanging a
+ * CLI. It is `unref`d, so it does not itself keep the process alive.
  */
 const EXIT_DRAIN_GRACE_MS = 3000;
 
@@ -1438,10 +1319,9 @@ function finish(code: number): void {
 // Run main() only when this file is the process entrypoint, not when a test
 // imports it. `argv[1]` is the path the user invoked, which is NOT this file
 // when npm installed the command as a symlink (`/usr/local/bin/harness-dispatch`
-// on Linux and macOS): node does not resolve it, so a name check alone
-// silently ran nothing there and exited 0 — every documented command was a
-// no-op for every non-Windows `npm install -g` user through 0.8.0. Windows
-// never hit it because npm's .cmd shim passes the real dist/bin.js path.
+// on Linux and macOS): node does not resolve it, so a name check alone runs
+// nothing there and exits 0. Hence the realpath comparison below. Windows is
+// unaffected — npm's .cmd shim passes the real dist/bin.js path.
 const entrypoint =
   typeof process !== "undefined" && Array.isArray(process.argv) ? (process.argv[1] ?? "") : "";
 function isThisFile(invoked: string): boolean {
@@ -1466,10 +1346,9 @@ if (isThisFile(entrypoint)) {
       // reliable way to tell "bug" from "bad input" by class here. Only a
       // non-Error throw (a genuine programming error) keeps its stack.
       if (err instanceof UsageError || err instanceof Error) {
-        // `--json` is a promise about the SHAPE of this command's output, and
-        // it was kept only on the success path: a bad --config made
-        // `doctor --json` print a sentence, so anything parsing the output got
-        // a parse error instead of the reason. The message is the same; only
+        // `--json` is a promise about the SHAPE of this command's output, on
+        // the failure path too: otherwise anything parsing the output gets a
+        // parse error instead of the reason. The message is the same; only
         // the envelope follows what was asked for. Errors still go to stderr,
         // so a caller reading stdout for results is unaffected either way.
         const wantsJson = wantsJsonOutput();

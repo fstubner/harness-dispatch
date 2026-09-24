@@ -1,9 +1,9 @@
 /**
  * Reading a job back: one with its partial output, or the recent list.
  *
- * Separate from start.ts because the supervisor reads jobs while deciding
- * what to run, and start.ts needs the supervisor — keeping the reads beside
- * the start verbs closed that loop.
+ * Separate from start.ts because the supervisor reads jobs while deciding what
+ * to run and start.ts needs the supervisor: keeping the reads beside the start
+ * verbs would close that loop.
  */
 
 import { existsSync } from "node:fs";
@@ -31,9 +31,9 @@ export async function getAsyncJob(jobId: string): Promise<{
   const jobDir = path.join(jobsRoot(), jobId);
   // A well-formed id for a job that is gone is the ORDINARY case, not an
   // internal error: retention prunes finished jobs, so any caller holding an
-  // id long enough will hit this. It used to surface as a raw Node ENOENT
-  // quoting an absolute path inside the jobs directory, which tells the caller
-  // nothing actionable and leaks the layout.
+  // id long enough will hit this. A raw Node ENOENT quoting an absolute path
+  // inside the jobs directory tells the caller nothing actionable and leaks
+  // the layout.
   const noSuchJob = () =>
     new Error(
       `No such job: ${jobId}. It may have been pruned by the retention window, ` +
@@ -59,18 +59,13 @@ export async function getAsyncJob(jobId: string): Promise<{
     return { manifest, status, result };
   }
   // Terminal: no poll guidance — polling will never resolve an orphaned job.
-  // But it still gets its partial output, which is the whole point of the
-  // record surviving the runner.
-  //
-  // This branch used to `return` here, ABOVE the partial-output read below, so
-  // an orphaned job handed back nothing at all while its progress sat in
-  // output/stdout.partial.log. PRODUCT.md's success criterion is explicit that
-  // a dispatch must never die returning nothing — "at worst it fails and hands
-  // back its latest progress… a wasted attempt with no trail is the defining
-  // failure" — and orphaning is exactly the case that criterion was written
-  // for: the supervisor died, so there is no result.json and the partial log
-  // is all that survived. An acceptance pass measured eight chunks of progress
-  // on disk and an empty response.
+  // But it still falls through to the partial-output read below, which is the
+  // whole point of the record surviving the runner. PRODUCT.md's success
+  // criterion is explicit that a dispatch must never die returning nothing —
+  // "at worst it fails and hands back its latest progress… a wasted attempt
+  // with no trail is the defining failure" — and orphaning is exactly that
+  // case: the supervisor died, so there is no result.json and the partial log
+  // is all that survived.
   const terminalOrphan = status.status === "orphaned";
   const out: { manifest: JobManifest; status: JobStatus; partialOutput?: string } = {
     manifest,

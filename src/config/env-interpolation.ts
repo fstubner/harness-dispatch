@@ -1,8 +1,8 @@
 /**
  * `${VAR}` interpolation over a loaded config tree.
  *
- * Split out of config.ts. Small, but it carries two invariants worth keeping
- * together and away from the parsing code:
+ * Small, but it carries two invariants worth keeping together and away from
+ * the parsing code:
  *
  * 1. It records every substitution it makes (`refs`), mapping the RESOLVED
  *    value back to the reference that produced it. That map is what lets
@@ -28,12 +28,11 @@ const ENV_VAR_ANYWHERE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
  * that needed an api_key loses it with zero feedback, and doctor reports
  * the route "ready" right up until the first real call 401s.
  *
- * Replacement applies ANYWHERE in the string, matching what the shipped
- * config's comment has promised all along ("anywhere in a string value").
- * The implementation was anchored to whole-string matches, so
- * `base_url: https://${HOST}/v1` stayed a literal, got no unset-var warning
- * (unsetVars only tracked whole-string matches), and failed downstream with
- * an error about a URL containing a dollar sign.
+ * Replacement applies ANYWHERE in the string, as the shipped config's comment
+ * promises ("anywhere in a string value"). Anchored to whole-string matches,
+ * `base_url: https://${HOST}/v1` would stay a literal, get no unset-var
+ * warning, and fail downstream with an error about a URL containing a dollar
+ * sign.
  */
 export function interpolateEnv(
   value: string,
@@ -46,10 +45,9 @@ export function interpolateEnv(
     //
     // Node's env object reports every inherited Object key as present (`in` is
     // true for `constructor`, `toString`, `__proto__`, `hasOwnProperty`) and
-    // returns the inherited value from the get. Measured: `${constructor}` in
-    // a config value produced "https://host/function () { [native code] }/v1"
-    // and reported NOTHING in unsetVars — native function source spliced into
-    // a base_url or api_key, silently. Gating only the warning would still
+    // returns the inherited value from the get, so `${constructor}` in a
+    // config value splices native function source into a base_url or api_key
+    // and reports nothing in unsetVars. Gating only the warning would still
     // substitute it, which is why `present` guards both.
     const present = Object.hasOwn(process.env, name);
     if (!present) unsetVars.add(name);

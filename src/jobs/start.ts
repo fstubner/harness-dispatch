@@ -1,8 +1,4 @@
-/**
- * Starting a job.
- *
- * Split out of jobs.ts with the rest of its concerns; nothing was rewritten.
- */
+/** Starting a job. */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { pruneDeadWorkspaceLocks } from "../workspace-lock.js";
@@ -41,16 +37,10 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
 
   // The runner reads the config FILE, so a file this server can no longer load
   // means no runner can start — and the job would sit untouched until the 90s
-  // orphan threshold reported it dead. Observed: a caller told
-  // "ended without a result (status: orphaned)" about a job whose own
-  // status.json later read completed/success. Two false statements from one
-  // broken file, ninety seconds apart.
-  //
-  // The server itself is fine: a failed hot-reload keeps the previous config
-  // in memory, which is why it can still accept the dispatch at all. That
-  // divergence between what the server runs and what the runner would read is
-  // the whole bug, so it is refused here, immediately, naming the real cause —
-  // before a job directory exists to be misreported.
+  // orphan threshold reported it dead, naming a cause that never happened. The
+  // server itself is fine: a failed hot-reload keeps the previous config in
+  // memory, which is why it can still accept the dispatch. That divergence is
+  // refused here, before a job directory exists to be misreported.
   const configError = await configLoadError(deps.holder.state.configPath);
   if (configError !== undefined) throw new Error(configError);
 
@@ -120,28 +110,22 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     }
     // The DETACHED runner re-reads prompt.md, which carries the context
     // preamble — so the in-process run must dispatch the same frozen prompt,
-    // not input.prompt. Passing the raw prompt here silently dropped
-    // contextJobs for every in-process run (unit tests with injected fakes,
-    // and the unbuilt-checkout fallback).
+    // not input.prompt, which would silently drop contextJobs.
     const completion = runJob(deps, jobDir, manifest, { ...input, prompt: effectivePrompt });
     return { status, completion };
   }
 
   // Concurrency gate. Every dispatch spawns its own detached runner, so an
-  // in-process semaphore would bound nothing — the count has to come off
-  // disk. The caller still gets its jobId back immediately either way, so the
-  // API contract is unchanged and only the start time can move.
-  // Every dispatch takes this path, including an uncapped one. It used to
-  // spawn its own detached runner when the cap was lifted, which bypassed the
-  // pool and put a ~76 MB wrapper behind every job.
-
-  // Enqueue first, then let drainSlotQueue decide — rather than testing the
-  // limit here and spawning inline. Two reasons, both learned the hard way:
-  // this job's own `queued` status is already on disk, so an inline count
-  // included itself and deadlocked at limit 1; and a fresh dispatch arriving
-  // while others wait must not jump the queue, which only one FIFO drainer
-  // can guarantee. Whether this job starts now is then just "did the drain
-  // reach it".
+  // in-process semaphore would bound nothing — the count has to come off disk.
+  // Every dispatch takes this path, including an uncapped one, so nothing
+  // bypasses the pool, and the caller gets its jobId back immediately either
+  // way.
+  //
+  // Enqueue first, then let drainSlotQueue decide, rather than testing the
+  // limit here and spawning inline: this job's own `queued` status is already on
+  // disk, so an inline count includes itself and deadlocks at limit 1, and a
+  // fresh dispatch arriving while others wait must not jump the queue, which
+  // only one FIFO drainer can guarantee.
   await updateStatus(jobDir, { ...status, slotQueued: true });
   await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
   const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));

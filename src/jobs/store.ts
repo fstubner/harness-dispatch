@@ -1,15 +1,13 @@
 /**
  * The job store: where a job lives on disk and how it is written.
  *
- * Split out of jobs.ts. These are the primitives every other part of the job
- * system sits on — path resolution, atomic writes, status reads, retention —
- * and they depend on nothing above them, so they lift out cleanly and can be
- * reasoned about (and tested) without starting a dispatch.
+ * These are the primitives every other part of the job system sits on — path
+ * resolution, atomic writes, status reads, retention — and they depend on
+ * nothing above them.
  *
- * The atomicity here is load-bearing rather than incidental: a status file
- * half-written when a reader arrives is indistinguishable from a crashed
- * runner, which is why every write goes through tmp+rename with a retry for
- * Windows EPERM.
+ * The atomicity is load-bearing: a status file half-written when a reader
+ * arrives is indistinguishable from a crashed runner, so every write goes
+ * through tmp+rename with a retry for Windows EPERM.
  */
 
 import { existsSync } from "node:fs";
@@ -23,9 +21,9 @@ import { dirFromEnv, stateRoot } from "../state-dir.js";
 import type { JobManifest, JobStatus } from "./types.js";
 
 /**
- * Dispatcher error strings are unbounded (a corrupted downstream config once
- * produced a 173KB parse error). Full text always lands in stderr.log; the
- * JSON surfaces returned over MCP carry a bounded copy.
+ * Dispatcher error strings are unbounded — a corrupted downstream config can
+ * produce a 173KB parse error. Full text always lands in stderr.log; the JSON
+ * surfaces returned over MCP carry a bounded copy.
  */
 const MAX_JSON_ERROR_CHARS = 4000;
 
@@ -33,11 +31,11 @@ const MAX_JSON_ERROR_CHARS = 4000;
 export const SUGGESTED_POLL_SECONDS = 300;
 
 /**
- * A "running" status whose updatedAt is older than this is a lie — the
- * process that owned the run is gone (several missed heartbeats), so
- * readers report the job as orphaned instead of keeping callers polling a
- * corpse forever. Generous multiple of the heartbeat so an event-loop
- * stall can't produce false orphans.
+ * A "running" status whose updatedAt is older than this is a lie — the process
+ * that owned the run is gone (several missed heartbeats) — so readers report
+ * the job as orphaned instead of keeping callers polling a corpse. A generous
+ * multiple of the heartbeat, so an event-loop stall cannot produce false
+ * orphans.
  */
 export const ORPHAN_THRESHOLD_MS = 90_000;
 
@@ -58,12 +56,10 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
     ...status,
     status: "orphaned",
     success: false,
-    // Says what is KNOWN, not which process died. This used to read "The
-    // dispatch server that started this job exited" — and a load test killed
-    // a single supervisor while the server stayed up and serving, producing
-    // that message verbatim. The status file this is derived from records a
-    // heartbeat and nothing about who was holding it, so naming a culprit was
-    // always a guess, and it sent anyone debugging to the wrong process.
+    // Says what is KNOWN, not which process died: the status file this is
+    // derived from records a heartbeat and nothing about who was holding it,
+    // so naming a culprit is a guess that sends anyone debugging to the wrong
+    // process. A supervisor can die while the server stays up and serving.
     error:
       "This job stopped reporting progress and the process running it is gone — " +
       "either the run crashed or whatever was supervising it died. Nothing will " +
@@ -119,24 +115,21 @@ export function jobMaxAgeMs(): number {
 }
 
 /**
- * Nothing ever pruned old job directories — status.json/result.json/output
- * logs and every snapshotted context file accumulated under jobsRoot()
- * forever. Prune anything with no activity for the retention window
- * (default 7 days, override via HARNESS_DISPATCH_JOB_MAX_AGE_MS) each time a
- * new job is about to start. Job directory mtime is a reasonable proxy for
- * "last activity": writeJson's tmp-then-rename touches the job dir on every
- * status update, so a running (or freshly completed but unpolled) job keeps
- * bumping it — only genuinely abandoned jobs go stale. Best effort: a prune
- * failure must never block starting the job that was actually requested.
+ * Prune job directories with no activity for the retention window (default 7
+ * days, override via HARNESS_DISPATCH_JOB_MAX_AGE_MS), each time a new job is
+ * about to start — otherwise every status file, result and snapshotted context
+ * file accumulates under jobsRoot() forever. Directory mtime is a reasonable
+ * proxy for "last activity": writeJson's tmp-then-rename touches the job dir on
+ * every status update. Best effort — a prune failure must never block starting
+ * the job that was actually requested.
  */
 export async function pruneStaleJobs(): Promise<void> {
   const maxAgeMs = jobMaxAgeMs();
-  // 0 means KEEP FOREVER, not "prune immediately". The same config file
-  // establishes `max_concurrent_runs: 0` as "disable the bound", inviting the
-  // same reading here — and the old behaviour deleted RUNNING jobs out from
-  // under their runners (a job dir's mtime only moves on a 15s heartbeat, so
-  // at age 0 every beat gap was fatal): the runner's next write failed and
-  // the caller's jobId turned into "No such job".
+  // 0 means KEEP FOREVER, not "prune immediately" — the same config file
+  // establishes `max_concurrent_runs: 0` as "disable the bound". Pruning at
+  // age 0 deletes RUNNING jobs out from under their runners: a job dir's mtime
+  // only moves on a 15s heartbeat, so every beat gap is fatal, the runner's
+  // next write fails, and the caller's jobId turns into "No such job".
   if (maxAgeMs === 0) return;
   const root = jobsRoot();
   let entries;
@@ -151,31 +144,21 @@ export async function pruneStaleJobs(): Promise<void> {
     // Only directories we named. This sweep deletes recursively, and the jobs
     // root is relocatable — HARNESS_DISPATCH_JOBS_DIR, and
     // HARNESS_DISPATCH_STATE_DIR which moves it too — so it is not guaranteed
-    // to be ours alone. Without this it removed anything stale sitting there:
-    // an acceptance pass pointed the root at a directory holding
-    // `backup-20260401/data.bin` and `my-notes/n.txt` and lost both.
+    // to be ours alone. Without this, a root pointed at a directory holding
+    // unrelated files removes anything stale sitting there.
     //
-    // The identical defect was found twice in workspace reclamation in this
-    // same release, which is why it gets fixed here rather than argued about:
-    // the reachable path is narrower (neither variable is documented in the
-    // README, unlike the workspaces one) but the code shape is the same, and
-    // "narrower" is not a property anyone can rely on.
-    //
-    // A name check suffices here where it did not there. `job-<digits>-<8
-    // hex>` is what newJobId generates and is specific enough that a foreign
-    // directory would have to be named deliberately to collide; the workspace
-    // guard failed because its shape was merely `-<8 hex>` at the END of any
-    // name, which every `<name>-<YYYYMMDD>` satisfies.
+    // A name check suffices: `job-<digits>-<8 hex>` is what newJobId generates
+    // and is specific enough that a foreign directory would have to be named
+    // deliberately to collide.
     if (!JOB_ID_RE.test(entry.name)) continue;
     const jobDir = path.join(root, entry.name);
     try {
       const info = await stat(jobDir);
       if (now - info.mtimeMs <= maxAgeMs) continue;
-      // mtime is a proxy for activity; never delete a job that is
-      // demonstrably in flight. A live runner heartbeats status.json inside
-      // the orphan window, so running/queued with a fresh beat means "working
-      // right now", whatever retention says. An unreadable status file falls
-      // through to the mtime rule — that is the abandoned case.
+      // Never delete a job that is demonstrably in flight: a live runner
+      // heartbeats status.json inside the orphan window, so running/queued with
+      // a fresh beat means "working right now", whatever retention says. An
+      // unreadable status file falls through to the mtime rule.
       try {
         const status = JSON.parse(
           await readFile(path.join(jobDir, "status.json"), "utf8"),
@@ -242,15 +225,12 @@ export async function updateStatus(jobDir: string, status: JobStatus): Promise<v
     //
     // Retention can prune a bundle, and a user can delete one, while its
     // runner is still alive — and a status write is a RECORD of the run, not
-    // the run itself. Throwing here took the runner down with an unhandled
-    // rejection over a file nobody was going to read, and did it from the
-    // heartbeat, so any long job could hit it. It broke CI on one platform
-    // exactly this way: every test passing, the suite failing on a rename
-    // into a directory the test had already cleaned up.
+    // the run itself. Throwing here takes the runner down with an unhandled
+    // rejection from the heartbeat, over a file nobody was going to read.
     //
-    // Narrow on purpose: only a missing directory is swallowed. A full disk,
-    // a permission fault or a corrupt write still surfaces, because those
-    // mean the record is being lost while somewhere to put it still exists.
+    // Narrow on purpose: only a missing directory is swallowed. A full disk, a
+    // permission fault or a corrupt write still surfaces, because those mean
+    // the record is being lost while somewhere to put it still exists.
     const code =
       typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
     if (code === "ENOENT" && !existsSync(jobDir)) return;
@@ -299,8 +279,7 @@ export function newJobId(): string {
 export const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
 
 /**
- * Reject anything that isn't a jobId we generated, BEFORE it reaches
- * path.join.
+ * Reject anything that isn't a jobId we generated, BEFORE it reaches path.join.
  *
  * The MCP schema validates this too, but the check belongs here as well:
  * path.join(jobsRoot(), "../../etc/hosts") escapes the jobs root, and this
@@ -308,12 +287,9 @@ export const JOB_ID_RE = /^job-\d+-[0-9a-f]{8}$/;
  * schema would mean any future caller silently reintroduces the traversal.
  */
 /**
- * The same test as `assertValidJobId`, as a predicate.
- *
- * For the caller that must REFUSE an id without failing the whole call:
- * `buildContextPreamble` takes a list, and one unusable entry should not kill
- * the dispatch the caller actually asked for. Sharing the regex is the point
- * — a second copy of the pattern is how the two would drift.
+ * The same test as `assertValidJobId`, as a predicate, for the caller that must
+ * REFUSE an id without failing the whole call: `buildContextPreamble` takes a
+ * list, and one unusable entry should not kill the dispatch.
  */
 export function isValidJobId(jobId: string): boolean {
   return JOB_ID_RE.test(jobId);
@@ -330,17 +306,16 @@ export function assertValidJobId(jobId: string): void {
 /**
  * Cancellation is COOPERATIVE, by a marker file rather than a signal.
  *
- * Killing a pid is not available here: jobs run inside pooled supervisors
- * (SUPERVISOR_POOL_SIZE), and one supervisor runs several jobs at once, so
- * the only pid recorded against a job belongs to a process that is also
- * running other people's work. Signalling it would cancel jobs nobody asked
+ * Killing a pid is not available here: one pooled supervisor runs several jobs
+ * at once, so the only pid recorded against a job belongs to a process also
+ * running other people's work, and signalling it would cancel jobs nobody asked
  * to cancel.
  *
- * So the canceller writes a marker and the RUN tears itself down: it drops
- * out of its event stream, which triggers the dispatcher's own teardown
- * (killTree on the agent CLI and its children) and releases the workspace
- * lock through the same path a normal finish uses. The cost is that
- * cancellation is not instant — it lands within one poll interval.
+ * So the canceller writes a marker and the RUN tears itself down: it drops out
+ * of its event stream, which triggers the dispatcher's own teardown (killTree
+ * on the agent CLI and its children) and releases the workspace lock through
+ * the same path a normal finish uses. The cost is that cancellation lands
+ * within one poll interval rather than instantly.
  */
 const CANCEL_MARKER = "cancel.json";
 

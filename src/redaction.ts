@@ -2,31 +2,17 @@
  * One place that knows every secret this process holds, and one function that
  * removes them from anything on its way out.
  *
- * WHY THIS EXISTS, because the alternative was tried six times and failed six
- * times. The same defect — a configured credential reaching a caller, a log
- * file or an agent's context — was found and "fixed" in six consecutive
- * rounds. Every fix was correct. Every fix was also incomplete, because each
- * one scrubbed at a SITE: a specific error path in a specific file. Four of
- * the six were found as "the fix landed in one branch and the sibling beside
- * it kept leaking", twice inside a single file. One round shipped a comment
- * asserting that every branch was covered while a branch was not.
- *
- * Sites are the wrong unit. There is no bounded list of places a string can be
- * built, and a new one is added by ordinary feature work with no reason for
- * its author to think about credentials. What IS bounded is the set of ways a
- * string leaves this process: it is serialized to JSON for a tool result or an
- * HTTP response, appended to the dispatch log, written into a job file, or
- * printed to the terminal. Those are sinks, there are few of them, and they
- * change rarely.
+ * WHY SINKS RATHER THAN SITES. Scrubbing a credential where the string is
+ * BUILT — a specific error path in a specific file — cannot hold: there is no
+ * bounded list of such places, and a new one is added by ordinary feature work
+ * with no reason for its author to think about credentials. What IS bounded is
+ * the set of ways a string leaves this process: serialized to JSON for a tool
+ * result or an HTTP response, appended to the dispatch log, written into a job
+ * file, or printed to the terminal. Those are few, and they change rarely.
  *
  * So: scrub at the sinks, and derive the secrets from the loaded config rather
  * than naming them per call site. A leak then requires someone to add a whole
  * new egress mechanism, not merely to write a new error message.
- *
- * This is deliberately more machinery than the individual fixes it replaces.
- * It has earned that: it is not guarding against a hypothetical, it is
- * guarding against six measured, reproduced disclosures, one of which put a
- * key into a file on disk and another into an orchestrating agent's context.
  */
 
 import type { RouterConfig } from "./types.js";
@@ -36,27 +22,22 @@ export const REDACTED = "<redacted>";
 
 /**
  * Below this length a "secret" is more likely to be a coincidence than a
- * credential, and redacting it would corrupt ordinary output.
- *
- * A real key is far longer. The risk being traded here is asymmetric and worth
- * stating: too low a bound mangles legitimate text (a route named `a` would
- * turn every `a` in an answer into a placeholder), while too high a bound
- * misses a short key. Eight is below every provider key format in this
- * project's own config and far above the length at which a value collides with
- * prose by accident.
+ * credential, and redacting it would corrupt ordinary output: a route named
+ * `a` would turn every `a` in an answer into a placeholder. Eight is below
+ * every provider key format in this project's own config and far above the
+ * length at which a value collides with prose by accident.
  */
 const MIN_SECRET_LENGTH = 8;
 
 /**
  * Query keys whose VALUE is a credential.
  *
- * A name test, not a length test. The length heuristic this replaces treated
- * any URL path segment of 16+ characters as a secret, which made an Azure
- * deployment name (`.../deployments/gpt-4-turbo-preview`) a redaction target —
- * measured by an acceptance pass. A credential in the path is a real shape,
- * but it cannot be told from a deployment name by inspection, and guessing
- * wrong corrupts output. `warnCredentialInUrlPath` in config.ts says so out
- * loud instead, which is actionable where a silent guess is not.
+ * A name test, not a length test: a length rule over URL path segments makes
+ * an Azure deployment name (`.../deployments/gpt-4-turbo-preview`) a redaction
+ * target. A credential in the path is a real shape, but it cannot be told from
+ * a deployment name by inspection, and guessing wrong corrupts output.
+ * `warnCredentialInUrlPath` in config.ts says so out loud instead, which is
+ * actionable where a silent guess is not.
  */
 const CREDENTIAL_QUERY_KEY = /^(api[_-]?key|key|token|access[_-]?token|auth|password|secret|sig|signature)$/i;
 
@@ -64,18 +45,13 @@ const CREDENTIAL_QUERY_KEY = /^(api[_-]?key|key|token|access[_-]?token|auth|pass
  * Every secret value reachable from a loaded config.
  *
  * Collected from fields that HOLD credentials, and deliberately not from
- * `envRefs`. Keying off `envRefs` was the obvious shortcut — it records every
- * `${VAR}` in the file by resolved value — and it was wrong in a way that
- * mattered: `${VAR}` is documented as legal in any string value, so a config
- * writing `model: ${MY_MODEL}` or `command: ${CODEX_BIN}` turned a model name
- * and a file path into process-wide redaction targets. An acceptance pass
- * measured `model=<redacted>` in `status` output, and a harness answer
- * mentioning that model would have been mangled the same way, silently.
- *
- * That failure is worse than the leak this guards against: a corrupted answer
- * is wrong work product delivered as if it were right. A `${VAR}` in a
- * credential field still resolves into `apiKey` before this runs, so nothing
- * real is lost by dropping the shortcut.
+ * `envRefs`, which records every `${VAR}` in the file by resolved value:
+ * `${VAR}` is legal in any string value, so `model: ${MY_MODEL}` or
+ * `command: ${CODEX_BIN}` would turn a model name and a file path into
+ * process-wide redaction targets, silently mangling any answer that mentions
+ * them — a corrupted answer being wrong work product delivered as if it were
+ * right. A `${VAR}` in a credential field still resolves into `apiKey` before
+ * this runs, so nothing real is lost.
  */
 export function collectSecrets(config: RouterConfig | undefined): string[] {
   const out = new Set<string>();
@@ -94,9 +70,9 @@ export function collectSecrets(config: RouterConfig | undefined): string[] {
       const url = new URL(svc.baseUrl);
       add(url.password);
       add(url.username);
-      // Only query values under a credential-looking KEY. Taking every value
-      // meant `?model=gemini-2.5-flash` made that model name a redaction
-      // target — measured. A query string carries ordinary parameters too.
+      // Only query values under a credential-looking KEY. A query string
+      // carries ordinary parameters too, and taking every value would make
+      // `?model=gemini-2.5-flash` a redaction target for that model name.
       for (const [key, value] of url.searchParams.entries()) {
         if (CREDENTIAL_QUERY_KEY.test(key)) add(value);
       }
@@ -119,8 +95,7 @@ export function scrubSecrets(text: string, secrets: readonly string[]): string {
     if (out.includes(secret)) out = out.split(secret).join(REDACTED);
     // Redaction runs AFTER JSON.stringify at most sinks, so a secret holding a
     // character JSON escapes — a quote, or the backslashes in a Windows path —
-    // is no longer present in its raw form and survived. Measured with a key
-    // containing a double quote.
+    // is no longer present in its raw form and would otherwise survive.
     const escaped = JSON.stringify(secret).slice(1, -1);
     if (escaped !== secret && out.includes(escaped)) {
       out = out.split(escaped).join(REDACTED);
@@ -135,25 +110,21 @@ export function scrubSecrets(text: string, secrets: readonly string[]): string {
  * Process-wide mutable state, which is normally a smell and is the right shape
  * here: whether a given string is a credential is a property of the process,
  * not of the call. Threading config into the dispatch log, the JSON
- * serializers and the job-file writers is exactly the per-site plumbing whose
- * absence caused six rounds of this bug — every one of those sinks would have
- * needed a caller to remember to pass it.
+ * serializers and the job-file writers would make every one of those sinks
+ * depend on a caller remembering to pass it.
  */
 let activeSecrets: readonly string[] = [];
 
 /**
  * Secrets seen while PARSING a config, which never become a route field.
  *
- * The top-level `api_keys:` block is the case that forced this. Its entries
- * are applied to routes by name, so an entry whose route also declares an
- * inline `api_key:` — or that names no route at all — is a live credential
- * sitting in the config file that `collectSecrets` cannot see from the
- * finished RouterConfig. A pass measured every entry after the first in that
- * block leaking, and this is the machine setup this project documents.
+ * The top-level `api_keys:` block forces this: its entries are applied to
+ * routes by name, so an entry whose route also declares an inline `api_key:`
+ * — or that names no route at all — is a live credential in the config file
+ * that `collectSecrets` cannot see from the finished RouterConfig.
  *
- * Accumulated rather than replaced on reload, deliberately: continuing to
- * scrub a credential that has been removed from the config costs one
- * unnecessary replacement in output that would not have contained it anyway,
+ * Accumulated rather than replaced on reload: still scrubbing a credential
+ * that has been removed from the config costs one needless replacement,
  * whereas forgetting one costs a disclosure.
  */
 const parsedSecrets = new Set<string>();
@@ -196,18 +167,15 @@ export function redact(text: string): string {
 /**
  * Redact everything written to stdout and stderr, for the life of the process.
  *
- * The terminal is a sink like any other, and it was the one left unwired when
- * the JSON and disk sinks were done — measured immediately afterwards, with a
- * path-embedded credential surviving into `status --json`, `usage` and
- * `configure --print` while the same value was correctly removed from the MCP
- * and HTTP payloads. That is the per-site failure this whole design exists to
- * end, reproduced one more time by doing four sinks out of five.
+ * The terminal is a sink like any other: without this, a path-embedded
+ * credential survives into `status --json`, `usage` and `configure --print`
+ * while the same value is correctly removed from the MCP and HTTP payloads.
  *
  * Installed once at the entrypoint rather than applied at each print, because
- * `bin.ts` alone writes to stdout from dozens of places and every future
- * command adds more. `redact` reads the registry at call time, so installing
- * before config load is correct: writes made before any secret is known are
- * unchanged, and everything after is covered with no ordering requirement.
+ * `bin.ts` alone writes to stdout from dozens of places. `redact` reads the
+ * registry at call time, so installing before config load is correct: writes
+ * made before any secret is known are unchanged, and everything after is
+ * covered with no ordering requirement.
  *
  * Non-string chunks pass through untouched — a Buffer write is not text this
  * process composed, and decoding one to scan it would risk corrupting binary

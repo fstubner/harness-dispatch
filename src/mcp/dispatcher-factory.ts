@@ -5,9 +5,9 @@
  * `type: cli` route (built-in harness or user-added — see the shipped
  * config.default.yaml for how the 4 built-ins get their default behavior)
  * and OpenAICompatibleDispatcher for `type: openai_compatible`. `harness:`
- * no longer selects a dispatcher class — it only picks which CLI_DEFAULTS
- * entry a route inherits metadata/protocol from at config-load time (see
- * config.ts). Dispatch itself never branches on harness name.
+ * does not select a dispatcher class — it only picks which CLI_DEFAULTS entry
+ * a route inherits metadata/protocol from at config-load time (see config.ts).
+ * Dispatch itself never branches on harness name.
  */
 
 import { GenericCliDispatcher } from "../dispatchers/generic-cli.js";
@@ -19,12 +19,10 @@ import type { RouterConfig, ServiceConfig } from "../types.js";
 /**
  * Every api-key env var any route could use.
  *
- * streamSubprocess spawns with `{ ...process.env, ...opts.env }`, and
- * generic-cli only ever cleared the route's OWN apiKeyEnvVar. So dispatching
- * to Codex handed the child the operator's Groq and Anthropic keys too — a
- * probe confirmed both were visible. A CLI has no need for another provider's
- * credentials, and an agent CLI is precisely the kind of process that might
- * do something with one.
+ * streamSubprocess spawns with `{ ...process.env, ...opts.env }`, so clearing
+ * only the route's own apiKeyEnvVar would hand a spawned CLI every other
+ * provider's key. A CLI has no need for another provider's credentials, and an
+ * agent CLI is precisely the kind of process that might do something with one.
  *
  * Unions the configured routes with the shipped presets: a route can be
  * disabled or absent from config while its variable is still sitting in the
@@ -40,17 +38,13 @@ export function collectApiKeyEnvVars(config: RouterConfig): ReadonlySet<string> 
   }
   // Endpoint routes have no protocol and so no apiKeyEnvVar — their key is
   // sent as an HTTP header, sourced from a ${VAR} in config.yaml. envRefs
-  // (recorded during interpolation) is the only place that mapping survives,
-  // and without it a configured Groq/Gemini key stayed visible to every
-  // spawned CLI.
-  // EVERY reference in the string, not a whole-string match.
+  // (recorded during interpolation) is the only place that mapping survives.
   //
-  // `${VAR}` is supported anywhere in a value — `base_url: https://${HOST}/v1`
-  // is a documented shape — and `envRefs` stores the ORIGINAL string as its
-  // key. Anchoring to `^...$` therefore matched only values that are nothing
-  // but a reference, so a key embedded in a larger string was never collected
-  // and stayed visible to every spawned CLI. That is precisely the leak this
-  // sanitizer was written for, one string shape over.
+  // EVERY reference in the string, not a whole-string match: `${VAR}` is
+  // supported anywhere in a value (`base_url: https://${HOST}/v1` is a
+  // documented shape) and `envRefs` stores the original string as its key, so
+  // an anchored match would miss a key embedded in a larger string and leave it
+  // visible to every spawned CLI.
   const REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   for (const ref of config.envRefs?.values() ?? []) {
     for (const match of ref.matchAll(REF_RE)) {

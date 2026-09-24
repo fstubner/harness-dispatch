@@ -3,17 +3,13 @@
  * ~/.harness-dispatch/logs/dispatches.jsonl (override the directory with
  * HARNESS_DISPATCH_LOG_DIR).
  *
- * This exists because synchronous `code` calls previously left ZERO
- * persistent artifacts — only `job` runs did — so a failed session couldn't
- * be autopsied after the fact. The log is local-only (same posture as
- * everything else here: nothing phones home) and size-capped via a single
- * rotation (dispatches.jsonl -> dispatches.jsonl.1 at ~5MB, keeping roughly
- * the last ten thousand entries).
+ * Local-only (nothing phones home) and size-capped via a single rotation
+ * (dispatches.jsonl -> dispatches.jsonl.1 at ~5MB, roughly the last ten
+ * thousand entries).
  *
- * Writes are SYNCHRONOUS on purpose: dispatches are seconds-to-minutes
- * events, so a sub-millisecond appendFileSync is free — and an async
- * fire-and-forget append loses the race against process.exit in one-shot
- * CLI commands (doctor --live's probe entry simply vanished). A write
+ * Writes are SYNCHRONOUS on purpose: dispatches are seconds-to-minutes events,
+ * so a sub-millisecond appendFileSync is free, and an async fire-and-forget
+ * append loses the race against process.exit in one-shot CLI commands. A write
  * failure never throws into the dispatch path.
  */
 
@@ -53,8 +49,8 @@ export interface DispatchLogEntry {
   /**
    * The score components behind the pick, present whenever a decision was
    * made — including on the explicit path, where they record what the forced
-   * route WOULD have scored. That comparison is what makes "was naming a
-   * route by hand better than letting it choose" answerable.
+   * route WOULD have scored, so hand-picking can be compared against the
+   * router.
    */
   scores?: {
     quota: number;
@@ -67,10 +63,8 @@ export interface DispatchLogEntry {
    * and explicit paths, where nothing was compared.
    *
    * `reason` records that a choice happened ("tier 1 best (3 available)") and
-   * never what it was between, so a month of logs could say the router had
-   * been used and not whether it chose well. That is the one question the
-   * field was added to the response to answer, and the analysis it was
-   * justified by could not be run from the log it was justified by.
+   * never what it was between, so without this a month of logs says the router
+   * was used but not whether it chose well.
    */
   candidates?: Array<{ route: string; score: number }>;
 }
@@ -101,19 +95,10 @@ export function buildDispatchLogEntry(
     if (decision.candidates !== undefined && decision.candidates.length > 0) {
       entry.candidates = decision.candidates;
     }
-    // The score COMPONENTS, not just the winner and the margin.
-    //
-    // `candidates` says the picked route beat `runner_up` 0.92 to 0.81. It
-    // does not say why, and "why" is the only thing that can tell a scoring
-    // bug from a route that is genuinely better. An audit of 457 real
-    // dispatches tried to answer whether the router earns its place and could
-    // not: quota, quality and capability were never recorded, so every
-    // hypothesis about the scoring was unfalsifiable from the one artifact
-    // built to test it.
-    //
-    // Cheap to add and impossible to reconstruct later — a dispatch that
-    // already happened cannot be re-scored, because quota and breaker state
-    // have moved on.
+    // The score COMPONENTS, not just the winner and the margin. `candidates`
+    // says the picked route beat `runner_up` 0.92 to 0.81, not why, and "why"
+    // is what tells a scoring bug from a route that is genuinely better. It
+    // cannot be reconstructed later: quota and breaker state have moved on.
     entry.scores = {
       quota: decision.quotaScore,
       quality: decision.qualityScore,

@@ -2,8 +2,7 @@
  * Core types for harness-dispatch.
  *
  * These are the cross-cutting types used by dispatchers, the router, the
- * quota tracker, and the MCP surface. Downstream modules (R2/R3/R4) import
- * from here.
+ * quota tracker, and the MCP surface.
  */
 
 export type TaskType = "execute" | "plan" | "review" | "local" | "";
@@ -90,14 +89,13 @@ export interface WorkspaceFileChange {
   kind: WorkspaceChangeKind;
   /**
    * Digest of this file as it stood when the dispatch STARTED — the base the
-   * agent's edit was made against. Absent for an added file (there was
-   * nothing) and for policies that have a real base commit instead.
+   * agent's edit was made against. Absent for an added file and for policies
+   * that have a real base commit instead.
    *
    * A `copy` patch has no commit to anchor to, so without this there is no way
    * to tell "the project has not moved" from "the project has moved and my
-   * patch is about to overwrite it". Two concurrent dispatches touching one
-   * file ended with the second silently reverting the first's COMMITTED work:
-   * git apply cannot conflict when the patch's context is the current file.
+   * patch is about to overwrite it": git apply cannot conflict when the
+   * patch's context is the current file.
    *
    * Computed over content with CRLF collapsed to LF, so a checkout whose eol
    * settings rewrote a file on the way in is not mistaken for a real edit.
@@ -119,10 +117,10 @@ export interface WorkspaceRun {
    * For `git_worktree`: the commit the worktree was created from.
    *
    * Load-bearing for producing a correct patch. A worktree starts at HEAD,
-   * NOT at the caller's working tree, so diffing the worktree against the
-   * original directory of a dirty project reports the user's own uncommitted
-   * work as deletions — and applying that patch would destroy it. The agent's
-   * changes are worktree-vs-this-commit, and nothing else.
+   * NOT at the caller's working tree, so diffing it against the original
+   * directory of a dirty project reports the user's own uncommitted work as
+   * deletions, and applying that patch would destroy it. The agent's changes
+   * are worktree-vs-this-commit, and nothing else.
    */
   baseCommit?: string;
   changedFiles?: WorkspaceFileChange[];
@@ -172,11 +170,9 @@ export interface DispatchResult {
    * The INPUT was refused before the route was asked to do anything.
    *
    * Distinct from a failure, because it says nothing about whether the route
-   * works: the same input fails identically on every route of that shape, and
-   * a fresh one would fail again. Not counted toward `usage` or the circuit
-   * breaker — an over-long prompt cascading through three routes otherwise
-   * recorded three calls and three failures, and three such dispatches opened
-   * healthy routes for 300 seconds.
+   * works. Not counted toward `usage` or the circuit breaker: an over-long
+   * prompt cascading through three routes would otherwise record three calls
+   * and three failures, tripping healthy routes.
    */
   inputRejected?: boolean;
   retryAfter?: number;
@@ -224,13 +220,12 @@ export interface CliEventRule {
   outputTokenFields?: string[];
   /**
    * For emit: "error" — dotted path to the human-readable error message
-   * (e.g. Codex's real `{"type":"error","message":"You've hit your usage
+   * (e.g. Codex's `{"type":"error","message":"You've hit your usage
    * limit..."}` frame). Without a rule for this, a structured error frame
-   * is silently invisible to the dispatcher — it falls through to raw
-   * stdout/stderr text heuristics, which lose the message entirely if
-   * stderr happens to carry unrelated CLI banner noise (confirmed
-   * 2026-07-24: Codex's real stderr is just "Reading additional input from
-   * stdin...", which was shadowing the actual JSON error in stdout).
+   * is invisible to the dispatcher — it falls through to raw stdout/stderr
+   * text heuristics, which lose the message entirely when stderr carries
+   * unrelated CLI banner noise (Codex's stderr is "Reading additional input
+   * from stdin...", which shadows the JSON error in stdout).
    */
   messageField?: string;
 }
@@ -321,10 +316,9 @@ export interface CliProtocolConfig {
      * present is SUMMED ON TOP of the primary. Anthropic splits input across
      * three sibling fields — `input_tokens` counts only the uncached remainder,
      * with the bulk in `cache_creation_input_tokens` and
-     * `cache_read_input_tokens`. Reading the first alone reported 2 tokens for
-     * a turn that consumed 55,213, and `usage` totals were meaningless as a
-     * result. There is no vendor field carrying the total, so it has to be
-     * added up here.
+     * `cache_read_input_tokens`. Reading the first alone reports single-digit
+     * totals for turns that consumed tens of thousands of tokens. There is no
+     * vendor field carrying the total, so it has to be added up here.
      */
     usage?: { input: string[]; output: string[]; inputExtra?: string[]; outputExtra?: string[] };
     /** jsonl_stream only — see CliEventRule. */
@@ -332,9 +326,9 @@ export interface CliProtocolConfig {
     /**
      * Explicit error detection for "text"/"json_field" modes (jsonl_stream
      * uses eventRules' emit: "error" instead) — a CLI can exit 0 while its
-     * JSON body reports an API-level failure (confirmed 2026-07-24: Claude
-     * Code's `is_error`/`api_error_status` fields on an otherwise-0-exit
-     * response). `field` is a dotted path to a boolean; when true, the
+     * JSON body reports an API-level failure (Claude Code's
+     * `is_error`/`api_error_status` fields on an otherwise-0-exit response).
+     * `field` is a dotted path to a boolean; when true, the
      * dispatch is forced to success: false regardless of exit code or
      * `successRequiresOutput`, with the message from `messageFields`
      * (falls back to `fields` if omitted).
@@ -368,11 +362,10 @@ export interface ServiceConfig {
   apiKey?: string;
   /**
    * The `${VAR}` this route's `api_key` was written as, when that variable is
-   * not set in the environment and the key therefore resolved to nothing.
-   *
-   * Set at config load, where the raw text and the resolved value are both in
-   * hand — `apiKey` alone cannot tell "no key configured" from "a key was
-   * configured and the variable is missing", and those need opposite answers.
+   * not set and the key therefore resolved to nothing. Set at config load,
+   * where the raw text and the resolved value are both in hand: `apiKey`
+   * alone cannot tell "no key configured" from "a key was configured and the
+   * variable is missing", and those need opposite answers.
    */
   apiKeyUnsetRef?: string;
   baseUrl?: string;
@@ -386,18 +379,16 @@ export interface ServiceConfig {
   escalateOn: TaskType[];
   capabilities: Partial<Record<"execute" | "plan" | "review", number>>;
   /**
-   * Maximum output tokens the model can produce in a single dispatch.
-   * Callers (Planners, Workers, Reconcilers) use this to size work so it fits
-   * without mid-call truncation. A value of `undefined` means "unknown /
-   * assume the provider default" — callers that need to chunk conservatively
-   * should treat absence as a low bound.
+   * Maximum output tokens the model can produce in a single dispatch, for
+   * callers sizing work so it fits without mid-call truncation. `undefined`
+   * means unknown; treat absence as a low bound when chunking.
    */
   maxOutputTokens?: number;
   /**
-   * Context window (input + output) in tokens. Used by the
-   * `preferLargeContext` route hint and by planners sizing up prompt payloads.
-   * Advertised by the provider; may be model-specific when `escalateModel` is
-   * in effect — consult the resolved model at dispatch time.
+   * Context window (input + output) in tokens, used by the
+   * `preferLargeContext` route hint and when sizing prompt payloads. May be
+   * model-specific when `escalateModel` is in effect — consult the resolved
+   * model at dispatch time.
    */
   maxInputTokens?: number;
   provider?: BillingProvider;
@@ -410,38 +401,28 @@ export interface ServiceConfig {
   billingNotes?: string;
   safetyProfile?: SafetyProfile;
   /**
-   * The safety level this route ACTUALLY runs at regardless of what's
-   * requested — a capability floor, not a preference. E.g. Cursor's print
-   * mode always has write+shell capability, so its shipped entry declares
-   * `effective_safety: full_auto` and the route is skipped for stricter
-   * requests. Declared in config (shipped or user), not hardcoded per
-   * harness anywhere in code.
-   */
-  /**
    * Capability floor: what the harness ACTUALLY runs at, regardless of what
-   * was requested.
+   * was requested. Declared in config, not hardcoded per harness in code.
    *
    * Either one profile for every request, or a map from requested profile to
    * the floor that applies to it. The map exists because a CLI can have
    * genuinely different capability per mode: cursor-agent's `--mode plan` is
-   * read-only (verified — it declined to create or overwrite files), while its
-   * default print mode has write AND shell. One value cannot say that, so the
-   * route was pinned at full_auto and skipped every ordinary request.
+   * read-only, while its default print mode has write AND shell. One value
+   * cannot say that, and pins such a route at full_auto, skipping every
+   * ordinary request.
    */
   effectiveSafety?: SafetyProfile | Partial<Record<SafetyProfile, SafetyProfile>>;
   /**
    * Operator-declared known-good model ids for this route (`models:` in
-   * config) — surfaced verbatim in status/usage so a calling agent can pick
-   * one without guessing. Optional and advisory: hints.model is still
-   * forwarded even if it's not in this list.
+   * config), surfaced verbatim in status/usage so a calling agent can pick one
+   * without guessing. Advisory: hints.model is forwarded even if absent here.
    */
   models?: string[];
   /**
    * Free-text pointer to where this route's REAL model catalog lives
    * (`model_hint:` in config) — a docs URL, a CLI command like
    * `cursor-agent --list-models`, or "GET {base_url}/models". Surfaced in
-   * status/usage; declared per entry in the shipped config, not hardcoded
-   * per harness in code.
+   * status/usage; declared per entry in config, not hardcoded in code.
    */
   modelHint?: string;
   endpointMode?: EndpointMode;
@@ -450,27 +431,23 @@ export interface ServiceConfig {
   /**
    * How much of the concurrency budget one run of this route consumes.
    *
-   * `max_concurrent_runs` counted jobs, which treated an HTTP call to a local
-   * endpoint as costing the same as a whole Claude Code process — so four
-   * cheap endpoint calls could exclude a real dispatch, and the bound could
-   * not be raised without also allowing four heavyweight CLIs. Weighting the
-   * count fixes both directions.
+   * A plain job count would treat an HTTP call to a local endpoint as costing
+   * the same as a whole Claude Code process, so four cheap endpoint calls
+   * could exclude a real dispatch and the bound could not be raised without
+   * also allowing four heavyweight CLIs.
    *
    * Defaults to 1.0 for CLI routes and 0.1 for openai_compatible endpoints.
-   * With every weight at 1.0 the arithmetic is exactly the old count, so
-   * existing configs behave identically.
+   * With every weight at 1.0 the arithmetic is exactly a job count.
    */
   resourceWeight?: number;
   workspacePolicy?: WorkspacePolicy;
   /** Required when `harness: "generic"` — see CliProtocolConfig. Ignored otherwise. */
   protocol?: CliProtocolConfig;
   /**
-   * Per-service dispatch timeout override in milliseconds. Every dispatcher
-   * hard-codes its own default (10 minutes for CLI harnesses, 2 minutes for
-   * openai_compatible) with no way to raise it — a long-running review or
-   * audit routed to a CLI harness gets killed and its result discarded at
-   * exactly the default, regardless of how the caller invoked the task
-   * (`code` or `job`). Set this to raise (or lower) the ceiling for a
+   * Per-service dispatch timeout override in milliseconds. Each dispatcher
+   * has its own default (10 minutes for CLI harnesses, 2 minutes for
+   * openai_compatible), at which a long-running review or audit is killed and
+   * its result discarded. Set this to raise (or lower) the ceiling for a
    * specific route; a per-call `hints.timeoutMs` takes precedence over this.
    */
   timeoutMs?: number;
@@ -482,13 +459,10 @@ export interface RouterConfig {
   /**
    * Whether auto-detection ran, as the loaded config resolved it.
    *
-   * Carried so `configure` can WRITE IT BACK. It could not: `detect` was a
-   * top-level key with no field here, so regenerating a config dropped it
-   * silently — and `detect: false` is the only setting that isolates a machine
-   * from its installed paid CLIs. An acceptance pass measured
-   * `configure --yes --force` turning an isolating config into one routing to
-   * four real subscriptions, reporting "Wrote", with the safety warning
-   * suppressed because an emptied document fails its own trigger condition.
+   * Carried so `configure` can WRITE IT BACK: `detect: false` is the only
+   * setting that isolates a machine from its installed paid CLIs, so dropping
+   * it on regeneration turns an isolating config into one routing to every
+   * real subscription on the box.
    *
    * Undefined means "not stated in the file"; the loader's default then
    * applies (detection on when the config names no routes, off when it does).
@@ -496,10 +470,9 @@ export interface RouterConfig {
   detect?: boolean;
   /**
    * Whether detection actually ran for THIS load, after the file's own
-   * `detect:` and the authoritative-routes rule were applied. `configure`
-   * printed "Detected N harness routes" from the route count alone, so a
-   * re-run over an edited, authoritative file reported a detection it never
-   * made and left a newly installed harness out without saying so.
+   * `detect:` and the authoritative-routes rule were applied. Without it,
+   * `configure` can only report a route count, which over an edited,
+   * authoritative file reads as a detection that never happened.
    */
   detectionRan?: boolean;
   /**
@@ -518,13 +491,11 @@ export interface RouterConfig {
   leaderboard?: { enabled?: boolean };
   /**
    * Resolved secret -> the `${VAR}` reference it came from, for every
-   * `${VAR}` in the config file that resolved to a non-empty value.
-   *
-   * Exists so `configure` can write the reference back instead of the secret.
+   * `${VAR}` in the config file that resolved to a non-empty value, so
+   * `configure` can write the reference back instead of the secret.
    * Interpolation happens on the raw YAML tree before it is shaped into
-   * routes, so by the time a ServiceConfig exists its `apiKey` is already the
-   * resolved string and the reference is gone; this is the only surviving
-   * record of it. Never serialize this map.
+   * routes, so this is the only surviving record of the reference. Never
+   * serialize this map.
    */
   envRefs?: ReadonlyMap<string, string>;
   /**
@@ -533,7 +504,7 @@ export interface RouterConfig {
    * envRefs is keyed by resolved value and therefore cannot represent a
    * reference whose variable is UNSET: that resolves to "", which every unset
    * variable shares. Without this map, regenerating a config on a shell that
-   * had not exported the variable dropped the api_key line entirely. Never
+   * has not exported the variable drops the api_key line entirely. Never
    * serialize this map.
    */
   apiKeyRefs?: ReadonlyMap<string, string>;
@@ -543,31 +514,25 @@ export interface RouterConfig {
    * Not a throughput knob — a resource guard. Every dispatch spawns a
    * detached runner which spawns a full agent CLI, and those are heavyweight
    * processes (Codex is a Rust binary with a model runtime), not fan-outable
-   * HTTP calls. Unbounded, a burst of parallel dispatches exhausts memory:
-   * measured 2026-08-03, 20 dispatches to one route with 13 running
-   * concurrently, half of them failing, one killed by a Rust OOM. Dispatches
-   * past the limit wait in `queued` and start as slots free — nothing is
-   * rejected or lost. Raise it on a machine with headroom; `0` disables the
-   * bound entirely and restores the old behaviour.
+   * HTTP calls: unbounded, 20 dispatches to one route ran 13 concurrently,
+   * half of them failing, one killed by a Rust OOM. Dispatches past the limit
+   * wait in `queued` and start as slots free — nothing is rejected or lost.
+   * `0` disables the bound entirely.
    */
   maxConcurrentRuns?: number;
   /**
-   * Config entries that were silently ignored rather than failing to load —
-   * a disabled:/overrides: name that doesn't match any auto-detected route
-   * (e.g. left over from before the claude_code -> claude_code_cli-style
-   * rename), or a clis: entry with a missing/unrecognized harness or name.
-   * Surfaced by `doctor`/`configure` so a stale or typo'd config doesn't go
-   * unnoticed forever.
+   * Config entries that were ignored rather than failing to load — a
+   * disabled:/overrides: name matching no auto-detected route, or a clis:
+   * entry with a missing/unrecognized harness or name. Surfaced by
+   * `doctor`/`configure` so a stale or typo'd config doesn't go unnoticed.
    */
   configWarnings?: readonly string[];
   /**
    * Set when a hot reload FAILED and this config is the previously loaded one
    * still in effect — so the file on disk is not the file being routed on.
    *
-   * Carried here because it has to reach `status`. The failure was reported on
-   * stderr only, which no MCP client and no HTTP caller ever sees, and the
-   * comment at the throw site described the bug as "nothing on stderr and
-   * nothing in status" while closing only the first half.
+   * Carried here because it has to reach `status`: stderr, where the failure
+   * is also reported, is seen by no MCP client and no HTTP caller.
    */
   reloadError?: string;
 }
@@ -584,25 +549,20 @@ export interface RoutingDecision {
   /**
    * Set only when hints.model was provided. true if it matched something
    * this route statically declares (model/leaderboardModel/escalateModel/
-   * route name) — false if it was passed through to the dispatcher "blind"
-   * because nothing recognized it, which can still work (CLIs often accept
-   * arbitrary --model values) or can fail at dispatch time with the
-   * harness's own rejection. hints.model is unvalidated by design (see the
-   * `code` tool's own description) — this field is how a caller
-   * distinguishes "the router picked exactly what I asked for" from "I
-   * might have a typo" without guessing from `model` alone.
+   * route name) — false if it was passed to the dispatcher "blind" because
+   * nothing recognized it, which can still work (CLIs often accept arbitrary
+   * --model values) or can fail with the harness's own rejection. hints.model
+   * is unvalidated by design; this field is how a caller tells "exactly what
+   * I asked for" from "I might have a typo".
    */
   modelHintMatched?: boolean;
   /**
    * `hints.model` was NOT sent to the harness, because it named a configured
    * route rather than a model.
    *
-   * Without this the drop was invisible: the tool schema said the model is
-   * "ALWAYS passed to the harness as an override either way", and
-   * `modelHintMatched: false` is documented as "it was forwarded blind" — so a
-   * caller whose model was silently discarded read a response that said the
-   * opposite twice over. Suppressing the value is right; saying nothing about
-   * it is the same failure this project keeps finding elsewhere.
+   * Without this the drop is invisible, and worse than invisible:
+   * `modelHintMatched: false` means "forwarded blind", so a caller whose
+   * model was discarded would read the opposite of what happened.
    */
   modelHintDropped?: boolean;
   elo: number | undefined;
@@ -610,17 +570,12 @@ export interface RoutingDecision {
   reason: string;
   /**
    * What the winner beat, and by how much — the other candidates in the tier
-   * it was chosen from, best first, winner included.
+   * it was chosen from, best first, winner included. The score components
+   * describe the winner only and `reason` is a count ("tier 1 best (3
+   * available)"), so without this "why that one?" has no answer.
    *
-   * Every score component was already reported FOR THE WINNER, and `reason`
-   * said "tier 1 best (3 available)" — a count, never a comparison. So the one
-   * question a caller has about an automatic choice ("why that one?") had no
-   * answer, and the honest response to an unauditable chooser is to stop using
-   * it: measured over a month of real dispatches, 85% named a route outright
-   * and the scoring ran on about one dispatch in seven.
-   *
-   * Set only on the scored path. A forced or explicit route was not chosen
-   * over anything, so there is nothing to compare.
+   * Set only on the scored path: a forced or explicit route was not chosen
+   * over anything.
    */
   candidates?: Array<{ route: string; score: number }>;
   skippedRoutes?: RouteSkip[];
@@ -649,12 +604,11 @@ export type DispatcherEvent =
    * arrives. Without it the chunk is raw process output, which for an
    * event-driven harness is protocol JSONL.
    *
-   * The distinction exists because the HTTP streaming path forwarded every
-   * stdout chunk into `delta.content`, so an OpenAI-compatible client
-   * concatenating deltas received Codex protocol frames and internal thread
-   * ids instead of the answer — while the non-streaming call on the same
-   * endpoint returned the parsed result. Only the dispatcher knows which of
-   * the two it is producing.
+   * The distinction exists because the HTTP streaming path puts chunks
+   * straight into `delta.content`: forwarding all of them would hand an
+   * OpenAI-compatible client Codex protocol frames and internal thread ids
+   * instead of the answer. Only the dispatcher knows which of the two it is
+   * producing.
    */
   | { type: "stdout"; chunk: string; text?: boolean }
   | { type: "stderr"; chunk: string }

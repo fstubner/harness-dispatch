@@ -1,16 +1,9 @@
 /**
  * Configuration loading for harness-dispatch.
  *
- * Two entry points:
- *   loadConfig(path?)   — if no path, auto-detects installed CLIs on PATH.
- *                         If path points to a legacy YAML with a `services:`
- *                         key, returns it verbatim. Otherwise merges minimal
- *                         overrides onto auto-detected defaults.
- *   watchConfig(path)   — poll the file's mtime once a second and reload on
- *                         change. Returns {stop} to cancel the poller.
- *
- * All string values are scanned for ${ENV_VAR} references and replaced with
- * the corresponding environment variable.
+ * Two entry points: loadConfig(path?) and watchConfig(path). All string values
+ * are scanned for ${ENV_VAR} references and replaced with the corresponding
+ * environment variable.
  */
 
 import { existsSync, promises as fs } from "node:fs";
@@ -44,17 +37,12 @@ import { ENV_VAR_RE, interpolateTree } from "./config/env-interpolation.js";
 export type WhichFn = (cmd: string) => Promise<string | null>;
 
 /**
- * PATH lookups, memoised for the life of the process.
- *
- * loadConfig() runs on every CLI invocation and on every config reload, and
- * each lookup is a real filesystem walk — ~2-3s per harness on Windows. A CLI
- * that resolves once will resolve the same way a second later, and a
- * long-running server re-reads config on hot reload where re-probing bought
- * nothing.
+ * PATH lookups, memoised for the life of the process: each is a real
+ * filesystem walk (~2-3s per harness on Windows) and loadConfig() runs on
+ * every CLI invocation and every reload.
  *
  * Deliberately NOT persisted across processes: installing a harness should
- * take effect on the next command, not after a cache expiry someone has to
- * discover.
+ * take effect on the next command, not after a cache expiry.
  */
 const whichCache = new Map<string, Promise<string | null>>();
 
@@ -74,36 +62,20 @@ const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
 };
 import type { RouterConfig, ServiceConfig, TaskType } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Built-in harness defaults — loaded from the package's own bundled
-// config.default.yaml's `clis:` list, NOT hardcoded here. Claude Code,
-// Codex, Cursor, and Antigravity are not special-cased in this file; they're
-// just the entries the shipped config happens to define, keyed by each
-// entry's `harness:` value. See resolveShippedConfigPath()/
-// loadDefaultHarnesses() below, near the bottom of this file (defined after
-// the field parsers they reuse — str/num/capsFrom/parseProtocolFields/etc. —
-// but referenced here via a hoisted function call, so definition order
-// doesn't matter to JS).
-// ---------------------------------------------------------------------------
+// Built-in harness defaults come from the package's bundled
+// config.default.yaml (see harness-presets.ts); no harness is special-cased
+// here.
+//
+// The route ids below are distinct from the CLI_DEFAULTS key, which is the
+// harness *type* (selects the dispatcher class via dispatcher-factory.ts's
+// HARNESS_TABLE, and is read by billing.ts/safety.ts/router.ts) and must not
+// change. These only control the service/route name, so they follow the same
+// `*_cli` convention `endpoints:` uses for `*_api` (e.g. gemini_api).
 
-
-// NOTE: everything the module-load-time `CLI_DEFAULTS = loadDefaultHarnesses()`
-// call below touches must be declared ABOVE it (or be a hoisted function) —
-// a `const` declared later in the file hits the temporal dead zone at load.
-
-
-// Default route id auto-detect assigns for each harness — distinct from the
-// CLI_DEFAULTS key above, which is the harness *type* (selects the
-// dispatcher class via dispatcher-factory.ts's HARNESS_TABLE, and is read by
-// billing.ts/safety.ts/router.ts) and must not change. This mapping only
-// controls what shows up as the service/route name, so it can follow the
-// same `*_cli` convention `endpoints:` uses for `*_api` (e.g. gemini_api).
 /**
- * Commands auto-detect probes on PATH, exported so `doctor` can name them.
- *
- * A zero-route install used to report "0 ready route(s)" and stop, which tells
- * a new user nothing about what was looked for or what to install. Keyed the
- * same way as AUTO_DETECT_NAME so the two cannot drift.
+ * Commands auto-detect probes on PATH, exported so `doctor` can name them —
+ * a zero-route install otherwise says "0 ready route(s)" and nothing about
+ * what was looked for. Keyed like AUTO_DETECT_NAME so the two cannot drift.
  */
 export const AUTO_DETECT_COMMANDS: Record<string, string> = {
   claude_code_cli: "claude",
@@ -119,29 +91,18 @@ const AUTO_DETECT_NAME: Record<string, string> = {
   antigravity_cli: "antigravity_cli",
 };
 
-// ---------------------------------------------------------------------------
-// Env var interpolation (${VAR_NAME})
-// ---------------------------------------------------------------------------
-
-
 /**
  * Blank out credential VALUES in a YAML parser's error text.
  *
- * js-yaml quotes the source lines around a syntax error. Those lines are the
- * user's config, so a parse failure anywhere near an `api_key:` put that key
- * into the error — and this error does not stay in the terminal. It becomes
- * `config.reloadError`, then `stateWarnings`, which is read by `status`, by
- * `doctor`, by the HTTP status route and by the `harness-dispatch://status`
- * MCP resource that an orchestrating agent can fetch.
+ * js-yaml quotes the source lines around a syntax error, so a parse failure
+ * near an `api_key:` puts that key into the error — which reaches
+ * `config.reloadError`, `stateWarnings`, `status`, `doctor`, the HTTP status
+ * route and the `harness-dispatch://status` MCP resource. js-yaml truncates
+ * its snippet lines at roughly 50 characters, and a partial credential in an
+ * agent-readable resource is still a disclosure.
  *
- * The value cannot be scrubbed by comparison here — the file did not parse, so
- * there is no configured value to compare against. Matching the KEY NAME is
- * what is available, which is why this is a pattern and not a lookup.
- *
- * js-yaml truncates its snippet lines at roughly 50 characters, so a realistic
- * 32-character key was already arriving as a prefix rather than in full. A
- * partial credential in an agent-readable resource is still a disclosure, and
- * a short key was arriving whole.
+ * A pattern and not a lookup because the file did not parse, so there is no
+ * configured value to compare against — only the KEY NAME is available.
  */
 function redactSecretLines(message: string): string {
   return message.replace(
@@ -175,9 +136,8 @@ function endpointFields(
 }
 
 /**
- * Top-level config blocks shared by every format: `telemetry:` and
- * `retention:`. Parsed once here so legacy `services:` configs and modern
- * `clis:`/`endpoints:` configs behave identically.
+ * Top-level config blocks shared by every format, parsed once here so legacy
+ * `services:` and modern `clis:`/`endpoints:` configs behave identically.
  */
 function topLevelSettings(
   raw: Record<string, unknown>,
@@ -202,9 +162,9 @@ function topLevelSettings(
   const maxRuns = num(raw.max_concurrent_runs, Number.NaN);
   if (Number.isFinite(maxRuns) && maxRuns >= 0) out.maxConcurrentRuns = Math.floor(maxRuns);
   else if (raw.max_concurrent_runs !== undefined) {
-    // Present but unusable. Silently falling back to the default meant a
-    // caller who set a concurrency bound got a different one and was never
-    // told — and this value governs how many agent CLIs run at once.
+    // Present but unusable. Silently falling back to the default would give a
+    // caller who set a concurrency bound a different one with no warning —
+    // and this value governs how many agent CLIs run at once.
     policyWarnings.push(
       `max_concurrent_runs: ${JSON.stringify(raw.max_concurrent_runs)} is not a ` +
         `non-negative number — IGNORED, the default applies instead.`,
@@ -215,21 +175,10 @@ function topLevelSettings(
 
 
 /**
- * `effective_safety` as either one profile or a per-request map.
- *
- * An unrecognised value is dropped rather than guessed at, and an unrecognised
- * KEY or value inside the map is dropped individually — a typo must not
- * silently widen the floor for a request it was meant to restrict.
- */
-/**
  * Billing IDENTITY for a route — the part that genuinely differs per shape.
- *
- * Everything that means the same thing everywhere (safety_profile,
- * effective_safety, workspace_policy, billing_notes, models, …) now comes from
- * resolveSharedRouteFields instead. What is left here is the set the caller
- * has already inferred per shape: endpoints derive provider/surface/kind from
- * the base URL, CLI routes derive them from whether an api_key is present.
- * This function only reads what it is handed.
+ * Endpoints derive provider/surface/kind from the base URL, CLI routes from
+ * whether an api_key is present; this only reads what it is handed. Everything
+ * that means the same thing everywhere comes from resolveSharedRouteFields.
  */
 function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
   const out: Partial<ServiceConfig> = {};
@@ -260,25 +209,17 @@ function escalateOnFrom(raw: unknown): TaskType[] {
 }
 
 
-// ---------------------------------------------------------------------------
-// Legacy full-format parser (YAML with top-level `services:` key)
-// ---------------------------------------------------------------------------
-
+// Legacy full-format parser (YAML with top-level `services:` key).
 function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   const services: Record<string, ServiceConfig> = {};
   const rawServices = (raw.services ?? {}) as Record<string, Record<string, unknown>>;
   const warnings: string[] = [];
 
   // `services:` must be a MAP of route id -> settings, but `typeof [] ===
-  // "object"`, so a list slips through and Object.entries turns it into routes
-  // called "0", "1", … with each item's `name:` silently ignored. Everything
-  // then looks healthy — doctor reports the routes, status lists them — right
-  // up until `--service my_route` answers "Unknown service".
-  //
-  // The mistake is a natural one rather than carelessness: the sibling
-  // top-level keys `clis:` and `endpoints:` ARE lists, and their items DO
-  // carry `name:`. Found by an acceptance pass; it predates the work that pass
-  // was reviewing.
+  // "object"`, so a list slips through and becomes routes called "0", "1", …
+  // with each item's `name:` ignored — healthy-looking until `--service
+  // my_route` answers "Unknown service". A natural mistake: the sibling keys
+  // `clis:` and `endpoints:` ARE lists, and their items DO carry `name:`.
   if (Array.isArray(raw.services)) {
     const intended = (raw.services as unknown[])
       .map((e) => (e !== null && typeof e === "object" ? (e as Record<string, unknown>).name : undefined))
@@ -297,12 +238,9 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     );
   }
 
-  // A top-level `services:` key selects the legacy parser entirely — it
-  // never looks at clis:/endpoints:/overrides:, so any of those sitting
-  // alongside it are silently dropped unless we say so here. The likely
-  // real-world case is a config written by an old `configure` (which used
-  // to emit `services:`; it writes clis:/endpoints: now) with modern keys
-  // later pasted in from the README or shipped config.
+  // A top-level `services:` key selects the legacy parser entirely — it never
+  // looks at clis:/endpoints:/overrides:, so any of those sitting alongside it
+  // are dropped unless we say so here.
   const ignoredModernKeys = (["clis", "endpoints", "overrides"] as const).filter(
     (key) => raw[key] !== undefined,
   );
@@ -316,25 +254,14 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   }
 
   for (const [name, svc] of Object.entries(rawServices)) {
-    // The legacy shape gets the same value checks as `clis:` and `endpoints:`.
-    //
-    // It got neither: both validators were wired into the two modern loops and
-    // not this one, so a `services:` config — still supported, still what an
-    // older `configure` wrote — reported one warning where the modern shape
-    // reports four. A delegate audit found the asymmetry.
-    //
-    // Deliberately only the VALUE checks. The unknown-KEY warner is not called
-    // here because the legacy shape accepts a wider set of keys than
-    // KNOWN_ROUTE_KEYS lists, and reporting those as typos would be worse than
-    // the silence it replaces.
+    // Only the VALUE checks: the unknown-KEY warner is not called here because
+    // the legacy shape accepts a wider set of keys than KNOWN_ROUTE_KEYS
+    // lists, and reporting those as typos would be worse than silence.
     warnMistypedRouteValues(svc, `services."${name}"`, warnings);
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
-    // Computed once and reused below for both max-tokens fallback and the
-    // billing/safety/model-hint inheritance IIFE — legacy-format entries
-    // inherit the named harness's declared metadata (from the shipped
-    // config) exactly like clis: entries do, so `harness: cursor` here
-    // classifies correctly without repeating every field. Explicit fields
-    // on the entry itself always win.
+    // Legacy-format entries inherit the named harness's shipped metadata just
+    // as clis: entries do, so `harness: cursor` classifies correctly without
+    // repeating every field. Explicit fields on the entry always win.
     const harnessDefaults = CLI_DEFAULTS[str(svc.harness) ?? ""];
     const svcConfig: ServiceConfig = {
       name,
@@ -351,8 +278,8 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
       escalateOn: escalateOnFrom(svc.escalate_on),
       capabilities: capsFrom(svc.capabilities),
       ...(() => {
-        // Billing IDENTITY only — the rest of the named harness's defaults
-        // reach this entry through resolveSharedRouteFields below.
+        // Billing identity only; the rest reaches this entry through
+        // resolveSharedRouteFields below.
         if (!harnessDefaults) return {};
         return {
           provider: harnessDefaults.provider,
@@ -367,20 +294,13 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
         };
       })(),
       ...billingFields(svc),
-      // The same table the `clis:` and `endpoints:` builders use. This shape
-      // previously read the shared keys through billingFields() plus four
-      // hand-written blocks, which is how it ended up with a DIFFERENT set
-      // again: it inherited maxInput/OutputTokens, effectiveSafety, models and
-      // modelHint from the named harness but not leaderboardModel or
-      // thinkingLevel, so `services: { x: { harness: antigravity_cli } }`
-      // silently lost its scoring key and its thinking level. Passing the
-      // defaults through one table fixes that too.
+      // The same table the `clis:` and `endpoints:` builders use, so every
+      // shape inherits the same set from the named harness.
       ...resolveSharedRouteFields(svc, harnessDefaults),
       ...endpointFields(svc, type, str(svc.base_url)),
       ...(() => {
-        // Falls back to the named harness's built-in default protocol (if
-        // any) when this legacy-format entry doesn't declare its own —
-        // same behavior as clis: entries, so `harness: claude_code` here
+        // Falls back to the named harness's built-in default protocol when
+        // this entry doesn't declare its own, so `harness: claude_code` here
         // works without repeating the whole protocol block.
         const harnessDefaults = CLI_DEFAULTS[str(svc.harness) ?? ""];
         const protocol =
@@ -402,19 +322,14 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
   return cfg;
 }
 
-// ---------------------------------------------------------------------------
-// Auto-detect loader
-// ---------------------------------------------------------------------------
-
 interface ApiKeys {
   [service: string]: string;
 }
 
 /**
  * Build a CLI ServiceConfig from a harness's built-in defaults plus a raw
- * override object. Shared by auto-detect (`overrides:` keyed by route id)
- * and explicit `clis:` entries (each entry IS the override, plus `name` and
- * `harness` picking which defaults to start from).
+ * override object. Shared by auto-detect (`overrides:` keyed by route id) and
+ * explicit `clis:` entries (each entry IS the override).
  */
 function buildCliServiceConfig(
   name: string,
@@ -424,7 +339,6 @@ function buildCliServiceConfig(
   warnings: string[] = [],
 ): ServiceConfig {
   override = { ...override };
-  // Capabilities merge-over-defaults.
   const caps = { ...defaults.capabilities };
   if (override.capabilities && typeof override.capabilities === "object") {
     const oc = override.capabilities as Record<string, unknown>;
@@ -450,10 +364,9 @@ function buildCliServiceConfig(
     cliCapability: num(override.cli_capability, defaults.cliCapability),
     escalateOn: escalateOnFrom(override.escalate_on),
     capabilities: caps,
-    // Every field that means the same thing on every route shape, resolved
-    // from ONE table against this harness's shipped defaults. Spread early so
-    // the shape-specific resolutions below (billing identity, which depends on
-    // whether an api_key is present) still win.
+    // Fields that mean the same thing on every route shape. Spread early so
+    // the shape-specific billing identity below, which depends on whether an
+    // api_key is present, still wins.
     ...resolveSharedRouteFields(override, defaults),
     provider: providerFrom(override.provider) ?? defaults.provider,
     surface: surfaceFrom(override.surface) ?? defaults.surface,
@@ -464,19 +377,14 @@ function buildCliServiceConfig(
       return billingKind !== undefined ? { billingKind } : {};
     })(),
     ...(() => {
-      // A DECLARED billing_kind beats the harness default.
+      // A DECLARED billing_kind beats the harness default. `harness: generic`
+      // defaults paidUsagePossible to true (an unknown command might cost
+      // money), but a route declaring `billing_kind: local_compute` has said
+      // it cannot; letting the default win would give `billing=local_compute
+      // paid=possible` and the route skipped by billing policy.
       //
-      // `harness: generic` defaults paidUsagePossible to true (correctly — an
-      // unknown command might cost money). But a route declaring
-      // `billing_kind: local_compute` has said it cannot, and the default
-      // still won: status showed `billing=local_compute paid=possible`, two
-      // fields of the same record contradicting each other, and the route was
-      // skipped by billing policy. Nothing about a declared non-paid kind
-      // should leave the paid flag set by a fallback.
-      //
-      // An explicit paid_usage_possible still wins over both, and an api_key
-      // still forces true — a key means a metered account exists regardless of
-      // what the kind claims.
+      // An explicit paid_usage_possible wins over both, and an api_key forces
+      // true — a key means a metered account exists whatever the kind claims.
       const declaredKind = billingKindFrom(override.billing_kind);
       const paidUsagePossible =
         typeof override.paid_usage_possible === "boolean"
@@ -490,10 +398,10 @@ function buildCliServiceConfig(
     })(),
     ...endpointFields(override, "cli", str(override.base_url)),
     ...(() => {
-      // Falls back to this harness's built-in default (if any) when no
-      // override is given, or when the override is malformed — protocolFrom
-      // already warned in the latter case; failing the whole route over a
-      // typo'd override would be worse than keeping the known-good default.
+      // Falls back to this harness's built-in default when no override is
+      // given, or when the override is malformed — protocolFrom has already
+      // warned, and failing the whole route over a typo would be worse than
+      // keeping the known-good default.
       const protocol = protocolFrom(override.protocol, `clis "${name}"`, warnings, PROTOCOL_PRESETS) ?? defaults.protocol;
       return protocol !== undefined ? { protocol } : {};
     })(),
@@ -509,16 +417,9 @@ async function detectServices(
   const services: Record<string, ServiceConfig> = {};
   const disabledSet = new Set(disabled);
 
-  // Probe every harness AT ONCE.
-  //
-  // This was a sequential await per harness. Each `which` costs real time on
-  // Windows — measured 2.8s / 3.3s / 2.7s / 2.1s for claude / codex /
-  // cursor-agent / agy on a machine where all four are installed, so ~11s per
-  // loadConfig() call, and loadConfig runs on every CLI invocation. `status`
-  // and `doctor` took ~17s, and the test suite went red with timeouts on any
-  // developer machine that actually has the harnesses installed — it passed in
-  // CI only because CI is bare. The probes are independent, so there was never
-  // a reason to serialise them.
+  // Probe every harness AT ONCE. Each `which` costs ~2-3s on Windows and
+  // loadConfig() runs on every CLI invocation, so serialising four of them
+  // would add ~11s to each. The probes are independent.
   const candidates = Object.entries(CLI_DEFAULTS)
     // "generic" has no installable binary of its own — it exists only for
     // explicit clis: entries (addClis), never auto-detection.
@@ -543,13 +444,13 @@ async function detectServices(
 }
 
 /**
- * Explicit `clis:` entries — same shape as `endpoints:` but for CLI
- * harnesses: arbitrary `name`, required `harness` picks which built-in
- * defaults to start from (claude_code | codex | cursor | antigravity_cli).
- * Not gated on `which()` — declared explicitly, so it's added to the map
- * unconditionally and its dispatcher's own isAvailable() reports whether the
- * binary is actually on PATH (surfaced in status/doctor either way, instead
- * of silently vanishing like undetected auto-detect entries do).
+ * Explicit `clis:` entries: arbitrary `name`, required `harness` picking which
+ * built-in defaults to start from.
+ *
+ * Not gated on `which()`. Declared explicitly, so the route is added
+ * unconditionally and its dispatcher's isAvailable() reports whether the
+ * binary is on PATH — surfaced in status/doctor either way, instead of
+ * silently vanishing like an undetected auto-detect entry.
  */
 function addClis(
   services: Record<string, ServiceConfig>,
@@ -591,15 +492,12 @@ function addClis(
         );
         continue;
       }
-      // Validate now so a malformed protocol block skips the whole entry,
-      // instead of silently landing a route with no `.protocol` at all.
-      // Warnings from THIS pass go to a throwaway array, not `warnings` —
-      // buildCliServiceConfig below parses the same entry.protocol again
-      // (it has to: it's shared with detectServices' overrides path, which
-      // has no prior validation pass) and would otherwise double every
-      // warning under two different labels. On failure we still surface it
-      // once, from here, since the entry gets skipped before that second
-      // parse ever runs.
+      // Validate now so a malformed protocol block skips the whole entry
+      // instead of landing a route with no `.protocol` at all. Warnings go to
+      // a throwaway array because buildCliServiceConfig parses the same block
+      // again, and would otherwise double every warning under two labels; on
+      // failure they are surfaced once from here, since the entry is skipped
+      // before that second parse runs.
       const validation: string[] = [];
       if (protocolFrom(entry.protocol, `clis[${index}] "${name}"`, validation, PROTOCOL_PRESETS) === undefined) {
         warnings.push(...validation);
@@ -611,35 +509,18 @@ function addClis(
 }
 
 /**
- * `api_key: ${VAR}` references keyed by route name, read from the RAW tree
- * before interpolation.
- *
- * envRefs cannot cover this case. It maps a resolved value back to the
- * reference that produced it, and an UNSET variable resolves to "" — which
- * every unset variable shares, so the map would hand one route another route's
- * variable name. interpolateEnv skips empty resolutions for exactly that
- * reason.
- *
- * The consequence was silent: `configure --yes --force` run in a shell that
- * had not exported the variable emitted the route with no `api_key` line at
- * all, overwriting a correct config with one whose key was simply gone. Keyed
- * by route name, which is unique per shape and is what configure has in hand.
- */
-/**
  * Record, per route, that its `api_key: ${VAR}` resolved to nothing.
  *
- * The config-level warning for unset variables has existed for a while and
- * names every one of them, but it is one line in `doctor` about the FILE:
- * `usage` and `status` still listed each affected route as ready, and the
- * router still scored it. Measured — three routes reported ok, were picked,
- * and came back `HTTP 401: Invalid API Key` and "Missing or invalid
- * Authorization header", one call each.
+ * The config-level warning for unset variables is one line in `doctor` about
+ * the FILE: without this per-route mark, `usage` and `status` still list the
+ * route as ready and the router still scores it, so it is picked and comes
+ * back `HTTP 401: Invalid API Key`.
  *
- * ENDPOINT ROUTES ONLY, deliberately. A CLI route that declares
- * `api_key: ${ANTHROPIC_API_KEY}` is asking for API billing *instead of* its
- * subscription login, and with the variable unset the harness simply uses the
- * login it already has — a working route that must not be skipped. For an
- * openai_compatible endpoint the key is the only credential there is.
+ * ENDPOINT ROUTES ONLY. A CLI route declaring `api_key: ${ANTHROPIC_API_KEY}`
+ * is asking for API billing instead of its subscription login, and with the
+ * variable unset the harness just uses the login it already has — a working
+ * route that must not be skipped. For an endpoint the key is the only
+ * credential there is.
  */
 function markUnsetApiKeys(
   services: Record<string, ServiceConfig>,
@@ -653,6 +534,15 @@ function markUnsetApiKeys(
   }
 }
 
+/**
+ * `api_key: ${VAR}` references keyed by route name, read from the RAW tree
+ * before interpolation.
+ *
+ * envRefs cannot cover this: it maps a resolved value back to its reference,
+ * and every UNSET variable resolves to the same "", so the map would hand one
+ * route another route's variable name. Keyed by route name, which is unique
+ * and is what `configure` has in hand when it rewrites the file.
+ */
 function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {
   const refs = new Map<string, string>();
   const note = (name: unknown, value: unknown): void => {
@@ -692,8 +582,7 @@ function collectApiKeys(raw: Record<string, unknown>): ApiKeys {
       apiKeys[k] = v;
       // Registered here and not from the finished config: an entry overridden
       // by an inline `api_key:`, or naming no route, never reaches a service
-      // and would otherwise be invisible to redaction while still sitting in
-      // the file. That is the entry a pass measured leaking.
+      // and would otherwise be invisible to redaction.
       registerSecretValue(v);
     }
   }
@@ -727,10 +616,8 @@ function addEndpoints(
     const baseUrl = str(ep.base_url);
     const model = str(ep.model);
     if (!name || !baseUrl || !model) {
-      // Silently dropping the entry was the same class this file keeps
-      // producing: the equivalent `clis:` mistake warns loudly, this one left
-      // `doctor` reporting "ok config-warnings" while three endpoints had
-      // vanished.
+      // Warn rather than drop silently, or `doctor` reports "ok" while the
+      // endpoints have vanished.
       const missing = [
         !name ? "name" : undefined,
         !baseUrl ? "base_url" : undefined,
@@ -750,12 +637,9 @@ function addEndpoints(
       baseUrl,
       model,
       command: "",
-      // The top-level `api_keys:` block was honoured for `clis:` (see
-      // buildCliServiceConfig) and silently ignored here, so an endpoint whose
-      // credential lived there had NO key at runtime — and `configure` could
-      // not round-trip a reference that had never reached the service. Same
-      // class as workspace_policy: a documented key read for one route shape
-      // and dropped for another.
+      // The top-level `api_keys:` block is honoured here as well as in
+      // buildCliServiceConfig, or an endpoint whose credential lives there has
+      // NO key at runtime.
       ...(str(ep.api_key) !== undefined
         ? { apiKey: str(ep.api_key)! }
         : apiKeys[name]
@@ -783,17 +667,12 @@ function addEndpoints(
       }),
       ...endpointFields(ep, "openai_compatible", baseUrl),
       // No defaults argument: an endpoint has no harness whose shipped
-      // defaults it could fall back to. That absence is exactly why the CLI
-      // path could not simply reuse billingFields() — see route-fields.ts.
+      // defaults it could fall back to.
       ...resolveSharedRouteFields(ep),
     };
     services[name] = svc;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Public: loadConfig
-// ---------------------------------------------------------------------------
 
 export interface LoadConfigOptions {
   /** Override `which` for tests — return null when a CLI is "not found". */
@@ -803,21 +682,12 @@ export interface LoadConfigOptions {
    *
    * Only `configure` sets this: the path it is given is its OUTPUT, which
    * legitimately does not exist yet. For every other command an explicit
-   * --config that is not there is a typo, and silently auto-detecting printed
-   * a confident route table for a config that was never loaded.
+   * --config that is not there is a typo, and silently auto-detecting would
+   * print a confident route table for a config that was never loaded.
    */
   allowMissing?: boolean;
 }
 
-/**
- * Load a RouterConfig.
- *
- * If `path` is omitted (or the file doesn't exist), auto-detect CLIs on PATH
- * and use built-in defaults. If the file has a top-level `services:` key,
- * parse it in legacy mode. Otherwise auto-detect and merge `overrides`.
- *
- * Supports ${ENV_VAR} interpolation for any string value.
- */
 /**
  * The config file a process should load: an explicit `--config`, else
  * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else the
@@ -825,19 +695,12 @@ export interface LoadConfigOptions {
  * else nothing (auto-detect). The current directory stays ahead of the user
  * file so a per-project config still wins when one is present.
  *
- * ONE function because there used to be two, and they disagreed. job-runner.ts
- * read the environment variable and bin.ts did not, while job-runner's own
- * header claimed the two mirrored each other. With the variable set in the
- * ambient environment, the server routed on auto-detected defaults and the
- * runner it spawned loaded a different file — the two halves of a single
- * dispatch working from different configs, with nothing reporting it. A
- * variable pointing at a file that does not exist was likewise ignored
- * outright by the CLI and the server, which CHANGELOG 0.6.0 claimed was
- * reported.
+ * ONE function, shared by bin.ts and job-runner.ts: two copies disagreeing
+ * about the environment variable would leave a server and the runner it
+ * spawned on different configs for a single dispatch.
  *
- * A path from the variable is treated as EXPLICIT, so a missing file is an
- * error rather than a silent fall-through to auto-detect: someone who exported
- * it meant it.
+ * A path from the variable is EXPLICIT, so a missing file is an error rather
+ * than a silent fall-through to auto-detect.
  */
 export function resolveConfigPath(explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
@@ -851,12 +714,11 @@ export function resolveConfigPath(explicit?: string): string | undefined {
 /**
  * Warn when a base_url's PATH looks like it carries a credential.
  *
- * Redaction used to guess at this with a length threshold, which made an Azure
- * deployment name (`.../deployments/gpt-4-turbo-preview`) a redaction target
- * and would have mangled that name wherever it appeared. A path segment cannot
- * be told from a credential by inspection, so this says so out loud rather
- * than guessing: the user knows which it is, and moving it to `api_key:` makes
- * it redactable everywhere by value.
+ * A path segment cannot be told from a credential by inspection — redacting on
+ * a length threshold would mangle an Azure deployment name
+ * (`.../deployments/gpt-4-turbo-preview`) wherever it appeared. So this warns
+ * instead: the user knows which it is, and moving it to `api_key:` makes it
+ * redactable everywhere by value.
  */
 function warnCredentialInUrlPath(config: RouterConfig, warnings: string[]): void {
   for (const svc of Object.values(config.services ?? {})) {
@@ -867,10 +729,8 @@ function warnCredentialInUrlPath(config: RouterConfig, warnings: string[]): void
     } catch {
       continue;
     }
-    // Two shapes the first version of this test exempted, both real: the
-    // `!includes(".")` filter skipped every JWT (`eyJ….eyJ….sig`), and
-    // requiring a digit skipped an all-alphabetic token. Neither got a
-    // warning or redaction, which is the worst of both.
+    // A JWT (`eyJ….eyJ….sig`) is matched before the dotted-segment filter,
+    // and no digit is required, so an all-alphabetic token still matches.
     const suspicious = segments.find((seg) => {
       if (seg.length < 24) return false;
       if (/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(seg)) return true;
@@ -890,12 +750,14 @@ function warnCredentialInUrlPath(config: RouterConfig, warnings: string[]): void
 /**
  * Load config, and register its secrets for output redaction.
  *
- * A thin wrapper on purpose. `loadConfigInner` has two return paths (legacy
- * `services:` and the modern `clis:`/`endpoints:` shape) and gained a third
- * once before; registering inside it would be two or three sites to keep in
- * step. Registering here means every caller — the CLI, the MCP server, the
- * hot reloader, the detached job runner — gets it by loading config at all,
- * with nothing to remember. See src/redaction.ts for why that matters.
+ * If `path` is omitted (or the file doesn't exist), auto-detect CLIs on PATH
+ * and use built-in defaults. A top-level `services:` key selects the legacy
+ * parser; otherwise `clis:`/`endpoints:`/`overrides:` apply. Any string value
+ * may use ${ENV_VAR} interpolation.
+ *
+ * A thin wrapper on purpose: `loadConfigInner` has several return paths, so
+ * registering inside it would be several sites to keep in step. Here, every
+ * caller gets redaction by loading config at all. See src/redaction.ts.
  */
 export async function loadConfig(
   path?: string,
@@ -937,32 +799,30 @@ async function loadConfigInner(
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
       if (e.code === "ENOENT") {
-        // configure names an OUTPUT path, so a file that is not there yet is
-        // its normal first run — it alone passes allowMissing.
         if (opts.allowMissing === true) {
-          // Fall through to auto-detect with an empty `raw`.
+          // `configure` names an OUTPUT path, so a file that is not there yet
+          // is its normal first run; fall through to auto-detect.
         } else {
-          // Otherwise an explicit --config that does not exist is a typo, not
-          // a request for auto-detection. Continuing printed a confident,
-          // healthy route table built from defaults, so a mistyped path looked
-          // like a working config. The implicit fallback (no path given at
-          // all) never reaches here and is unchanged.
+          // An explicit --config that does not exist is a typo, not a request
+          // for auto-detection: continuing would print a confident, healthy
+          // route table built from defaults. The implicit fallback (no path
+          // given at all) never reaches here.
           throw new Error(
             `config file not found: ${path}. Check the path, or omit --config to ` +
               `auto-detect installed harness CLIs.`,
           );
         }
       } else if (e.code === "EISDIR") {
-        // A raw `EISDIR: illegal operation on a directory, read` named no
-        // path, so the one thing the user needed — which argument was wrong
-        // — was the one thing missing.
+        // A raw `EISDIR: illegal operation on a directory, read` names no
+        // path, so it omits the one thing the user needs: which argument was
+        // wrong.
         throw new Error(
           `config path ${path} is a directory, not a file. Point --config at the ` +
             `config.yaml inside it.`,
         );
       } else if (err instanceof yaml.YAMLException) {
-        // A YAML syntax error used to escape as a raw js-yaml stack trace that
-        // never named the file it came from.
+        // Name the file: a raw js-yaml stack trace does not say which config
+        // it came from.
         throw new Error(
           `config file ${path} is not valid YAML: ${redactSecretLines(err.message)}`,
         );
@@ -984,10 +844,8 @@ async function loadConfigInner(
     const enumWarnings: string[] = [];
     warnUnknownSafetyEnums(raw, enumWarnings);
     // The legacy shape returns before the modern path's top-level key check
-    // ever runs, so the same `policy: copy` that warns twice in a `clis:`
-    // config warned about nothing here. An acceptance pass reproduced the two
-    // shapes side by side. The check is about the top level of the FILE, which
-    // both shapes have; only route-entry validation is format-specific.
+    // runs, so it has to be done here too — that check is about the top level
+    // of the FILE, which both shapes have.
     warnUnknownTopLevelKeys(raw, enumWarnings);
     if (enumWarnings.length > 0) {
       legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
@@ -1027,16 +885,10 @@ async function loadConfigInner(
       );
       continue;
     }
-    // `overrides:` gets the same value checks as the three route shapes.
-    //
-    // It was left out when they were added, and it is the block most likely to
-    // carry exactly the fields the check exists for: config.default.yaml
-    // presents `overrides:` as the way to "tweak auto-detected service defaults
-    // without writing a full config", naming tier and weight. An acceptance
-    // pass measured `overrides: { claude_code_cli: { tier: metered, weight:
-    // very-high, enabled: yes-please } }` producing ZERO warnings while none of
-    // it applied. The enum walk already reached here; only the numeric,
-    // boolean and unknown-key checks stopped at the block boundary.
+    // `overrides:` gets the same value checks as the route shapes:
+    // config.default.yaml presents it as the way to tweak tier and weight
+    // without writing a full config, so `tier: metered` here must not pass
+    // silently while applying nothing.
     if (entry !== null && typeof entry === "object") {
       warnUnknownRouteKeys(entry, `overrides.${name}`, warnings);
     }
@@ -1044,27 +896,12 @@ async function loadConfigInner(
 
   const apiKeys = collectApiKeys(raw);
 
-  // A CONFIG FILE THAT DEFINES ROUTES IS AUTHORITATIVE about them.
-  //
-  // Detection used to run unconditionally, so `clis: []` did NOT isolate a
-  // config from the harnesses installed on the machine — the file added to
-  // auto-detection rather than replacing it, and only `disabled:` (naming
-  // every route, including ones you might not know existed) subtracted. That
-  // default caught three acceptance passes in a row DESPITE explicit warnings,
-  // and caught this project's own test suite: one boundary test dispatched to
-  // the real Claude Code CLI on every `npm test` and every CI run, measured at
-  // 6.4s and 47k input tokens, under a comment asserting it could not reach a
-  // route. When a default surprises the maintainer, the reviewers, and the
-  // product's own tests, it is a least-surprise violation rather than a
-  // convenience.
-  //
-  // It also decayed: a future release adding a fifth supported harness would
-  // auto-add it to every existing config, so a `disabled:` list written today
-  // silently stops isolating tomorrow.
-  //
-  // The legacy `services:` format has ALWAYS been authoritative (it returns
-  // above without calling detection), so this makes the two shapes agree
-  // rather than inventing a rule.
+  // A CONFIG FILE THAT DEFINES ROUTES IS AUTHORITATIVE about them. Otherwise a
+  // file ADDS to the harnesses installed on the machine rather than replacing
+  // them, and only `disabled:` — naming every route, including ones you might
+  // not know existed — can subtract. That also decays: a release adding a
+  // fifth supported harness would auto-add it to every existing config. The
+  // legacy `services:` format is authoritative too, so the shapes agree.
   //
   // Three cases, and the third is what keeps the migration safe:
   //   detect: true/false   — explicit, always wins.
@@ -1073,25 +910,16 @@ async function loadConfigInner(
   //     only `overrides:`/`disabled:`/settings exists to TUNE detection; it
   //     cannot be authoritative about routes it does not describe, and
   //     switching detection off for it would leave such a user with nothing.
-  // PRESENCE of the key, not a non-empty list. `clis: []` is someone writing
-  // down "no CLI routes" — an opinion about routes, and the most explicit one
-  // available. Requiring a non-empty array meant `clis: []` still loaded every
-  // harness on the machine, which is the precise failure the comment above
-  // describes in the past tense. An acceptance pass caught the contradiction:
-  // `clis: []` returned all four real CLIs, so the fix did not cover its own
-  // motivating example, and this project's test suite still leans on
-  // `disabled:` naming every route to stay off them.
-  // A block that is PRESENT counts as defining routes even when it is the wrong
-  // shape. The warning below tells the user their entries were ignored; that
-  // must not also turn detection on, or a config that names one route runs
-  // every installed harness instead (measured in an audit: a mapping-form
-  // `clis:` naming one route produced four).
+  //
+  // PRESENCE of the key, not a non-empty list: `clis: []` is someone writing
+  // down "no CLI routes", the most explicit opinion available. A block that is
+  // present counts even when it is the wrong shape — the warning below tells
+  // the user their entries were ignored, and that must not also turn detection
+  // on, or a config naming one route runs every installed harness instead.
   const present = (v: unknown): boolean => v !== undefined && v !== null;
   const definesRoutes = present(raw.clis) || present(raw.endpoints);
   // A `clis:` written as a MAPPING rather than a list drops every entry under
-  // it. Say so loudly — and, per `definesRoutes` above, without falling back
-  // to detection, which would hand the user every installed harness instead of
-  // the routes they were trying to name.
+  // it, so say so loudly.
   for (const key of ["clis", "endpoints"] as const) {
     const value = raw[key];
     if (value !== undefined && value !== null && !Array.isArray(value)) {
@@ -1134,9 +962,9 @@ async function loadConfigInner(
   const cfg: RouterConfig = {
     services,
     disabled,
-    // Only when the file SAID so. Carrying the resolved value instead would
-    // make `configure` write `detect: true` into every config that merely
-    // omitted it, turning a default into a permanent declaration.
+    // Only when the file SAID so. Carrying the resolved value would make
+    // `configure` write `detect: true` into every config that merely omitted
+    // it, turning a default into a permanent declaration.
     ...(detectRequested !== undefined ? { detect: detectRequested } : {}),
     detectionRan: detect,
     ...topLevelSettings(raw, warnings),
@@ -1146,10 +974,6 @@ async function loadConfigInner(
   };
   return cfg;
 }
-
-// ---------------------------------------------------------------------------
-// Public: watchConfig
-// ---------------------------------------------------------------------------
 
 export interface ConfigWatcher {
   stop(): void;
@@ -1201,8 +1025,4 @@ export function watchConfig(
     },
   };
 }
-
-// ---------------------------------------------------------------------------
-// Built-in harness defaults (shipped config.default.yaml)
-// ---------------------------------------------------------------------------
 

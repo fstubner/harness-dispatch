@@ -11,17 +11,13 @@ import type {
 /**
  * Parse a base_url into (hostname, port), or undefined if it isn't a URL.
  *
- * Both predicates below used `String.includes`, which is not a host check:
+ * Parsed rather than substring-matched, because "is this host local" is not a
+ * question a substring can answer:
  * `https://evil.example.com/proxy?upstream=localhost:11434/v1` contains
- * "localhost:11434" and so classified as free local compute — provider
- * "local", kind "local_compute", paidUsagePossible false. That also exempted
- * it from the caller-supplied `local_only` and `approval_required` policies,
- * because route-policy.ts's isLocalRoute ORs those same four fields.
- *
- * Requires a hostile or mistaken config entry, so it is not remotely
- * triggerable — but "is this host local" is exactly the question a substring
- * cannot answer. config.ts:inferEndpointProvider already did this correctly;
- * this is the same approach applied to the two predicates that did not.
+ * "localhost:11434" and would classify as free local compute — provider
+ * "local", kind "local_compute", paidUsagePossible false — which also exempts
+ * it from the `local_only` and `approval_required` policies, since
+ * route-policy.ts's isLocalRoute ORs those same four fields.
  */
 function hostOf(baseUrl: string | undefined): { host: string; port: string } | undefined {
   if (!baseUrl) return undefined;
@@ -97,13 +93,11 @@ function inferredKind(
   switch (surface) {
     case "claude_agent_sdk":
     case "claude_code":
-      // Anthropic announced a separate Agent SDK credit pool for claude -p
-      // (2026-06-15) but PAUSED the change on launch day, before it took
-      // effect — as of 2026-07, programmatic and interactive Claude Code
-      // usage still draw from the same subscription pool. Reclassify to
-      // included_credit_then_optional_overage only if/when Anthropic
-      // actually ships the split (verify against
-      // https://support.claude.com/en/articles/15036540 first).
+      // Programmatic and interactive Claude Code usage draw from the same
+      // subscription pool: Anthropic's announced Agent SDK credit split was
+      // paused before taking effect. Reclassify to
+      // included_credit_then_optional_overage only if that split ships
+      // (verify against https://support.claude.com/en/articles/15036540).
       return "included_plan_usage";
     case "codex_cli":
     case "codex_sdk":
@@ -150,15 +144,15 @@ function inferredConfidence(
  * explicitly allowed.
  *
  * "included_X_then_optional_Y" kinds (Codex flexible credits, Claude usage
- * credits, Cursor on-demand) are NOT blocked by default: researched across
- * Anthropic, OpenAI, and Cursor (2026-07), all three hard-stop at the
- * included cap by default — continuing past it requires the user to have
- * ALREADY completed a separate, deliberate opt-in on the PROVIDER's own
- * side (enabling usage credits/flexible pricing/on-demand billing, usually
- * with its own payment method and spend limit). harness-dispatch blocking
- * these by default would just be re-gating something the provider already
- * gates, and asking every user to prove a negative ("I haven't opted into
- * my provider's overage") for a state that's off by default anyway.
+ * credits, Cursor on-demand) are NOT blocked by default: all three providers
+ * hard-stop at the included cap by default, and continuing past it requires
+ * the user to have ALREADY completed a separate, deliberate opt-in on the
+ * PROVIDER's own side (enabling usage credits/flexible pricing/on-demand
+ * billing, usually with its own payment method and spend limit).
+ * harness-dispatch blocking these by default would just be re-gating
+ * something the provider already gates, and asking every user to prove a
+ * negative ("I haven't opted into my provider's overage") for a state that's
+ * off by default anyway.
  *
  * A user who HAS enabled provider-side overage can still restore the block
  * by setting `paid_usage_possible: true` explicitly in that route's config
@@ -189,8 +183,8 @@ function defaultNotes(
 ): string | undefined {
   if (svc.billingNotes) return svc.billingNotes;
   if (surface === "claude_agent_sdk" || surface === "claude_code") {
-    // The genuinely useful operational fact for this route: dispatched jobs
-    // compete with the user's own interactive Claude Code sessions.
+    // Dispatched jobs compete with the user's own interactive Claude Code
+    // sessions.
     return (
       "claude -p draws from the same subscription usage pool as interactive " +
       "Claude Code (Anthropic's announced 2026-06-15 Agent SDK credit split " +
@@ -204,13 +198,9 @@ function defaultNotes(
 }
 
 /**
- * Classification is date-independent by construction.
- *
- * This took an `opts.now` that was threaded into inferredKind/defaultNotes
- * and used by neither — a leftover from when the Agent SDK credit split was
- * expected to change classification on 2026-06-15. Anthropic paused that on
- * launch day, the date logic was removed, and the parameter stayed behind
- * implying a time dependency that no longer exists.
+ * Build a route's billing identity from what it declares, falling back to
+ * structural inference. Classification is date-independent by construction:
+ * nothing here reads the clock.
  */
 export function buildRouteBilling(svc: ServiceConfig): RouteBilling {
   const provider = providerFromService(svc);
@@ -239,24 +229,15 @@ export function buildRouteBilling(svc: ServiceConfig): RouteBilling {
  *
  * `confidence` LOOKS like a four-value enum and behaves like one bit: only
  * `unknown` changes anything, and `documented`/`inferred`/`unsupported` are
- * indistinguishable to every caller. That invited a real mistake — this
- * repo's own config carried `billing_confidence: undocumented`, an invalid
- * value that resolved to the less restrictive default (now warned about, but
- * still the wrong direction).
+ * indistinguishable to every caller.
  *
- * Collapsing the field was considered on 2026-08-31 and rejected on
- * measurement rather than taste. In every INFERRED case, confidence tracks
- * kind exactly — loopback and custom surfaces already get `kind: unknown`, so
- * the second test is redundant there. It does independent work in exactly one
+ * It is not collapsed into `kind` because it does independent work in one
  * case: an operator explicitly writing `billing_confidence: unknown` on a
  * route whose kind IS known, which is how you say "I do not trust this
- * classification" about a route you have otherwise described. Removing it
- * would silently unblock that config — a behaviour change in the unsafe
- * direction, to tidy a field whose actual defect (invalid values failing
- * open) is already fixed elsewhere.
- *
- * So it stays, and this comment is the collapse: the four values are one bit,
- * `unknown` is the bit, and nothing else here reads the other three.
+ * classification" about a route you have otherwise described. In every
+ * INFERRED case confidence tracks kind exactly — loopback and custom surfaces
+ * already get `kind: unknown` — so removing the field would silently unblock
+ * only that config, a change in the unsafe direction.
  */
 export function billingIsUnknown(billing: RouteBilling): boolean {
   return billing.kind === "unknown" || billing.confidence === "unknown";

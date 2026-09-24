@@ -1,16 +1,14 @@
 /**
  * Value coercion and enum narrowing for config parsing.
  *
- * Split out of config.ts, which reached 1738 lines with three parallel route
- * builders — the shape that produced four separate silent-drop defects. These
- * are the leaves of that parser: pure functions over `unknown`, no config
- * state, no I/O, trivially testable in isolation.
+ * The leaves of the config parser: pure functions over `unknown`, no config
+ * state, no I/O, testable in isolation.
  *
  * The convention throughout is DROP ON MISMATCH — every `*From` returns
  * undefined rather than guessing, and the caller decides the fallback. That is
- * deliberate, and it is also exactly why a typo could silently select a
- * default. config.ts warns separately about unrecognised keys to cover it;
- * the two belong together.
+ * deliberate, and it is also why a typo can silently select a default;
+ * config.ts warns separately about unrecognised keys to cover it, and the two
+ * belong together.
  */
 
 import type {
@@ -189,16 +187,13 @@ export function inferEndpointProvider(baseUrl: string | undefined): EndpointProv
       return "lmstudio";
     }
     // A URL that parsed and is not on loopback is not known to be local,
-    // whatever its text contains.
-    //
-    // The substring checks below used to run for EVERY URL, so any host with
-    // "ollama" in it — `https://ollama.com/v1`, Ollama's paid cloud, included —
-    // came back as provider "ollama", which config.ts turns into local compute
-    // that cannot bill. That route then skipped the allow_paid_usage gate and
-    // passed `routePolicy: local_only`, whose whole promise is that the prompt
-    // never leaves the machine. Measured in an audit: ollama.com reported
-    // `billing=local_compute paid=false ready=true`. A remote box that really
-    // is free says so with `billing_kind: local_compute` on its route.
+    // whatever its text contains. Running the substring checks below on it
+    // would make any host containing "ollama" — `https://ollama.com/v1`,
+    // Ollama's paid cloud, included — provider "ollama", which config.ts turns
+    // into local compute that cannot bill: the route would skip the
+    // allow_paid_usage gate and pass `routePolicy: local_only`, whose whole
+    // promise is that the prompt never leaves the machine. A remote box that
+    // really is free says so with `billing_kind: local_compute` on its route.
     return "custom";
   } catch {
     // Not a parseable URL, so there is no host to check; the substring test

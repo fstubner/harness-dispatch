@@ -3,18 +3,12 @@
  * harness is, and how a route of that harness behaves before the user
  * changes anything.
  *
- * WHY THIS IS ITS OWN MODULE. "A harness preset" had no home. It was a
- * protocol block in YAML, loaded and parsed inside config.ts, interpreted by
- * dispatchers/generic-cli.ts, read again by mcp/dispatcher-factory.ts to
- * collect API-key env vars, and asserted by four per-harness test files that
- * each imported PROTOCOL_PRESETS and drove the generic dispatcher. A
- * co-change check over 300 commits reported the result as shotgun surgery:
- * ten files moving together across six directories, because every change to
- * a shipped protocol had to touch all of them.
+ * A harness preset is read by config.ts, dispatchers/generic-cli.ts,
+ * mcp/dispatcher-factory.ts and the per-harness tests; without one home, every
+ * change to a shipped protocol is shotgun surgery across all of them.
  *
  * Nothing here loads a user's config; config.ts owns that and imports this.
- * The dependency runs one way — presets know nothing about the file the user
- * wrote, which is what keeps the parse order honest.
+ * The dependency runs one way, which keeps the parse order honest.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -70,11 +64,10 @@ export interface CliDefaults {
 }
 
 /**
- * `harness: generic` is not a harness definition — it's the escape hatch a
- * user's own entry selects when adding a wholly new CLI, so its "defaults"
- * are parser fallbacks, not example config. Billing is unknown/blocked until
- * the operator classifies it, since there's no way to know an arbitrary
- * CLI's real billing model. Command is empty so it can never be
+ * `harness: generic` is the escape hatch for adding a wholly new CLI, so its
+ * "defaults" are parser fallbacks, not example config. Billing is
+ * unknown/blocked until the operator classifies it, since an arbitrary CLI's
+ * real billing model is unknowable. Command is empty so it can never be
  * auto-detected; the user's entry must supply command + protocol.
  */
 const GENERIC_DEFAULTS: CliDefaults = {
@@ -93,12 +86,10 @@ const GENERIC_DEFAULTS: CliDefaults = {
 
 /**
  * Resolve the package's own bundled config.default.yaml relative to this
- * module — same "walk up" approach as leaderboard.ts's benchmark file, so
- * it works whether this is running compiled (dist/) or via tsx (src/). This
- * is a DIFFERENT file from a user's own config.yaml (never tracked, may
- * hold secrets/local overrides) — separating them means a package update to
- * the shipped defaults never collides with or gets clobbered by a user's
- * live instance, and vice versa.
+ * module — the same "walk up" as leaderboard.ts's benchmark file, so it works
+ * compiled (dist/) or via tsx (src/). A DIFFERENT file from a user's own
+ * config.yaml, so a package update to the shipped defaults never collides with
+ * a user's live instance.
  */
 function resolveShippedConfigPath(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -114,10 +105,9 @@ function resolveShippedConfigPath(): string {
 }
 
 /**
- * Parse one `clis:` entry of the shipped config into CliDefaults. Uses the
- * exact same field parsers (str/num/int/capsFrom/parseProtocolFields/...)
- * as a user's own `clis:` entry — the shipped file IS a config.yaml, parsed
- * the same way, not a special hardcoded path or bespoke shape.
+ * Parse one `clis:` entry of the shipped config into CliDefaults, using the
+ * same field parsers as a user's own `clis:` entry — the shipped file IS a
+ * config.yaml, not a bespoke shape.
  */
 function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [string, CliDefaults] | undefined {
   const harness = str(raw.harness);
@@ -131,18 +121,11 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
   return [
     harness,
     {
-      // The shipped defaults are the FOURTH consumer of the shared field
-      // contract, and were the one still hand-writing its own list. It had
-      // already drifted: `thinking_level` on a shipped harness entry was
-      // dropped on the floor, while route-fields.ts reads `d.thinkingLevel`
-      // as the fallback for every user route of that harness — the exact
-      // silent-drop shape the table exists to retire, one layer down.
-      // Resolving through the table means a row added there works here too,
-      // instead of needing to be remembered in a second place.
+      // Through the shared field table, so a row added there works here too.
       ...resolveSharedRouteFields(raw),
       // This shape's own required identity fields, after the spread so they
-      // win: the table cannot supply them, and `leaderboardModel` is a
-      // required string here while the table leaves it optional.
+      // win: the table cannot supply them, and `leaderboardModel` is required
+      // here while the table leaves it optional.
       command: str(raw.command) ?? "",
       harness,
       leaderboardModel: str(raw.leaderboard_model) ?? "",
@@ -160,12 +143,10 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
 }
 
 /**
- * Load the built-in harness defaults from the shipped config's `clis:` list
- * — the same shape as a `clis:` entry in a user's own config.yaml, keyed by
- * each entry's `harness:` value. Failure (missing/malformed file) degrades
- * to just the generic escape hatch — auto-detect simply finds nothing
- * built-in, rather than crashing the whole router; a user's own
- * `clis:`/`services:` entries are unaffected either way.
+ * Load the built-in harness defaults from the shipped config's `clis:` list,
+ * keyed by each entry's `harness:` value. A missing or malformed file degrades
+ * to just the generic escape hatch — auto-detect finds nothing built-in rather
+ * than crashing the router, and a user's own entries are unaffected.
  */
 function loadDefaultHarnesses(): Record<string, CliDefaults> {
   const warnings: string[] = [];
@@ -179,10 +160,9 @@ function loadDefaultHarnesses(): Record<string, CliDefaults> {
       if (parsed && parsed[0] !== "generic") out[parsed[0]] = parsed[1];
     }
     if (warnings.length > 0) {
-      // Shipped-config warnings indicate a packaging/build problem, not a
-      // user config mistake — surface loudly rather than folding into
-      // configWarnings (which a user would reasonably assume is about
-      // their own file).
+      // A shipped-config warning is a packaging problem, not a user mistake,
+      // so it does not belong in configWarnings — which a user would
+      // reasonably read as being about their own file.
       for (const w of warnings) console.error(`harness-dispatch: shipped config.default.yaml: ${w}`);
     }
     return out;

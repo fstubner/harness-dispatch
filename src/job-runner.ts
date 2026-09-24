@@ -2,20 +2,16 @@
  * Detached job runner — the process a `dispatch` background run actually
  * lives in, so the run survives the MCP server that started it.
  *
- * Field incident that motivated this (2026-07-24): background runs used to
- * execute inside the server process; a session restart killed the server
- * and every in-flight run died with it, leaving status files frozen at
- * "running". Now the server only *starts* this process (detached, unref'd)
- * and watches the job directory; the run itself owes the server nothing.
- * Orphan detection (jobs.ts heartbeat) remains the safety net for the rare
- * case this runner itself dies.
+ * A run executing inside the server process dies with it on a session restart,
+ * leaving its status file frozen at "running". So the server only *starts*
+ * this process (detached, unref'd) and watches the job directory. Orphan
+ * detection (jobs.ts heartbeat) covers this runner itself dying.
  *
  * Usage: node dist/job-runner.js <jobDir>
  * Config: HARNESS_DISPATCH_CONFIG (set by the spawning server so the run
  * bootstraps against the same config file), else ./config.yaml if present,
- * else auto-detect. Shared with bin.ts through resolveConfigPath(), which is
- * what makes that claim true — the two used to be written out separately and
- * had drifted apart.
+ * else auto-detect. Shared with bin.ts through resolveConfigPath(), so the two
+ * cannot drift apart.
  */
 
 import { resolveConfigPath } from "./config.js";
@@ -25,9 +21,8 @@ import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
 
 async function main(): Promise<void> {
   // This process writes its own stdout/stderr straight into
-  // .supervisors/spawn-<id>.log, which nothing ever deletes. Only bin.ts
-  // installed the patch, so a fatal handler or an unhandled stack trace
-  // here bypassed every sink the chokepoint covers.
+  // .supervisors/spawn-<id>.log, so a fatal handler or an unhandled stack
+  // trace here needs the same redaction sink bin.ts installs.
   installOutputRedaction();
   const arg = process.argv[2];
   if (!arg) {
@@ -46,13 +41,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Single-job mode is retained: it is the narrowest way to run one job dir,
-  // which is what the end-to-end runner test drives against the real build.
+  // Single-job mode: the narrowest way to run one job dir, which is what the
+  // end-to-end runner test drives against the real build.
   await executeJobDir({ holder: new RuntimeHolder(state) }, arg);
   // This runner's slot just freed — hand it to whoever is waiting. Doing it
-  // here (rather than in a daemon) is what keeps the queue moving between
-  // dispatches; a failure to drain must not fail the run that already
-  // succeeded, hence the swallow.
+  // here rather than in a daemon is what keeps the queue moving between
+  // dispatches, and a failed drain must not fail a run that already succeeded.
   try {
     await drainSlotQueue(state.config, configPath);
   } catch {
@@ -64,9 +58,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // Last-resort: bootstrap itself failed (bad config, missing deps). The
-  // job dir still holds only the frozen "queued/running" status, which the
-  // heartbeat-staleness check will surface as orphaned.
+  // Bootstrap itself failed (bad config, missing deps). The job dir still
+  // holds a frozen "queued/running" status, which the heartbeat-staleness
+  // check surfaces as orphaned.
   console.error(
     `harness-dispatch job-runner: fatal: ${err instanceof Error ? err.message : String(err)}`,
   );

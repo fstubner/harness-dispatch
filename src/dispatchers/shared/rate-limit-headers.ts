@@ -1,12 +1,9 @@
 /**
  * HTTP rate-limit header parsers.
  *
- * Ported from the Python v1's `src/coding_agent/dispatchers/utils.py`
- * (parse_remaining, parse_limit, parse_retry_after) — a path that no longer
- * exists in this repo, kept as provenance. claims-check-ignore
- * Preserves the same key order and semantics:
+ * Semantics:
  * - matching is case-insensitive (headers are normalized to lowercase)
- * - numeric strings with commas are NOT supported here (matches Python)
+ * - numeric strings with commas are NOT supported
  * - Retry-After may be a delta-seconds number or an HTTP-date
  * - reset-* headers may be an epoch timestamp (seconds since 1970)
  */
@@ -54,7 +51,7 @@ function parseIntStrict(raw: string | undefined): number | null {
   if (raw == null) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  // Python's int() rejects decimals; match that.
+  // Decimals are rejected outright rather than truncated.
   if (!/^-?\d+$/.test(trimmed)) return null;
   const n = Number.parseInt(trimmed, 10);
   return Number.isFinite(n) ? n : null;
@@ -100,13 +97,12 @@ export function parseLimit(headers: Record<string, string>): number | null {
 /**
  * Ceiling on any parsed retry-after, in seconds (24h).
  *
- * The epoch branch below assumes `x-ratelimit-reset` is in SECONDS. Providers
- * that send MILLISECONDS yield delay = 1.7e12 - 1.7e9 ~= 1.8e12 seconds, and
- * nothing downstream clamped it: parseRetryAfter -> result.retryAfter ->
- * CircuitBreaker.trip() -> cooldown. Measured 2026-08-17, a millisecond-epoch
- * header produced a 56,600-year cooldown, and since breaker state now
- * persists to disk it survived a restart — one malformed header permanently
- * removing a route. An RFC-7231 HTTP-date far in the future does the same.
+ * The epoch branch below assumes `x-ratelimit-reset` is in SECONDS. A provider
+ * sending MILLISECONDS yields a delay around 1.8e12 seconds, which flows
+ * unchanged into CircuitBreaker.trip()'s cooldown — a tens-of-thousands-of-
+ * years cooldown that, because breaker state persists to disk, survives a
+ * restart and permanently removes a route. An RFC-7231 HTTP-date far in the
+ * future does the same.
  *
  * No real provider asks a client to wait longer than a day, so a value past
  * this is malformed rather than authoritative. Clamping (not discarding) is

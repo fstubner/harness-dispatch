@@ -22,8 +22,8 @@ import { redact } from "../redaction.js";
 import { VERSION } from "../version.js";
 
 const TRACER_NAME = "harness-dispatch";
-// Was hardcoded "1.0.0-alpha.0" against a package at 0.4.x, so every emitted
-// span was tagged with a version that never existed.
+// From the package version, so an emitted span is tagged with a build that
+// actually exists.
 const TRACER_VERSION = VERSION;
 
 export interface SpanAttrs {
@@ -65,11 +65,9 @@ async function withSpan<T>(
       const durationMs = Date.now() - t0;
       span.setAttribute("duration_ms", durationMs);
       const e = err instanceof Error ? err : new Error(String(err));
-      // Spans leave the process over OTLP, so this is a sink like any other —
-      // and it was the one egress path outside the eight that redact. Opt-in
-      // and localhost-by-default, which is why it is low rather than nothing.
-      // The exception is rebuilt rather than mutated: recordException reads
-      // `message` off the object it is given.
+      // Spans leave the process over OTLP, so this is an egress sink like any
+      // other and must redact. The exception is rebuilt rather than mutated:
+      // recordException reads `message` off the object it is given.
       const safe = new Error(redact(e.message));
       safe.name = e.name;
       span.recordException(safe);

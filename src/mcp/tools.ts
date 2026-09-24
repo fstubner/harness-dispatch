@@ -7,10 +7,6 @@
  * finished one again; `workspace` inspects, keeps or discards isolated work;
  * `usage` reads route/quota state.
  *
- * The count was corrected from three to six a release ago and this list was
- * not — the same defect one line further down, which is why it is spelled out
- * in full here rather than summarised.
- *
  * Every dispatch is job-backed from the first moment — dispatch races an inline
  * grace window against the background run, so a fast task returns its full
  * result in-call and a slow one degrades to a pollable jobId with NOTHING
@@ -69,17 +65,6 @@ import {
 } from "./tool-schemas.js";
 
 
-/**
- * Exactly the shape `newJobId()` generates: `job-${Date.now()}-${8 hex}`.
- *
- * The schema was a bare z.string() and getAsyncJob does
- * `path.join(jobsRoot(), jobId)` with no validation, so a caller could read
- * manifest.json / status.json from anywhere on disk by passing `../..`
- * segments. Constrained to three filenames, but an MCP server's threat model
- * is "the calling agent may be steered by injected content", not "the caller
- * is trustworthy" — validating the format is a one-liner and removes the
- * question entirely.
- */
 
 
 export const TOOL_NAMES = ["dispatch", "job_status", "cancel_job", "retry_job", "workspace", "usage"] as const;
@@ -120,9 +105,8 @@ export interface RouteResponse {
      * sent on as a model — the route ran its own. `model` above is what
      * actually ran.
      *
-     * Without this the only signal was modelHintMatched: false, documented as
-     * "forwarded blind, treat with suspicion" — the opposite of what
-     * happened. It was not forwarded at all.
+     * Without this the only signal is modelHintMatched: false, which means
+     * "forwarded blind" — the opposite of what happened.
      */
     modelHintDropped?: boolean;
     /**
@@ -196,15 +180,13 @@ export interface ToolExtra {
 /**
  * Strip a route's credentials out of text an ENDPOINT wrote.
  *
- * The `usage` tool's live-models probe reported failures as a redacted URL
- * followed by an unscrubbed `err.message`, and undici embeds the URL it was
- * given — so a `base_url` carrying userinfo or `?key=` arrived in full,
- * beside its own redaction, in a tool result that goes straight into an
- * orchestrating agent's context.
+ * undici embeds the URL it was given in its own error messages, so a
+ * `base_url` carrying userinfo or `?key=` arrives in full inside an endpoint's
+ * error text — in a tool result that goes straight into an orchestrating
+ * agent's context.
  *
- * Named and shared rather than inlined at each site: this exact class of
- * defect has now been found four times, three of them because a fix landed
- * in one branch and the sibling beside it kept leaking.
+ * Named and shared rather than inlined at each site, so a fix cannot land in
+ * one branch while the sibling beside it keeps leaking.
  */
 function safeEndpointText(
   text: string,
@@ -215,9 +197,9 @@ function safeEndpointText(
 
 /**
  * Serialize a tool result. Exported so the egress sweep can drive this sink
- * directly: routing a secret through a real tool handler is not possible
- * without a live dispatcher, and a test that cannot fail when the sink stops
- * redacting is the defect that let an unredacted sink ship green.
+ * directly: routing a secret through a real tool handler needs a live
+ * dispatcher, so a test that cannot do that also cannot fail when the sink
+ * stops redacting.
  */
 export function jsonText(value: unknown): CallToolResult {
   return {
@@ -240,10 +222,8 @@ function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
 }
 
 /**
- * Exported for the parity test, which re-implemented this rule inline and so
- * would have stayed green if the real resolver flipped — the same
- * assert-the-derivation-not-the-behaviour shape that let a fanout fail-open
- * ship under two passing rows.
+ * Exported so the parity test drives the real resolver: a test that
+ * re-implements this rule inline stays green when the resolver flips.
  */
 export function workspacePolicyFromInput(input: {
   workspacePolicy?: WorkspacePolicy | undefined;
@@ -267,15 +247,14 @@ async function emitProgress(
   counter.value += 1;
   try {
     // Sink. `_meta.event` carries the RAW dispatcher event — full stdout and
-    // stderr chunk text, untruncated error strings — and this was the one MCP
-    // path with no redaction. Over stdio it is caught by accident, by the
-    // process-wide stdout patch; over the HTTP MCP transport nothing catches
-    // it, because that path never touches sendJson, writeSse or stdout.
+    // stderr chunk text, untruncated error strings. Over stdio the
+    // process-wide stdout patch would catch it by accident; over the HTTP MCP
+    // transport nothing would, because that path never touches sendJson,
+    // writeSse or stdout.
     //
     // Redacted by serializing and re-parsing rather than walking the object:
-    // the event shape is a union that grows, and a per-field scrub is exactly
-    // the per-site pattern that failed eight times before the sink design
-    // replaced it.
+    // the event shape is a union that grows, and a per-field scrub is the
+    // per-site pattern the sink design replaces.
     const safe = JSON.parse(redact(JSON.stringify({ event, route }))) as {
       event: DispatcherEvent;
       route?: string;
@@ -381,12 +360,9 @@ function jobCompleted(job: Awaited<ReturnType<typeof getAsyncJob>>): boolean {
     // Orphaned (owner process died mid-run) is terminal: it will never
     // complete, so callers must stop polling and re-dispatch.
     job.status.status === "orphaned" ||
-    // Cancelled is terminal too, and was missing. `completed` is the field the
-    // tool descriptions tell an agent to branch on, so an orchestrator that
-    // cancelled a job and then polled it was told `completed: false` with
-    // `nextPollSeconds: 300` and "check again until status is completed or
-    // failed" — forever, for a job that had already stopped at its own
-    // request.
+    // Cancelled is terminal too. `completed` is the field the tool
+    // descriptions tell an agent to branch on, so omitting it leaves an
+    // orchestrator polling forever a job that stopped at its own request.
     job.status.status === "cancelled"
   );
 }
@@ -407,17 +383,11 @@ function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteRe
   // trail — and `getAsyncJob` reads the partial log precisely so this path can
   // hand it over.
   //
-  // It did not. `jobCompleted` counts orphaned and cancelled as terminal
-  // (correctly — they will never finish), and `pollDispatch` only attached
-  // `partialOutput` on the NOT-completed branch, so every terminal-without-
-  // result job returned `output: ""`. An acceptance pass measured it: three
-  // steps of progress on disk, `getAsyncJob` returning them, and `job_status`
-  // answering with an empty string.
-  //
-  // The commit that added the partial read is right in the module it edited
-  // and never reached the surface a caller touches. Same for the crash path
-  // (a `failed` status with no result.json) and for a cancelled job. The HTTP
-  // surface already salvages this; MCP now matches it.
+  // It has to happen HERE, on the completed branch: `jobCompleted` counts
+  // orphaned and cancelled as terminal, so every terminal-without-result job
+  // misses `pollDispatch`'s not-completed partialOutput and would come back
+  // with `output: ""`. Same for the crash path, a `failed` status with no
+  // result.json. The HTTP surface salvages this the same way.
   const response: RouteResponse = {
     success: false,
     output: job.partialOutput ?? "",
@@ -428,8 +398,8 @@ function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteRe
   if (job.status.durationMs !== undefined) response.durationMs = job.status.durationMs;
   // Say which kind of output this is. `success: false` already tells a caller
   // the run did not finish, but a non-empty `output` next to it reads like a
-  // completed answer, and salvage that is mistaken for a result is a worse
-  // outcome than the empty string this replaced.
+  // completed answer, and salvage mistaken for a result is worse than no
+  // output at all.
   if (job.partialOutput !== undefined && job.partialOutput !== "") {
     const note =
       `\`output\` is PARTIAL — everything the delegate wrote before it stopped, not a ` +
@@ -460,21 +430,15 @@ async function startSingle(
   extra?: ToolExtra,
 ): Promise<DispatchResponse> {
   await ensureFreshConfig(deps.reloader);
-  // Reject an unknown forced route BEFORE a job directory exists. Fanout
-  // rejects unknown `models` at the boundary; single mode let the same
-  // mistake through, burned a job dir, and returned a success-shaped
-  // completed:true / success:false — one input, two behaviours.
+  // Reject an unknown forced route BEFORE a job directory exists, matching
+  // fanout's rejection of unknown `models` at the boundary — otherwise the
+  // same mistake burns a job dir and comes back success-shaped
+  // (completed: true / success: false).
   //
-  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so every
-  // inherited Object key passed this guard for a config declaring no such
-  // route. Measured on all four of `constructor`, `toString`, `__proto__` and
-  // `hasOwnProperty`: the job directory this check exists to prevent was
-  // created, and the dispatch came back `completed: true` / `success: false`
-  // with `error: "route is disabled"` — a false statement, since nothing is
-  // disabled and the route does not exist. `evaluateRoutePolicy` had simply
-  // read `enabled` off a function. `status.ts` already uses `Object.hasOwn`
-  // here, with a comment naming `constructor`; the lesson never reached the
-  // two guards a caller can actually reach.
+  // `Object.hasOwn`, not `in`: `in` walks the prototype chain, so
+  // `constructor`, `toString`, `__proto__` and `hasOwnProperty` all pass as
+  // routes, and `evaluateRoutePolicy` then reads `enabled` off a function and
+  // reports "route is disabled" for a route that does not exist.
   if (input.service !== undefined && !Object.hasOwn(deps.holder.state.config.services, input.service)) {
     throw new Error(
       `Unknown service: ${input.service}. Valid route ids: ` +
@@ -551,11 +515,10 @@ async function startFanout(
     fanoutSafetyProfile !== "read_only" &&
     (hints.workspacePolicy === undefined || !isIsolatedWorkspacePolicy(hints.workspacePolicy))
   ) {
-    // A refusal must not be success-shaped. This used to return
-    // completed:true with empty results and the reason tucked into
-    // skippedRoutes, so an agent skimming for `completed` read "done". The
-    // HTTP surface has returned 400 for the same input all along; the two
-    // must agree.
+    // A refusal must not be success-shaped: completed:true with empty results
+    // and the reason tucked into skippedRoutes reads as "done" to an agent
+    // skimming for `completed`. The HTTP surface returns 400 for the same
+    // input, and the two must agree.
     throw new Error(
       "write-capable fanout requires workspacePolicy=copy or workspacePolicy=git_worktree; " +
         "use read_only fanout or run single-route workspace_edit (workspace_isolation_required)",
@@ -571,14 +534,12 @@ async function startFanout(
   const counter = { value: 0 };
   const skippedRoutes: RouteSkip[] = [];
 
-  // Every requested name must match SOMETHING. A name that matches nothing was
-  // silently dropped: `models: ["fake_fast", "ghost_route"]` fanned out to one
-  // arm with no skippedRoutes entry and no error, and
-  // `models: ["ghost_a", "ghost_b"]` returned
-  // `{ completed: true, results: [] }` — success-shaped, zero explanation,
-  // because `completed` is `every()` over an empty array. Single mode already
-  // rejects an unknown `service` by name; fanout should not be looser about
-  // the same mistake.
+  // Every requested name must match SOMETHING, or it is silently dropped:
+  // one bad name out of two fans out to a single arm with no skippedRoutes
+  // entry and no error, and two bad names return
+  // `{ completed: true, results: [] }` — success-shaped, because `completed`
+  // is `every()` over an empty array. Single mode rejects an unknown
+  // `service` by name; fanout is not looser about the same mistake.
   const matchedRequests = new Set<string>();
   for (const [routeName, svc] of Object.entries(state.config.services)) {
     for (const want of requested) {
@@ -612,16 +573,14 @@ async function startFanout(
   }
 
   // Nothing can run. Same rule as the two refusals above — a refusal must not
-  // be success-shaped — and this was the one case still taking the vacuous
-  // path: `completed` is `every()` over an empty array, so an all-blocked
-  // fanout answered `{ completed: true, results: [] }` with the reasons tucked
-  // into `skippedRoutes`, on the field the tool description tells agents to
-  // branch on.
+  // be success-shaped — and `completed` is `every()` over an empty array, so
+  // an all-blocked fanout would answer `{ completed: true, results: [] }` on
+  // the field the tool description tells agents to branch on.
   //
-  // The unmatched-name guard above throws for a name matching NO route, so the
-  // same user mistake produced two opposite shapes depending on whether the
-  // route they named happens to exist and be disabled. Both are "you asked for
-  // routes and none of them can run".
+  // The unmatched-name guard above throws for a name matching NO route, so
+  // without this the same user mistake takes two opposite shapes depending on
+  // whether the route named happens to exist and be disabled. Both are "you
+  // asked for routes and none of them can run".
   if (candidates.length === 0) {
     const why = skippedRoutes.map((s) => `${s.route}: ${s.message}`).join("; ");
     throw new Error(
@@ -637,8 +596,7 @@ async function startFanout(
   // Start every candidate as its own background job up front, then wait ONE
   // shared grace window for all of them — a route that beats the deadline
   // reports inline, the rest hand back their jobIds. Per-route job dirs also
-  // give each fanout arm its own artifacts, which the blocking version never
-  // had.
+  // give each fanout arm its own artifacts.
   const started = await Promise.all(
     candidates.map(async (routeName) => {
       const svc = state.config.services[routeName]!;
@@ -653,9 +611,9 @@ async function startFanout(
         {
           prompt,
           files,
-          // Forwarded per arm, same as single mode. It used to be dropped
-          // here silently, so a chained fanout ("get three opinions building
-          // on job A") ran every arm WITHOUT the context and never said so.
+          // Forwarded per arm, same as single mode: dropped here, a chained
+          // fanout ("get three opinions building on job A") would run every
+          // arm without the context and never say so.
           ...(input.contextJobs !== undefined ? { contextJobs: input.contextJobs } : {}),
           ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
           hints,
@@ -772,8 +730,8 @@ export async function handleJobStatus(
   return withMcpToolSpan({ "tool.name": "job_status" }, async () => {
     if (input.jobId !== undefined) return pollDispatch(input.jobId);
     // Compact list: full detail (jobDir, warnings, instructions, errors)
-    // lives behind a per-job check — dumping it for every job ever was a
-    // several-KB token tax on each list call.
+    // lives behind a per-job check, since including it for every job costs
+    // several KB of tokens on each list call.
     const all = await listAsyncJobs();
     const jobs = all.slice(0, LIST_LIMIT).map((j) => ({
       jobId: j.jobId,
@@ -838,18 +796,13 @@ async function fetchEndpointModels(
       .filter((id): id is string => typeof id === "string");
     return { route, models, source: "live" };
   } catch (err) {
-    // Scrubbed, not just host-redacted. This line put a redacted URL next to
-    // an UNSCRUBBED `err.message`, which is the precise shape
-    // `scrubEndpointSecrets` was written to stop: undici embeds the URL it
-    // was handed, so a base_url carrying userinfo or `?key=` came back in
-    // full beside its own redaction. It reaches an orchestrating agent's
-    // context directly, because this is the `usage` tool's result and callers
-    // are told to check `usage` before trying an unfamiliar route.
-    //
-    // Three earlier rounds fixed this class inside the endpoint dispatcher
-    // and each declared it closed; the enumeration that finally held is in
-    // that file and does not reach this module. Any NEW site that puts an
-    // endpoint's own text into a result needs this call too.
+    // Scrubbed, not just host-redacted: undici embeds the URL it was handed
+    // in `err.message`, so a base_url carrying userinfo or `?key=` would come
+    // back in full beside its own redaction. This is the `usage` tool's
+    // result, and callers are told to check `usage` before trying an
+    // unfamiliar route, so it reaches an orchestrating agent's context
+    // directly. Any NEW site that puts an endpoint's own text into a result
+    // needs this call too.
     return {
       route,
       error: safeEndpointText(
@@ -1009,23 +962,21 @@ export type InvokeResult = { kind: "json"; data: unknown };
 /**
  * Near-miss top-level keys are caught by `mcp/near-miss-guard.ts`, not here.
  *
- * This is where the gap used to be documented. The MCP SDK validates against
- * `z.object(dispatchInputShape)` before any code in this file runs, and zod
- * STRIPS unknown keys — so by the time a handler sees the arguments, a
- * misspelled key is already gone, and nothing in the registered-tool path can
- * see what the caller actually sent. `hints` is `.strict()`, which is why the
- * nested form was always rejected; the outer object cannot be, because MCP
- * carries `_meta` there.
+ * The MCP SDK validates against `z.object(dispatchInputShape)` before any code
+ * in this file runs, and zod STRIPS unknown keys — so by the time a handler
+ * sees the arguments, a misspelled key is already gone, and nothing in the
+ * registered-tool path can see what the caller actually sent. `hints` is
+ * `.strict()`, which is why the nested form is rejected; the outer object
+ * cannot be, because MCP carries `_meta` there.
  *
- * An acceptance pass measured what that cost: `safteyProfile: "read_only"` was
- * accepted in silence and the dispatch ran at the `workspace_edit` default,
- * writing a file. Asking for read-only by way of a typo got you write access,
- * while the HTTP surface refused the same input — one input, two opposite
- * answers, which is the class the parity suite exists to end.
+ * That silence has teeth: `safteyProfile: "read_only"` would be accepted and
+ * the dispatch would run at the `workspace_edit` default, so asking for
+ * read-only by way of a typo gets write access — while the HTTP surface
+ * refuses the same input.
  *
  * The guard wraps the CallTool handler the SDK installs and inspects the raw
  * arguments before delegating, so the SDK's routing, validation and `extra`
- * plumbing are untouched. Both surfaces now run the same check from
+ * plumbing are untouched. Both surfaces run the same check from
  * `near-miss.ts`, and `surface-parity.test.ts` asserts it on both.
  */
 

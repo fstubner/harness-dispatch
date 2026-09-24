@@ -3,18 +3,12 @@
  *
  * WHY THIS EXISTS. A client that cannot spawn its server does not report an
  * error — it just has no tools, which looks exactly like not having installed
- * anything. On the maintainer's machine that state lasted from a repo rename
- * until someone happened to read the config: Claude Code was launching
- * `harness-router/dist/bin.js`, a path deleted months earlier, and a
- * SessionStart hook pointed at the same dead directory. Both failed silently
- * every session. Nothing in this tool could have told them, because nothing
- * looked.
+ * anything. A config pointing at a path this project has since renamed
+ * therefore fails silently, every session, with nothing able to say so.
  *
- * READ ONLY. This inspects other applications' config files and never writes
- * to them. A previous version of this project DID write to a user's global
- * config, was removed a version later, and left orphans behind that were still
- * there seven minor versions on — which is the reason a reporting check comes
- * first and a writing one may never come at all.
+ * READ ONLY. An entry written into someone's global config outlives the version
+ * that wrote it and there is no safe way to take it back, so this inspects and
+ * reports and never writes.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -29,18 +23,15 @@ export interface ClientConfigLocation {
   file: string;
   /**
    * Commands whose presence on PATH means the client is installed. The config
-   * file alone said nothing: Claude Code creates `~/.claude.json` on its first
-   * interactive launch, so a freshly installed one that had never been opened
-   * looked identical to one that was not there — and `connect` told a user
-   * with `claude` on PATH that no client was found. Seen on the cold-install
-   * walk in acceptance/0.8.0.md.
+   * file alone says nothing: Claude Code creates `~/.claude.json` on its first
+   * interactive launch, so a freshly installed one that has never been opened
+   * looks identical to one that is not there.
    */
   commands: string[];
   /**
    * The object servers hang off in THIS client's file. Claude Code and Cursor
    * both use `mcpServers`; VS Code uses `servers`. Carried per client rather
-   * than assumed, because assuming it is how a writer corrupts a format it
-   * has not seen.
+   * than assumed.
    */
   serversKey: string;
 }
@@ -58,12 +49,10 @@ export interface ClientEntryReport {
 }
 
 /**
- * Only shapes actually read on a real machine.
- *
- * Claude Desktop and VS Code are deliberately absent: their formats are known
- * to me from documentation rather than from a file I have opened, and VS Code
- * uses a different key (`servers`, not `mcpServers`) — guessing at a config
- * format is how you misreport someone's healthy setup as broken.
+ * Only shapes actually read on a real machine. Claude Desktop and VS Code are
+ * deliberately absent: their formats are known only from documentation, and
+ * VS Code uses a different key (`servers`, not `mcpServers`) — guessing at a
+ * config format is how you misreport a healthy setup as broken.
  */
 export function clientConfigLocations(home: string = homedir()): ClientConfigLocation[] {
   return [
@@ -93,12 +82,10 @@ function looksLikePath(value: string): boolean {
 }
 
 /**
- * A bare command — `npx`, `harness-dispatch`, `node` — is NOT checked.
- *
- * Resolving it means replicating PATH lookup and shims, and getting that wrong
- * would report a working install as broken. The failure this check exists for
- * is an absolute path to a directory that has been renamed or deleted, which
- * needs none of that.
+ * A bare command — `npx`, `harness-dispatch`, `node` — is NOT checked:
+ * resolving it means replicating PATH lookup and shims, and getting that wrong
+ * would report a working install as broken. The failure this exists for is an
+ * absolute path to a directory that has been renamed or deleted.
  */
 function missingPathsIn(entry: unknown): string[] {
   if (!entry || typeof entry !== "object") return [];
@@ -131,8 +118,7 @@ function isHarnessDispatch(key: string, entry: unknown): boolean {
  *
  * A client with no config file, or no entry for this server, contributes
  * nothing — not having installed it is not a fault. A config that will not
- * parse is skipped rather than reported: it is that application's problem, and
- * this tool has no business grading someone else's JSON.
+ * parse is skipped rather than reported: it is that application's problem.
  */
 export function inspectClientEntries(home?: string): ClientEntryReport[] {
   const out: ClientEntryReport[] = [];

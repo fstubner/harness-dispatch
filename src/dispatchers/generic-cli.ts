@@ -1,15 +1,12 @@
 /**
  * Config-driven CLI dispatcher for harness-dispatch.
  *
- * Every part of the invocation comes from `svc.protocol` (CliProtocolConfig,
- * see types.ts) — this dispatcher has no hardcoded knowledge of any specific
- * CLI's flags or output shape. It's the ONE interpreter for every CLI
- * harness, built-in or user-added: prompt input style, working-dir flag,
- * per-file directory flags, model flag, per-safety-profile args, API-key env
- * injection, and (via `eventRules`) the same tool_use/thinking/usage
- * streaming-event semantics Codex's original hand-written dispatcher used —
- * expressed declaratively instead of imperatively, so a new harness (or a
- * redefinition of an existing one) needs zero new TypeScript.
+ * Every part of the invocation comes from `svc.protocol` (CliProtocolConfig in
+ * types.ts): prompt input style, working-dir flag, per-file directory flags,
+ * model flag, per-safety-profile args, API-key env injection, and (via
+ * `eventRules`) tool_use/thinking/usage streaming-event semantics. This is the
+ * ONE interpreter for every CLI harness, with no hardcoded knowledge of any
+ * specific CLI, so a new harness needs zero new TypeScript.
  */
 
 import os from "node:os";
@@ -33,16 +30,12 @@ import { commandAvailable } from "./shared/which-available.js";
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
 /**
- * "429" only counts next to HTTP context. A bare includes("429") flagged any
- * failed run whose transcript mentioned the number at all — a port, a line
- * number, a test count. That claim was made once and was still false: an
- * acceptance pass measured "Error on line 429 of the config" and two test
- * assertions all flagging, because the gap allowed arbitrary WORDS between
- * the keyword and the number. It now allows only separators, and a line that
- * reads as a test assertion is excluded outright. One flag trips the breaker
- * with NO threshold, blocking the route for 300s and recording `rate_limited`
- * in the counts the orchestrator is told to trust. The phrase list below covers limiters that
- * spell it out; this pattern covers the ones that only send the status code.
+ * "429" only counts next to HTTP context, with nothing but separators between:
+ * a bare includes("429") flags any failed run whose transcript mentions the
+ * number at all — a port, a line number, a test count — and one flag trips the
+ * breaker with NO threshold, blocking the route for 300s. The phrase list
+ * below covers limiters that spell it out; this covers the ones that send only
+ * the status code.
  */
 const HTTP_429_RE =
   /\b(?:http|status(?:[_\s]?code)?|error(?:[_\s]?code)?|code)\b["'\s:=_,-]{0,4}429\b|\b429\b[\s:-]{0,3}too many requests/i;
@@ -50,38 +43,18 @@ const HTTP_429_RE =
 /**
  * Text that is TALKING ABOUT a 429 rather than reporting one.
  *
- * The pattern above still matched an assertion — "expected error code 429 but
- * got 200", "assertion failed: status code 429 expected" — which is a test
- * suite the delegate RAN, not a limiter the delegate HIT. Flagging it trips
- * the breaker with no threshold and blocks the route for 300 seconds, and
- * records a rate limit in the counts an orchestrator is told to trust.
+ * "expected error code 429 but got 200" is a test suite the delegate RAN, not
+ * a limiter the delegate HIT, and flagging it blocks the route for 300
+ * seconds. Checked per line, so an assertion elsewhere in a long transcript
+ * cannot mask a genuine 429 on its own line. The tick/cross and "Test
+ * Files"/"Tests " markers cover vitest output, where a test NAME containing
+ * "usage limit" carries no assertion keyword at all.
  *
- * Checked per line, so an assertion elsewhere in a long transcript cannot mask
- * a genuine 429 on its own line.
- *
- * The tick/cross and "Test Files"/"Tests " markers were added after this
- * repository's OWN vitest output was measured flagging as rate-limited: a
- * test NAME containing "usage limit" is not an assertion and carried no
- * keyword, so nothing here caught it. A delegated "run the tests" task that
- * exits non-zero then blocks its route for 300 seconds.
- *
- * This stays a HEURISTIC, and it is worth saying so rather than implying a
- * solved problem: separating "the delegate hit a limiter" from "the delegate
- * printed the words" is undecidable from text alone. The structural answer is
- * to discriminate by STREAM — a harness reports its own limiter on stderr,
- * while a test runner writes results to stdout — and that is deliberately not
- * done here, because some CLIs do print limiter errors to stdout and getting
- * it wrong in that direction MISSES a real limit, which is the worse failure.
- *
- * `should` was in this list and had to come out: it discards
- * "429 received; the request should be retried", a REAL limiter message that
- * matched before this filter existed. A guard against false positives that
- * creates false negatives on the same surface is worse than the problem — a
- * missed 429 means the router keeps hammering an exhausted route.
- *
- * `it(` and `describe(` are written without a trailing `\b`, which could never
- * match: `(` followed by a quote is not a word boundary, so both alternatives
- * were dead while the docblock named them as covered.
+ * A HEURISTIC: separating "hit a limiter" from "printed the words" is
+ * undecidable from text alone, and every widening risks the worse failure, a
+ * MISSED limit that leaves the router hammering an exhausted route. Hence no
+ * `should` (it would discard "429 received; the request should be retried")
+ * and no discrimination by stream (some CLIs print limiter errors to stdout).
  */
 const ASSERTION_CONTEXT_RE =
   /\bassert\w*|\bexpect\w*|\btest case\b|\bit\(|\bdescribe\(|^\s*[✓✗×]|\bTest Files\b|\bTests\s\s/i;
@@ -97,11 +70,10 @@ function mentions429(text: string): boolean {
 }
 
 /**
- * Only the TAIL of each stream is scanned (per stream, before joining).
- * Failed runs carry up to 10 MB of agent transcript, and a rate-limit
- * message a CLI actually died from is at the end of its output; scanning the
- * whole transcript mostly adds chances for an innocent mention of "rate
- * limit" in the AGENT'S OWN WORK to block the route.
+ * Only the TAIL of each stream is scanned, per stream, before joining. Failed
+ * runs carry up to 10 MB of agent transcript and a limiter message a CLI died
+ * from is at the end of its output; scanning the rest mostly adds chances for
+ * an innocent mention in the AGENT'S OWN WORK to block the route.
  */
 const RATE_LIMIT_SCAN_TAIL_BYTES = 16 * 1024;
 
@@ -112,11 +84,10 @@ export function rateLimitScanTail(text: string): string {
 /** Phrases a limiter actually uses, matched per line. */
 const LIMITER_PHRASES = [
   "rate limit",
-  // Anthropic's own error type, and OpenAI's 429 body text. Neither matched:
-  // the list had `rate limit` with a SPACE and `quota exceeded` in that order,
-  // so `rate_limit_error` and "You exceeded your current quota" both went
-  // through as ordinary failures. A missed limiter is the worse direction —
-  // the router keeps hammering a route that has already said stop.
+  // Anthropic's own error type, and OpenAI's 429 body text — neither is
+  // covered by the spaced `rate limit` / `quota exceeded` forms, and a missed
+  // limiter is the worse direction: the router keeps hammering a route that
+  // has already said stop.
   "rate_limit_error",
   "rate-limited",
   "quota exceeded",
@@ -124,24 +95,17 @@ const LIMITER_PHRASES = [
   "exceeded your current quota",
   "resource_exhausted",
   "too many requests",
-  // "usage limit" is OpenAI Codex's real phrasing (confirmed live,
-  // 2026-07-24: "You've hit your usage limit... try again at Jul 28th,
-  // 2026 10:16 PM.") — none of the phrases above matched it, so a real
-  // Codex exhaustion was silently NOT flagged as rate-limited.
+  // OpenAI Codex's phrasing ("You've hit your usage limit... try again at
+  // ..."), which none of the phrases above match.
   "usage limit",
 ];
 
 /** Exported for tests: the false-positive space here is what trips breakers. */
 export function detectRateLimit(text: string): { rateLimited: boolean; retryAfter: number | null } {
   // PER LINE, and past the assertion filter — like the 429 check beside it.
-  //
-  // These phrases were matched against the whole blob with no filter at all,
-  // so the assertion guard protected one half of this function and not the
-  // other. Measured: this repository's OWN vitest output, fed back in, flags
-  // as rate-limited — a delegated "run the tests" task that exits non-zero
-  // then trips the breaker with no threshold, blocks the route for 300s, and
-  // records a rate limit that never happened. The scan-tail comment above
-  // claims the tail exists to stop exactly that.
+  // Matching these phrases against the whole blob unfiltered lets this
+  // repository's own vitest output flag as rate-limited, tripping the breaker
+  // with no threshold on a delegated "run the tests" task.
   const flagged = text.split(/\r?\n/).some((line) => {
     if (ASSERTION_CONTEXT_RE.test(line)) return false;
     const lowered = line.toLowerCase();
@@ -160,57 +124,39 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
  * The harness could not run its own tools — an environment fault, not an
  * answer.
  *
- * Observed live: Codex's Windows sandbox failed to spawn ANY child on a deep
- * path (`CreateProcessAsUserW failed: 5 (Access is denied)`, six times in one
- * run). The delegate, unable to read anything, replied "Unable to read file.",
- * the process exited 0, and a lenient harness reported `success: true`. That
- * counted a success in `usage`, left the breaker closed, and cost 57k tokens
- * and 63 seconds — so the router kept choosing a route that could not do
- * anything. PRODUCT.md names exactly that shape as a counter-signal.
+ * Codex's Windows sandbox can fail to spawn ANY child on a deep path
+ * (`CreateProcessAsUserW failed: 5 (Access is denied)`). The delegate, unable
+ * to read anything, answers something like "Unable to read file.", the process
+ * exits 0, and a lenient harness would report `success: true` — a counted
+ * success, a breaker left closed, and a router that keeps choosing a route
+ * which can do nothing.
  *
- * Erring toward failure is deliberate. If the agent recovered and the run was
- * fine, calling it a failure costs one retry on another route. The other
- * direction costs plausible garbage, real quota, and a breaker that never
- * opens — and the user cannot tell.
+ * Erring toward failure is deliberate: a wrongly failed run costs one retry
+ * elsewhere, the other direction costs plausible garbage and real quota with
+ * no way for the user to tell.
  *
- * Deliberately NOT a general "did any tool call fail" check: an agent hitting
- * a permission error and working around it is normal. This matches the harness
- * reporting that it could not START a process at all, which no prompt can
- * work around.
+ * Deliberately NOT a general "did any tool call fail" check — an agent working
+ * around a permission error is normal. This matches the harness reporting that
+ * it could not START a process at all, which no prompt can work around.
  */
 export function detectHarnessEnvironmentFailure(...streams: string[]): string | undefined {
   // TWO DIAGNOSTIC LINES, in each stream's TAIL.
   //
   // This overrides a SUCCESSFUL exit code, so a false positive is expensive:
-  // it charges the route a failure, counts toward the breaker, and tells the
-  // caller "any answer it gave was produced without reading or running
-  // anything" — a fabricated diagnosis about a run that worked.
+  // it charges the route a failure and tells the caller its answer was
+  // produced without reading or running anything. Bare mentions do not
+  // separate the cases — a delegate's prose ABOUT this function is a realistic
+  // thing to receive, since this project delegates work on this very file.
+  // SHAPE does: the harness attaches the errno ("CreateProcessAsUserW failed:
+  // 5 (Access is denied)") where prose shortens to the phrase, and a sandbox
+  // that cannot spawn fails EVERY attempt, so a real diagnostic repeats.
   //
-  // Counting bare mentions does not separate the two cases. The first version
-  // fired on one mention anywhere; raising it to two still fired on a
-  // delegate's prose ABOUT this function, which is a realistic thing to
-  // receive — this project delegates work on this very file. Both versions
-  // were reproduced with a CLI exiting 0 while printing sentences.
+  // Narrower, not closed, both ways: prose QUOTING the full diagnostic on two
+  // lines still fires, and only `failed: <digits>` matches — `failed (5)` or
+  // the errno on the next line are missed, deliberately, rather than widening
+  // a false-positive surface to cover output nobody has seen.
   //
-  // What separates them better than volume is SHAPE. The harness emits its
-  // own diagnostic with the errno attached ("CreateProcessAsUserW failed: 5
-  // (Access is denied)"), which prose usually shortens to the bare phrase, so
-  // requiring the errno form on two separate LINES needs a real diagnostic,
-  // repeated — and a sandbox that cannot spawn fails EVERY attempt, so it
-  // repeats by definition (the run this was built from logged six).
-  //
-  // Narrower, not closed, and worth being exact about both ways:
-  //  - Prose QUOTING the full diagnostic on two lines still fires. A report
-  //    on this file can do that, including a diff of this function's own
-  //    tests. Nothing in the text distinguishes those cases; only the source
-  //    of the stream would, and we do not have it here.
-  //  - Only `failed: <digits>` matches. `failed (5)`, `failed with error 5`,
-  //    or the errno on the next line are all missed. That is deliberate
-  //    rather than an oversight: the form above is the one observed live, and
-  //    inventing variants would widen a false-positive surface that has
-  //    already misfired twice to cover output nobody has seen.
-  //
-  // Each stream is tailed SEPARATELY, like the rate-limit scanner: six real
+  // Each stream is tailed SEPARATELY, like the rate-limit scanner: real
   // occurrences on stdout followed by a wall of stderr noise would otherwise
   // fall off the end of a single joined tail.
   const lines = streams.flatMap((s) => rateLimitScanTail(s).split(/\r?\n/));
@@ -228,13 +174,11 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
 }
 
 /**
- * Command-line budgets, deliberately a little under the true limits.
- *
- * Windows: CreateProcess caps the whole command line at 32,767 characters.
- * POSIX: ARG_MAX bounds the total but MAX_ARG_STRLEN caps a SINGLE argument at
- * 128 KiB, and the prompt is one argument, so that is the binding constraint.
- * Under-shooting means the refusal comes from here, with an explanation,
- * rather than from the OS as a bare ENAMETOOLONG.
+ * Command-line budgets, deliberately a little under the true limits, so the
+ * refusal comes from here with an explanation rather than from the OS as a bare
+ * ENAMETOOLONG. Windows: CreateProcess caps the whole command line at 32,767
+ * characters. POSIX: MAX_ARG_STRLEN caps a SINGLE argument at 128 KiB, and the
+ * prompt is one argument, so that binds before ARG_MAX.
  */
 const WINDOWS_CMDLINE_MAX = 32_000;
 const POSIX_ARG_MAX = 128 * 1024 - 2048;
@@ -243,25 +187,19 @@ const POSIX_ARG_MAX = 128 * 1024 - 2048;
  * than the CreateProcess figure above.
  *
  * A `.cmd`/`.bat` target is re-spawned through `cmd.exe`, which caps a command
- * line at 8,191 characters — a quarter of the CreateProcess limit. The first
- * version of this check budgeted 32,000 for everything, so the shipped Cursor
- * route (a `cursor-agent.CMD` PowerShell wrapper, not an npm shim, handed
- * straight to cross-spawn) still failed at ~9k characters with the bare
- * "The command line is too long." this check exists to replace. Measured on a
- * stock install; the true ceiling was then bisected at exactly 8,191.
+ * line at exactly 8,191 characters — a quarter of the CreateProcess limit. The
+ * shipped Cursor route (a `cursor-agent.CMD` wrapper handed straight to
+ * cross-spawn) hits it at ~9k characters.
  *
- * Only eleven characters of margin, because commandLineLength no longer
- * estimates — it builds cross-spawn's own escaped forms and measures them, so
- * the slack that used to cover a wrong model is not needed and was costing
- * ~10% of the usable prompt.
+ * Only eleven characters of margin, because commandLineLength measures
+ * cross-spawn's own escaped forms rather than estimating, and wider slack
+ * costs ~10% of the usable prompt.
  *
  * One case that margin would NOT cover: cross-spawn keys its escaping on the
- * SHEBANG-RESOLVED file, and unshifts the resolved interpreter path as an
- * extra argument. This keys on the raw command, so a shebang script would go
- * ~60 characters uncounted. It cannot happen through the dispatchers here —
- * resolveCliCommand hands over a fully `which`-resolved path, and reaching
- * cross-spawn's shebang branch on Windows needs an extensionless PATHEXT hit
- * — but a future caller passing an unresolved command is the way in.
+ * SHEBANG-RESOLVED file and unshifts the interpreter path as an extra
+ * argument, ~60 characters this does not count. Unreachable through these
+ * dispatchers — resolveCliCommand hands over a `which`-resolved path — but a
+ * future caller passing an unresolved command is the way in.
  */
 const WINDOWS_CMD_SHIM_MAX = 8_180;
 
@@ -271,8 +209,7 @@ const WINDOWS_CMD_SHIM_MAX = 8_180;
  * Keyed on what cross-spawn will actually DO, not on the extension string.
  * cross-spawn routes through cmd.exe for anything that is not `.com` or `.exe`
  * (lib/parse.js), so an extensionless target, a `.ps1`, or a hand-rolled shim
- * gets the same 8,191-character ceiling as a `.cmd` — the first version of
- * this listed `.cmd`/`.bat` explicitly and handed everything else the
+ * gets the same 8,191-character ceiling as a `.cmd`, rather than the
  * four-times-larger CreateProcess budget.
  */
 function commandLineBudget(command: string): number {
@@ -286,16 +223,13 @@ function commandLineBudget(command: string): number {
  * `cross-spawn/lib/util/escape.js`.
  *
  * Every one of these gets a `^` prefix when the target goes through cmd.exe —
- * INCLUDING THE SPACE, which is the character that made hand-modelling this
- * wrong. My first version counted `"` and `\` only, so ordinary prose (~15%
- * spaces) and JSON measured well under budget and still died with cmd.exe's
- * own "The command line is too long." — from ~6,600 characters for prose and
- * ~4,500 for code, against a guard that did not fire until ~7,820.
+ * INCLUDING THE SPACE, which is why hand-modelling the escaped length does not
+ * work: ordinary prose is ~15% spaces, so counting only `"` and `\` puts a
+ * line that dies at ~6,600 characters well under an 8,000 budget.
  *
  * Copied rather than imported because it lives in cross-spawn's internals,
- * which are not part of its public API. The coupling is real either way; a
- * copy at least fails visibly if cross-spawn changes, and the tests below pin
- * the shapes that actually matter.
+ * which are not part of its public API. A copy at least fails visibly if
+ * cross-spawn changes, and the tests pin the shapes that matter.
  */
 const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
 
@@ -303,9 +237,8 @@ const CMD_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
  * cross-spawn double-escapes meta chars for an npm-style cmd shim
  * (`node_modules/.bin/x.cmd`) — `isCmdShimRegExp` in its `lib/parse.js`.
  *
- * Counting them once meant such a target died at ~5,300 characters while the
- * estimate said 6,400 against a budget of 8,000, so the guard stayed silent
- * and the bare "The command line is too long." reached the caller anyway.
+ * Counting them once under-reads such a target badly enough for the guard to
+ * stay silent while cmd.exe refuses the line.
  */
 const CMD_SHIM_DOUBLE_ESCAPE_RE = /node_modules[\\/].bin[\\/][^\\/]+\.cmd$/i;
 
@@ -315,8 +248,8 @@ const CMD_SHIM_DOUBLE_ESCAPE_RE = /node_modules[\\/].bin[\\/][^\\/]+\.cmd$/i;
  *
  * comspec, not the literal "cmd.exe": cross-spawn uses
  * `process.env.comspec || "cmd.exe"`, which on a normal Windows install is the
- * full `C:\WINDOWS\system32\cmd.exe` — twenty characters longer than the
- * constant this started as. The drift test below caught that on its first run.
+ * full `C:\WINDOWS\system32\cmd.exe` — twenty characters longer than the bare
+ * name.
  */
 function cmdWrapperOverhead(): number {
   return `${process.env["comspec"] || "cmd.exe"} /d /s /c ""`.length;
@@ -332,13 +265,10 @@ function escapeCmdCommand(command: string): string {
 /**
  * cross-spawn's `escapeArgument`, replicated from `lib/util/escape.js`.
  *
- * REPLICATED, NOT ESTIMATED. The previous version added one character per
- * backslash, but backslashes are only doubled in a run immediately before a
- * quote or the end of the argument — so prompts full of Windows paths (~9%
- * backslashes) were over-counted and REFUSED although they ran: an
- * 804-character band, about 10% of the usable prompt, on the very route the
- * check was written for. Before that the same function under-counted spaces.
- * Both are the cost of hand-modelling something that already exists.
+ * REPLICATED, NOT ESTIMATED. Backslashes are only doubled in a run immediately
+ * before a quote or the end of the argument, so a per-backslash estimate
+ * over-counts prompts full of Windows paths and refuses work that would have
+ * run — about 10% of the usable prompt on the route this check was written for.
  */
 function escapeCmdArgument(arg: string, doubleEscapeMetaChars: boolean): string {
   let out = quoteWindowsArgument(arg);
@@ -351,11 +281,9 @@ function escapeCmdArgument(arg: string, doubleEscapeMetaChars: boolean): string 
  * The quoting half, which applies to EVERY Windows spawn — cmd.exe target or
  * not. Only the `^` meta escaping above is cmd-specific.
  *
- * Split out because the first version of the non-cmd branch counted
- * `arg.length + 3` and so ignored quote escaping entirely, which under-read a
- * quote-heavy prompt heading for a native `.exe`. Caught by the test written
- * for exactly that case one release earlier — the two branches need the same
- * quoting and differ only in what comes after it.
+ * Split out because both branches need the same quoting and differ only in
+ * what comes after it; without it, the non-cmd branch under-reads a
+ * quote-heavy prompt heading for a native `.exe`.
  */
 function quoteWindowsArgument(arg: string): string {
   let out = String(arg);
@@ -373,27 +301,20 @@ function quoteWindowsArgument(arg: string): string {
  *
  * Counting raw characters under-reads on Windows, where every `"` in an
  * argument is escaped to `\"` and every argument containing whitespace is
- * wrapped in quotes. A 31,000-character prompt that is ~10% quote characters —
- * ordinary for JSON or source code — measured under the budget and then threw
- * `spawn ENAMETOOLONG` anyway. Deliberately an over-estimate: refusing a
- * borderline prompt with an explanation beats spawning one that dies with an
- * errno.
+ * wrapped in quotes: a 31,000-character prompt that is ~10% quote characters,
+ * ordinary for JSON or source code, measures under the budget and then throws
+ * `spawn ENAMETOOLONG`. Deliberately an over-estimate — refusing a borderline
+ * prompt with an explanation beats spawning one that dies with an errno.
  */
 function commandLineLength(command: string, args: string[]): number {
   if (process.platform !== "win32") {
     // BYTES, not code units. The kernel counts bytes (MAX_ARG_STRLEN is
-    // 131072 per argument); `String.length` counts UTF-16 units. Measured
-    // through the built artifact: 100,000 CJK characters in one argument
-    // measured as 100,021 against a 129,024 budget — so the guard did not
-    // fire — while the kernel saw 300,000 bytes and the spawn died with
-    // E2BIG. That is precisely the outcome the comment above says this
-    // exists to prevent.
-    //
-    // Invisible on Windows, where the same string is 100,000 UTF-16 units
-    // against a far smaller budget, so the friendly refusal fires there.
-    // Reachable in practice: the guard only runs when a protocol does NOT
-    // use stdin, and antigravity_cli is the shipped route that puts the
-    // prompt in argv — while advertising a two-million-token input.
+    // 131072 per argument); `String.length` counts UTF-16 units, so 100,000
+    // CJK characters in one argument measure as 100,021 against a 129,024
+    // budget — the guard would not fire — while the kernel sees 300,000 bytes
+    // and the spawn dies with E2BIG. Reachable in practice: the guard only
+    // runs when a protocol does NOT use stdin, and antigravity_cli puts the
+    // prompt in argv while advertising a two-million-token input.
     return args.reduce((n, a) => n + Buffer.byteLength(a, "utf8") + 1, Buffer.byteLength(command, "utf8"));
   }
   if (commandLineBudget(command) !== WINDOWS_CMD_SHIM_MAX) {
@@ -401,13 +322,11 @@ function commandLineLength(command: string, args: string[]): number {
     return args.reduce((n, a) => n + quoteWindowsArgument(a).length + 1, command.length);
   }
   // cmd.exe target. Build the escaped forms and MEASURE them, rather than
-  // estimating from character counts — two releases running, the estimate was
-  // wrong in one direction and then the other.
+  // estimating from character counts.
   const double = CMD_SHIM_DOUBLE_ESCAPE_RE.test(command);
   const parts = [escapeCmdCommand(command), ...args.map((a) => escapeCmdArgument(a, double))];
   // `cmd.exe /d /s /c "<line>"` — the wrapper cross-spawn actually spawns, and
-  // it counts against the same 8,191 ceiling. Uncounted before, which put the
-  // estimate a constant ~29 characters under the truth.
+  // it counts against the same 8,191 ceiling.
   return cmdWrapperOverhead() + parts.join(" ").length;
 }
 
@@ -507,9 +426,8 @@ function buildArgs(
 }
 
 /**
- * Event-rule-driven JSONL line handler — the declarative equivalent of
- * Codex's original hand-written `emitLine`. Mutates the shared accumulator
- * state and returns any mid-run DispatcherEvents this line produced.
+ * Event-rule-driven JSONL line handler. Mutates the shared accumulator state
+ * and returns any mid-run DispatcherEvents this line produced.
  */
 class JsonlAccumulator {
   lastText = "";
@@ -520,12 +438,10 @@ class JsonlAccumulator {
   /** Parsed event lines, for diagnosing a run that streamed and then produced nothing. */
   eventCount = 0;
   /**
-   * The last `type` seen, whatever it was.
-   *
-   * A stream that stops after `turn.started` failed differently from one that
-   * stops after `item.completed`, and neither is visible in an exit code. This
-   * is diagnosis only — it never decides success, so a benign frame cannot
-   * fail a healthy run.
+   * The last `type` seen, whatever it was: a stream that stops after
+   * `turn.started` failed differently from one that stops after
+   * `item.completed`, and neither is visible in an exit code. Diagnosis only —
+   * it never decides success, so a benign frame cannot fail a healthy run.
    */
   lastEventType: string | undefined;
   /** Set by the first matching emit: "error" rule; last one wins if several match across the stream. */
@@ -557,14 +473,7 @@ class JsonlAccumulator {
     return out;
   }
 
-  /**
-   * One matched rule, applied.
-   *
-   * Split out of `process()`, where this switch sat inside the rule loop and
-   * reached seven levels of nesting — a dispatch table written as a chain.
-   * Each arm is independent, so reading one no longer means holding the loop
-   * and the switch in your head at the same time.
-   */
+  /** One matched rule, applied. Each arm is independent of the rule loop. */
   #apply(rule: CliEventRule, event: unknown): DispatcherEvent[] {
     if (rule.emit === "text") {
       const text = rule.textField ? getPath(event, rule.textField) : undefined;
@@ -611,10 +520,9 @@ class JsonlAccumulator {
 /**
  * Every requested field, concatenated across a whole JSONL transcript.
  *
- * The poor-man's fallback for a harness whose protocol declares no
- * `eventRules`: no line is authoritative, so every one that yields text
- * contributes. A line that is not JSON is skipped rather than failing the
- * parse, because harnesses interleave plain log lines with their events.
+ * The fallback for a harness whose protocol declares no `eventRules`: no line
+ * is authoritative, so every one that yields text contributes. Non-JSON lines
+ * are skipped, because harnesses interleave plain log lines with their events.
  */
 function concatJsonlFields(stdout: string, fields: string[]): string | undefined {
   const parts: string[] = [];
@@ -634,10 +542,8 @@ function concatJsonlFields(stdout: string, fields: string[]): string | undefined
 /**
  * Token counts out of whichever JSON body carried them, or undefined.
  *
- * Lifted out of the `json_field` parsing arm, where it was one of two nested
- * blocks that took that switch to seven levels. Returning undefined rather
- * than mutating a variable in the caller is what lets the call site be one
- * line: "these counts, if there are any".
+ * Returning undefined rather than mutating a variable in the caller is what
+ * lets the call site be one line: "these counts, if there are any".
  */
 function readUsage(
   source: unknown,
@@ -674,9 +580,7 @@ function readStructuredError(
  *
  * The remainder is the point: a real pipe splits wherever it flushes, so the
  * tail of a chunk is routinely half a JSON line that only completes on the
- * next read. Returned rather than mutated in place, so the caller's buffer
- * handling is one assignment instead of an index walked inside four other
- * conditions.
+ * next read.
  */
 function takeCompleteLines(buffer: string): { lines: string[]; rest: string } {
   const parts = buffer.split("\n");
@@ -721,7 +625,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
    * this dispatch can clear the ones that aren't its own. Supplied by
    * dispatcher-factory, which is the only place that sees the whole config.
    * Optional so a hand-built dispatcher (tests, one-off scripts) still works;
-   * it then falls back to clearing only its own, the previous behaviour.
+   * it then clears only its own.
    */
   constructor(svc?: ServiceConfig, siblingApiKeyEnvVars?: ReadonlySet<string>) {
     super();
@@ -756,23 +660,15 @@ export class GenericCliDispatcher extends BaseDispatcher {
    * Remove this route's own api key from everything the child process said.
    *
    * A CLI harness is handed its credential in an environment variable, and a
-   * harness reporting an auth failure can quote it back — reproduced with a
-   * stub harness writing `auth error: rejected key <key>` to stderr, which
-   * arrived verbatim in the terminal AND in `logs/dispatches.jsonl`.
+   * harness reporting an auth failure can quote it back (`auth error: rejected
+   * key <key>` on stderr), reaching the terminal AND `logs/dispatches.jsonl`.
    *
-   * Wrapped around the whole stream rather than applied at each result site,
-   * and that is the entire point. The same class of leak has now been found
-   * five times in this project, and four of those were "the fix landed in one
-   * branch and the sibling beside it kept leaking" — including twice inside a
-   * single file. `#runStream` has five separate result sites plus the chunk
-   * events, and a sixth added later would silently miss a per-site scrub. It
-   * cannot miss this one.
-   *
-   * Chunks are scrubbed too, not just completions: they become `partialOutput`
-   * and `stdout.log` on disk, which is the same disclosure a beat earlier.
-   *
-   * Costs nothing when the route has no key, which is every subscription CLI —
-   * `redactSecretValue` returns the input untouched for an undefined secret.
+   * Wrapped around the whole stream rather than applied at each result site:
+   * `#runStream` has five result sites plus the chunk events, and a sixth added
+   * later would silently miss a per-site scrub. Chunks are scrubbed too — they
+   * become `partialOutput` and `stdout.log` on disk, the same disclosure a beat
+   * earlier. Costs nothing when the route has no key, which is every
+   * subscription CLI.
    */
   async *#scrubbed(inner: AsyncIterable<DispatcherEvent>): AsyncIterable<DispatcherEvent> {
     if (this.apiKey === undefined || this.apiKey === "") {
@@ -855,8 +751,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // Clear every OTHER route's api-key variable that is present in this
     // process. The child inherits process.env wholesale, and there is no
     // reason for Codex to receive a Groq key. Blanking rather than deleting
-    // because streamSubprocess merges over process.env; an empty value is
-    // what the existing single-variable clear already used.
+    // because streamSubprocess merges over process.env.
     for (const envVar of this.siblingApiKeyEnvVars) {
       if (envVar === protocol.apiKeyEnvVar) continue;
       if (process.env[envVar]) extraEnv[envVar] = "";
@@ -869,13 +764,9 @@ export class GenericCliDispatcher extends BaseDispatcher {
       }
     }
 
-    // A prompt too long for this route's COMMAND LINE, caught before spawning.
-    //
-    // A route that takes the prompt on argv is bounded by the OS: Windows caps
-    // a whole command line at 32,767 characters, and POSIX caps a single
-    // argument at 128 KiB. Past that the spawn failed with a raw
-    // `spawn ENAMETOOLONG` — accurate, unexplained, and pointing at nothing
-    // the caller could act on. Measured: 30k characters worked, 100k did not.
+    // A prompt too long for this route's COMMAND LINE, caught before spawning:
+    // past the OS limit the spawn fails with a raw `spawn ENAMETOOLONG`,
+    // pointing at nothing the caller could act on.
     //
     // Per route, not at the schema, because it is genuinely per route: codex
     // reads the prompt from stdin and has no such limit, so a boundary cap
@@ -928,9 +819,9 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let lineBuffer = "";
 
     for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
-      // One `continue` per event kind, rather than nested ifs. This loop was
-      // seven levels deep — for/if/if/if/while/for — around the one part that
-      // has to be exactly right: holding a partial line across reads.
+      // One `continue` per event kind, rather than nested ifs, so the part
+      // that has to be exactly right — holding a partial line across reads —
+      // sits at the top level of the loop.
       if (!("stream" in evt)) {
         exitCode = evt.exitCode;
         durationMs = evt.durationMs;
@@ -978,10 +869,10 @@ export class GenericCliDispatcher extends BaseDispatcher {
     }
 
     // The output cap stopped this run. stream-subprocess kills the child and
-    // flags it, and nothing here used to read the flag: the caller got a bare
-    // `Exit code N` with no hint the run was killed for volume — or, if the
-    // child exited before the kill landed, a success whose answer was quietly
-    // cut off. Found in an audit. What arrived before the cap is kept.
+    // flags it; without reading the flag the caller gets a bare `Exit code N`
+    // with no hint the run was killed for volume — or, if the child exited
+    // before the kill landed, a success whose answer was quietly cut off.
+    // What arrived before the cap is kept.
     if (truncated) {
       const capMb = Math.round(DEFAULT_MAX_OUTPUT_BYTES / (1024 * 1024));
       yield {
@@ -1003,14 +894,13 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let parsedOutput: string | undefined;
     let tokensUsed: { input: number; output: number } | undefined;
     /**
-     * A structured, unambiguous error message extracted from a parsed CLI
-     * response (event `emit: "error"` rule, or `output.error`'s boolean
-     * field) — takes priority over exit code and raw-text heuristics below.
-     * Exists because a CLI can report failure while exiting 0 (Claude
-     * Code's is_error flag) or bury the real message behind an unrelated
-     * exit-1 stderr banner (Codex — confirmed 2026-07-24: its actual error
-     * is JSON on stdout; stderr is just "Reading additional input from
-     * stdin...", which the old stderr-first fallback picked instead).
+     * A structured error message from a parsed CLI response (event
+     * `emit: "error"` rule, or `output.error`'s boolean field) — takes priority
+     * over exit code and the raw-text heuristics below, because a CLI can
+     * report failure while exiting 0 (Claude Code's is_error flag) or bury the
+     * real message behind an unrelated exit-1 stderr banner (Codex puts its
+     * error in JSON on stdout, with stderr carrying only "Reading additional
+     * input from stdin...").
      */
     let structuredError: string | undefined;
 
@@ -1078,37 +968,30 @@ export class GenericCliDispatcher extends BaseDispatcher {
       }
     }
 
-    // Text-mode CLIs conventionally put real error text on stderr with
-    // stdout empty; JSON-oriented modes (json_field/jsonl_stream) put their
-    // real payload — errors included — on stdout, with stderr often just
-    // decorative banner noise (see structuredError's doc comment). A
-    // structuredError, when present, is authoritative over both.
+    // Text-mode CLIs put real error text on stderr with stdout empty;
+    // JSON-oriented modes put their payload — errors included — on stdout, with
+    // stderr often just banner noise. structuredError outranks both.
     const rawErrorFallback =
       protocol.output.mode === "text"
         ? stderr.trim() || stdout.trim()
         : stdout.trim() || stderr.trim();
     // Event-driven modes only: there, rawErrorFallback IS the raw JSONL event
-    // stream, so a CLI that emitted valid events and then exited non-zero
-    // reported ~300 chars of {"type":"thread.started",...} as its error.
-    // Observed across 9 real failures on 2026-08-03, after 11-88s waits, while
-    // the parsed agent_message sat unused. Gated on eventDriven deliberately:
-    // in text mode parsedOutput IS stdout, and preferring it would defeat the
-    // stderr-first rule above (a real error on stderr losing to stray stdout).
-    // structuredError still wins — a turn.failed reason beats the last
-    // message — and rawErrorFallback still covers the nothing-parsed case.
+    // stream, so a CLI that emits valid events and then exits non-zero would
+    // report ~300 chars of {"type":"thread.started",...} as its error while the
+    // parsed agent_message sat unused. Gated on eventDriven because in text
+    // mode parsedOutput IS stdout, and preferring it would defeat the
+    // stderr-first rule above.
     const parsedErrorDetail = eventDriven ? parsedOutput : undefined;
     // And when NOTHING parsed either, say what happened instead of dumping the
-    // stream. That is the case the 9 failures above actually hit: no
-    // agent_message was ever emitted, so parsedErrorDetail was undefined too
-    // and rawErrorFallback won — 300 characters of JSONL, truncated
-    // mid-sentence, as the caller's only explanation.
+    // stream: with no agent_message emitted, rawErrorFallback wins and the
+    // caller's only explanation is 300 characters of JSONL truncated
+    // mid-sentence.
     //
     // Deliberately NOT a new event rule for Codex's nested
-    // {"item":{"type":"error"}} frame, which is the obvious-looking fix and is
-    // wrong: structuredError overrides the exit code, so the benign notice
-    // that frame carries ("Skill descriptions were shortened... Codex can
-    // still see every skill") would mark HEALTHY runs failed, charge the route
-    // and move the breaker. This path only ever runs on a run that already
+    // {"item":{"type":"error"}} frame, which looks like the fix and is wrong:
+    // structuredError overrides the exit code, so the benign notice that frame
+    // carries ("Skill descriptions were shortened...") would mark HEALTHY runs
+    // failed and move the breaker. This path only runs on a run that already
     // failed with nothing to show for it, so it cannot do that.
     const streamedNothing =
       eventDriven && acc && parsedOutput === undefined && acc.sawAnyJson
@@ -1126,13 +1009,11 @@ export class GenericCliDispatcher extends BaseDispatcher {
       parsedErrorDetail ??
       streamedNothing ??
       (rawErrorFallback || `Exit code ${exitCode}`);
-    // Scan BOTH streams, not just whichever one errorDetail resolved to.
-    // This was narrowed to detectRateLimit(errorDetail) while adding
-    // structured-error support, so a 429 on the stream that lost the
-    // errorDetail race stopped being detected — for jsonl_stream that means a
-    // rate limit on stderr while stdout carries the event payload. The
-    // message shown to the caller stays errorDetail; only the DETECTION
-    // widens.
+    // Scan BOTH streams, not just whichever one errorDetail resolved to: a 429
+    // on the stream that lost the errorDetail race would otherwise go
+    // undetected — for jsonl_stream, a rate limit on stderr while stdout
+    // carries the event payload. The message shown to the caller stays
+    // errorDetail; only the DETECTION widens.
     const { rateLimited, retryAfter } = detectRateLimit(
       [errorDetail, rateLimitScanTail(stdout), rateLimitScanTail(stderr)]
         .filter(Boolean)

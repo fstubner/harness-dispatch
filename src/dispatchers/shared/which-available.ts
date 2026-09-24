@@ -7,13 +7,11 @@ export function commandAvailable(command: string): boolean {
     sync?: (cmd: string, opts: { nothrow: true }) => string | null;
   };
   if (typeof candidate.sync !== "function") {
-    // Fail CLOSED. This previously returned true, declaring every command
-    // available when the resolver was unusable: the route would be selected,
-    // spawned, and fail — burning a dispatch and a breaker failure instead of
-    // being skipped with a clear "unavailable" reason. Not currently
-    // reachable (which@7 does expose .sync), but this branch exists precisely
-    // to survive an export-shape change, and the package was moved across two
-    // majors recently.
+    // Fail CLOSED. Declaring every command available when the resolver is
+    // unusable would get the route selected, spawned and failed — burning a
+    // dispatch and a breaker failure instead of skipping it with a clear
+    // "unavailable" reason. Not reachable with which@7, which does expose
+    // .sync; this branch exists to survive an export-shape change.
     if (!warnedMissingSync) {
       warnedMissingSync = true;
       console.error(

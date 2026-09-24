@@ -1,13 +1,9 @@
 /**
  * Rendering a live RouterConfig back into config.yaml.
  *
- * Split out of bin.ts. This is the half of `configure` that decides what a
- * user's file should say, and it is the half that has been dangerous: it once
- * wrote RESOLVED api keys into the output (including --print, the form people
- * paste into bug reports), and it once dropped top-level settings on a
- * round-trip so `configure --yes --force` destroyed them. Both fixes live
- * here, and both are easier to keep honest with the emission rules in one
- * file rather than interleaved with command plumbing.
+ * The dangerous half of `configure`: a mistake here writes live credentials
+ * into the output (including --print, the form people paste into bug reports),
+ * or drops settings on a round-trip so `configure --yes --force` destroys them.
  *
  * The governing rule: emit what the USER set, never what a default computed.
  * Billing fields are deliberately absent (they are recomputed from harness
@@ -26,17 +22,16 @@ import type { RouterConfig, ServiceConfig } from "./types.js";
  * (provider/surface/auth_source/billing_kind/paid_usage_possible/
  * billing_confidence/billing_notes) are deliberately NOT emitted — they're
  * computed from the harness/endpoint defaults every time the config loads
- * (see buildRouteBilling), so writing them out would freeze a snapshot that
- * silently stops tracking future default changes and looks like a deliberate
- * user override when it never was one. `allow_paid_usage` is the one real
- * opt-in flag here, so it's the only billing-adjacent field written.
+ * (see buildRouteBilling), so writing them out freezes a snapshot that stops
+ * tracking future default changes and looks like a deliberate user override.
+ * `allow_paid_usage` is the one real opt-in flag here, so it's the only
+ * billing-adjacent field written.
  *
  * `safety_profile`/`effective_safety` are only emitted when the service
  * actually carries an explicit value — never a fallback default. Baking in
- * `requestedSafetyProfile()`'s "workspace_edit" fallback for every route used
- * to write `safety_profile: workspace_edit` on cursor_cli even though its
- * real effective_safety (the capability floor that actually governs it) is
- * full_auto, making the written file self-contradictory next to `status`.
+ * `requestedSafetyProfile()`'s "workspace_edit" fallback would write it onto a
+ * route whose real effective_safety (the capability floor that governs it) is
+ * full_auto, making the file self-contradictory next to `status`.
  */
 function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
   return {
@@ -67,18 +62,13 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
 }
 
 /**
- * A base_url safe to print, with the same rules the api_key gets.
+ * A base_url safe to print, with the same rules the api_key gets: one carrying
+ * `user:password@` or `?key=` discloses a credential just as an api_key does.
  *
- * `--print` redacted the api_key, printed a note saying the preview was
- * sanitised, and emitted the base_url verbatim two lines above it — so a URL
- * carrying `user:password@` or `?key=` disclosed the credential in exactly the
- * output this file's own header calls "the form people paste into bug
- * reports". Reproduced against the built binary by a verification pass.
- *
- * An `${VAR}`-written base_url comes back as its reference, as the api_key
- * does. A literal one keeps everything diagnostic — scheme, host, port, path —
- * and loses only the credential-bearing parts, so the preview still tells the
- * reader which endpoint a route points at.
+ * An `${VAR}`-written base_url comes back as its reference. A literal one keeps
+ * everything diagnostic — scheme, host, port, path — and loses only the
+ * credential-bearing parts, so the preview still says which endpoint a route
+ * points at.
  */
 function baseUrlForYaml(
   svc: ServiceConfig,
@@ -108,25 +98,21 @@ function baseUrlForYaml(
 /**
  * Render a route's api_key WITHOUT materialising the secret.
  *
- * `svc.apiKey` is the RESOLVED value — config.ts interpolates `${VAR}` at
- * load time, so by here the reference is gone. Emitting it verbatim wrote
- * live credentials into config.yaml and echoed them to stdout on
- * `configure --print`, which is documented as the safe preview and is exactly
- * what someone pastes into a bug report. It also broke the project's own
- * stated invariant (plugin/commands/setup.md: "API keys MUST be written as
- * ${ENV_VAR} references — never literal").
+ * `svc.apiKey` is the RESOLVED value — config.ts interpolates `${VAR}` at load
+ * time, so by here the reference is gone, and emitting it verbatim writes live
+ * credentials into config.yaml and echoes them on `configure --print`. It also
+ * breaks the project's own invariant (plugin/commands/setup.md: "API keys MUST
+ * be written as ${ENV_VAR} references — never literal").
  *
- * `config.envRefs` maps the resolved value back to the reference that
- * produced it, so a key that came from `${GROQ_API_KEY}` round-trips exactly.
- * `config.apiKeyRefs` covers the case envRefs structurally cannot — a
- * reference whose variable is unset, which resolves to "" and so has no
- * distinct value to key on.
+ * `config.envRefs` maps the resolved value back to the reference that produced
+ * it, so a key from `${GROQ_API_KEY}` round-trips exactly. `config.apiKeyRefs`
+ * covers the case envRefs structurally cannot — a reference whose variable is
+ * unset, which resolves to "" and so has no distinct value to key on.
  *
- * A key written as a LITERAL in the source file has no reference to restore.
- * That case splits by destination: `--yes` writes to disk, where the literal
- * already lives and dropping it would break a working config, so it is
- * preserved; `--print` goes to a terminal and a bug report, so it is redacted
- * to the placeholder below.
+ * A key written as a LITERAL has no reference to restore, and that case splits
+ * by destination: `--yes` writes to disk, where the literal already lives and
+ * dropping it would break a working config; `--print` goes to a terminal and a
+ * bug report, so it is redacted to the placeholder below.
  */
 function apiKeyForYaml(
   svc: ServiceConfig,
@@ -137,7 +123,7 @@ function apiKeyForYaml(
   // the route never had a key, or it had a reference whose variable was not
   // exported in this shell. config.apiKeyRefs, read before interpolation,
   // tells the two apart — without it, `configure --yes --force` on such a
-  // shell silently rewrote a working config with the key deleted.
+  // shell silently rewrites a working config with the key deleted.
   if (svc.apiKey === undefined || svc.apiKey === "") return config.apiKeyRefs?.get(svc.name);
   const ref = config.envRefs?.get(svc.apiKey) ?? config.apiKeyRefs?.get(svc.name);
   if (ref !== undefined) return ref;
@@ -159,16 +145,14 @@ function cliEntryToYaml(
   opts: YamlOpts,
 ): Record<string, unknown> {
   // `harness: generic` has NO shipped preset behind it, so anything omitted
-  // here is not recoverable on reload — it is gone. Dropping `protocol:` was
-  // fatal: config.ts refuses a generic entry without one ("requires a
-  // protocol block — entry ignored"), so a round-trip deleted every
-  // user-added harness, and `configure --yes --force` wrote that over their
-  // file. This is the documented README#adding-a-harness path.
+  // here is not recoverable on reload — it is gone. Dropping `protocol:` is
+  // fatal: config.ts refuses a generic entry without one, so a round-trip would
+  // delete every user-added harness (the documented README#adding-a-harness
+  // path) and `configure --yes --force` would write that over their file.
   //
-  // Built-in harnesses keep the lean output: their preset supplies protocol
-  // and billing, and emitting a copy would freeze a snapshot that stops
-  // tracking future default changes — the same reasoning commonEntryFields
-  // gives for omitting billing fields generally.
+  // Built-in harnesses keep the lean output: their preset supplies protocol and
+  // billing, and emitting a copy would freeze a snapshot — the same reasoning
+  // commonEntryFields gives for omitting billing fields generally.
   const isGeneric = svc.harness === "generic";
   return {
     name: svc.name,
@@ -201,14 +185,11 @@ function endpointEntryToYaml(
     api_key: apiKeyForYaml(svc, config, opts),
     ...commonEntryFields(svc),
     // Endpoints have no shipped preset behind them, so an omitted billing
-    // field is not recomputed on reload — it is lost. Verified: an endpoint
-    // declaring `billing_kind: local_compute` and `paid_usage_possible: false`
-    // came back undefined, flipping it to paid=possible and getting it skipped
-    // by billing policy.
-    //
-    // This is the same reasoning already applied to `harness: generic` CLI
-    // routes, and it should have been applied here at the same time. Built-in
-    // harnesses still keep the lean output because their preset supplies these.
+    // field is not recomputed on reload — it is lost. An endpoint declaring
+    // `billing_kind: local_compute` and `paid_usage_possible: false` would come
+    // back undefined, flipping it to paid=possible and getting it skipped by
+    // billing policy. Same reasoning as `harness: generic` CLI routes; built-in
+    // harnesses keep the lean output because their preset supplies these.
     provider: svc.provider,
     surface: svc.surface,
     auth_source: svc.authSource,
@@ -221,34 +202,25 @@ function endpointEntryToYaml(
 /**
  * Top-level settings a user set and that have no defaults to track.
  *
- * These were silently dropped on every round-trip. Unlike the billing fields
- * (see commonEntryFields — omitted deliberately so they keep following harness
- * defaults), nothing recomputes these: a dropped `max_concurrent_runs` is
- * simply gone, and `configure --yes --force` wrote the result over the user's
- * file.
+ * Unlike the billing fields (see commonEntryFields — omitted deliberately so
+ * they keep following harness defaults), nothing recomputes these: a dropped
+ * `max_concurrent_runs` is simply gone, and `configure --yes --force` writes
+ * the result over the user's file.
  */
 function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   // FIRST, and unconditionally when the file stated it.
   //
   // `detect` is the only setting that isolates a machine from its installed
-  // paid CLIs, and it was dropped on every round-trip because nothing carried
-  // it. An acceptance pass measured `configure --yes --force` turning
-  // `detect: false` into a config that routes to four real subscriptions,
-  // printing "Wrote", with the safety warning suppressed because the emptied
-  // document failed its own trigger condition. That is the same class as the
-  // two failures this file's header already records in the past tense: a
-  // regenerate that silently drops what it cannot represent.
+  // paid CLIs. Dropping it turns `detect: false` into a config that routes to
+  // every real subscription on the machine, and the safety warning does not
+  // fire because the emptied document fails its own trigger condition.
   if (config.detect !== undefined) out.detect = config.detect;
   // `disabled:` only means something to AUTO-DETECTION, and a config that
   // lists its own routes is authoritative — a disabled route is simply absent
-  // from that list, so carrying the name forward says nothing and actively
-  // breaks the file: `doctor` warns that `disabled:` had no effect and exits
-  // 1. An acceptance pass reproduced it end to end, so the setup path was
-  // generating a config that fails the project's own health check.
-  //
-  // Kept when the config defines NO routes, because there it is still the
-  // thing doing the work.
+  // from that list. Carrying the name forward therefore says nothing and breaks
+  // the file: `doctor` warns that `disabled:` had no effect and exits 1. Kept
+  // when the config defines NO routes, where it is still doing the work.
   if (!definesRoutes && config.disabled && config.disabled.length > 0) {
     out.disabled = [...config.disabled];
   }
@@ -278,13 +250,10 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   if (endpoints.length > 0) doc.endpoints = endpoints;
   const body = yaml.dump(doc, { noRefs: true, lineWidth: 100 });
   // `{}` is what js-yaml emits for an empty document, and it is what a machine
-  // with no harness CLI installed got from `configure` — printed by --print and
-  // written to disk by --yes. Valid YAML, and useless: the file says nothing
-  // about why it is empty or what to put in it, which on Linux is the ordinary
-  // first-run case rather than an edge one (measured on an acceptance pass
-  // there). `doctor` already says the thing that unblocks it — an endpoints:
-  // entry needs no CLI — so the file says it too, in the place someone who
-  // opens it is looking.
+  // with no harness CLI installed produces — the ordinary first-run case on
+  // Linux. Valid YAML, and useless: it says nothing about why it is empty or
+  // what to put in it, so the replacement says what `doctor` would, in the
+  // place someone who opens the file is looking.
   return body.trim() === "{}" ? EMPTY_CONFIG_BODY : body;
 }
 
@@ -318,13 +287,12 @@ const EMPTY_CONFIG_BODY = `# This config defines no routes. On a fresh machine t
  * `configure` stamps what it writes so a later run can tell its own unedited
  * output from a file someone has worked on.
  *
- * The natural first-run order is: install this tool, run configure (0 routes),
- * discover a harness is needed, install one, run configure again — and the
- * second run was refused: "already exists ... --force". The refusal exists
- * because overwriting a hand-written config is unrecoverable, and that reason
- * does not apply to a file configure itself wrote and nobody has touched. The
- * fingerprint is a sha256 of everything after the header; the header lines
- * are comments, so the file loads exactly as before.
+ * The refusal to overwrite ("already exists ... --force") exists because
+ * overwriting a hand-written config is unrecoverable, and that reason does not
+ * apply to a file configure itself wrote and nobody has touched — the natural
+ * first-run order, where configure runs once with no harness installed and
+ * again after installing one. The fingerprint is a sha256 of everything after
+ * the header; the header lines are comments, so the file loads unchanged.
  *
  * Only a leading block of `#` lines may sit above the fingerprint line. An
  * edit inserted ABOVE it — `detect: false` at the top of the file, say — is
@@ -341,7 +309,7 @@ const HEADER = [
 function fingerprint(body: string): string {
   // Line endings and trailing whitespace are not an edit: an editor that
   // saves CRLF, or strips the final newline, changed nothing the loader can
-  // see. The first version counted a stripped newline as an edit and refused.
+  // see.
   return createHash("sha256")
     .update(body.replace(/\r\n/g, "\n").replace(/\s+$/, ""))
     .digest("hex");
@@ -355,9 +323,8 @@ export function isUneditedGenerated(text: string): boolean {
   const normalised = text.replace(/\r\n/g, "\n");
   const match = FINGERPRINT_LINE.exec(normalised);
   if (match === null || match.index === undefined) return false;
-  // Exactly our header, nothing else: the first version accepted ANY comment
-  // lines above the fingerprint, so a `# note to self` a user put at the top
-  // was regenerated away without a word.
+  // Exactly our header, nothing else: accepting ANY comment lines above the
+  // fingerprint would regenerate away a `# note to self` a user put at the top.
   if (normalised.slice(0, match.index) !== `${HEADER}\n`) return false;
   const body = normalised.slice(match.index + match[0].length + 1);
   return fingerprint(body) === match[1];

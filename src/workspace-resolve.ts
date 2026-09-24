@@ -1,14 +1,6 @@
 /**
- * What happens to isolated work AFTER the agent finishes.
- *
- * `copy` and `git_worktree` gave you a workspace path, a changed-file list and
- * a `cleanupHint` — a string telling you to run `git worktree remove`
- * yourself. Isolation worked and nothing was ever applied automatically, but
- * there was no way to see the actual change, no way to keep it, and no way to
- * clean up but by hand. Isolated dispatches were effectively write-only: you
- * could look at a summary and then abandon the result.
- *
- * This module is the missing half — inspect, then keep or throw away.
+ * What happens to isolated work AFTER the agent finishes: inspect the change
+ * a `copy` or `git_worktree` dispatch produced, then keep it or throw it away.
  *
  * THE DANGEROUS PART IS `apply`, and it is dangerous in one specific way:
  * applying a patch into a directory that has moved on since the agent started
@@ -37,9 +29,7 @@ export const MAX_PATCH_CHARS = 60_000;
 
 /**
  * ENOENT from spawning git means git is not on PATH, and saying so is the
- * whole remedy. It surfaced as raw errno text — `spawn git ENOENT` — from
- * `workspace diff`, `workspace apply` and a `git_worktree` dispatch, in a
- * module that elsewhere goes to some trouble to explain a long-path failure.
+ * whole remedy — the raw `spawn git ENOENT` says nothing a reader can act on.
  */
 function describeGitSpawnFailure(err: unknown): Error | undefined {
   const code = (err as { code?: unknown } | null)?.code;
@@ -72,13 +62,10 @@ async function git(args: string[], cwd: string): Promise<string> {
  * `git diff` exits 1 when there ARE differences; that is success, not failure.
  *
  * But exit 1 is NOT exclusively "differences found" — git also uses it for
- * real errors, and the two were indistinguishable here. Observed live on
- * Windows: a copy workspace whose paths crossed MAX_PATH made git exit 1 with
- * an EMPTY stdout and `error: Could not open directory <259-char path>` on
- * stderr. Returning stdout meant an empty patch, which every caller reads as
- * "the agent changed nothing" — the feature could not deliver, and the user
- * was told to file a bug report rather than the actual cause. git's own
- * explanation was discarded at this line and never reached anyone.
+ * real errors, with an EMPTY stdout and the explanation on stderr (a copy
+ * workspace whose paths cross Windows MAX_PATH does exactly this). Returning
+ * stdout there would mean an empty patch, which every caller reads as "the
+ * agent changed nothing".
  *
  * `error:`/`fatal:` on stderr is the discriminator. Plain `warning:` lines do
  * not count: git emits those routinely for line-ending conversion, and
@@ -100,10 +87,8 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
     if (failure !== undefined) {
       // `Could not access` is git's wording when it stats a FILE it cannot
       // reach; `Could not open directory` is the same fault hit while scanning
-      // a directory. The first version of this hint pinned only the string
-      // that had been observed, so the file variant — which is what an
-      // over-long path usually produces — got a bare error with no cause and
-      // no remedy, for exactly the case the hint exists to explain.
+      // a directory. Both have to match, because an over-long path usually
+      // produces the file variant.
       const hint =
         /could not open directory|could not access|filename too long|name too long|No such file or directory/i.test(
           failure,
@@ -113,11 +98,10 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
         : "";
       throw new Error(`git could not produce a patch for this workspace: ${failure}.${hint}`);
     }
-    // The cap firing reads as gibberish otherwise. `maxBuffer` surfaces as
-    // `stdout maxBuffer length exceeded` with no mention of patches, limits,
-    // or the fact that the work is safe and still on disk — for a user whose
-    // agent simply changed a lot. Same wording as the copy path's own bound,
-    // so the two policies explain the same limit the same way.
+    // `maxBuffer` surfaces as `stdout maxBuffer length exceeded`, with no
+    // mention of patches, limits, or the fact that the work is safe and still
+    // on disk. Same wording as the copy path's own bound, so the two policies
+    // explain the same limit the same way.
     if ((err as { code?: unknown })?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
       throw new Error(
         `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
@@ -184,16 +168,10 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
   const root = isolatedRoot(run);
   if (!existsSync(root)) {
     throw new Error(
-      // Do not assert WHY it is gone.
-      //
-      // Nothing records that: a root goes missing because retention pruned it,
-      // because the user deleted it, or because a worktree was removed through
-      // git — and `discardWorkspace` below documents all three. Naming
-      // retention alone blamed the clock for something this tool ASKS the user
-      // to do: every isolated dispatch returns a `cleanupHint` telling them to
-      // remove the workspace when they are done with it. Follow that advice,
-      // then ask for the patch, and the answer was that you should have
-      // resolved the job before it aged out — which it had not.
+      // Do not assert WHY it is gone: nothing records that. A root goes
+      // missing because retention pruned it, because the user deleted it, or
+      // because a worktree was removed through git — and every isolated
+      // dispatch returns a `cleanupHint` asking the user to do exactly that.
       `The isolated workspace for this job is gone (${root}), and no saved patch was ` +
         `found beside the job either, so there is nothing left to build a patch from. ` +
         `It was pruned once it aged out of retention, removed by hand or by following ` +
@@ -219,15 +197,12 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // the diff as additions. It touches only the throwaway worktree's index.
     await git(["add", "-A", "-N"], root).catch(() => undefined);
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
-    // a filesystem fingerprint. So an agent that wrote a gitignored file (a
-    // `.env`, a local config) had that file REPORTED as changed and applied,
-    // and silently left behind: the patch never carried it. An acceptance pass
-    // measured `applied: true` naming two files with only one in the diff.
-    //
-    // It compounds: the "already applied" guard needs every recorded change
-    // present in the project, so it never fires, and the next apply refuses
-    // with "changed since dispatch" — blaming the user for the first apply's
-    // own writes, the exact misleading refusal an earlier fix removed.
+    // a filesystem fingerprint. So an agent that writes a gitignored file (a
+    // `.env`, a local config) has that file reported as changed and applied
+    // while the patch never carries it. It compounds: the "already applied"
+    // guard needs every recorded change present in the project, so it never
+    // fires, and the next apply refuses with "changed since dispatch" — over
+    // the first apply's own writes.
     //
     // Force-add EXACTLY the paths already recorded as changed, never `-f -A`.
     // The recorded list comes from a fingerprint that skips node_modules,
@@ -235,7 +210,7 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // force-add would sweep whole ignored trees into the patch.
     //
     // This also makes the two policies agree: a `copy` patch is built per file
-    // from this same list and has always carried ignored files.
+    // from this same list and carries ignored files.
     const ignoredCandidates = (run.changedFiles ?? [])
       .filter((c) => c.kind !== "deleted")
       .map((c) => c.path);
@@ -251,42 +226,29 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
   //
   // A tree comparison has no BASE. It diffs the workspace against the project
   // as the project is RIGHT NOW, at apply time, so everything that changed in
-  // the project since the copy was taken is proposed for reversal. Reproduced
-  // through the documented tool surface: dispatch two isolated jobs, apply the
-  // first, COMMIT it, apply the second — and the second silently deleted the
-  // first's committed file and reverted its committed line, reporting
-  // `applied: true` and a changedFiles list one entry shorter than the patch it
-  // had just applied. That is the parallel-delegation case this product is
-  // built around, and the refusal on uncommitted changes is not a mitigation:
-  // it tells you to commit first, and committing is what walks you into it.
-  //
-  // The git_worktree branch above never had this, because it diffs against a
-  // recorded baseCommit — and its own error text spells the hazard out
-  // ("diffing it against a dirty project could report your own uncommitted
-  // work as deletions"). The danger was documented for one policy and
-  // unguarded in the other.
+  // the project since the copy was taken is proposed for reversal: dispatch
+  // two isolated jobs, apply the first, COMMIT it, apply the second, and the
+  // second deletes the first's committed file and reverts its committed line
+  // while reporting `applied: true`. That is the parallel-delegation case this
+  // product is built around, and the refusal on uncommitted changes is not a
+  // mitigation — it tells you to commit first, and committing is what walks
+  // you into it. The git_worktree branch above is immune because it diffs
+  // against a recorded baseCommit.
   //
   // changedFiles is exactly the missing base: fingerprints of the workspace
   // taken at dispatch, compared with fingerprints taken when the agent
   // finished. A file the agent never touched cannot appear in the patch at
-  // all now, whatever the project has done since — and the patch and the
-  // reported changedFiles are derived from one list, so they cannot disagree.
+  // all, whatever the project has done since — and the patch and the reported
+  // changedFiles are derived from one list, so they cannot disagree.
   if (run.changedFiles !== undefined) {
     return buildCopyPatchFromChanges(run, root, run.changedFiles);
   }
 
-  // A job recorded before `changedFiles` existed cannot be patched safely, and
-  // can no longer exist: the field has been written since 2026-07-13 and an
-  // isolated workspace is pruned after a day, so any run without it is older
-  // than its own workspace. This used to fall back to `git diff --no-index`
-  // over the whole directory pair, with ~170 lines of path normalisation and
-  // section filtering to undo the damage that comparison does — machinery that
-  // no input could reach any more, whose own comment still described the copy
-  // as living inside the project, which stopped being true in 0.7.0.
-  //
-  // Refusing matches what the `git_worktree` branch above already does for its
-  // own equivalent case, and is the safe direction: the alternative is emitting
-  // a patch from an untested path.
+  // A job with no `changedFiles` cannot be patched safely, and in practice
+  // cannot exist: an isolated workspace is pruned after a day, so any run
+  // without the field is older than its own workspace. Refusing matches the
+  // `git_worktree` branch above for its equivalent case; the alternative is
+  // emitting a patch from a whole-directory comparison with no base.
   throw new Error(
     "This copy job predates changed-file recording, so a safe patch cannot be " +
       "produced — diffing the whole directory pair could report files the copy " +
@@ -304,10 +266,9 @@ const NULL_PATH = "/dev/null";
  *
  * The headers are REBUILT from the path we already know rather than derived by
  * stripping roots out of git's output. That is what makes it impossible for
- * this step to touch file content: nothing is searched for and replaced, the
- * three header lines are simply replaced with correct ones and every other
- * line — hunks, `index`, mode lines, the content itself — passes through
- * untouched.
+ * this step to touch file content: nothing is searched for and replaced, and
+ * every line but the three headers — hunks, `index`, mode lines, the content
+ * itself — passes through untouched.
  */
 async function buildCopyPatchFromChanges(
   run: WorkspaceRun,
@@ -326,17 +287,14 @@ async function buildCopyPatchFromChanges(
     // The LEFT side is what the project has right now, whatever the recorded
     // kind says — an "added" file the project already has is a modification,
     // and after a successful apply it is no change at all. Trusting the kind
-    // blindly re-proposed a file the project already held as a fresh addition,
-    // so a second apply always found work to do.
+    // would re-propose it as a fresh addition, so a second apply always finds
+    // work to do.
     //
     // The RIGHT side is the workspace, EXCEPT for a deletion, where the whole
     // point is that the workspace no longer has it. Nulling both sides for a
-    // deletion — which the first version of this did — made the guard below
-    // fire every time, so no copy patch ever carried a deletion: a delegate
-    // that removed a file had `applied: true` reported over a project where
-    // the file was still there, and a delete-only job produced an empty patch
-    // that apply refused and discard then refused to clean up. A rename is a
-    // delete plus an add, so renames did not land either.
+    // deletion makes the guard below fire every time, so no copy patch carries
+    // a deletion at all — and a rename is a delete plus an add, so renames go
+    // with it.
     const left = projectHas ? toPosix(projectFile) : NULL_PATH;
     const right = change.kind === "deleted" || !workspaceHas ? NULL_PATH : toPosix(workspaceFile);
 
@@ -349,9 +307,8 @@ async function buildCopyPatchFromChanges(
     // Already in the project, modulo line endings: emit nothing. `git apply`
     // writes through the repository's eol settings, so an applied file lands
     // as CRLF against an LF workspace copy and a byte comparison would call
-    // that a difference forever — a second apply would keep finding work to
-    // do. Same rule as the already-applied check, deliberately, so the two
-    // cannot disagree about what "landed" means.
+    // that a difference forever. Same rule as the already-applied check, so
+    // the two cannot disagree about what "landed" means.
     if (left !== NULL_PATH && right !== NULL_PATH) {
       const [a, b] = await Promise.all([
         readFile(projectFile).catch(() => null),
@@ -368,10 +325,9 @@ async function buildCopyPatchFromChanges(
       );
     } catch (err) {
       // The size refusal names a DIRECTORY, and `git()` only knows the cwd it
-      // was handed — which on this path is the parent of the user's project,
-      // not the workspace. So it told the reader their work was somewhere it
-      // is not. Re-raised here, where `run` is in scope, with the same wording
-      // the accumulation check below uses.
+      // was handed — on this path the parent of the user's project, not the
+      // workspace. Re-raised here, where `run` is in scope, with the same
+      // wording the accumulation check below uses.
       if (err instanceof Error && err.message.includes("patch limit")) {
         throw new Error(
           `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
@@ -380,8 +336,7 @@ async function buildCopyPatchFromChanges(
             `${isolatedRoot(run)}, where you can copy out what you need or diff it by hand.`,
         );
       }
-      // An unreadable file must not silently shrink the patch — that is the
-      // failure mode this whole area keeps producing.
+      // An unreadable file must not silently shrink the patch.
       throw new Error(
         `could not diff ${rel} for this workspace: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -389,12 +344,9 @@ async function buildCopyPatchFromChanges(
     if (raw.trim() === "") continue;
     sections.push(rewriteSectionHeaders(raw, rel));
     total += sections[sections.length - 1]!.length;
-    // MAX_PATCH_BYTES documents itself as bounding patches because they are
-    // "read into memory and returned over MCP" — and it did, for the worktree
-    // path, where it is an execFile maxBuffer. This path concatenates per file
-    // and had no bound at all, so the guarantee held for one policy and not
-    // the other. Refuse with the same limit and say where the work still is,
-    // rather than building a patch too large to hand back.
+    // On the worktree path MAX_PATCH_BYTES is an execFile maxBuffer; this path
+    // concatenates per file, so it has to enforce the same bound itself rather
+    // than build a patch too large to hand back over MCP.
     if (total > MAX_PATCH_BYTES) {
       throw new Error(
         `This workspace's changes exceed the ${Math.floor(MAX_PATCH_BYTES / (1024 * 1024))}MB ` +
@@ -413,8 +365,7 @@ async function buildCopyPatchFromChanges(
  * Only before the first `@@`. Prefix alone is not safe: a REMOVED line whose
  * own text begins `-- ` (an SQL comment, a signature delimiter) arrives as
  * `--- `, and an added line beginning `++ ` arrives as `+++ `. Rewriting those
- * would corrupt content — the same defect this file has already shipped once,
- * from the other direction.
+ * would corrupt content.
  */
 function rewriteSectionHeaders(section: string, rel: string): string {
   let inHunk = false;
@@ -443,10 +394,8 @@ function rewriteSectionHeaders(section: string, rel: string): string {
  * missing. A copy is fingerprinted from the copied directory itself, so there
  * the two coincide.
  *
- * ONE function because this has now been got wrong twice in this file, in two
- * different checks, with the same symptom each time — a guard refusing every
- * apply or discard for a monorepo dispatch. Two callers computing the same
- * base separately is what allowed the second one.
+ * ONE function, so the guards below cannot compute this base differently and
+ * refuse every apply or discard for a monorepo dispatch.
  */
 async function projectBaseFor(run: WorkspaceRun): Promise<string> {
   if (run.policy !== "git_worktree") return run.originalWorkingDir;
@@ -460,9 +409,9 @@ async function projectBaseFor(run: WorkspaceRun): Promise<string> {
  * is anchored to a real commit, so `git apply --3way` can see that the target
  * has moved and refuse or merge. A copy patch is generated against the project
  * as it stands at apply time, which means its context always matches — git
- * applies it cleanly and the divergent version is simply overwritten. Two
- * concurrent dispatches touching one file ended with the second silently
- * reverting the first's COMMITTED work, reporting `applied: true`.
+ * applies it cleanly and the divergent version is simply overwritten, so two
+ * concurrent dispatches touching one file end with the second reverting the
+ * first's COMMITTED work and reporting `applied: true`.
  *
  * baseHash is that file as it was when the dispatch started. If the project's
  * copy no longer matches, someone else has been here.
@@ -482,12 +431,10 @@ async function projectMovedSince(
     const inProject = path.join(base, change.path);
     if (change.baseHash === undefined) {
       // An ADDED file has no baseHash because it did not exist when the
-      // dispatch started — and that ABSENCE is its base. Skipping it here
-      // meant the whole check was off for exactly the changes that create new
+      // dispatch started — and that ABSENCE is its base. Skipping it would
+      // turn the whole check off for exactly the changes that create new
       // files: the user writes and COMMITS their own version of a path the
       // agent also created, and apply overwrites it reporting `applied: true`.
-      // Verbatim the failure this function's own comment says it fixed, live
-      // for one of the three change kinds. Reproduced by an acceptance pass.
       //
       // Matching content is not a conflict — it is a re-apply, and the empty
       // patch path below cannot catch every one of those.
@@ -554,10 +501,9 @@ async function changesNotInProject(
       ]);
       // Bytes first, then line endings. `git apply` writes through the
       // repository's eol/autocrlf settings, so on Windows an applied text file
-      // routinely lands as CRLF while the workspace copy is LF. A raw byte
-      // comparison called every one of those "differs" — which would have
-      // raised the false data-loss alarm this check exists to remove, on the
-      // platform it was reported from.
+      // routinely lands as CRLF while the workspace copy is LF, and a raw byte
+      // comparison would call every one of those "differs" — a false
+      // data-loss alarm from the check that exists to remove them.
       if (!a.equals(b) && normaliseEol(a) !== normaliseEol(b)) {
         missing.push(`${change.path} (differs)`);
       }
@@ -600,14 +546,10 @@ export async function workspaceDiff(
   //
   // An isolated workspace lives under the OS temp directory, which is cleared
   // on reboot on most Linux distributions and, on WSL, whenever the VM idles
-  // out — measured during a Linux acceptance pass, where an unapplied
-  // workspace vanished between two commands minutes apart. Retention could
-  // never explain it (24 h) and the user has no way to know why.
-  //
-  // `persistWorkspacePatch` now writes the patch when the run finishes, so
-  // there is something to fall back to, and diff/apply keep working from it.
-  // The file is written under the JOB directory, which lives in the state
-  // directory rather than temp — the whole point of the fallback.
+  // out — long before retention's 24 h would explain it.
+  // `persistWorkspacePatch` writes the patch when the run finishes, under the
+  // JOB directory, which lives in the state directory rather than temp — the
+  // whole point of the fallback.
   if (!existsSync(isolatedRoot(run))) {
     const cached = await cachedPatch(jobDir);
     if (cached !== undefined) return fromPatchText(jobId, run, patchPath, cached, true);
@@ -650,18 +592,12 @@ function fromPatchText(
 }
 
 /**
- * Save the patch as soon as the run finishes, before anyone asks for it.
- *
- * The missing-workspace error has always told the reader that "the full patch
- * is written to the job directory at dispatch time" — and it was not: the
- * patch appeared only when someone called `diff` or `apply`, so a user who
- * lost the workspace was sent to a file that had never existed. Worse, the
- * reader that would have recovered it, `cachedPatch`, was written and never
- * called by anything.
+ * Save the patch as soon as the run finishes, before anyone asks for it, so a
+ * user who loses the workspace still has something for `cachedPatch` to
+ * recover.
  *
  * Best effort by construction: a dispatch that succeeded must not fail
- * because its patch could not be cached, so every failure here is swallowed
- * and the caller is no worse off than before this existed.
+ * because its patch could not be cached, so every failure here is swallowed.
  */
 export async function persistWorkspacePatch(jobDir: string, run: WorkspaceRun): Promise<void> {
   try {
@@ -679,30 +615,23 @@ export async function persistWorkspacePatch(jobDir: string, run: WorkspaceRun): 
 /**
  * Uncommitted changes in the target, or undefined when it is not a repo.
  *
- * The tool's OWN directory is not the user's work. Workspaces now live outside
- * the project entirely, but an install that ran an earlier version can still
- * have a `.harness-dispatch/` sitting there, and counting it made apply refuse
- * with "1 uncommitted change" — the feature blocking itself with its own
- * leftovers.
+ * The tool's OWN directory is not the user's work. Workspaces live outside the
+ * project, but a leftover `.harness-dispatch/` counted here makes apply refuse
+ * with "1 uncommitted change" — the feature blocking itself.
  *
- * Matched on ANY segment, not just the first. `git status --porcelain` reports
- * paths from the repo root, so a dispatch whose workingDir was a subdirectory
- * saw `sub/.harness-dispatch/` and the old first-segment test missed it —
- * which is how the self-blocking bug this comment describes came back for
- * every monorepo layout after it was supposedly fixed.
+ * Matched on ANY segment, not just the first: `git status --porcelain` reports
+ * paths from the repo root, so a dispatch whose workingDir is a subdirectory
+ * sees `sub/.harness-dispatch/`.
  */
 async function dirtyPaths(dir: string): Promise<string[] | undefined> {
   try {
     const out = await git(["status", "--porcelain"], dir);
     // Porcelain paths are relative to the REPOSITORY ROOT, not to the
-    // directory git ran in. Resolving them against `dir` was right only when
-    // the dispatch happened at the repo root: from a subdirectory,
-    // `<repo>/ws` resolved as `<repo>/pkg/ws`, matched nothing, and the
-    // workspaces directory read as the user's uncommitted work again —
-    // refusing every apply on a pristine tree, which is the exact defect the
-    // filter below was added to fix, surviving one level over. Only the
-    // literal-name check masked it at the default name. An acceptance pass
-    // reproduced it from a subdirectory.
+    // directory git ran in. Resolving them against `dir` is right only when
+    // the dispatch happened at the repo root: from a subdirectory `<repo>/ws`
+    // would resolve as `<repo>/pkg/ws`, match nothing, and the workspaces
+    // directory would read as the user's uncommitted work, refusing every
+    // apply on a pristine tree.
     const root = (await repoRoot(dir)) ?? dir;
     return out
       .split("\n")
@@ -713,12 +642,10 @@ async function dirtyPaths(dir: string): Promise<string[] | undefined> {
         const raw = line.slice(2).trim().replace(/^"|"$/g, "");
         const p = raw.replace(/\\/g, "/");
         if (p.split("/").includes(".harness-dispatch")) return false;
-        // The CONFIGURED workspaces root, not just the legacy hard-coded name.
-        // Only the fixed name was filtered, so the documented override —
-        // HARNESS_DISPATCH_WORKSPACES_DIR pointed inside the project, which
-        // README recommends for reflinks — left its own directory showing as
-        // an untracked change and made this refusal fire on every apply, on a
-        // pristine tree. An acceptance pass reproduced it end to end.
+        // The CONFIGURED workspaces root, not just the default name:
+        // HARNESS_DISPATCH_WORKSPACES_DIR can point inside the project, which
+        // README recommends for reflinks, and that directory would otherwise
+        // show as an untracked change and fire this refusal on a pristine tree.
         return !isUnderOrEqual(path.resolve(root, raw), workspacesBase());
       });
   } catch {
@@ -746,14 +673,10 @@ export interface ApplyResult {
 }
 
 /**
- * The "nothing left to apply" answer, given from both places that can reach it.
- *
- * Two call sites: the empty-patch branch, and the explicit check further down
- * that exists because a `git_worktree` patch never empties out. They were
- * written out separately and had to say the same thing by hand — and this
- * message is the one a caller reads to decide whether their work landed, so
- * the two drifting apart is exactly the confusion the second site was added
- * to fix.
+ * The "nothing left to apply" answer, given from both places that can reach
+ * it: the empty-patch branch, and the explicit check further down that exists
+ * because a `git_worktree` patch never empties out. A caller reads this
+ * message to decide whether their work landed, so the two must not drift.
  */
 function alreadyApplied(jobId: string, patchPath: string, changedCount: number): ApplyResult {
   return {
@@ -785,12 +708,11 @@ export async function applyWorkspace(
   if (diff.bytes === 0) {
     // An empty patch is only honest when nothing changed. changedFiles is
     // computed separately, by comparing fingerprints, so the two disagreeing
-    // means the patch lost something — which is exactly what happened when a
-    // created file went missing: one response said `added: notes.txt` and
-    // "the agent changed nothing" at the same time, and the user, reasonably,
-    // believed the reassuring half and discarded the workspace.
+    // means the patch lost something — and a response that says both
+    // `added: notes.txt` and "the agent changed nothing" invites the user to
+    // believe the reassuring half and discard the workspace.
     //
-    // This is a guard, not a fix; the fix is in buildWorkspacePatch. It stays
+    // A guard, not a fix; the fix belongs in buildWorkspacePatch. It stays
     // because the failure is silent and destructive, and because the
     // workspace it describes is about to be deleted.
     const changed = run.changedFiles ?? [];
@@ -800,8 +722,8 @@ export async function applyWorkspace(
       // answers:
       //
       //   already applied — the project now matches the workspace, so there is
-      //     genuinely nothing left to do. Alarming here told a user their work
-      //     had been dropped one second after it landed correctly.
+      //     genuinely nothing left to do. Alarming here would tell a user
+      //     their work had been dropped a second after it landed correctly.
       //   the patch lost something — the project does NOT match, and applying
       //     an empty patch would quietly abandon the difference.
       //
@@ -836,14 +758,11 @@ export async function applyWorkspace(
   //
   // That branch is unreachable for `git_worktree`: its patch is
   // `git diff <baseCommit>` inside the worktree, which does not change when
-  // the project changes, so it is never empty. A `copy` patch is rebuilt
-  // against the project and does empty out, which is why the bug was invisible
-  // there. So a second apply of the same worktree job fell through to the
-  // conflict check, which saw the file differ from its recorded base — the
-  // difference the FIRST apply had just made — and told the user their own
-  // successful apply was someone else's newer work, pointing them at
-  // `force: true`. Reproduced by an acceptance pass; `ux-walkthrough.md` Flow 6
-  // step 6 says both policies answer "already applied", and only one did.
+  // the project changes, so it is never empty. Without this check a second
+  // apply of the same worktree job falls through to the conflict check, which
+  // sees the file differ from its recorded base — the difference the FIRST
+  // apply made — and reports the user's own successful apply as someone
+  // else's newer work, pointing them at `force: true`.
   //
   // Safe against a real collision: this fires only when the project matches
   // the WORKSPACE for every recorded change, i.e. this job's work is already
@@ -860,19 +779,13 @@ export async function applyWorkspace(
   // because it catches the case the dirty check cannot: a change that has been
   // COMMITTED since the dispatch started leaves `git status` clean, and
   // committing is exactly what the dirty refusal tells you to do. Apply job A,
-  // commit it, apply job B — and B silently reverted A's committed line, with
-  // git apply unable to conflict because the patch's context was the current
-  // file.
-  // Computed whether or not force was passed. Gating the CHECK on force meant
-  // `moved` was never known on the forced path, and the note below only ever
-  // reported UNCOMMITTED changes — so a change that had been COMMITTED since
-  // the dispatch started left the tree clean, produced an empty `dirty`, and
-  // was overwritten with the same cheerful "Applied N bytes" as a clean run.
+  // commit it, apply job B — and B reverts A's committed line, with git apply
+  // unable to conflict because the patch's context is the current file.
   //
-  // That is the worse half of the pair: the non-forced refusal tells you to
-  // "commit or stash first", and committing is exactly what walks you into
-  // the case nothing reports. An audit reproduced it — a committed line gone,
-  // recoverable from git, with nothing telling the user to look.
+  // Computed whether or not force was passed: gating the CHECK on force would
+  // leave `moved` unknown on the forced path, so the note below could only
+  // ever report UNCOMMITTED changes and a committed one would be overwritten
+  // under the same cheerful "Applied N bytes" as a clean run.
   const moved =
     run.changedFiles !== undefined ? await projectMovedSince(run, run.changedFiles) : [];
   if (opts.force !== true && run.changedFiles !== undefined) {
@@ -885,11 +798,7 @@ export async function applyWorkspace(
           `Refused: ${moved.length} file(s) this patch touches have changed in ${target} since ` +
           `the dispatch started (${moved.join(", ")}). The agent worked from the older version, ` +
           `so applying would overwrite that newer work rather than merge with it. ` +
-          // Said only where it is true. This clause read "unlike a worktree
-          // patch there is no common commit for git to merge against" on every
-          // refusal — including the ones handling a worktree patch, which does
-          // have one. An acceptance pass caught it describing the opposite of
-          // the policy it was refusing.
+          // Said only for `copy`: a worktree patch does have a common commit.
           (run.policy === "copy"
             ? `A copy patch has no common commit for git to merge against, so there is no ` +
               `three-way merge to fall back on. `
@@ -921,15 +830,14 @@ export async function applyWorkspace(
   // --3way fails with "could not build fake ancestor". Plain apply handles
   // that fine, so the strict-but-smarter mode is an attempt, not a requirement.
   //
-  // PLAIN APPLY FIRST, --3way second. The order used to be the other way
-  // round, and --3way is not atomic: on conflict it writes `<<<<<<< ours` /
-  // `>>>>>>> theirs` markers INTO the target and then exits non-zero. The
-  // failure was reported as "git apply failed … resolve by hand", which reads
-  // as "nothing happened" — while the user's file had already been rewritten
-  // with conflict markers. Plain apply either applies everything or nothing,
-  // so trying it first means the common case never mutates on failure, and
-  // --3way is still there for the case it exists to handle (context moved in a
-  // worktree patch, where the pre-image blobs are in the repo).
+  // PLAIN APPLY FIRST, --3way second. --3way is not atomic: on conflict it
+  // writes `<<<<<<< ours` / `>>>>>>> theirs` markers INTO the target and then
+  // exits non-zero, so a failure reported as "resolve by hand" reads as
+  // "nothing happened" over a file that has already been rewritten. Plain
+  // apply either applies everything or nothing, so trying it first means the
+  // common case never mutates on failure, and --3way is still there for the
+  // case it exists to handle (context moved in a worktree patch, where the
+  // pre-image blobs are in the repo).
   // Apply from the repo root — and for `copy`, tell git which subdirectory the
   // patch is relative to.
   //
@@ -942,14 +850,13 @@ export async function applyWorkspace(
   //   copy — `git diff --no-index <workingDir> <copy>`, so paths are
   //     WORKINGDIR-relative. Applying those at the repo root resolves every
   //     path one or more levels too high: with a same-named file up there it
-  //     silently edited and DELETED the wrong files and reported success, and
-  //     without one it wrote conflict markers into a root file the delegate
-  //     had never seen. --directory is git's own answer to exactly this.
+  //     edits and DELETES the wrong files while reporting success, and without
+  //     one it writes conflict markers into a root file the delegate never
+  //     saw. --directory is git's own answer to exactly this.
   //
   // Running from the subdirectory instead does not work: `git apply` inside a
   // repo ignores paths that resolve outside the current directory, so it
-  // matched nothing, printed `Skipped patch`, and exited 0 — the silent no-op
-  // this whole area started with. Verified against real git, all three ways.
+  // matches nothing, prints `Skipped patch`, and exits 0.
   const root = await repoRoot(target);
   const applyCwd = root ?? target;
   const applyPrefix =
@@ -966,8 +873,7 @@ export async function applyWorkspace(
     try {
       const out = await gitBoth(args, applyCwd);
       // `Skipped patch` is git telling us, on a zero exit, that it did
-      // nothing. Treated as success it is indistinguishable from a real apply,
-      // which is the whole defect above.
+      // nothing. Treated as success it is indistinguishable from a real apply.
       if (/^Skipped patch /m.test(out)) {
         applyError = out.split("\n").find((l) => l.startsWith("Skipped patch")) ?? out;
         continue;
@@ -1001,11 +907,9 @@ export async function applyWorkspace(
     };
   }
 
-  // Name what force ran over. `force: true` is the caller waiving the
-  // uncommitted-changes refusal, and it was answered with the same cheerful
-  // line as a clean apply — so a human edit the patch replaced left no trace
-  // in the response at all. The waiver covers doing it; it does not cover
-  // being quiet about it.
+  // Name what force ran over. `force: true` waives the uncommitted-changes
+  // refusal; the waiver covers doing it, not being quiet about it, so a human
+  // edit the patch replaced still leaves a trace in the response.
   const forcedOver: string[] = [];
   if (opts.force === true && dirty !== undefined && dirty.length > 0) {
     forcedOver.push(
@@ -1013,9 +917,9 @@ export async function applyWorkspace(
     );
   }
   if (opts.force === true && moved.length > 0) {
-    // The committed case, which had no reporting at all. Named separately
-    // because the recovery differs: uncommitted work replaced this way is
-    // gone, while a committed change is still in the reflog.
+    // The committed case, named separately because the recovery differs:
+    // uncommitted work replaced this way is gone, while a committed change is
+    // still in the reflog.
     forcedOver.push(
       `${moved.length} file(s) changed in the project since the dispatch started: ` +
         `${moved.join(", ")} — the agent worked from the older version. If those changes were ` +
@@ -1063,13 +967,9 @@ export async function discardWorkspace(
     return { jobId, discarded: false, message: "This job has no isolated workspace to discard." };
   }
   if (!existsSync(root)) {
-    // The directory is gone, but git may still have the worktree REGISTERED.
-    // This function's own docblock says worktrees must be removed through git
-    // for exactly that reason, and this early return skipped the block that
-    // does it — so a workspace that aged out of retention, or that someone
-    // deleted by hand, left `.git/worktrees/<name>` in the user's repo
-    // permanently. Reproduced: `git worktree list` still showing the path,
-    // marked `prunable`, after discard answered `discarded: true`.
+    // The directory is gone, but git may still have the worktree REGISTERED —
+    // a workspace that aged out of retention, or that someone deleted by hand,
+    // otherwise leaves `.git/worktrees/<name>` in the user's repo permanently.
     //
     // Prune rather than `worktree remove`: the directory is already gone, so
     // remove has nothing to act on, and prune is precisely the "forget
@@ -1085,10 +985,8 @@ export async function discardWorkspace(
   // Refuse to destroy the only copy of work the project does not have.
   //
   // `apply` can end with "Do NOT discard this job — the workspace still holds
-  // the files at …", and discard then deleted them anyway and answered "The
-  // original project was never modified." The reassuring sentence arrived at
-  // the exact moment the work was destroyed. Discard is the one irreversible
-  // action here, so it owes the same check apply makes.
+  // the files at …". Discard is the one irreversible action here, so it owes
+  // the same check apply makes rather than deleting them anyway.
   //
   // Deliberately not gated on whether apply was ever called: a caller who
   // never ran apply is in more danger, not less.
@@ -1119,16 +1017,13 @@ export async function discardWorkspace(
   }
 
   // maxRetries because the agent CLI has only just exited and Windows can
-  // still be holding a handle on something it wrote — observed live as
-  // `EBUSY: resource busy or locked, rmdir ...\workspace` on a discard issued
-  // straight after a successful apply, where the same removal succeeded
-  // moments later. Failing here strands the workspace inside the user's
-  // project, which is the one place it must not be left.
+  // still be holding a handle on something it wrote (`EBUSY: resource busy or
+  // locked, rmdir ...\workspace` on a discard issued straight after an apply,
+  // where the same removal succeeds moments later). Failing here strands the
+  // workspace inside the user's project.
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-  // "The original project was never modified" was printed unconditionally,
-  // including immediately after an apply that had just modified it. Discard
-  // only ever speaks for ITSELF; whether the project was touched earlier is
-  // not something this function knows.
+  // Discard only ever speaks for ITSELF: whether the project was modified
+  // earlier, by an apply of this same job, is not something it knows.
   return {
     jobId,
     discarded: true,

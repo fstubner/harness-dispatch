@@ -1,20 +1,16 @@
 /**
  * "Did you mean…" for a top-level key that is one typo from a hint name.
  *
- * WHY THIS EXISTS. Neither surface's outer object can be strict — MCP carries
- * `_meta`, and the HTTP surface must tolerate OpenAI's own fields — so an
- * unknown top-level key was accepted and dropped on both. The named traps in
- * mcp/tool-schemas.ts and http/parse.ts catch the snake_case spellings, which
- * are the predictable slip. A plain typo is not enumerable and had the same
- * consequence: `safteyProfile` returned success and the dispatch ran at the
- * default `workspace_edit` — more access than the caller asked for, with no
- * signal — while the correct spelling produced `read_only`.
+ * Neither surface's outer object can be strict — MCP carries `_meta`, and the
+ * HTTP surface must tolerate OpenAI's own fields — so an unknown top-level key
+ * is accepted and dropped on both. The named traps in mcp/tool-schemas.ts and
+ * http/parse.ts catch the predictable snake_case spellings; a plain typo is
+ * not enumerable and has the same consequence: `safteyProfile` returns success
+ * and the dispatch runs at the default `workspace_edit`, more access than the
+ * caller asked for, while the correct spelling produces `read_only`.
  *
- * ONE COPY ON PURPOSE. This file exists because the alternative is the same
- * rule written twice, and tool-schemas.ts already records where that leads:
- * "Three independent copies of one rule is how they diverged". The surfaces
- * disagreeing about which keys are typos would be exactly the "same input, two
- * answers" class the parity suite was built to end.
+ * ONE COPY ON PURPOSE: the surfaces disagreeing about which keys are typos is
+ * the "same input, two answers" class the parity suite exists to prevent.
  */
 
 /** The hint names a caller can plausibly mistype at the top level. */
@@ -40,15 +36,13 @@ export function nearMissHintKey(key: string): string | undefined {
 
 /**
  * One typo apart: an insertion, deletion, substitution, or a swap of two
- * adjacent characters.
+ * adjacent characters. The swap is not an extra — plain edit distance scores a
+ * transposition as TWO substitutions, so a rule without it misses
+ * `safteyProfile`.
  *
- * The swap is not an extra. `safteyProfile` is the exact spelling an acceptance
- * pass typed, and plain edit distance scores a transposition as TWO
- * substitutions — so a rule without it misses the case it was written for.
- *
- * Deliberately tight in the other direction too: at a true distance of two,
- * short field names from the OpenAI protocol start matching, and refusing a
- * legitimate request would be its own defect.
+ * Tight in the other direction too: at a true distance of two, short OpenAI
+ * protocol field names start matching, and refusing a legitimate request would
+ * be its own defect.
  */
 export function withinOneTypo(a: string, b: string): boolean {
   if (a === b) return false;
@@ -88,9 +82,9 @@ function isAdjacentSwap(a: string, b: string): boolean {
  * Where each hint name legitimately goes on the MCP surface.
  *
  * Only these two are top-level `dispatch` parameters; the rest are `z.never()`
- * traps there and belong inside `hints`. The HTTP surface reads ALL SEVEN from
- * the top level of the request body (`http/parse.ts`), which is why the advice
- * below has to know which surface is asking.
+ * traps there and belong inside `hints`. The HTTP surface reads all seven from
+ * the top level (`http/parse.ts`), so the advice below has to know which
+ * surface is asking.
  */
 const MCP_TOP_LEVEL_NAMES = new Set(["workingDir", "workspacePolicy"]);
 
@@ -99,20 +93,16 @@ export type NearMissSurface = "mcp" | "http";
 /**
  * The message both surfaces give — same RULE, correct advice for each.
  *
- * The rule is shared on purpose (see this file's header). The advice cannot
- * be: a single "did you mean X?" sent the caller somewhere the surface would
- * refuse or ignore, which is the failure `tool-schemas.ts` already records
- * from its own snake_case traps — "a refusal that confidently points at the
- * wrong landing spot costs the round trip it exists to save". An acceptance
- * pass measured the new message repeating it: correcting `safteyProfile` to
- * `safetyProfile` on MCP `dispatch` produced a SECOND rejection, because the
- * corrected spelling is a trap at that level.
+ * The rule is shared (see this file's header); the advice cannot be. A single
+ * "did you mean X?" sends the caller somewhere the surface would refuse: on
+ * MCP `dispatch`, correcting `safteyProfile` to `safetyProfile` at the top
+ * level earns a SECOND rejection, because that spelling is a trap at that
+ * level.
  *
- * `toolName` is MCP-only and names the tool the call was for. On a tool that
- * takes no hints at all — `job_status`, `usage`, `cancel_job`, `retry_job`,
- * `workspace` — the corrected spelling is simply not a field, and the old
- * message's "the dispatch runs with MORE access than you asked for" was false
- * on every one of them: none of them dispatch anything.
+ * `toolName` is MCP-only. On a tool that takes no hints at all — `job_status`,
+ * `usage`, `cancel_job`, `retry_job`, `workspace` — the corrected spelling is
+ * not a field either, and none of them dispatch anything, so the safety
+ * warning does not apply.
  */
 export function nearMissMessage(
   key: string,

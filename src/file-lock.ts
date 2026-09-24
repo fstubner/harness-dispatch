@@ -1,17 +1,14 @@
 /**
  * A minimal cross-process mutex over a file path.
  *
- * Extracted from breaker-store.ts so quota.ts can use the same one. Both guard
- * the same shape of bug: a read-modify-write of a shared state file performed
- * by many detached dispatch processes at once, where the losers are silently
- * discarded.
+ * Shared by breaker-store.ts and quota.ts, which guard the same shape of bug:
+ * a read-modify-write of a shared state file performed by many detached
+ * dispatch processes at once, where the losers are silently discarded.
  *
- * IMPORTANT, and the reason a lock alone is not enough: serialising writers
- * does not help if each writer holds an ABSOLUTE value computed from its own
- * boot-time baseline — they will politely take turns writing the same number.
- * The caller must apply a DELTA to whatever it reads inside the critical
- * section. Both callers here do; getting that wrong is what made the first
- * attempt at each of these fixes ineffective.
+ * A lock alone is not enough. Serialising writers does not help if each writer
+ * holds an ABSOLUTE value computed from its own boot-time baseline — they will
+ * politely take turns writing the same number. The caller must apply a DELTA to
+ * whatever it reads inside the critical section. Both callers here do.
  */
 
 import { randomBytes } from "node:crypto";
@@ -19,13 +16,10 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import path from "node:path";
 
 /**
- * The file inside a lock directory that says who holds it.
- *
- * Release used to be a bare `rmdir` of the lock path. If the lock had been
- * stolen as stale in the meantime, that path held the NEW holder's lock, and
- * removing it let a third process straight in — two writers doing the
- * read-modify-write this exists to serialise. `workspace-lock.ts` already
- * checked ownership before releasing; this one did not. Found in an audit.
+ * The file inside a lock directory that says who holds it. Release must check
+ * it rather than doing a bare `rmdir` of the lock path: if the lock was stolen
+ * as stale in the meantime, that path holds the NEW holder's lock, and removing
+ * it lets a third process straight in.
  */
 const OWNER_FILE = "owner";
 
@@ -40,17 +34,14 @@ const LOCK_STALE_MS = 10_000;
 /**
  * Take a lock judged stale, by RENAME rather than delete.
  *
- * stat-then-rmdir let two waiters both judge the same lock stale — the slower
- * one's rmdir then removed the faster one's FRESHLY CREATED lock, and both
- * entered the critical section, recreating the unserialised
- * read-modify-write this lock exists to prevent. Rename is atomic: exactly
- * one waiter wins it, the loser gets ENOENT and goes round the loop again.
+ * stat-then-rmdir lets two waiters both judge the same lock stale — the slower
+ * one's rmdir then removes the faster one's FRESHLY CREATED lock and both enter
+ * the critical section. Rename is atomic: exactly one waiter wins it, the loser
+ * gets ENOENT and goes round the loop again.
  *
- * Both failures are expected and neither is worth reporting: losing the
- * rename means another waiter got there first, and a leftover tombstone is
- * inert because nothing reads `*.stale-*` names. Lifted out of the acquire
- * loop, where two nested try/catch blocks inside an if inside a try took it
- * to seven levels.
+ * Both failures are expected and neither is worth reporting: losing the rename
+ * means another waiter got there first, and a leftover tombstone is inert
+ * because nothing reads `*.stale-*` names.
  */
 function stealStaleLock(lockDir: string): void {
   const tomb = `${lockDir}.stale-${process.pid}-${Date.now().toString(36)}`;
@@ -79,21 +70,17 @@ const LOCK_TIMEOUT_MS = 2_000;
  * every platform, and unlike `writeFile` with `wx` it needs no cleanup path
  * distinct from the directory itself. Synchronous on purpose — the callers
  * (BreakerStore.update via Router.handleResult, and CLI paths that exit
- * immediately afterwards) are sync, and making them async to acquire a lock
- * would ripple through the whole dispatch return path for no benefit.
+ * immediately afterwards) are sync.
  *
  * Failing to acquire runs `fn` anyway rather than dropping the update: an
- * un-serialised write is what we had before, so the fallback is no worse than
- * the old behaviour, while a dropped failure would be strictly worse.
- *
- * That reasoning holds for a caller with NOTHING to fall back on, and it is
- * why BreakerStore still uses the default. It does not hold for a caller that
- * can retry: QuotaCache accumulates a pending delta and only clears it once a
- * write succeeds, so for it a deferred write loses nothing while an
- * unserialised one silently loses counts — it clears the delta believing the
- * write was serialised, and the real lock holder then overwrites the file with
- * a value computed before that write existed. `requireLock` is for that case:
- * throw instead of running unserialised, and let the caller try again.
+ * un-serialised write may lose a count, while a dropped one loses it for
+ * certain. That holds for a caller with NOTHING to fall back on, which is why
+ * BreakerStore uses the default. It does not hold for a caller that can retry:
+ * QuotaCache accumulates a pending delta and only clears it once a write
+ * succeeds, so an unserialised write clears the delta believing it was
+ * serialised, and the real lock holder then overwrites the file with a value
+ * computed before it. `requireLock` is for that case: throw instead of running
+ * unserialised, and let the caller try again.
  */
 export class LockNotAcquiredError extends Error {
   constructor(file: string) {
@@ -105,11 +92,9 @@ export class LockNotAcquiredError extends Error {
   }
 }
 /**
- * Block this thread briefly without spinning.
- *
- * Atomics.wait on a throwaway buffer is the only synchronous sleep Node
- * offers. The lock has to stay synchronous (its callers are), so the choice is
- * this or a busy loop.
+ * Block this thread briefly without spinning. Atomics.wait on a throwaway
+ * buffer is the only synchronous sleep Node offers, and the lock has to stay
+ * synchronous, so the choice is this or a busy loop.
  */
 function sleepSync(ms: number): void {
   try {
@@ -124,8 +109,7 @@ function sleepSync(ms: number): void {
  * Remove the lock only if it is still the one this call took.
  *
  * The check and the removal are two steps, so a steal landing exactly between
- * them can still be undone — a window of one file read, against the previous
- * behaviour of removing whatever lock was there, unconditionally.
+ * them can still be undone. The window is one file read.
  */
 function releaseIfOurs(lockDir: string, token: string | undefined): void {
   try {
@@ -145,10 +129,11 @@ export function withFileLock<T>(
   // Ensure the parent exists before trying to lock inside it: a caller whose
   // state directory has not been created yet would otherwise spin against an
   // ENOENT that no amount of retrying resolves.
+  //
   // If the parent cannot be created there is nothing to lock against and
-  // retrying cannot help — spinning the full timeout on EVERY call was
-  // measured at 2005ms per call, forever, on an unwritable state directory.
-  // Run unlocked immediately instead; the caller already tolerates that.
+  // retrying cannot help — an unwritable state directory would burn the full
+  // 2s timeout on every call, forever. Run unlocked immediately instead; the
+  // caller already tolerates that.
   try {
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   } catch {
@@ -166,7 +151,7 @@ export function withFileLock<T>(
         writeFileSync(path.join(lockDir, OWNER_FILE), token, "utf8");
         marked = true;
       } catch {
-        // Could not mark it; released the old, unconditional way below.
+        // Could not mark it; released unconditionally below.
       }
       break;
     } catch {
@@ -179,14 +164,10 @@ export function withFileLock<T>(
       } catch {
         // mkdir failed for a reason that is not "already exists": the lock
         // vanished between the two calls, or the directory is unwritable, or
-        // the name is too long. Retrying can only help in the first case.
-        //
-        // This branch previously `continue`d with NO sleep, so the loop spun a
-        // full CPU for the whole timeout — measured at 1968ms of CPU per call
-        // on an existing-but-unwritable state directory, after every dispatch
-        // result. The earlier fix added a sleep to the contended branch only
-        // and its commit claimed the whole defect was gone; it was not. Every
-        // retry path sleeps now, and there is a test per branch.
+        // the name is too long. Retrying can only help in the first case, and
+        // sleeping before it matters as much as in the contended branch:
+        // continuing without a sleep spins a full CPU for the whole timeout on
+        // every dispatch result when the state directory is unwritable.
         if (Date.now() >= deadline) break;
         sleepSync(RETRY_MS);
         continue;

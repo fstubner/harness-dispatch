@@ -6,14 +6,10 @@
  * A bounded internal queue protects against runaway processes flooding memory
  * (exceeding the bound kills the child).
  *
- * There is NO backpressure, and this said there was ("consumers drive
- * backpressure by how fast they iterate"). Nothing pauses the child's stdout,
- * so a slow consumer does not slow the producer — the queue grows instead,
- * and past `maxBufferedChunks` the child is killed and the iterator REJECTS,
- * which in the job runner marks a healthy run failed and discards its result.
- * Not reached at the shipped bound of 1000 in measurement, but the behaviour
- * when it is reached is wrong, and the reader deserves to know which of the
- * two it is relying on.
+ * There is NO backpressure: nothing pauses the child's stdout, so a slow
+ * consumer does not slow the producer — the queue grows instead, and past
+ * `maxBufferedChunks` the child is killed and the iterator REJECTS, which in
+ * the job runner marks a healthy run failed and discards its result.
  *
  * The iterator yields `{ stream, chunk }` tuples until the child exits,
  * whereupon it yields a single terminal `{ kind: "end", exitCode, timedOut,
@@ -23,14 +19,6 @@
  * does automatically when you `break` or throw) sends SIGTERM to the child
  * and drains any remaining buffered chunks. If the child doesn't exit within
  * a grace window, SIGKILL is sent.
- *
- * This module used to branch on whether `runSubprocess` had been replaced by
- * a vitest mock, and if so synthesise events from a buffered result instead.
- * The comment claimed that arrangement still exercised the streaming path in
- * production; it did not exercise it ANYWHERE, because every dispatcher suite
- * mocked `runSubprocess` and therefore ran the adapter. The adapter now lives
- * in `tests/support/buffered-stream.ts`, where a suite opts into it
- * explicitly, and nothing in this file knows whether it is under test.
  */
 import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
@@ -142,19 +130,12 @@ export function streamSubprocess(
 
   // One decoder per stream, held across chunks.
   //
-  // Each `data` buffer used to be decoded on its own with `buf.toString()`, so
-  // any multi-byte character straddling two reads became replacement
-  // characters. Reproduced: a child writing "price: € done", split inside
-  // the euro sign, arrived as "price: ��� done".
-  //
-  // This is the path every MCP job uses — partialOutput, stdout.log, result.md
-  // — so accented text, CJK, emoji and box-drawing were being corrupted in
-  // delivered work product. The buffered sibling in subprocess.ts concatenates
-  // before decoding and was always correct, which is why only the path nothing
-  // but tests exercise looked right.
-  //
-  // StringDecoder holds an incomplete sequence back until the bytes that
-  // finish it arrive; `end()` at teardown flushes whatever never completed.
+  // Decoding each `data` buffer on its own turns any multi-byte character
+  // straddling two reads into replacement characters, corrupting accented
+  // text, CJK, emoji and box-drawing in everything this path feeds —
+  // partialOutput, stdout.log, result.md. StringDecoder holds an incomplete
+  // sequence back until the bytes that finish it arrive; `end()` at teardown
+  // flushes whatever never completed.
   const stdoutDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
 
@@ -164,10 +145,8 @@ export function streamSubprocess(
     // A StringDecoder withholds an incomplete multi-byte sequence until the
     // bytes completing it arrive. If the child exits mid-character — a
     // truncated run, a kill, a crash partway through a write — those bytes
-    // would otherwise be dropped silently, which is the same class of loss the
-    // decoders were added to prevent, just at the end instead of the middle.
-    // `end()` returns them as replacement characters: visibly wrong beats
-    // invisibly absent.
+    // would otherwise be dropped silently. `end()` returns them as replacement
+    // characters: visibly wrong beats invisibly absent.
     const tailOut = stdoutDecoder.end();
     if (tailOut !== "") push({ stream: "stdout", chunk: tailOut });
     const tailErr = stderrDecoder.end();
@@ -211,13 +190,12 @@ export function streamSubprocess(
   }
   if (opts.stdin !== undefined) {
     // A child that exits without reading its stdin makes this write fail
-    // (EPIPE; `write EOF` on Windows). With no listener, Node raises that as
-    // an uncaught `error` event and the WHOLE process dies — the supervisor
-    // and every job it holds, or the HTTP server. Measured in an audit: a
-    // 256 KB prompt to a child that exits at once crashed the process; 64 KB
-    // fit in the pipe buffer and did not. The failed write needs no handling
-    // of its own: the child's exit is what ends the run, and its exit code
-    // and output already say what happened.
+    // (EPIPE; `write EOF` on Windows) once the prompt is bigger than the pipe
+    // buffer. With no listener, Node raises that as an uncaught `error` event
+    // and the WHOLE process dies — the supervisor and every job it holds, or
+    // the HTTP server. The failed write needs no handling of its own: the
+    // child's exit is what ends the run, and its exit code and output already
+    // say what happened.
     child.stdin?.on("error", () => undefined);
     child.stdin?.end(opts.stdin);
   }
@@ -291,13 +269,9 @@ export function streamSubprocess(
     finish();
   });
 
-  // The three iterator methods, named rather than written inline.
-  //
-  // They used to sit three object/function literals deep inside
-  // buildIterable, which put the ordinary queue check at brace depth 8 — the
-  // deepest point in the codebase, for logic that is not complicated. None of
-  // them uses `this`, so they lift straight out and the nesting was pure
-  // syntax.
+  // The three iterator methods, named rather than written inline: none uses
+  // `this`, so keeping them here avoids nesting buildIterable several
+  // object/function literals deep.
 
   /** Next buffered event, the terminal state, or a promise a writer resolves. */
   function nextEvent(): Promise<IteratorResult<SubprocessStreamEvent>> {
@@ -336,8 +310,8 @@ export function streamSubprocess(
   }
 
   function buildIterable(): AsyncIterable<SubprocessStreamEvent> {
-    // A fresh iterator object per call, as before — they share the one queue
-    // either way, so this stream has always been single-consumer.
+    // A fresh iterator object per call, but they share the one queue, so this
+    // stream is single-consumer.
     return {
       [Symbol.asyncIterator]: (): AsyncIterator<SubprocessStreamEvent> => ({
         next: nextEvent,

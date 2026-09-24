@@ -1,13 +1,10 @@
 /**
  * Quota management for harness-dispatch.
  *
- * SCOPE, stated up front because the previous version of this comment
- * overpromised: real quota numbers are available for `openai_compatible`
- * ENDPOINT routes only. CLI routes — claude_code_cli, codex_cli, cursor_cli,
+ * SCOPE: real quota numbers are available for `openai_compatible` ENDPOINT
+ * routes only. CLI routes — claude_code_cli, codex_cli, cursor_cli,
  * antigravity_cli, i.e. the routes this product exists to arbitrate between —
- * always report score 1.0 and source "unknown".
- *
- * Two layers were described here. Measured 2026-08-17, neither reaches a CLI
+ * always report score 1.0 and source "unknown". Neither layer reaches a CLI
  * route:
  *   1. Reactive — state is updated from `rateLimitHeaders`, which only
  *      OpenAICompatibleDispatcher ever sets. A CLI route's
@@ -15,11 +12,8 @@
  *      and then updates nothing.
  *   2. Proactive — `checkQuota()` is a stub returning source "unknown" in
  *      BOTH dispatcher implementations, and maybeRefresh() discards
- *      "unknown". There are only two dispatchers, so this layer is currently
+ *      "unknown". There are only two dispatchers, so this layer is
  *      unreachable in its entirety.
- *
- * Feeding 51 consecutive rate-limited CLI results through recordResult()
- * leaves getQuotaScore at 1.0.
  *
  * This is a real gap but NOT an unhandled one: exhaustion of a CLI route is
  * caught by the circuit breaker, which does trip on the CLI rate-limit
@@ -59,12 +53,10 @@ export const PROACTIVE_CHECK_TIMEOUT_MS = 15_000;
 
 /**
  * Default quota state location — same HARNESS_DISPATCH_STATE_DIR-override,
- * else ~/.harness-dispatch/<subdir> pattern as jobs.ts/dispatch-log.ts. A
- * bare "quota_state.json" (the old default) resolves relative to
- * process.cwd(): running the router from different directories splits
- * state across stray files, and — worse — the test suite writes real
- * counts into whatever cwd the tests happen to run from (this repo's own
- * root, in dev) since nothing points it elsewhere by default.
+ * else ~/.harness-dispatch/<subdir> pattern as jobs.ts/dispatch-log.ts. An
+ * absolute path matters: a bare "quota_state.json" would resolve relative to
+ * process.cwd(), splitting state across stray files as the router is run from
+ * different directories.
  */
 function defaultStateFile(): string {
   const dir = stateRoot();
@@ -189,8 +181,8 @@ export class QuotaCache {
    * reporting. They cannot be written to a shared file directly: every
    * dispatch runs in its own detached runner that booted from the same
    * baseline, so a wave of them all write "baseline + 1" and all but one
-   * increment is lost. Measured at the shipped default of
-   * max_concurrent_runs: 4 — 8 dispatches were recorded as 2.
+   * increment is lost — at the shipped default of max_concurrent_runs: 4,
+   * 8 dispatches are recorded as 2.
    *
    * Persisting the DELTA under a lock is what makes the count additive across
    * processes. Cleared only after a write succeeds, so a failed write is
@@ -249,9 +241,8 @@ export class QuotaCache {
       // before delegating, and these counts persist across restarts. Filing a
       // busy route under `failed` leaves a permanent record that it is
       // unreliable, so the agent routes away from a route that was never
-      // broken — a tool quietly destroying its own reputation. The circuit
-      // breaker already handles the routing consequence of a rate limit
-      // properly and separately; this is only about what the numbers say.
+      // broken. The circuit breaker handles the routing consequence of a rate
+      // limit separately; this is only about what the numbers say.
       this.localRateLimitedCounts[service] = (this.localRateLimitedCounts[service] ?? 0) + 1;
       this.bumpDelta(service, "rateLimited");
     } else {
@@ -288,14 +279,12 @@ export class QuotaCache {
       const remaining = parseRemaining(result.rateLimitHeaders);
       const limit = parseLimit(result.rateLimitHeaders);
       if (remaining !== null || limit !== null) {
-        // Each field is assigned only when it ARRIVED. Both were assigned
-        // unconditionally under a guard that only asks whether EITHER did, so a
-        // response carrying `remaining` and no `limit` — which providers send —
-        // nulled the limit this cache already knew. With no limit there is no
-        // ratio, so the score went back to a full 1.0: measured at
-        // `remaining: 2` scoring the same as an untouched route, and the router
-        // then preferred it. Right about "some header arrived", wrong one case
-        // over. Headers are a partial update, not a replacement.
+        // Headers are a partial update, not a replacement: each field is
+        // assigned only when it ARRIVED. A response carrying `remaining` and
+        // no `limit` — which providers send — would otherwise null the limit
+        // this cache already knew, and with no limit there is no ratio, so the
+        // score returns to a full 1.0 and the router prefers a nearly
+        // exhausted route.
         if (remaining !== null) state.remaining = remaining;
         if (limit !== null) state.limit = limit;
         state.source = "headers";
@@ -325,12 +314,9 @@ export class QuotaCache {
    * Re-read the persisted counts before reporting them.
    *
    * Dispatches run in DETACHED child processes. Each child records its result
-   * and persists it, but the server's own QuotaCache loaded its counts at boot
-   * and never looked again — so `usage` inside the process that started the
-   * work reported calls=0 while the disk held calls=3. The numbers only ever
-   * appeared to a LATER process, which is the opposite of useful: the
-   * walkthrough tells a user to run `usage` when spend looks unexpected, and
-   * on the primary surface it answered zero.
+   * and persists it, so without re-reading, `usage` inside the long-lived
+   * server that started the work reports zero while the disk holds the real
+   * counts — the numbers appear only to a LATER process.
    *
    * Max rather than adopt-disk: this process writes through on every
    * recordResult, so disk is normally current, but the persist path is a
@@ -338,14 +324,8 @@ export class QuotaCache {
    * consulted by routing). Taking the larger value means a lost write shows a
    * stale count rather than losing one this process definitely made.
    *
-   * ALL SIX counters, not four. The first version refreshed calls, success,
-   * failure and rateLimited and left the two token totals behind — so the bug
-   * described above went on happening for tokens alone: a real dispatch
-   * returned 45,345 input tokens, the state file held them, and `usage` in
-   * that same long-lived server answered 0. Only a freshly started process
-   * showed the truth, which is exactly the shape this docstring says was
-   * fixed. A partial fix that reads as a complete one is worse than none,
-   * because the docstring stops anyone looking again.
+   * ALL SIX counters, not just the four call counts — leaving the token
+   * totals behind leaves the same staleness in place for tokens alone.
    */
   private refreshLocalCounts(): void {
     const disk = this.loadLocalCounts();
@@ -517,27 +497,19 @@ export class QuotaCache {
   }
 
   /**
-   * Write local counts to disk via a temp-file-then-rename (atomic within
-   * this process — see buildStatePayload's doc comment for the known
-   * cross-process caveat). Synchronous so a CLI invocation that exits
+   * Persist this process's increments, additively and under a lock, via a
+   * temp-file-then-rename. Synchronous so a CLI invocation that exits
    * immediately after a route can't leave a temp file behind.
-   */
-  /**
-   * Persist this process's increments, additively and under a lock.
    *
-   * buildStatePayload() writes this process's ABSOLUTE counts over whatever it
-   * read. With a detached runner per dispatch that is lossy by construction:
-   * every runner boots from the same baseline, so a concurrent wave all write
-   * "baseline + 1" and all but one increment disappears. Measured at the
-   * shipped default of max_concurrent_runs: 4 — 8 successful dispatches were
-   * recorded as 2, deterministically.
-   *
-   * The earlier Math.max merge on read could not fix this: it recovers a value
-   * that was written, and these were never written at all.
+   * Writing this process's ABSOLUTE counts over whatever was read is lossy by
+   * construction with a detached runner per dispatch: every runner boots from
+   * the same baseline, so a concurrent wave all write "baseline + 1" and all
+   * but one increment disappears — at the shipped default of
+   * max_concurrent_runs: 4, 8 successful dispatches are recorded as 2.
    *
    * So the delta is applied to whatever is on disk INSIDE the lock. The lock
-   * alone would not have been enough either — serialised writers each holding
-   * an absolute value simply take turns writing the same number.
+   * alone is not enough — serialised writers each holding an absolute value
+   * simply take turns writing the same number.
    */
   saveLocalCountsSync(): void {
     const pending = this.pendingDelta;
@@ -576,10 +548,8 @@ export class QuotaCache {
       //
       // The in-process view keeps serving the numbers it accumulated, so
       // nothing looks wrong until the server restarts and every count is zero.
-      // Two acceptance passes measured that: four recorded results, no file on
-      // disk, no error, and `usage` reporting the counts as fact until the
-      // next boot. Recorded here so `status` can say the numbers are not
-      // durable, which is the honest answer to "how much have I used this?".
+      // Recorded here so `status` can say the numbers are not durable, which
+      // is the honest answer to "how much have I used this?".
       //
       // A lock miss is NOT that condition and must not report it. The delta is
       // still pending and the next recorded result writes it, so the counts
@@ -604,13 +574,10 @@ export class QuotaCache {
   /**
    * Current on-disk state, or {} if unreadable.
    *
-   * `{}` used to mean two different things — "no file yet" and "a file I could
-   * not read" — and the caller applies its delta to whatever this returns and
-   * writes the result back. So one unparseable read did not merely stop
-   * counting: it REPLACED every route's history with a single route at 1.
-   * Measured — two routes with 5 and 3 calls became one route with 1, and
-   * `usage` then reported that as fact, on the surface this project's own
-   * instructions tell an orchestrator to consult before delegating.
+   * The caller applies its delta to whatever this returns and writes the
+   * result back, so an unparseable read that answered a bare `{}` would not
+   * merely stop counting — it would REPLACE every route's history with the
+   * single route being recorded.
    *
    * The file is moved aside rather than overwritten. Counters are
    * informational, so this does not try to recover them; it just declines to
