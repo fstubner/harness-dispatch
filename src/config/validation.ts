@@ -2,15 +2,14 @@
  * What a config file is ALLOWED to say, and what to warn about when it says
  * something else.
  *
- * Split out of config.ts. This module exists because of a specific, repeated
- * failure: the parser reads what it recognises and cannot distinguish a key it
- * does not know from a key that is absent. Four silent-drop defects came from
- * that — a misspelled `workspace_policy` or `safety_profile` left the route
- * running under the LESS restrictive default, silently.
+ * The parser reads what it recognises and cannot distinguish a key it does not
+ * know from a key that is absent, so a misspelled `workspace_policy` or
+ * `safety_profile` would leave the route running under the LESS restrictive
+ * default, silently.
  *
  * So the legal surface is enumerated here rather than implied by whatever the
- * builders happen to read. Keeping it in one file is the point: a per-shape
- * copy is what drifted last time.
+ * builders happen to read, and kept in one file rather than copied per entry
+ * shape, where the copies drift.
  */
 
 
@@ -29,21 +28,17 @@
  *                                               isolated copy
  *
  * A typo therefore quietly grants more than intended, which is the wrong
- * direction for a safety control. The same parser already warns loudly for a
- * malformed `protocol` block, so this is consistency as much as safety.
+ * direction for a safety control.
  *
  * Walks the raw tree rather than hooking each builder: the same keys appear
  * under services:, clis:, endpoints: and overrides:, and a single walk cannot
  * miss a format the way four separate call sites can.
  */
 export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
-  // Billing enums, added after a review found `billing_kind: metered-api`
-  // (hyphen, not underscore) silently resolving to the harness default of
-  // `included_plan_then_flexible_credits` with paidUsagePossible false and no
-  // warning. This block existed precisely for enums whose fallback is LESS
-  // restrictive than the value attempted, and billing is the other hard
-  // constraint the product states — a typo here silently marks a metered route
-  // as free.
+  // Billing enums belong here for the same reason: `billing_kind: metered-api`
+  // (hyphen, not underscore) resolves to the harness default of
+  // `included_plan_then_flexible_credits` with paidUsagePossible false, so a
+  // typo marks a metered route as free.
   billing_kind: [
     "local_compute",
     "included_plan_usage",
@@ -61,13 +56,10 @@ export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
 };
 
 /**
- * Every key this parser understands at the top level of config.yaml.
- *
- * `doctor` reported "no unrecognized config entries" while a typo'd or
- * invented top-level key produced no warning at all — the check's own name
- * promised something it never did. A misspelled `max_concurrent_runs` is
- * indistinguishable from not setting it, which is exactly the silent-default
- * class that has bitten this file twice already.
+ * Every key this parser understands at the top level of config.yaml. Without
+ * the list, a misspelled `max_concurrent_runs` is indistinguishable from not
+ * setting it and `doctor` cannot honestly claim there are no unrecognized
+ * entries.
  */
 export const KNOWN_TOP_LEVEL_KEYS = new Set([
   "version",
@@ -94,22 +86,13 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
 /**
  * Every key a `clis:` or `endpoints:` entry may carry.
  *
- * ROOT-CAUSE FIX, not a fourth instance. Three separate silent-drop defects
- * were found in this file in one day — workspace_policy ignored for `clis:`,
- * api_keys ignored for `endpoints:`, unknown top-level keys unwarned — and
- * each was patched individually. Measured afterwards: a route carrying
- * `workspace_polcy`, `safety_profil` and `tierr` still produced ZERO warnings
- * and silently got none of the three.
- *
- * The mechanism is that this parser reads what it recognises and cannot
- * distinguish a key it does not know from a key that is absent. Nothing
- * enumerated the legal surface, so every future misspelling was guaranteed to
- * fail the same silent way — and these are safety and isolation controls, so
+ * Enumerating the legal surface is what makes a misspelling reportable at all:
+ * the parser reads what it recognises and cannot distinguish a key it does not
+ * know from a key that is absent, and for safety and isolation controls
  * "silently absent" means "silently less restrictive".
  *
- * Kept as one list for both entry shapes on purpose. Splitting it per shape
- * would recreate the original defect, where two parallel field lists drifted
- * and each was missing something the other had.
+ * Kept as one list for both entry shapes on purpose — two parallel field lists
+ * drift, each missing something the other has.
  */
 export const KNOWN_ROUTE_KEYS = new Set([
   "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
@@ -155,10 +138,9 @@ const NUMERIC_ROUTE_KEYS = new Set([
  * preference — the router multiplies three of them together
  * (`quality * cli_capability * capability * quota * weight`) and orders by
  * `tier` ASCENDING. A negative pair therefore does not degrade a route, it
- * PROMOTES it: an acceptance pass measured `tier: -5, weight: -100,
- * cli_capability: -3` scoring 299.8 against a normal route's 0.88, from a
- * tier that sorts ahead of every real one — a route that wins every routing
- * decision, silently, with no warning anywhere.
+ * PROMOTES it: `tier: -5, weight: -100, cli_capability: -3` scores two orders
+ * of magnitude above a normal route, from a tier that sorts ahead of every
+ * real one, and wins every routing decision.
  *
  * `tier` starts at 1 because tier 1 is the frontier band and lower sorts
  * first; 0 and below are ahead of a band that already means "best". The rest
@@ -166,8 +148,8 @@ const NUMERIC_ROUTE_KEYS = new Set([
  * nothing, and a zero timeout is not a timeout).
  *
  * No upper bounds. `cli_capability: 1.1` ships in this repo's own default
- * config as deliberate tuning, so a cap would reject a documented value; the
- * defect being fixed is sign, not magnitude.
+ * config as deliberate tuning, so a cap would reject a documented value; what
+ * is constrained here is sign, not magnitude.
  */
 const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }> = {
   tier: { min: 1, exclusive: false },
@@ -182,8 +164,8 @@ const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }
  * Of those, the ones the router actually multiplies into a score.
  *
  * Only these three get the "PROMOTES the route" explanation. Giving that
- * reason for `timeout_ms` or a token cap told the operator something untrue
- * about their own config: routing multiplies neither.
+ * reason for `timeout_ms` or a token cap would tell the operator something
+ * untrue about their own config: routing multiplies neither.
  */
 const ROUTING_SCORED_KEYS = new Set(["tier", "weight", "cli_capability"]);
 
@@ -198,15 +180,11 @@ const BOOLEAN_ROUTE_KEYS = new Set([
 /**
  * Is this a value that reads as a USABLE number?
  *
- * Finite on both branches, and the string branch is the one that was wrong:
- * `Number("1e999")` is `Infinity`, and `!Number.isNaN(Infinity)` is true, so a
- * YAML `weight: 1e999` (which parses as a string, not a number) sailed through
- * as "reads as a number", then sailed through the range check too — `Infinity`
- * is not below any minimum. An acceptance pass measured it loading as
- * `weight = Infinity` with NO warning of any kind.
- *
- * `Number.isFinite` on both branches closes that: `.inf`, `-.inf`, `.nan` and
- * `1e999` are all unusable, whichever way YAML happened to type them.
+ * `Number.isFinite` on BOTH branches, not `!Number.isNaN`: `Number("1e999")`
+ * is `Infinity`, so a YAML `weight: 1e999` (which parses as a string, not a
+ * number) would read as a usable number and then clear the range check too,
+ * since `Infinity` is below no minimum. As written, `.inf`, `-.inf`, `.nan`
+ * and `1e999` are all unusable, whichever way YAML happened to type them.
  */
 function readsAsNumber(v: unknown): boolean {
   if (typeof v === "number") return Number.isFinite(v);
@@ -217,8 +195,8 @@ function readsAsNumber(v: unknown): boolean {
  * How to name the offending value back to the operator.
  *
  * `JSON.stringify` has no representation for the non-finite numbers and emits
- * `null`, so a warning about YAML's `-.inf` read "tier is null" — naming a
- * value that appears nowhere in the file the reader is being asked to fix.
+ * `null`, so a warning about YAML's `-.inf` would read "tier is null" — naming
+ * a value that appears nowhere in the file the reader is being asked to fix.
  */
 function describeValue(v: unknown): string {
   if (typeof v === "number" && !Number.isFinite(v)) return String(v);
@@ -231,25 +209,19 @@ function describeValue(v: unknown): string {
  * The unknown-key warner above covers a misspelled key. It does not cover a
  * correctly-spelled one whose value cannot be read: the coercions in
  * coercions.ts drop on mismatch and the caller supplies a default, silently.
- * That file's own header names this gap and points at the unknown-key warning
- * as the mitigation — which does not cover it, because the key is not unknown.
- *
- * Found live on the maintainer's machine by an acceptance pass: four routes
- * carrying `tier: metered`, which is not a number, silently running at the
- * default tier 3. Nothing had ever said so. `weight: very-high` becomes 1.0 the
- * same way, and both feed routing decisions.
+ * So `tier: metered` runs at the default tier 3 and `weight: very-high`
+ * becomes 1.0, both feeding routing decisions with nothing said.
  *
  * Reports rather than rejects, like every other warning here: the config still
  * loads, and `doctor` exits non-zero so the signal is not merely decorative.
  *
  * The one thing it does beyond reporting is DELETE an out-of-range numeric
- * value from the entry, so the built-in default applies. That is not a second
- * behaviour bolted on: a non-numeric `tier: metered` already ends up at the
- * default, because `num()` cannot read it. `tier: -5` is different only in
- * that the coercion CAN read it, which is exactly why it is dangerous — it
- * reaches routing and wins. Deleting the key makes the two unusable cases
- * behave the same way, which is what an operator reading either warning
- * ("IGNORED, and the built-in default applies instead") is being told.
+ * value from the entry, so the built-in default applies. A non-numeric
+ * `tier: metered` already ends up at the default because `num()` cannot read
+ * it; `tier: -5` differs only in that the coercion CAN read it, which is
+ * exactly why it is dangerous — it reaches routing and wins. Deleting the key
+ * makes both unusable cases behave the way either warning says they do
+ * ("IGNORED, and the built-in default applies instead").
  *
  * Every caller warns before it parses the same object, so the deletion is
  * visible to the parse that follows.
@@ -262,11 +234,9 @@ export function warnMistypedRouteValues(
   for (const [key, value] of Object.entries(entry)) {
     if (value === null || value === undefined) continue;
     if (NUMERIC_ROUTE_KEYS.has(key) && !readsAsNumber(value)) {
-      // Per field, for the same reason the range branch varies its text: the
-      // routing sentence was emitted for all six keys, and routing does not
-      // read `timeout_ms` or the token caps. The very next acceptance pass
-      // found this branch still saying it after the other was fixed — the
-      // same defect one branch over, in one function.
+      // Per field, for the same reason the range branch varies its text:
+      // routing does not read `timeout_ms` or the token caps, so the routing
+      // sentence must not be emitted for them.
       warnings.push(
         `${label}: ${key} is ${describeValue(value)}, which is not a number — ` +
           `IGNORED, and the built-in default applies instead. ` +
@@ -275,23 +245,20 @@ export function warnMistypedRouteValues(
               `line says it does.`
             : `The route runs with the built-in ${key}, not the one written here.`),
       );
-      // This branch WARNED without neutralising, and for a plain unreadable
-      // value that was harmless — `num()` returns the default anyway, so the
-      // warning was true by accident. `.inf` and `.nan` are `typeof "number"`,
-      // so `num()` hands them straight back: the route loaded at
-      // `tier=-Infinity, weight=Infinity` — ahead of every tier and above
-      // every score — underneath a warning reading "IGNORED, and the built-in
-      // default applies instead". The message asserted the opposite of what
-      // happened, which is worse than the silence it replaced.
+      // Warning alone would not be enough here. `.inf` and `.nan` are
+      // `typeof "number"`, so `num()` hands them straight back and the route
+      // loads at `tier=-Infinity, weight=Infinity` — ahead of every tier and
+      // above every score — underneath a warning claiming the built-in default
+      // applies.
       delete entry[key];
     } else if (NUMERIC_ROUTE_KEYS.has(key)) {
       const bound = NUMERIC_ROUTE_MINIMUMS[key];
       const n = Number(value);
       if (bound !== undefined && (bound.exclusive ? n <= bound.min : n < bound.min)) {
-        // The consequence differs by field, and stating the routing one for
-        // all six was simply false: routing does not multiply `timeout_ms` or
-        // the token caps. A warning that explains the wrong mechanism teaches
-        // the reader something untrue about their own config.
+        // The consequence differs by field: routing does not multiply
+        // `timeout_ms` or the token caps, and a warning that explains the
+        // wrong mechanism teaches the reader something untrue about their own
+        // config.
         const consequence = ROUTING_SCORED_KEYS.has(key)
           ? `Routing multiplies these fields and orders tiers ascending, so a ` +
             `negative one PROMOTES the route over every other rather than demoting it.`
@@ -321,11 +288,10 @@ export function warnMistypedRouteValues(
  * Two route entries sharing one name.
  *
  * The later entry wins outright, so everything the earlier one declared is
- * gone. An acceptance pass measured the consequence: a first entry setting
- * `safety_profile: read_only` and `workspace_policy: copy` was replaced by a
- * second with neither, and the surviving route ran `workspace_edit` /
- * `shared_locked` — silently LESS restrictive than what was written, with no
- * warning on any surface.
+ * gone: a first entry setting `safety_profile: read_only` and
+ * `workspace_policy: copy`, replaced by a second with neither, leaves the
+ * surviving route running `workspace_edit` / `shared_locked` — silently LESS
+ * restrictive than what was written.
  */
 export function warnDuplicateRouteNames(
   names: Array<string | undefined>,
@@ -359,17 +325,13 @@ export function warnDuplicateRouteNames(
  * failure this module exists to prevent. They stay allow-listed (so they are
  * not reported as typos) but say plainly that setting them has no effect.
  *
- * Verified read-nowhere in src/ at the time of writing; if one is implemented
- * later, delete it from here and the warning goes away.
+ * If one is implemented later, delete it from here and the warning goes away.
  *
- * `policy` and `workspace_policy` were added after an acceptance pass found
- * them allow-listed at top level and read nowhere — top-level isolation
- * controls that do nothing, the same shape as `default_safety_profile` above.
- * Both names ARE real per-route keys (see KNOWN_ROUTE_KEYS), which is what
- * makes the top-level spelling plausible enough to write by mistake: it looks
- * like a global default for the per-route setting, and there is no such thing.
- * Re-verified read-nowhere at top level on 2026-08-31 — `raw?.policy` in
- * jobs.ts reads a JOB MANIFEST, not this config file.
+ * `policy` and `workspace_policy` are here because both names ARE real
+ * per-route keys (see KNOWN_ROUTE_KEYS), which makes the top-level spelling
+ * plausible enough to write by mistake: it looks like a global default for the
+ * per-route setting, and there is no such thing. (`raw?.policy` in jobs.ts
+ * reads a JOB MANIFEST, not this config file.)
  */
 const ACCEPTED_BUT_UNIMPLEMENTED = new Set([
   "protocols",

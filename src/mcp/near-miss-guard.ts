@@ -1,31 +1,28 @@
 /**
  * Catch a near-miss TOP-LEVEL key on the MCP surface, before the SDK drops it.
  *
- * THE DEFECT. `safteyProfile: "read_only"` was accepted in silence and the
- * dispatch then ran at the `workspace_edit` default — an acceptance pass
- * measured it writing a file into the project. Asking for read-only by way of
- * a typo got you write access, with nothing said on any surface. The HTTP
- * surface has rejected the same input all along (`http/parse.ts` runs exactly
- * the check below), so the two surfaces gave opposite answers to one input,
- * which is the class the parity suite exists to end.
+ * WHAT IT GUARDS. Without this, `safteyProfile: "read_only"` is accepted in
+ * silence and the dispatch runs at the `workspace_edit` default: asking for
+ * read-only by way of a typo gets you write access, with nothing said on any
+ * surface. The HTTP surface rejects the same input (`http/parse.ts` runs
+ * exactly the check below), so the two surfaces would otherwise give opposite
+ * answers to one input.
  *
- * WHY IT NEEDED THIS AND NOT A SCHEMA CHANGE. The SDK validates arguments
- * against `z.object(inputShape)` before any handler runs, and zod STRIPS
- * unknown keys rather than reporting them — so by the time our code sees the
- * arguments, the misspelled key is already gone. `hints` is `.strict()`, which
- * is why the nested form is caught; the outer object cannot be, because MCP
- * carries `_meta` there and rejecting that would break legitimate callers. The
- * named traps in `tool-schemas.ts` close the predictable snake_case slips, but
- * a plain typo is not enumerable — generating every one-edit spelling of every
+ * WHY NOT A SCHEMA CHANGE. The SDK validates arguments against
+ * `z.object(inputShape)` before any handler runs, and zod STRIPS unknown keys
+ * rather than reporting them — so by the time our code sees the arguments, the
+ * misspelled key is already gone. `hints` is `.strict()`, which is why the
+ * nested form is caught; the outer object cannot be, because MCP carries
+ * `_meta` there and rejecting that would break legitimate callers. The named
+ * traps in `tool-schemas.ts` close the predictable snake_case slips, but a
+ * plain typo is not enumerable — generating every one-edit spelling of every
  * hint name would put dozens of `z.never()` fields into the advertised schema.
  *
- * WHY WRAPPING setRequestHandler RATHER THAN REPLACING THE ROUTE. The obvious
- * alternative — register our own `CallToolRequestSchema` handler — means
- * reimplementing the SDK's routing: tool lookup, enable checks, task support,
- * input and OUTPUT schema validation, and the `extra` argument that carries
- * the progress token our fanout tap writes to. Replacing all of that to add
- * one check would be trading a silent safety hole for a much larger surface of
- * things to get wrong. This wraps the handler the SDK installs, inspects the
+ * WHY WRAPPING setRequestHandler RATHER THAN REPLACING THE ROUTE. Registering
+ * our own `CallToolRequestSchema` handler means reimplementing the SDK's
+ * routing: tool lookup, enable checks, task support, input and OUTPUT schema
+ * validation, and the `extra` argument that carries the progress token the
+ * fanout tap writes to. This wraps the handler the SDK installs, inspects the
  * raw arguments, and delegates: routing is untouched.
  *
  * Ordering matters. `McpServer` installs its CallTool handler lazily on the
@@ -56,7 +53,7 @@ export function nearMissInArguments(args: unknown, toolName?: string): string | 
       // that takes no hints, the corrected spelling is not a field either, and
       // a message telling the caller to fix the spelling sends them to a key
       // that is silently ignored — the class this guard exists to close,
-      // reopened one step later. Measured by an acceptance pass.
+      // reopened one step later.
       return nearMissMessage(key, meant, {
         surface: "mcp",
         ...(toolName !== undefined ? { toolName } : {}),
@@ -75,10 +72,7 @@ export function installNearMissGuard(server: McpServer): void {
   const inner = server.server;
   // Installing after `registerTools` is inert — the SDK's handler is already
   // in place and this would wrap nothing — and the failure mode of getting the
-  // order wrong is a SILENT safety hole rather than an error. An acceptance
-  // pass confirmed the late install accepts a near miss with no complaint.
-  // There is one call site and its comment states the requirement, so this is
-  // a guard against a future edit, not a live bug; it costs one line and turns
+  // order wrong is a SILENT safety hole rather than an error. One line turns
   // "safety check quietly absent" into a startup failure.
   if (inner.assertCanSetRequestHandler !== undefined) {
     inner.assertCanSetRequestHandler(CALL_TOOL_METHOD);

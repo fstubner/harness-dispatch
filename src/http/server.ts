@@ -80,27 +80,17 @@ function isLoopbackHost(host: string): boolean {
 /**
  * Run fanout arms to completion INDEPENDENTLY of one another, and DURABLY.
  *
- * Promise.all rejected the whole batch when one arm threw (workspace lock
- * timeout, worktree setup failure), discarding every other arm's completed —
- * and possibly billed — work behind a single 500. Each arm now settles on its
- * own; a thrown arm becomes a failed row naming its route. One row shape for
- * the streaming and non-streaming branches on purpose: they used to differ
- * (streaming omitted success/error), the one-sibling-guarded pattern again.
+ * Each arm settles on its own (`Promise.allSettled`): with `Promise.all`, one
+ * arm throwing — workspace lock timeout, worktree setup failure — discards
+ * every other arm's completed, possibly billed, work behind a single 500. A
+ * thrown arm becomes a failed row naming its route. One row shape for the
+ * streaming and non-streaming branches, so the two cannot drift.
  *
- * JOB-BACKED, like the MCP fanout. These arms called `router.routeTo`
- * directly, so an arm's work existed ONLY inside the HTTP request: no job
- * directory, no manifest, no partial log. Kill the client — or the server —
- * mid-fanout and every arm's output was gone, with nothing on disk to salvage.
- * PRODUCT.md names that as the defining failure ("a wasted attempt with no
- * trail"), and the MCP surface had been durable all along; an acceptance pass
- * caught the two surfaces disagreeing about the product's central promise.
- *
- * The RESPONSE SHAPE IS UNCHANGED. This awaits each arm's completion and
- * returns the same rows it always did, so an OpenAI-compatible client sees
- * exactly what it saw before — durability was never a contract change, which
- * is what made deferring this to a breaking release the wrong call. The one
- * addition is `jobId` per row: additive, inside the `harness_dispatch`
- * extension namespace, and the thing that makes salvage possible at all.
+ * JOB-BACKED, like the MCP fanout. Calling `router.routeTo` directly would
+ * leave an arm's work existing ONLY inside the HTTP request: no job directory,
+ * no manifest, no partial log, and nothing on disk to salvage if the client or
+ * the server dies mid-fanout. `jobId` per row, inside the `harness_dispatch`
+ * extension namespace, is what makes that salvage possible.
  */
 async function runFanoutArms(
   holder: RuntimeHolder,
@@ -171,10 +161,8 @@ interface SseState {
 }
 
 /**
- * POST /v1/chat/completions — extracted from the request callback, where
- * this logic sat eleven brace-levels deep (the smell checker's worst
- * finding for the whole repo). Behaviour is unchanged; only the nesting
- * moved.
+ * POST /v1/chat/completions. Kept out of the request callback so the branching
+ * here does not sit eleven brace-levels deep.
  */
 async function handleChatCompletions(
   holder: RuntimeHolder,
@@ -207,9 +195,9 @@ async function handleChatCompletions(
     for (const route of requestedRoutes) {
       const svc = state.config.services[route];
       if (!svc) {
-        // The MCP tool rejects unknown fanout targets by name; this
-        // surface silently skipped them, returning 200 with fewer arms
-        // and an empty skippedRoutes. Same input, two answers.
+        // Rejected by name, matching the MCP tool. Skipping it would answer
+        // 200 with fewer arms and an empty skippedRoutes — one input, two
+        // surfaces, two answers.
         throw new BadRequestError(
           `Unknown fanout target: ${route}. Valid route ids: ` +
             `${Object.keys(state.config.services).join(", ")}.`,
@@ -218,8 +206,8 @@ async function handleChatCompletions(
       const dispatcher = state.dispatchers[route];
       const breaker = state.router.getBreaker(route);
       // routePolicy is the half that decides ELIGIBILITY — local_only,
-      // approval_required and blocked are enforced here, not in routeTo. It
-      // was omitted, so a fanout arm ran whatever the policy forbade.
+      // approval_required and blocked are enforced here, not in routeTo, so
+      // omitting it lets a fanout arm run whatever the policy forbids.
       const policy = evaluateRoutePolicy(route, svc, {
         ...(dispatcher !== undefined ? { dispatcher } : {}),
         circuitBroken: Boolean(breaker?.isTripped),
@@ -230,8 +218,7 @@ async function handleChatCompletions(
           ? { routePolicy: parsed.hints.routePolicy }
           : {}),
         // Same refusal as every other surface: an HTTP endpoint route cannot
-        // carry an `execute` task. Omitted here, this surface would keep
-        // routing execution to endpoints after the others stopped.
+        // carry an `execute` task.
         ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
       });
       if (policy.skipped) skippedRoutes.push(policy.skipped);
@@ -240,18 +227,14 @@ async function handleChatCompletions(
     return { routes, skippedRoutes };
   };
   if (parsed.stream) {
-    // Resolve fanout targets BEFORE writing SSE headers.
+    // Resolve fanout targets BEFORE writing SSE headers: eligibleRoutes throws
+    // BadRequestError for an unknown route, and after writeHead the error
+    // handler can only res.end(), leaving the caller an HTTP 200 with a
+    // zero-byte body instead of the 400 the non-streaming path returns.
     //
-    // eligibleRoutes throws BadRequestError for an unknown route, but it
-    // was called after writeHead — so headersSent was true, the error
-    // handler could only res.end(), and the caller got HTTP 200 with a
-    // zero-byte body. The non-streaming path returns a proper 400 with
-    // the valid ids. Same input, two answers, again.
-    // Default to every dispatchable route when `models` is omitted,
-    // exactly as the non-streaming branch does. Streaming passed
-    // parsed.models straight through, so {"mode":"fanout","stream":true}
-    // with no models fanned out to ZERO routes and reported success —
-    // content "[]", empty skippedRoutes, HTTP 200.
+    // Defaults to every dispatchable route when `models` is omitted, exactly
+    // as the non-streaming branch does; passing parsed.models straight through
+    // would fan out to ZERO routes and report success.
     const preSelected =
       parsed.mode === "fanout"
         ? eligibleRoutes(
@@ -259,19 +242,15 @@ async function handleChatCompletions(
               ? parsed.models
               : Object.keys(state.config.services).filter((route) =>
                   // `Object.hasOwn`, not `in` — same prototype-chain hazard as
-                  // the non-streaming branch below. Missed when the rest of
-                  // this class was fixed because the search pattern required a
-                  // closing paren and this call is wrapped across lines.
+                  // the non-streaming branch below.
                   Object.hasOwn(state.dispatchers, route),
                 ),
           )
         : undefined;
-    // Refuse BEFORE writeHead, while a real status code is still available.
-    //
-    // The non-streaming branch has the same check; this one is here rather
-    // than beside it because once the 200 and the SSE headers are out, the
-    // only way to report a refusal is an error frame inside a successful
-    // stream — which is exactly the "vacuously true" shape being fixed.
+    // Refuse BEFORE writeHead, while a real status code is still available:
+    // once the 200 and the SSE headers are out, the only way to report a
+    // refusal is an error frame inside a successful stream. The non-streaming
+    // branch makes the same check at its own point.
     if (preSelected !== undefined && preSelected.routes.length === 0) {
       const why = preSelected.skippedRoutes.map((s) => `${s.route} (${s.code}): ${s.message}`).join("; ");
       sendJson(res, 400, {
@@ -281,8 +260,8 @@ async function handleChatCompletions(
             `Check /v1/usage for route readiness, or adjust models/safetyProfile/routePolicy.`,
           type: "invalid_request_error",
         },
-        // Structured as well as prose: a caller that was reading
-        // `skippedRoutes` off the old 200 keeps its machine-readable reason.
+        // Structured as well as prose, so a caller reading `skippedRoutes`
+        // still has a machine-readable reason.
         harness_dispatch: { mode: "fanout", skippedRoutes: preSelected.skippedRoutes },
       });
       return;
@@ -294,21 +273,18 @@ async function handleChatCompletions(
     });
     // Send the headers NOW, not when the first chunk happens to arrive.
     //
-    // For a CLI harness no delta exists until the run completes, so without
-    // this nothing reached the client — not even the status line. Measured:
-    // 3.0s to first byte for a fast prompt, 13.6s for a 12s one. Any client
-    // or proxy with a response-header timeout gives up on a live stream, and
-    // a streaming request creates no job record, so there is no jobId to
-    // recover with.
+    // For a CLI harness no delta exists until the run completes, so otherwise
+    // nothing reaches the client — not even the status line — for as long as
+    // the run takes. Any client or proxy with a response-header timeout gives
+    // up on a live stream, and a streaming request creates no job record, so
+    // there is no jobId to recover with.
     res.flushHeaders();
     sse.started = true;
-    // One identity for the whole stream, minted before the first frame.
-    //
-    // Every chunk of one streamed response must repeat the same `id` and
-    // `created`; a client that groups or dedupes by id would otherwise see one
-    // response per frame. The model starts as what the caller asked for and is
-    // filled in below once the router has picked a route, which is the same
-    // value the non-streaming branch reports.
+    // One identity for the whole stream, minted before the first frame: every
+    // chunk must repeat the same `id` and `created`, or a client that groups
+    // or dedupes by id sees one response per frame. The model starts as what
+    // the caller asked for and is filled in below once the router has picked a
+    // route.
     const identity = newStreamIdentity(parsed.hints.model ?? "harness-dispatch");
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
@@ -326,13 +302,10 @@ async function handleChatCompletions(
         }),
       );
     } else {
-      // What reaches `delta.content` must be the ANSWER.
-      //
-      // This forwarded every stdout chunk, so a client concatenating deltas
-      // from a CLI harness received protocol JSONL and internal thread ids —
-      // `{"type":"thread.started",...}` — while the non-streaming call on this
-      // same endpoint returned "pong". Two answers to one question, and the
-      // streaming one was unusable by the clients this envelope exists for.
+      // What reaches `delta.content` must be the ANSWER. Forwarding every
+      // stdout chunk would hand a client concatenating deltas from a CLI
+      // harness protocol JSONL and internal thread ids, while the
+      // non-streaming call on this same endpoint returns the answer text.
       //
       // An endpoint route streams real assistant text and marks it `text`;
       // those chunks go out as they arrive, which is what streaming is for. A
@@ -344,14 +317,11 @@ async function handleChatCompletions(
       let pendingFailure: { error: { message: string; route: string } } | undefined;
       // Stop the run when the caller hangs up.
       //
-      // Nothing connected the client's disconnect to the dispatch, so an
-      // aborted stream left the harness running to completion — measured
-      // still producing output twelve seconds after the client went away.
-      // This is the ONE dispatch path with no job record, so there is also no
-      // `jobId` to cancel it with: on a CLI route that means an agent with
-      // file access still working in the user's directory for a caller that
-      // no longer exists. OPERATIONS.md claimed "the run is lost with the
-      // connection"; it was not lost, it was unsupervised.
+      // Without this an aborted stream leaves the harness running to
+      // completion. This is the ONE dispatch path with no job record, so there
+      // is also no `jobId` to cancel it with: on a CLI route that means an
+      // agent with file access still working in the user's directory for a
+      // caller that no longer exists.
       //
       // `close` fires on normal completion too, hence the `writableEnded`
       // guard — aborting a finished response would cancel nothing but would
@@ -366,9 +336,8 @@ async function handleChatCompletions(
         parsed.workingDir,
         { hints: parsed.hints, maxFallbacks: 2, signal: clientGone.signal },
       )) {
-        // The route that answered is not known until the router picks one, and
-        // the model it runs is what the non-streaming branch reports. Filled in
-        // before the first frame goes out, so the whole stream names it.
+        // Filled in before the first frame goes out, so the whole stream names
+        // the model the picked route actually runs.
         if (decision?.model !== undefined) identity.model = decision.model;
         const text = answer.next(event);
         if (text !== undefined) {
@@ -389,22 +358,18 @@ async function handleChatCompletions(
           };
           // Once any answer text has gone out, this response is committed to
           // that route: a fallback's answer cannot be spliced onto a half-sent
-          // one without garbling it, and the previous behaviour ran the
-          // fallback anyway and discarded what it produced — billed, and
-          // thrown away. Stop instead. Breaking here ends the router's
-          // iteration, so no further route is attempted.
+          // one without garbling it, and running the fallback only to discard
+          // its output means paying for work nobody sees. Breaking here ends
+          // the router's iteration, so no further route is attempted.
           if (answer.committed) {
             writeSse(res, frame);
             break;
           }
           // Not committed, so the router is about to try another route. The
-          // frame was written HERE, before that happened — so a request that
-          // then succeeded on the fallback still carried an `error` frame,
-          // ahead of the answer. The OpenAI streaming contract has no
-          // non-fatal error frame, so a client that treats one as terminal
-          // reported a failure for a request that worked. Reproduced by an
-          // acceptance pass. Held until the end, and sent only if nothing
-          // ever succeeded.
+          // OpenAI streaming contract has no non-fatal error frame, so
+          // writing one here would make a client that treats it as terminal
+          // report a failure for a request the fallback went on to answer.
+          // Held until the end, and sent only if nothing ever succeeded.
           pendingFailure = frame;
         }
       }
@@ -423,22 +388,16 @@ async function handleChatCompletions(
         ? parsed.models
         : Object.keys(state.config.services).filter((route) =>
             // `Object.hasOwn`, not `in` — the same prototype-chain hazard the
-            // service guards carry. Here the names come from config rather
-            // than a caller, so it takes a route literally named `constructor`
-            // in config.yaml, which would then be treated as having a
-            // dispatcher it never got.
+            // service guards carry. Here the names come from config, so it
+            // takes a route literally named `constructor` in config.yaml,
+            // which would then be treated as having a dispatcher it never got.
             Object.hasOwn(state.dispatchers, route),
           );
     const selected = eligibleRoutes(routes);
-    // An empty candidate set is a REFUSAL, not an empty success.
-    //
-    // This answered 200 with `"[]"` as the content — vacuously true over zero
-    // arms, on the surface PRODUCT.md points CI and cron at, which read 200 as
-    // "it worked". MCP already refuses the identical input by name. The
-    // no-`models` sub-case of this class was closed earlier; the
-    // empty-ELIGIBLE-SET case beside it was not, which is the same defect one
-    // branch over. Same wording as the MCP path, so the two surfaces answer
-    // one question one way.
+    // An empty candidate set is a REFUSAL, not an empty success: 200 with
+    // `"[]"` as the content is vacuously true over zero arms, and CI and cron
+    // read 200 as "it worked". Same wording as the MCP path, which refuses the
+    // identical input, so the two surfaces answer one question one way.
     if (selected.routes.length === 0) {
       const why = selected.skippedRoutes.map((s) => `${s.route} (${s.code}): ${s.message}`).join("; ");
       sendJson(res, 400, {
@@ -473,14 +432,13 @@ async function handleChatCompletions(
     return;
   }
 
-  // Backed by a persisted job, not a bare in-process await. This
-  // surface's users are curl/CI/cron — exactly the clients that enforce
-  // their own request timeouts — and a direct await meant a client that
-  // gave up mid-run lost the finished result with no way to retrieve
-  // it. The job survives (it runs detached and lands on disk); the
-  // jobId is exposed in the response AND in a header so even a caller
-  // that only captured headers before timing out can recover the
-  // result via `job_status`.
+  // Backed by a persisted job, not a bare in-process await. This surface's
+  // users are curl/CI/cron — exactly the clients that enforce their own
+  // request timeouts — and with a direct await a client that gives up mid-run
+  // loses the finished result. The job survives (it runs detached and lands on
+  // disk); the jobId is exposed in the response AND in a header so even a
+  // caller that only captured headers before timing out can recover the result
+  // via `job_status`.
   const { status: jobStatus, completion } = await startAsyncJobTracked(
     { holder },
     {
@@ -505,15 +463,10 @@ async function handleChatCompletions(
     });
     return;
   }
-  // A dispatch that FAILED is not a 200.
-  //
-  // The error text was served as the assistant's answer with
-  // `finish_reason: "stop"`, and the failure was visible only in the vendor
-  // extension. Six hundred lines up, the fanout branch already establishes
-  // the opposite rule in as many words — "an empty candidate set is a
-  // REFUSAL, not an empty success… CI and cron read 200 as 'it worked'" —
-  // and the single-route branch beside it kept answering 200. The same defect
-  // one branch over, which is the shape this codebase keeps producing.
+  // A dispatch that FAILED is not a 200 — same rule as the fanout branch
+  // above. Serving the error text as the assistant's answer with
+  // `finish_reason: "stop"` leaves the failure visible only in the vendor
+  // extension.
   //
   // 502: the router worked, the harness it delegated to did not.
   const status = result.success ? 200 : 502;
@@ -522,11 +475,10 @@ async function handleChatCompletions(
     status,
     completionEnvelope(result.output, decision?.model ?? parsed.hints.model ?? "harness-dispatch", {
       // The status above is 502 on a failure, and the body must not contradict
-      // it. Without this the payload was a plain completion — empty content,
-      // `finish_reason: "stop"` — with the reason buried in the vendor
-      // extension, so a client that reads the body before the status (or logs
-      // it) saw an empty successful answer. `error` is where an
-      // OpenAI-compatible client looks, and it is absent on success.
+      // it: a plain completion — empty content, `finish_reason: "stop"` — with
+      // the reason buried in the vendor extension reads as an empty successful
+      // answer to a client that takes the body before the status. `error` is
+      // where an OpenAI-compatible client looks, and it is absent on success.
       ...(result.success
         ? {}
         : {
@@ -557,20 +509,16 @@ async function handleChatCompletions(
 /**
  * One SSE content frame.
  *
- * The `choices[0].delta` envelope is what an OpenAI-compatible client parses,
- * and it was written out as a literal at three call sites — which is both how
- * the deepest nesting in this file appeared (a data shape indented under a
- * loop inside a branch) and how the streaming and non-streaming fanout
- * replies drifted apart in the first place. Built in one place now.
+ * The `choices[0].delta` envelope is what an OpenAI-compatible client parses.
+ * Built in one place rather than as a literal at each call site, which is how
+ * the streaming and non-streaming replies drift apart.
  *
- * `id`, `object` and `created` are REQUIRED on a streamed chunk and were all
- * absent: a frame carried `choices` alone. The non-streaming envelope three
- * functions up has always sent them, so one endpoint answered the same client
- * two structurally different ways depending on one boolean — and a client that
+ * `id`, `object` and `created` are REQUIRED on a streamed chunk: a client that
  * reads `chunk.id`, or asserts `object === "chat.completion.chunk"` before
- * parsing, got `undefined` from the streaming half. `object` is the chunk type,
- * NOT "chat.completion": they are different shapes (`delta` versus `message`)
- * and a client switches on exactly this field to know which it is holding.
+ * parsing, gets `undefined` without them, while the non-streaming envelope
+ * sends them. `object` is the chunk type, NOT "chat.completion": they are
+ * different shapes (`delta` versus `message`) and a client switches on exactly
+ * this field to know which it is holding.
  */
 function sseContent(
   identity: StreamIdentity,
@@ -604,11 +552,10 @@ function sseStop(identity: StreamIdentity): Record<string, unknown> {
   };
 }
 
-// Sink. An SSE frame IS an HTTP response, and this was the one HTTP egress
-// path without redaction while `sendJson` two functions above had it — so
-// the same request leaked with `stream: true` and was clean with
-// `stream: false`. Six call sites feed this: answer chunks, the fanout row
-// dump, and four error frames.
+// Sink. An SSE frame IS an HTTP response, so it redacts like `sendJson` above;
+// without it the same request would leak with `stream: true` and be clean with
+// `stream: false`. Fed by answer chunks, the fanout row dump, and the error
+// frames.
 function writeSse(res: ServerResponse, payload: unknown): void {
   res.write(`data: ${redact(JSON.stringify(payload))}\n\n`);
 }
@@ -622,12 +569,11 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 0;
   const mcpRoute = opts.mcpRoute ?? "/mcp";
-  // An explicitly supplied token is fixed for the life of the server (tests
-  // pass one, and a caller who hands us a value did not ask us to go looking
-  // for another). Otherwise the token is whatever is on disk NOW: it was read
-  // once at startup and held forever, which made `auth rotate` a lie in both
-  // directions — the old token kept working and the new one was refused.
-  // Re-read only when the file's mtime moves, so the common path is a stat.
+  // An explicitly supplied token is fixed for the life of the server (a caller
+  // who hands us a value did not ask us to go looking for another). Otherwise
+  // the token is whatever is on disk NOW, so `auth rotate` takes effect
+  // instead of leaving the old token working and the new one refused. Re-read
+  // only when the file's mtime moves, so the common path is a stat.
   const fixedToken = opts.token;
   let diskToken = fixedToken === undefined ? await ensureHttpToken() : fixedToken;
   let seenMtimeMs = fixedToken === undefined ? httpTokenMtimeMs() : 0;
@@ -650,12 +596,13 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   /**
    * How long an MCP session may sit unused before it is closed.
    *
-   * Sessions were never expired or capped. `transports` is pruned only by
-   * `transport.onclose`, and the SDK fires that only on an explicit HTTP
-   * DELETE — which `StreamableHTTPClientTransport.close()` does not send. So a
-   * client that shuts down cleanly left its session, and its whole `McpServer`
-   * instance, resident for the lifetime of the process. This surface exists
-   * for CI, cron and scripts, i.e. exactly the callers that connect and go.
+   * `transports` is pruned only by `transport.onclose`, and the SDK fires that
+   * only on an explicit HTTP DELETE — which
+   * `StreamableHTTPClientTransport.close()` does not send. So without a sweep,
+   * a client that shuts down cleanly leaves its session, and its whole
+   * `McpServer` instance, resident for the lifetime of the process. This
+   * surface exists for CI, cron and scripts, i.e. exactly the callers that
+   * connect and go.
    *
    * Thirty minutes is far longer than any dispatch grace window, so it cannot
    * reap a session a caller is still polling on.
@@ -687,9 +634,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   };
 
   // A bare IPv6 host must be bracketed to be legal inside a URL:
-  // new URL("/mcp", "http://::1") throws "Invalid URL", which turned EVERY
-  // request to a server bound on ::1 into a 500 — the bind succeeded and the
-  // loopback check blessed the address, so nothing else ever caught it.
+  // new URL("/mcp", "http://::1") throws "Invalid URL", which turns EVERY
+  // request to a server bound on ::1 into a 500 — the bind succeeds and the
+  // loopback check blesses the address, so nothing else catches it.
   const urlBase = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`;
 
   const http: NodeHttpServer = createServer(async (req, res) => {
@@ -698,22 +645,17 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     try {
       const url = new URL(req.url ?? "/", urlBase);
 
-      // Liveness, and the ONLY route served without a token.
+      // Liveness, and the ONLY route served without a token: a health check
+      // that needs a secret is one most orchestrators will not perform.
+      // `/v1/status` answers a richer question (routes, quota, breaker state)
+      // and stays behind the token precisely because that answer is not for
+      // strangers.
       //
-      // Every other endpoint is authenticated, which meant a deploy gate or a
-      // container probe could not ask whether the process was up without being
-      // handed a credential — and a health check that needs a secret is one
-      // most orchestrators simply will not perform. `/v1/status` answers a
-      // richer question (routes, quota, breaker state) and stays behind the
-      // token precisely because that answer is not for strangers.
-      //
-      // What it discloses is bounded on purpose: that this is harness-dispatch,
-      // that it is running, and which version. No route ids, no endpoints, no
-      // quota, no config, no token. Version is here because verifying which
-      // build is live is the second thing an operator asks after "is it up",
-      // and it is already public in the npm registry, `--version`, and the MCP
-      // handshake. If that is more than you want exposed, bind to loopback —
-      // which is the default.
+      // What it discloses is bounded on purpose: that this is
+      // harness-dispatch, that it is running, and which version. No route ids,
+      // no endpoints, no quota, no config, no token. The version is already
+      // public in the npm registry, `--version` and the MCP handshake; if that
+      // is more than you want exposed, bind to loopback, which is the default.
       if (url.pathname === "/health" && (req.method === "GET" || req.method === "HEAD")) {
         if (req.method === "HEAD") {
           res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -822,14 +764,12 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
               sessionLastSeen.set(sid, Date.now());
             },
           });
-          // Bookkeeping only — do NOT call sessionServer.close() here.
-          // McpServer.close() -> Protocol.close() -> transport.close() again,
-          // and transport.close() calls this same onclose handler, so doing
-          // so recurses infinitely. The SDK's connect() already wraps
-          // whatever onclose was set before it ran with its own internal
-          // Protocol cleanup, so closing the transport (whether client-
-          // initiated or via our shutdown path below) is sufficient on its
-          // own to tear down sessionServer's Protocol-side state too.
+          // Bookkeeping only — do NOT call sessionServer.close() here:
+          // McpServer.close() -> Protocol.close() -> transport.close(), which
+          // calls this same handler, recursing infinitely. connect() already
+          // wraps whatever onclose was set before it with the SDK's own
+          // Protocol cleanup, so closing the transport tears down
+          // sessionServer's Protocol-side state too.
           transport.onclose = () => {
             if (transport.sessionId) {
               transports.delete(transport.sessionId);
@@ -840,16 +780,15 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           await sessionServer.connect(transport as unknown as Transport);
         }
         await transport.handleRequest(req, res);
-        // A session that never came into existence still left a server behind.
+        // Dispose of a server whose session never came into existence.
         //
         // The McpServer and transport are built BEFORE it is known whether
         // this is an `initialize`. For anything else with an unknown session
         // id the SDK answers 400 without initialising, so
         // `onsessioninitialized` never fires (nothing enters `transports`) and
-        // `onclose` never fires (nothing leaves `sessionServers`). Measured:
-        // five POSTs with unknown session ids left five orphaned servers alive
-        // until shutdown. Anyone can trigger it with a wrong header, and the
-        // auth check above does not help — a valid token is enough.
+        // `onclose` never fires (nothing leaves `sessionServers`) — one
+        // orphaned server per POST with a wrong session header, which a valid
+        // token is enough to send.
         if (freshServer !== undefined && transport.sessionId === undefined) {
           sessionServers.delete(freshServer);
           await freshServer.close().catch(() => undefined);
@@ -861,7 +800,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     } catch (err) {
       if (sse.started) {
         // Mid-stream failure: the client already holds a 200 and possibly
-        // partial frames, and a bare end() made a truncated stream
+        // partial frames, and a bare end() would make a truncated stream
         // indistinguishable from a complete one. Emit an error frame and the
         // stream terminator so the caller can tell.
         try {
@@ -886,10 +825,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   });
 
   // A listen failure arrives as an 'error' EVENT, not a rejected call, so with
-  // no handler Node rethrew it from the event loop: `serve --port <busy>`
-  // printed a raw `node:events:486 throw er; // Unhandled 'error' event`
-  // stack trace. Every other bad-input path in this CLI answers with one
-  // actionable line, and a port already in use is the most ordinary of them.
+  // no handler Node rethrows it from the event loop as a raw stack trace.
+  // Every other bad-input path in this CLI answers with one actionable line,
+  // and a port already in use is the most ordinary of them.
   await new Promise<void>((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException): void => {
       const where = `${host}:${port}`;
@@ -901,13 +839,11 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           ),
         );
       } else if (err.code === "EACCES") {
-        // Do NOT assert privileges here. The first version said "ports below
-        // 1024 need elevated privileges" for EVERY EACCES, and on Windows a
-        // HIGH port is refused just as often — the OS reserves whole ranges
-        // (Hyper-V, WinNAT, `netsh interface ipv4 show excludedportrange`),
-        // where elevation changes nothing. Naming a cause that does not apply
-        // sends people to fix the wrong thing, which is worse than the stack
-        // trace this replaced.
+        // Do NOT assert privileges here. On Windows a HIGH port is refused
+        // just as often — the OS reserves whole ranges (Hyper-V, WinNAT,
+        // `netsh interface ipv4 show excludedportrange`), where elevation
+        // changes nothing, and naming a cause that does not apply sends people
+        // to fix the wrong thing.
         reject(
           new Error(
             `not permitted to bind ${where}. Below 1024 that means elevated privileges are ` +
@@ -932,10 +868,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   const actualPort = typeof addr === "object" && addr ? addr.port : port;
 
   // Same reason as the stdio entry point: jobs left waiting for a concurrency
-  // slot when a server died are drained by nothing until a new dispatch
-  // happens to arrive, and unlike a running job they are exempt from orphan
-  // detection, so they simply read `queued` forever. Not awaited and never
-  // fatal — the server must still serve.
+  // slot when a server died are exempt from orphan detection, so nothing
+  // drains them and they read `queued` forever. Not awaited and never fatal —
+  // the server must still serve.
   void orphanStrandedSlotQueue().catch(() => undefined);
 
   if (!isLoopbackHost(host)) {
@@ -955,11 +890,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
     /**
      * How many per-session MCP servers are alive.
      *
-     * Exposed because a leak here is invisible from outside: a request that
-     * never initialises a session used to leave its `McpServer` resident with
-     * nothing to observe it by. There is no other seam — the count lives in a
-     * closure — and a test that reimplemented the bookkeeping would pin its
-     * own copy rather than this one.
+     * Exposed because a leak here is otherwise invisible from outside: the
+     * count lives in a closure, and a test that reimplemented the bookkeeping
+     * would pin its own copy rather than this one.
      */
     openMcpSessions: () => sessionServers.size,
     async close() {

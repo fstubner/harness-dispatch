@@ -39,23 +39,17 @@
  *
  * The first: a hints.model value that names a CONFIGURED ROUTE runs that route
  * wherever it sits, falling through to normal tier order when it is not an
- * eligible candidate. The +0.5 above could not do this on its own — a bonus
- * only reorders within a tier — so a named route below the best tier was never
- * called while the response still reported the hint as honoured. `service`
- * remains the way to force a route with no fallback at all.
+ * eligible candidate. A score bonus cannot do this on its own, because a bonus
+ * only reorders within a tier. `service` remains the way to force a route with
+ * no fallback at all.
  *
  * The second, applied after it: task_type="local" picks the best-scoring
- * LOCAL route wherever it sits, falling back to normal tier order
- * when none is eligible. Local means what `routePolicy: "local_only"` means —
- * declared provider/surface/auth/billing, and NOT a loopback URL. The "or a
- * loopback URL" half was deleted deliberately: a metered proxy on 127.0.0.1
- * declares itself metered, and the URL check overruled that, so the one task
- * type meaning "free local endpoint" preferred the PAID route. This line kept
- * the deleted half for a while after the code lost it. This used to be
- * a +0.3 score bonus, which could not work: a bonus only reorders within a
- * tier, and local endpoints sit in the cheap tier, so a healthy tier-1 route
- * won before it was consulted. Tier ranks CAPABILITY, and this task type means
- * "capability is not what matters here".
+ * LOCAL route wherever it sits, falling back to normal tier order when none is
+ * eligible. Local means what `routePolicy: "local_only"` means — declared
+ * provider/surface/auth/billing, and NOT a loopback URL, because a metered
+ * proxy on 127.0.0.1 declares itself metered and the task type meaning "free
+ * local endpoint" must not prefer the PAID route. Tier ranks CAPABILITY, and
+ * this task type means "capability is not what matters here".
  *
  * Tier auto-derivation
  * --------------------
@@ -63,16 +57,13 @@
  * auto-derived from the Arena ELO score via LeaderboardCache.autoTier().
  * Explicit `tier` in config is the fallback when ELO is unavailable.
  *
- * R3: adds `stream()` / `streamTo()` that emit `DispatcherEvent`s with an
- * attached `RoutingDecision`.
+ * `stream()` / `streamTo()` emit `DispatcherEvent`s with an attached
+ * `RoutingDecision`.
  *
  * There is ONE selection-and-fallback loop per shape — `#runStream` for the
  * routed path, `#runStreamTo` for an explicit route — and the buffered
- * `route()` / `routeTo()` drain them. This paragraph used to claim exactly
- * that while it was false: the buffered methods were separate 120-line
- * implementations, and the copies drifted. The timeout rule ended up written
- * four times, and an audit mutation showed a test pinned only the `route()`
- * copy, leaving the pair that jobs and the HTTP server actually use unguarded.
+ * `route()` / `routeTo()` drain them, so a rule such as timeout precedence
+ * exists once rather than in four copies that can drift.
  *
  * What still differs between buffered and streaming is the dispatcher call
  * itself, and only that: see `DispatcherInvoke`.
@@ -120,17 +111,9 @@ const TASK_TYPES_WITH_CAPABILITY: ReadonlySet<TaskType> = new Set([
 /**
  * Every scoring adjustment, named and in one place.
  *
- * These were inline literals, restated as prose in this file's header several
- * hundred lines away. One of those restatements went stale — the header still
- * described a taskType=local bonus for a release after it was deleted — and
- * nothing could have caught it: check-claims.mjs verifies that things prose
- * NAMES exist, never that what it SAYS is true.
- *
- * Naming them does not by itself keep the header honest. `tests/router.test.ts`
- * pins these values with a message pointing at the header, so changing one
- * fails a test that tells you the other half to update. That is the cheap
- * version of a doc-accuracy check: not parsing prose, just refusing to let the
- * numbers move quietly.
+ * `tests/router.test.ts` pins these values with a message pointing at this
+ * file's header, so changing one fails a test that tells you the other half to
+ * update — the cheap version of a doc-accuracy check.
  */
 export const SCORING = {
   /** hints.model names this route or one of its declared models. */
@@ -147,9 +130,9 @@ export const SCORING = {
 
 
 /**
- * `service` is a raw string from the caller — a near-miss ("codex" for
- * "codex_cli") used to fail with no hint at what WOULD have worked, costing
- * a round-trip to `usage` to find out.
+ * `service` is a raw string from the caller, so a near-miss ("codex" for
+ * "codex_cli") names the valid ids rather than costing a round-trip to `usage`
+ * to find out what would have worked.
  */
 function unknownServiceError(service: string, valid: string[]): string {
   return `Unknown service: ${service} (valid route ids: ${valid.join(", ")})`;
@@ -176,10 +159,10 @@ export interface ExplicitDispatchOpts {
   /**
    * Fallback timeout when neither `timeoutMs` (explicit per-call override)
    * nor the service's own `timeoutMs` config is set — below both in
-   * precedence, so it never silently overrides a real value. Used by `job`
-   * to give background dispatches a generous ceiling without a caller
-   * having to know to ask for one; `code` (which blocks the MCP call) does
-   * not set this and keeps the dispatcher's own short default.
+   * precedence, so it never silently overrides a real value. Background
+   * dispatches set it to get a generous ceiling without a caller having to
+   * ask for one; a blocking call leaves it unset and keeps the dispatcher's
+   * own short default.
    */
   defaultTimeoutMs?: number;
   /**
@@ -188,7 +171,7 @@ export interface ExplicitDispatchOpts {
    * For the job runner only: a cancelled job abandons the stream before any
    * completion arrives, and the completion is where an isolated workspace's
    * record — its changed files, its patch — is produced. Without this, a
-   * cancelled `copy`/`git_worktree` run left edits nobody could diff or apply.
+   * cancelled `copy`/`git_worktree` run leaves edits nobody can diff or apply.
    */
   onWorkspace?: (workspace: PreparedWorkspace) => void;
 }
@@ -221,12 +204,9 @@ function modelMatchesService(name: string, svc: ServiceConfig, model: string | u
  *
  * Distinct from modelMatchesService, which includes the name because a route
  * id is a legitimate routing nudge and should score like one. The reported
- * flag is a different question, and the schema is explicit about which:
- * "modelHintMatched: true means the picked route actually declares this
- * model; false means it was forwarded blind and you should treat the result
- * with more suspicion". Reporting a name match as true told the agent the
- * opposite of the truth on the one signal the schema points it at for
- * self-correction.
+ * flag is a different question: `modelHintMatched: false` tells the agent the
+ * model was forwarded blind, so counting a route-name match as a declaration
+ * would invert the one signal the schema points it at for self-correction.
  */
 export function declaresModel(svc: ServiceConfig, model: string | undefined): boolean {
   if (!model) return false;
@@ -245,18 +225,13 @@ export function declaresModel(svc: ServiceConfig, model: string | undefined): bo
  * With the service already chosen, `model` can only be a model, so a value
  * that merely collides with SOME OTHER route's id must still reach the
  * harness. The one exception is a value naming THIS route: that is
- * over-specifying ("use codex_cli, with codex_cli"), and forwarding it sent
- * `--model codex_cli` to Codex, which rejected it with a real failed job and
+ * over-specifying ("use codex_cli, with codex_cli"), and forwarding it sends
+ * `--model codex_cli` to a harness that rejects it, costing a failed job and
  * a breaker event.
  *
- * Shared because it was not. The explicit path never had the suppression and
- * reported neither field, so 0.7.8's schema text — "a value that names a
- * configured route is NOT sent on as a model" — was true on the forced path
- * and false here, on the parameter the docs are written about. Three
- * independent copies of one rule is how they diverged; keep it in one place.
- *
- * The SCORED path deliberately differs: no service was named there, so any
- * route id is a routing nudge rather than a model.
+ * Shared by the forced and explicit paths so the rule exists once. The SCORED
+ * path deliberately differs: no service was named there, so any route id is a
+ * routing nudge rather than a model.
  */
 function resolveNamedRouteModel(
   serviceName: string,
@@ -282,23 +257,14 @@ function capabilityScore(svc: ServiceConfig, taskType: TaskType): number {
 /**
  * How the router asks a dispatcher to do the work.
  *
- * There is ONE selection-and-fallback loop, and this is the single thing that
- * differs between the buffered and streaming entry points. It is a parameter
- * rather than a second copy of the loop because the copies drifted: the rule
- * "a per-call timeoutMs beats the route's configured default" was written out
- * four times, and an audit mutation proved only the `route()` copy was pinned
- * by a test — while jobs and the HTTP server both dispatch through the
- * streaming pair. Whatever is true of one entry point is now true of all four
- * by construction.
+ * The single thing that differs between the buffered and streaming entry
+ * points, passed as a parameter rather than duplicated as a second loop.
  *
- * Why the strategy rather than draining `stream()` for everything, which is
- * what the audit proposed: `OpenAICompatibleDispatcher` overrides `dispatch()`
- * with a one-shot POST that sets `stream: false` on the wire, deliberately.
- * Routing every buffered call through `stream()` would flip that request for
- * every endpoint route — a live behaviour change against third-party gateways,
- * one of which this repo already has a note about ignoring `stream: true`.
- * Collapsing the loop is safe; collapsing the transport is not, and they are
- * separate questions.
+ * Not simply `stream()` for everything: `OpenAICompatibleDispatcher` overrides
+ * `dispatch()` with a one-shot POST that sets `stream: false` on the wire,
+ * deliberately, and draining `stream()` would flip that request for every
+ * endpoint route — a live behaviour change against third-party gateways, one
+ * of which this repo has a note about ignoring `stream: true`.
  */
 type DispatcherInvoke = (
   dispatcher: Dispatcher,
@@ -346,10 +312,9 @@ const BUFFERED_INVOKE: DispatcherInvoke = async function* (
  * reach it.
  *
  * Two can: the stream below finishes it when the dispatcher completes, and a
- * cancelled job finishes it itself (see `onWorkspace`), because a cancel
- * abandons the stream before any completion arrives. They can race — the
- * completion may land just as the cancel does — and a second `finish` would
- * fingerprint, or try to remove, a workspace the first already dealt with.
+ * cancelled job finishes it itself (see `onWorkspace`). They can race, and a
+ * second `finish` would fingerprint, or try to remove, a workspace the first
+ * already dealt with.
  */
 function finishOnce(workspace: PreparedWorkspace): PreparedWorkspace {
   let done: Promise<DispatchResult> | undefined;
@@ -463,10 +428,9 @@ interface Candidate {
 
 /**
  * Router streaming events wrap the dispatcher event with the active routing
- * decision. The decision is emitted on the first event of each dispatch
- * attempt (so consumers can show "routing to claude_code" before the first
- * token arrives) and is also attached to every subsequent event in case the
- * consumer missed the first.
+ * decision. The decision is attached to every event of a dispatch attempt, so
+ * a consumer can show "routing to claude_code" before the first token arrives
+ * and cannot miss it by joining late.
  */
 export interface RouterStreamEvent {
   event: DispatcherEvent;
@@ -477,11 +441,10 @@ export interface RouterStreamEvent {
 // Router
 // ---------------------------------------------------------------------------
 
-// isLoopbackUrl lived here and had one caller, the taskType=local predicate
-// above, which no longer uses it — "local" is a declared property of a route,
-// not a shape its URL happens to have. billing.ts keeps its own loopback check
-// for structural INFERENCE about routes that declare nothing, which is a
-// different job and the right place for it.
+// No loopback-URL check here: "local" is a declared property of a route, not a
+// shape its URL happens to have. billing.ts keeps its own loopback check for
+// structural INFERENCE about routes that declare nothing, which is a different
+// job and the right place for it.
 
 export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
@@ -518,15 +481,9 @@ export class Router {
 
   /**
    * Why nothing was eligible — read off what ACTUALLY happened, not a fixed
-   * list of guesses.
-   *
-   * The message used to say "all are disabled, exhausted, or circuit-broken"
-   * whatever the cause, and print every breaker alongside it. A route skipped
-   * as `paid_blocked` — a billing policy the operator chose — was therefore
-   * reported as a health problem, next to a breaker blob reading
-   * `tripped:false, failures:0`. That is this project's own counter-signal:
-   * making a healthy route look unreliable. `skippedRoutes` carried the true
-   * reason all along, so only the headline a human reads was wrong.
+   * list of guesses. A route skipped as `paid_blocked` is a billing policy the
+   * operator chose, not a health problem, and reporting it as one makes a
+   * healthy route look unreliable.
    *
    * Breakers are named only when one is actually tripped; an untripped blob is
    * noise that reads as evidence.
@@ -564,22 +521,13 @@ export class Router {
     const exclude = opts.exclude ?? new Set<string>();
 
     const forceService = hints.service;
-    // A ROUTE ID is not a model name.
-    //
-    // `hints.model` accepts either — the schema says so, and naming a route id
-    // is the documented way to nudge routing toward it. But the value was then
-    // ALSO forwarded to the winning route as `--model`, and when that was some
-    // other route the result was a real provider call with a nonsense model.
-    // Measured: one dispatch hinting a configured local route id was tried
-    // against four subscription CLIs, each rejecting `--model <route id>`,
-    // spending five calls and tripping two breakers. This product's own
-    // counter-signal is "a route that is configured, reported ready, and never
-    // actually used".
-    //
-    // So a route id still steers routing (modelMatchesService below matches on
-    // the route NAME) and is simply not passed on as a model override. A value
-    // that is not a configured route id keeps today's forward-blind behaviour,
-    // which is what makes an undeclared-but-real model usable.
+    // A ROUTE ID is not a model name. `hints.model` accepts either, and a
+    // route id steers routing (modelMatchesService below matches on the route
+    // NAME) without being passed on as a model override — forwarding it to the
+    // winning route as `--model` would be a real provider call with a nonsense
+    // model, rejected and charged for. A value that is not a configured route
+    // id is forwarded blind, which is what makes an undeclared-but-real model
+    // usable.
     const preferredModel = hints.model;
     const modelIsRouteId =
       preferredModel !== undefined &&
@@ -629,8 +577,8 @@ export class Router {
         taskType,
         // A requested model is passed through even when this route declares
         // nothing like it — the router not recognizing a model does not mean
-        // the CLI rejects it, and silently discarding the request gave a
-        // mismatched hints.model no error and no explanation. See
+        // the CLI rejects it, and discarding it silently would leave a
+        // mismatched hints.model with no error and no explanation. See
         // resolveNamedRouteModel for the one case that is suppressed.
         ...resolveNamedRouteModel(forceService, svc, preferredModel, taskType),
         elo: elo ?? undefined,
@@ -689,53 +637,29 @@ export class Router {
       }
       if (preferLargeContext) {
         // Boost by DECLARED context size (max_input_tokens in the route's
-        // config), not by harness name — a 2M-context route (e.g.
-        // Antigravity's default) gets the full boost, 1M-context routes get
-        // half, and any user-added large-context harness benefits equally.
+        // config), not by harness name — a 2M-context route gets the full
+        // boost, 1M-context routes get half, and any user-added large-context
+        // harness benefits equally.
         const maxIn = svc.maxInputTokens ?? 0;
         if (maxIn >= SCORING.largeContextThreshold) score += SCORING.largeContextBonus;
         else if (maxIn >= SCORING.mediumContextThreshold) score += SCORING.mediumContextBonus;
       }
-      // No `taskType === "local"` bonus here any more.
-      //
-      // There used to be a +0.3 for a loopback openai_compatible route, meant
-      // to implement the schema's promise that 'local' "prefers free local
-      // endpoints". It could not: a bonus only reorders WITHIN a tier, and
-      // local endpoints sit in the cheap tier, so any healthy tier-1 route won
-      // before the bonus was ever consulted. Measured on a real config, every
-      // taskType including 'local' resolved to the same tier-1 CLI, and the
-      // configured local box had 0 calls in a month.
-      //
-      // Replaced by a cross-tier preference below — one mechanism for one
-      // intent, rather than a bonus that cannot reach the thing it wants.
+      // No `taskType === "local"` bonus here: a bonus only reorders WITHIN a
+      // tier, and local endpoints sit in the cheap tier, so any healthy tier-1
+      // route wins before it is consulted. The cross-tier preference below is
+      // the one mechanism for that intent.
       const bucket = tierCandidates.get(tier);
       const candidate: Candidate = {
         score,
         name,
         tier,
         // DECLARED signals only — the same test `routePolicy: "local_only"`
-        // uses. Not "or the URL looks like localhost".
-        //
-        // That OR was here for one release and had exactly one observable
-        // effect, which was wrong: a metered proxy on loopback (LiteLLM,
-        // OpenRouter, anything fronting a paid API from 127.0.0.1) declares
-        // provider openai / surface openai_api / billing metered_api, so
-        // isLocalRoute says no — and the OR overrode that to yes. The task
-        // type whose entire meaning is "free local endpoint" then preferred
-        // the PAID route, across tiers, over a free subscription CLI.
-        //
-        // It bought nothing in exchange. A genuine local box declaring the
-        // fields is already covered; one declaring NOTHING on a known runtime
-        // port is inferred local by billing.ts (providerFromService ->
-        // isKnownLocalRuntime, ports 11434/1234); and one on some other port
-        // declaring nothing never reaches candidacy at all — route-policy.ts
-        // skips it as unknown_billing first. So the OR could only ever
-        // contradict an explicit declaration, which is the opposite of what it
-        // was for.
-        //
-        // The commit that added it claimed a test caught its removal. No test
-        // did: deleting it left all 874 green, because the fixtures it relied
-        // on are local by their DEFAULTS, not by their URL.
+        // uses, never "or the URL looks like localhost" (see the header). A
+        // genuine local box declaring the fields is covered; one declaring
+        // NOTHING on a known runtime port is inferred local by billing.ts
+        // (providerFromService -> isKnownLocalRuntime, ports 11434/1234); and
+        // one on some other port declaring nothing never reaches candidacy —
+        // route-policy.ts skips it as unknown_billing first.
         local: isLocalRoute(buildRouteBilling(svc)),
         quotaScore,
         qualityScore,
@@ -754,30 +678,17 @@ export class Router {
       if (svc.enabled && svc.tier < minConfiguredTier) minConfiguredTier = svc.tier;
     }
 
-    // A ROUTE ID in `hints.model` crosses tiers. This and `taskType: "local"`
-    // below are the only two rules that do.
-    //
-    // Naming a route was implemented as `modelMatchBonus`, a +0.5 added to that
-    // route's score — and a bonus only reorders WITHIN a tier, which is the
-    // same defect written up twenty lines below for the old 'local' bonus.
-    // Measured on three stub routes: `model: "route_deep"` (tier 4) was
-    // answered by `route_cheap` (tier 3), and route_deep's server logged no
-    // request at all. The hint was reported as honoured — `modelHintDropped:
-    // true` — while the named route was never called.
-    //
-    // It lands hardest on the HTTP surface, which is why this is a defect
-    // rather than a preference: `/v1/models` advertises route ids as model
-    // ids, and `service` is refused there by name (see http/parse.ts, which
-    // rejects it precisely because "an explicit route choice was silently
-    // overridden by the router's pick"). So naming a route in `model` was an
-    // OpenAI client's only way to choose one, and it did not work across tiers.
+    // Cross-tier rule one: a ROUTE ID in `hints.model` runs that route
+    // wherever it sits. It matters most on the HTTP surface, where
+    // `/v1/models` advertises route ids as model ids and `service` is refused
+    // by name (see http/parse.ts), so this is an OpenAI client's only way to
+    // choose a route.
     //
     // Ahead of the 'local' rule below, because naming a route is a specific
     // instruction and a task type is a general preference. Falls through when
     // the named route is not an eligible candidate — blocked, tripped, or
     // excluded by a previous failed attempt — so fallback and every policy
-    // refusal behave exactly as before, and `service` remains the way to force
-    // a route with no fallback at all.
+    // refusal are unaffected.
     if (modelIsRouteId && preferredModel !== undefined) {
       const named = [...tierCandidates.values()]
         .flat()
@@ -801,23 +712,15 @@ export class Router {
       }
     }
 
-    // `taskType: "local"` crosses tiers. Nothing else does.
+    // Cross-tier rule two: `taskType: "local"` prefers the best local route
+    // wherever it sits. The schema says 'local' is for "trivial/mechanical"
+    // work and "prefers free local endpoints"; tier ranks CAPABILITY, which is
+    // the wrong question for a task explicitly marked as not needing it.
     //
-    // The schema says 'local' is for "trivial/mechanical" work and "prefers
-    // free local endpoints", and the point of sending trivial work to a local
-    // box is that it costs nothing and consumes no subscription. Tier ranks
-    // CAPABILITY, so a local endpoint is correctly ranked below a frontier
-    // CLI — and for a task explicitly marked as not needing that capability,
-    // ranking by it is the wrong question.
-    //
-    // Deliberately the ONLY cross-tier rule. Tier gating is right in general:
-    // it is what stops plan and review work drifting onto a weak route to save
-    // a fraction of a point. This one task type opts out because its whole
-    // meaning is "capability is not what matters here", and there is no way to
-    // honour that from inside a tier.
-    //
-    // Falls through when no local route is eligible, so a machine with none
-    // behaves exactly as before.
+    // Tier gating is right in general — it is what stops plan and review work
+    // drifting onto a weak route to save a fraction of a point. Falls through
+    // when no local route is eligible, so a machine with none routes by tier
+    // as usual.
     const localTiers = [...tierCandidates.keys()].sort((a, b) => a - b);
     if (taskType === "local") {
       const localCandidates = localTiers
@@ -872,16 +775,12 @@ export class Router {
   }
 
   /**
-   * Build the RoutingDecision for a winning candidate.
-   *
-   * One place, because there are now three scored paths that reach a winner —
-   * the named-route rule, the 'local' rule, and the tier loop — and they had
-   * been three near-identical 25-line object literals. The fields that were
-   * easiest to get wrong when copied are the two model-hint flags:
-   * `modelHintMatched` says the picked route declares the requested model,
-   * `modelHintDropped` says the value named a route and so was used for
-   * routing only. See the forced-service branch for why `model` always
-   * prefers the requested value rather than gating on modelMatchesService.
+   * Build the RoutingDecision for a winning candidate — one place for all
+   * three scored paths (the named-route rule, the 'local' rule, the tier
+   * loop). `modelHintMatched` says the picked route declares the requested
+   * model; `modelHintDropped` says the value named a route and so was used for
+   * routing only. See the forced-service branch for why `model` always prefers
+   * the requested value rather than gating on modelMatchesService.
    */
   #decide(
     best: Candidate,
@@ -889,10 +788,9 @@ export class Router {
       taskType: TaskType;
       reason: string;
       /**
-       * Every candidate this one beat, best first. Capped at four here,
-       * because this is for reading: six would bury the one comparison that
-       * matters under a list nobody scans. Rounded for the same reason — the
-       * choice turns on 0.92 vs 0.81, never on the fifteenth decimal place.
+       * Every candidate this one beat, best first. Capped at four and rounded
+       * because this is for reading: the choice turns on 0.92 vs 0.81, never
+       * on the fifteenth decimal place.
        */
       compared: Candidate[];
       modelOverride: string | undefined;
@@ -934,13 +832,11 @@ export class Router {
   }
 
   /**
-   * Stream events from the chosen dispatcher, with the same fallback logic
-   * as `route()`. When a dispatch fails (non-rate-limit), the router picks
-   * another service and yields that service's events — so the caller sees
-   * events from potentially multiple services during fallback.
-   *
-   * The last `completion` or `error` event always reflects the final
-   * outcome (success-with-fallback or all-attempts-failed).
+   * Stream events from the chosen dispatcher, with the same fallback logic as
+   * `route()`. On a failed dispatch the router picks another service and
+   * yields that service's events, so the caller may see events from several
+   * services. The last `completion` or `error` event always reflects the final
+   * outcome.
    */
   stream(
     prompt: string,
@@ -975,13 +871,11 @@ export class Router {
     const maxFallbacks = opts.maxFallbacks ?? SCORING.defaultMaxFallbacks;
     const tried = new Set<string>();
     let lastDecision: RoutingDecision | null = null;
-    // `defaultTimeoutMs` (currently only `job`'s background ceiling) is a
-    // budget for the WHOLE call, not a per-attempt allowance — without this,
-    // 3 fallback attempts (default + 2 retries) each getting the full
-    // default would let one `job` call run 3x its stated ceiling before
-    // failing conclusively. An explicit `hints.timeoutMs` or a route's own
-    // configured `timeoutMs` is a deliberate per-attempt choice and is NOT
-    // budgeted this way.
+    // `defaultTimeoutMs` is a budget for the WHOLE call, not a per-attempt
+    // allowance: three fallback attempts each getting the full default would
+    // run 3x the stated ceiling before failing conclusively. An explicit
+    // `hints.timeoutMs` or a route's own configured `timeoutMs` is a
+    // deliberate per-attempt choice and is NOT budgeted this way.
     const callStart = Date.now();
 
     for (let attempt = 0; attempt <= maxFallbacks; attempt++) {
@@ -1239,14 +1133,11 @@ export class Router {
   /**
    * Route a task, with automatic fallback on transient failures.
    *
-   * R3: reimplemented on top of `stream()`. The per-attempt result is
-   * captured from the `completion` event and drives the fallback loop.
-   *
-   * The old route() also had a quirk: when pickService returned null with
-   * no prior attempts, it yielded an error DispatchResult. On a later
-   * fallback round that returned null it returned the last attempt's
-   * result+decision. The streaming-based reimplementation below preserves
-   * the same externally observable behaviour for existing tests.
+   * Built on `stream()`: the per-attempt result is captured from the
+   * `completion` event and drives the fallback loop. When pickService returns
+   * null with no prior attempts the result is an error DispatchResult; on a
+   * later fallback round that returns null, the last attempt's
+   * result+decision stands.
    */
   async route(
     prompt: string,
@@ -1274,14 +1165,11 @@ export class Router {
   /**
    * The buffered entry point, drained from the one shared loop.
    *
-   * This used to be a second full implementation of selection, fallback,
-   * timeout precedence, workspace policy and breaker accounting — about 120
-   * lines that had to stay in step with `#runStream` and did not. The router
-   * header claimed the buffered methods were "reimplemented on top of the
-   * streaming primitives"; they were not, and that claim is what made the
-   * drift invisible. `BUFFERED_INVOKE` keeps the one thing that genuinely
-   * differs: the dispatcher's own `dispatch()`, so a route with a non-streaming
-   * fast path still uses it.
+   * Selection, fallback, timeout precedence, workspace policy and breaker
+   * accounting all live in `#runStream`, so there is no second copy to drift.
+   * `BUFFERED_INVOKE` keeps the one thing that genuinely differs: the
+   * dispatcher's own `dispatch()`, so a route with a non-streaming fast path
+   * still uses it.
    */
   async #routeImpl(
     prompt: string,
@@ -1321,9 +1209,8 @@ export class Router {
     workingDir: string,
     opts: ExplicitDispatchOpts = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
-    // Drained from `#runStreamTo`, for the reasons on `#routeImpl`: this was
-    // the second of two hand-written explicit-dispatch bodies, and the pair
-    // had already diverged on the timeout rule.
+    // Drained from `#runStreamTo`, for the reasons on `#routeImpl`: one
+    // explicit-dispatch body, so the timeout rule cannot diverge.
     let result: DispatchResult | null = null;
     let decision: RoutingDecision | null = null;
     for await (const event of this.#runStreamTo(service, prompt, files, workingDir, {
@@ -1355,13 +1242,10 @@ export class Router {
 
     // A rejected INPUT says nothing about the route.
     //
-    // The prompt-too-long refusal happens before any process is spawned, and
-    // it fails identically on every argv route — so a single over-long prompt
-    // cascading through three routes counted three calls and three failures,
-    // and three such dispatches opened healthy routes for 300 seconds. The
-    // route was never asked to do anything. Counting it is the shape
-    // PRODUCT.md names as a counter-signal: usage numbers that make a working
-    // route look unreliable.
+    // The prompt-too-long refusal happens before any process is spawned and
+    // fails identically on every argv route, so counting it would charge a
+    // cascade of failures — and eventually a trip — to routes that were never
+    // asked to do anything.
     //
     // Still logged, so the dispatch is visible in the dispatch log; simply not
     // charged to the route's counters or its breaker.
@@ -1375,16 +1259,13 @@ export class Router {
     //
     // Mutating the in-memory breaker and writing its snapshot loses events
     // across processes: every dispatch runs in a detached child that loaded
-    // its own breaker at boot, so two concurrent failures both read 0 and both
-    // write 1. Measured: 8 concurrent failures persisted as `failures: 1` and
-    // the breaker never tripped, leaving a dead route selectable.
+    // its own breaker at boot, so concurrent failures all read 0 and all write
+    // 1, the breaker never trips, and a dead route stays selectable.
     //
     // update() serialises the read-modify-write, so each process contributes
     // exactly one event; restoring afterwards keeps this process's routing
-    // decisions consistent with what is now on disk.
-    // Persistence must never fail a completed dispatch. The store guards its
-    // own writes, but handleResult runs on the result path and a throw here
-    // would discard work the user already paid for.
+    // decisions consistent with what is now on disk. Wrapped, because a throw
+    // on the result path would discard work the user already paid for.
     const merged = this.safeBreakerUpdate(service, (current) => {
       const shared = new CircuitBreaker();
       if (current) shared.restore(current);
@@ -1403,18 +1284,12 @@ export class Router {
   /**
    * Re-hydrate from the persisted store before reporting.
    *
-   * Dispatches run in DETACHED child processes, and handleResult now merges
-   * each failure into the shared store — so the authority for breaker state
-   * lives on disk, while this Router hydrates its in-memory breakers once, in
-   * its constructor. Without a refresh here the two surfaces an agent is told
-   * to consult went stale for the life of the server process:
-   *
-   *   status  -> breaker=closed failures=0, route listed in "Ready to route"
-   *   dispatch-> "all are disabled, exhausted, or circuit-broken"
-   *              {"fail_cli":{"tripped":true,"failures":5}}
-   *
-   * That contradiction was introduced by moving the authority to disk without
-   * moving the readers with it. This is the readers catching up.
+   * The authority for breaker state lives on disk (dispatches run in detached
+   * children and handleResult merges each failure into the shared store) while
+   * this Router hydrates its in-memory breakers once, in its constructor.
+   * Without a refresh here, `status` would report a route healthy and ready
+   * for the life of the server process while every dispatch refused it as
+   * circuit-broken.
    */
   circuitBreakerStatus(): Record<string, ReturnType<CircuitBreaker["status"]>> {
     this.refreshBreakersFromStore();

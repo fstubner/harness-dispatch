@@ -1,9 +1,8 @@
 /**
  * Per-service circuit breaker with dynamic cooldown from provider responses.
  *
- * Ported from the Python `coding_agent.router.CircuitBreaker` class.
- * Uses `performance.now()` for monotonic seconds (equivalent to Python's
- * `time.monotonic()`), independent of wall-clock adjustments.
+ * Uses `performance.now()` for monotonic seconds, independent of wall-clock
+ * adjustments.
  */
 
 export const CIRCUIT_BREAKER_THRESHOLD = 5;
@@ -15,18 +14,17 @@ export const CIRCUIT_BREAKER_DEFAULT_COOLDOWN_SEC = 300;
  * Belt-and-braces alongside the clamp in rate-limit-headers.ts. That one
  * guards the parser; this one guards the class, because `retryAfter` reaches
  * trip()/recordFailure() from dispatcher code paths generally, not only from
- * that parser — and because a cooldown is now written to disk and rehydrated
- * by later processes, so a bad value stops being a per-process nuisance and
- * becomes a permanent one.
+ * that parser — and because a cooldown is written to disk and rehydrated by
+ * later processes, so a bad value is permanent rather than a per-process
+ * nuisance.
  */
 export const MAX_COOLDOWN_SEC = 24 * 60 * 60;
 
 /**
  * Gap after which the consecutive-failure count restarts (30 min).
  *
- * Without this the counter only ever reset on success, so five failures
- * separated by days tripped the breaker as readily as five in a burst — the
- * opposite of what a breaker is for.
+ * Without it the counter resets only on success, so five failures separated by
+ * days trip the breaker as readily as five in a burst.
  */
 export const FAILURE_DECAY_SEC = 30 * 60;
 
@@ -53,15 +51,13 @@ export interface CircuitBreakerSnapshot {
   blockedUntilMs: number | null;
   /**
    * Wall-clock epoch ms of the most recent failure; null when none recorded.
-   * Optional because snapshots written by older builds lack it — restoring
-   * one of those just means decay cannot apply until the next failure, the
-   * same behaviour those builds had.
+   * Optional because snapshots written by older builds lack it — restoring one
+   * of those means decay cannot apply until the next failure.
    *
    * This field is what makes FAILURE_DECAY_SEC real across processes: every
    * dispatch runs in a detached child that rebuilds a breaker from the
-   * persisted snapshot per event, so without persisting the failure time,
-   * recordFailure never saw a prior one and the decay was dead code on the
-   * only path that matters — five failures spread over weeks still tripped.
+   * persisted snapshot per event, so without the failure time recordFailure
+   * never sees a prior one and the decay never applies.
    */
   lastFailureAtMs?: number | null;
 }
@@ -85,9 +81,8 @@ export class CircuitBreaker {
 
   recordFailure(retryAfterSec?: number): void {
     // Decay first: five failures spread across a week are not the same signal
-    // as five in a row, but the counter never reset except on success, so a
-    // route that fails rarely eventually tripped anyway. Any gap longer than
-    // the decay window starts the count over.
+    // as five in a row, so any gap longer than the decay window starts the
+    // count over.
     const now = monotonicSec();
     if (this.lastFailureAt !== null && now - this.lastFailureAt > FAILURE_DECAY_SEC) {
       this.failures = 0;
@@ -107,17 +102,15 @@ export class CircuitBreaker {
   /**
    * Immediately trip — use on 429 or explicit rate-limit response.
    *
-   * Counts the failure as well as tripping. It did not, so `usage` reported
-   * `tripped: true, failures: 0` for a route knocked out by a 429 — a
-   * contradiction on the surface an orchestrator is told to consult before
-   * delegating, and one that makes a real trip look like a bookkeeping bug.
-   * A 429 IS a failed attempt; the threshold path already counts it.
+   * Counts the failure as well as tripping: a 429 IS a failed attempt, and
+   * without the count `usage` reports `tripped: true, failures: 0` — a
+   * contradiction on the surface an orchestrator consults before delegating.
    */
   trip(retryAfterSec?: number): void {
-    // monotonicSec, matching recordFailure — this field feeds the decay
-    // window and lastFailureWallMs, both of which read it as monotonic
-    // seconds. An epoch value here would put the last failure decades in the
-    // future and disable decay entirely.
+    // monotonicSec, matching recordFailure — the decay window and
+    // lastFailureWallMs both read this field as monotonic seconds. An epoch
+    // value would put the last failure decades in the future and disable decay
+    // entirely.
     this.failures += 1;
     this.lastFailureAt = monotonicSec();
     this.trippedAt = monotonicSec();
@@ -196,9 +189,9 @@ export class CircuitBreaker {
       this.trippedAt = null;
       return;
     }
-    // Clamped on the way back in too: state written by an older build (or a
-    // hand-edited file) can carry a deadline centuries out, and hydrating it
-    // verbatim would make the ceiling above trivially bypassable.
+    // Clamped on the way back in too: a persisted or hand-edited file can
+    // carry a deadline centuries out, and hydrating it verbatim would make the
+    // ceiling above trivially bypassable.
     this.cooldown = Math.min(remainingSec, MAX_COOLDOWN_SEC);
     this.trippedAt = monotonicSec();
   }

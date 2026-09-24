@@ -1,10 +1,9 @@
 /**
  * Leaderboard-based quality scoring for harness-dispatch.
  *
- * Ported from `coding_agent.leaderboard`. Fetches Arena ELO scores from the
- * public wulong.dev API with a 24-hour cache. Scores are used as routing
- * quality multipliers — higher ELO → higher routing priority within the
- * same tier.
+ * Fetches Arena ELO scores from the public wulong.dev API with a 24-hour
+ * cache. Scores are used as routing quality multipliers — higher ELO → higher
+ * routing priority within the same tier.
  *
  * API reference: https://blog.wulong.dev/posts/i-built-an-auto-updating-archive-of-every-ai-arena-leaderboard/
  * Endpoint:      https://api.wulong.dev/arena-ai-leaderboards/v1/leaderboard?name=code
@@ -20,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Constants — load-bearing, preserved from Python
+// Constants — load-bearing
 // ---------------------------------------------------------------------------
 
 export const LEADERBOARD_URL =
@@ -50,10 +49,8 @@ export const QUALITY_MIN = 0.6;
 export const QUALITY_MAX = 1.0;
 export const QUALITY_DEFAULT = 0.85;
 
-// User-Agent required — API returns 403 without it
-// Built from VERSION rather than pinned: this was hardcoded at "0.4" and
-// still said so at 0.9, so the one host this tool ever contacts was told a
-// version that had been wrong for five releases.
+// User-Agent required — API returns 403 without it. Built from VERSION rather
+// than pinned, so the one host this tool contacts is told the truth.
 const USER_AGENT = `harness-dispatch/${VERSION} (leaderboard quality scoring)`;
 
 // ---------------------------------------------------------------------------
@@ -68,7 +65,6 @@ const USER_AGENT = `harness-dispatch/${VERSION} (leaderboard quality scoring)`;
  */
 function resolveBenchmarkPath(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  // Walk up a few levels looking for data/coding_benchmarks.json.
   // Handles src/, dist/, or deeper nesting.
   let dir = here;
   for (let i = 0; i < 6; i += 1) {
@@ -99,7 +95,7 @@ export function normalizeElo(elo: number): number {
 /**
  * Case-insensitive partial-match lookup.
  *
- * Three-tier fallback (identical to Python `_fuzzy_match`):
+ * Three-tier fallback:
  *   1. Exact match after lowercasing.
  *   2. Query is a substring of a leaderboard name → prefer the shortest
  *      match (most specific entry that still contains the query).
@@ -161,14 +157,13 @@ export interface QualityScoreResult {
 /**
  * Disk cache for the fetched leaderboard.
  *
- * The 24h TTL lived only in process memory, and every detached supervisor
- * bootstraps its own Router, so each one refetched. Sharing the cache on disk
- * makes the TTL mean what it says: one request a day for the machine, not one
- * per process. It also means a slow or down api.wulong.dev delays routing once
- * rather than once per process — the fetch sits on the routing path with an
- * 8s timeout.
+ * Every detached supervisor bootstraps its own Router, so an in-memory-only
+ * TTL means one fetch per process. On disk the 24h TTL means what it says: one
+ * request a day for the machine, and a slow or down api.wulong.dev delays
+ * routing once rather than once per process — the fetch sits on the routing
+ * path with an 8s timeout.
  *
- * Single file, last-write-wins, and that is safe here in a way it was NOT for
+ * Single file, last-write-wins, which is safe here in a way it is not for
  * breaker state: this is one shared value rather than a map being merged, so
  * concurrent writers write the same thing instead of clobbering each other's
  * entries. Still written atomically, so a reader never sees a half file.
@@ -223,13 +218,12 @@ export class LeaderboardCache {
   /**
    * Whether to consult the Arena leaderboard at all. OFF by default.
    *
-   * The router used to lean on public ELO scores to rank routes and to
-   * auto-derive tiers, which meant the default install made an outbound
-   * request to a third party before it could route, and let a benchmark
-   * nobody here controls reorder a user's own subscriptions. Neither is what
-   * the tool is for: the routing decision that matters is "which of the
-   * things I already pay for is available", and that is answered by the
-   * `tier` and `weight` a user sets in config.
+   * On by default, the tool would make an outbound request to a third party
+   * before it could route, and let a benchmark nobody here controls reorder a
+   * user's own subscriptions. Neither is what the tool is for: the routing
+   * decision that matters is "which of the things I already pay for is
+   * available", and that is answered by the `tier` and `weight` a user sets in
+   * config.
    *
    * With this off, getQualityScore returns a neutral 1.0 (thinking-level
    * multipliers still apply) and autoTier returns the configured tier, so
@@ -297,12 +291,10 @@ export class LeaderboardCache {
 
     // 0. Disabled: quality is neutral and ranking falls to tier/weight.
     //
-    // This deliberately skips the BUNDLED benchmark file as well as the live
-    // fetch. Gating only the network call would swap a current third-party
-    // ranking for a stale shipped one — still a benchmark nobody here
-    // controls deciding the order of a user's own subscriptions, just an
-    // older one. thinkingLevel survives because it is a property of the route
-    // the user configured, not a score handed down from outside.
+    // Skips the BUNDLED benchmark file as well as the live fetch. Gating only
+    // the network call would swap a current third-party ranking for a stale
+    // shipped one. thinkingLevel survives because it is a property of the
+    // route the user configured, not a score handed down from outside.
     if (!this.enabled) {
       return { qualityScore: mult, elo: null };
     }
@@ -389,17 +381,11 @@ export class LeaderboardCache {
       const controller = new AbortController();
       // The abort must span the BODY, not just the headers.
       //
-      // `clearTimeout` sat in a `finally` around `fetch()` alone, so the
-      // timeout was cancelled the moment response headers arrived and
-      // `response.json()` then ran with nothing bounding it. Measured against
-      // a server that answered 200 and never sent a body: still pending after
-      // 15s, abort never fired, against an 8s ceiling — and this sits on the
-      // routing path, awaited per candidate, so a half-dead endpoint wedges
-      // every dispatch indefinitely. The class docblock above promises the
-      // opposite ("delays routing once ... with an 8s timeout").
-      //
-      // The fix is only the placement of `clearTimeout`: it now runs after the
-      // body has been read, so one timer covers the whole exchange.
+      // `clearTimeout` runs after the body has been read, so one timer covers
+      // the whole exchange. Cancelling it once response headers arrive leaves
+      // `response.json()` unbounded, and a server that answers 200 and never
+      // sends a body then wedges every dispatch — this sits on the routing
+      // path, awaited per candidate.
       const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       try {
         const response = await fetch(LEADERBOARD_URL, {
@@ -453,9 +439,8 @@ export class LeaderboardCache {
   // ------------------------------------------------------------------
 
   private loadBenchmarkFileSync(): void {
-    // Sync load at construction to match Python behaviour (loaded once at
-    // startup). Swallow all errors — missing/malformed file just falls back
-    // to the Arena API.
+    // Loaded once at startup; a missing or malformed file just falls back to
+    // the Arena API.
     try {
       if (!existsSync(this.benchmarkPath)) {
         return;
