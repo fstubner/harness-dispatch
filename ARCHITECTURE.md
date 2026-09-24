@@ -9,7 +9,7 @@ it spawns.
 |---|---|---|
 | MCP server (stdio) | `bin.ts` (default) | Child of the calling agent |
 | HTTP server | `bin.ts serve` -> `http/server.ts` | Long-lived local server |
-| CLI | `bin.ts status \| doctor \| configure \| usage \| auth` | One-shot |
+| CLI | `bin.ts status \| doctor \| configure \| usage \| auth`, each command in `cli/` | One-shot |
 | Job supervisor | `job-runner.ts --supervisor` | Detached, spawned by the above |
 
 All four share `router.ts` and the config in `config.ts`. There is no server
