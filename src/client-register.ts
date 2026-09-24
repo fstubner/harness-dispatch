@@ -1,32 +1,20 @@
 /**
  * Register this server with the MCP clients installed on this machine.
  *
- * WHY THIS EXISTS. Setup was a copy-paste job: `configure` printed a JSON
- * snippet and the user pasted it somewhere. Nobody owned the result, and on
- * the maintainer's machine that produced, at the same time — a Claude Code
- * entry launching a directory renamed away months earlier, a session hook
- * pointing at the same dead path, and a working Cursor entry with no
- * `--config`, so the two clients disagreed about which routes existed while
- * both appeared to work.
+ * Hand-pasted registration leaves nobody owning the result: entries launching
+ * a directory that was renamed, or missing `--config` so two clients disagree
+ * about which routes exist while both appear to work.
  *
- * WHY IT IS PARANOID. This project has failed at exactly this before. v0.1.0
- * shipped a setup command that wrote `~/.claude/CLAUDE.md` and a hooks entry;
- * v0.2.0 removed the command and neither artifact was ever cleaned up. Both
- * were still on the machine seven minor versions later, the hook failing
- * silently every session. So:
- *
- *  - only the two config shapes actually opened on a real machine are written;
- *  - every write is backed up, merged, and swapped in atomically;
- *  - an entry that already exists and differs is REPORTED, never overwritten
- *    without consent — that Cursor entry was good, and a blind writer would
- *    have destroyed a working setup in the name of fixing it;
- *  - removal ships in the same change as writing, so the ENTRY is never left
- *    orphaned when someone changes their mind. Backups are bounded rather than
- *    removed with it — see pruneOwnBackups for why undoing a registration is
- *    the worst moment to delete the record of what it replaced.
+ * This edits other applications' config files, and an entry it writes can
+ * outlive the feature that wrote it. So: only the two config shapes actually
+ * opened on a real machine are written; every write is backed up, merged and
+ * swapped in atomically; an entry that already exists and differs is REPORTED,
+ * never overwritten without consent, because a hand-tuned entry may well be
+ * the correct one; and removal ships alongside writing so the entry is never
+ * orphaned. Backups outlive removal — see pruneOwnBackups.
  *
  * It writes MCP server registration and nothing else — no instructions, no
- * hooks, no behavioural configuration. That is the part that rotted last time.
+ * hooks, no behavioural configuration.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -47,18 +35,13 @@ export interface ServerEntry {
 /**
  * What a client's config says about us right now.
  *
- * `absent` is the client not being installed — not a fault, and not something
- * to offer. `unreadable` covers a config that will not parse: that is the
- * other application's problem, and the one thing we must not do is rewrite a
- * file we could not understand.
- */
-/**
  * `absent`: neither the config file nor the client's command exists — not
- * installed. `missing-file`: the command is on PATH but the file is not there
- * yet (Claude Code writes it on first interactive launch) — the file will be
- * created with just our entry, which the client accepts as a user-scope
- * registration (checked against Claude Code 2.1.258: `claude mcp list` shows
- * the server from a file holding only `mcpServers`).
+ * installed, which is not a fault. `missing-file`: the command is on PATH but
+ * the file is not there yet (Claude Code writes it on first interactive
+ * launch); it will be created holding just our entry, which the client accepts
+ * as a user-scope registration (Claude Code 2.1.258). `unreadable`: a config
+ * that will not parse — the other application's problem, and a file we cannot
+ * understand is one we must not rewrite.
  */
 export type ClientState =
   | "absent"
@@ -84,11 +67,10 @@ export interface ClientPlan {
 /**
  * The entry to write.
  *
- * The `--config` path is absolute on purpose. A relative path — or none, which
- * is what the machine's Cursor entry had — silently falls back to the shipped
- * defaults, so the client quietly ignores every edit made to the config file
- * and disagrees with the client next to it about which routes exist. Both look
- * like they work, which is what made it survive.
+ * The `--config` path is absolute on purpose. A relative path, or none,
+ * silently falls back to the shipped defaults, so the client quietly ignores
+ * every edit made to the config file and disagrees with the client next to it
+ * about which routes exist — while both look like they work.
  */
 export function desiredEntry(configPath: string, command: string[]): ServerEntry {
   const [cmd, ...prefix] = command;
@@ -100,14 +82,13 @@ export function desiredEntry(configPath: string, command: string[]): ServerEntry
  *
  * A global install is preferred because it needs no network and starts faster.
  * `npx -y harness-dispatch` is the fallback, not an absolute path into a
- * checkout: an absolute path is precisely what broke here, and the failure was
- * invisible for months.
+ * checkout: an absolute path stops working, invisibly, the moment the
+ * directory moves.
  *
- * This resolves PATH, which the read-only inspector deliberately refuses to do
- * — but the trade is opposite. There, a wrong guess reports a healthy install
- * as broken. Here, guessing "harness-dispatch" when nothing by that name is
- * installed writes an entry that can never spawn, which is the exact silent
- * breakage this whole feature exists to end.
+ * This resolves PATH, which the read-only inspector refuses to do — but the
+ * trade is opposite. There, a wrong guess reports a healthy install as broken;
+ * here, guessing "harness-dispatch" when nothing by that name is installed
+ * writes an entry that can never spawn.
  */
 export function launchCommand(env: NodeJS.ProcessEnv = process.env): string[] {
   return resolvesOnPath("harness-dispatch", env)
@@ -118,20 +99,16 @@ export function launchCommand(env: NodeJS.ProcessEnv = process.env): string[] {
 /**
  * Launch the build you are running RIGHT NOW, by absolute path.
  *
- * This is the one form the rest of this module argues against, and it exists
- * because refusing to write it did not stop anyone needing it. On a
- * development checkout the installed-package form is actively wrong: with
+ * The one form the rest of this module argues against, and it exists because
+ * on a development checkout the installed-package form is actively wrong: with
  * nothing installed globally, `npx -y harness-dispatch` fetches the published
- * version, so registering it would silently swap a checkout that is commits
- * ahead for an older release — a downgrade that looks like a successful setup.
- * That is exactly what `connect` found on the maintainer's machine, where the
- * hand-written absolute entry was the correct one.
+ * version, silently swapping a checkout that is commits ahead for an older
+ * release.
  *
- * The trade is real and unchanged: an absolute path stops working the moment
- * the directory is renamed or deleted, silently, which is the failure that
- * started all of this. It is opt-in per run, the path is printed before it is
- * written, and `doctor` fails on a client entry naming a path that has gone —
- * so the failure mode this reintroduces is the one thing already checked for.
+ * The trade is real: an absolute path stops working, silently, the moment the
+ * directory is renamed or deleted. It is opt-in per run, the path is printed
+ * before it is written, and `doctor` fails on a client entry naming a path
+ * that has gone.
  */
 export function devLaunchCommand(entryPath: string): string[] {
   return ["node", path.resolve(entryPath)];
@@ -174,9 +151,8 @@ function readJsonFile(file: string): { ok: true; value: unknown } | { ok: false 
 /**
  * What would change, per client, if we registered right now.
  *
- * Reports only. Nothing here writes, so a caller can show this and ask — which
- * is the whole point, given one of the entries this was written for was
- * already correct.
+ * Reports only. Nothing here writes, so a caller can show this and ask before
+ * touching an entry that may already be correct.
  */
 export function planClientWrites(
   configPath: string,
@@ -215,8 +191,8 @@ export function planClientWrites(
  * Copy the file next to itself before touching it.
  *
  * Same directory, so it inherits that directory's permissions rather than
- * landing somewhere world-readable: `~/.claude.json` holds live API keys on
- * this machine, and a backup is a copy of those keys.
+ * landing somewhere world-readable: `~/.claude.json` holds live API keys, and
+ * a backup is a copy of those keys.
  */
 async function backup(file: string, stamp: string): Promise<string> {
   const dest = `${file}.harness-dispatch-backup-${stamp}`;
@@ -235,21 +211,12 @@ const NOT_AN_OBJECT =
  * The parsed file as something safe to spread into, or undefined if it is not.
  *
  * "Does it parse" and "is it the shape I am about to merge into" are different
- * questions, and only the first was being asked. An ARRAY parses fine and then
- * gets spread into an object: an array-rooted file came back as
- * `{"0":…,"1":…,"mcpServers":{…}}` and `connect` reported success. A backup is
- * always taken so it was recoverable — but this module edits OTHER
- * applications' config files, which is the highest-consequence thing this
- * product does, and it must not rewrite a shape it does not understand.
+ * questions: an ARRAY parses fine and then gets spread into an object, so an
+ * array-rooted file comes back as `{"0":…,"1":…,"mcpServers":{…}}`. Applied at
+ * EVERY level this spreads, not just the root — guarding only the root leaves
+ * `{"mcpServers": "oops"}` rekeyed into `{"0":"o","1":"o",…}`.
  *
- * `null`/absent stays mergeable: that is an empty file, which is the ordinary
- * first-run case.
- *
- * Applied at EVERY level this spreads, not just the root. The first version
- * guarded the root only, so `{"mcpServers": "oops"}` still had its string
- * rekeyed into `{"0":"o","1":"o",…}` and reported success — the same defect
- * one level down, found by the very next acceptance pass. Anywhere a spread
- * happens, this question has to be asked first.
+ * `null`/absent stays mergeable: that is an empty file, the first-run case.
  */
 function mergeableRoot(value: unknown): Record<string, unknown> | undefined {
   if (value === null || value === undefined) return {};
@@ -261,18 +228,13 @@ function mergeableRoot(value: unknown): Record<string, unknown> | undefined {
  * Keep the last few backups of a file, not all of them ever taken.
  *
  * Every write AND every removal takes one, so a few rounds of connect/--remove
- * left a pile of copies of `~/.claude.json` — a file this module's own comment
- * describes as holding live API keys — with nothing to prune them, no flag to
- * decline them, and no command to list them. An acceptance pass found one
- * already sitting on the maintainer's machine, and the module header's claim
- * that "nothing this creates is left orphaned" was true of the entry and false
- * of these.
+ * otherwise leave a pile of copies of `~/.claude.json` — a file that holds
+ * live API keys — with nothing to prune them.
  *
- * Bounded rather than removed entirely, and NOT cleared by `--remove`: the
- * moment someone undoes a registration is the worst possible moment to destroy
- * the copy of what it looked like before. Only files matching the name this
- * function itself writes are touched, so a backup anyone else made is not ours
- * to delete.
+ * Bounded rather than removed entirely, and NOT cleared by `--remove`: undoing
+ * a registration is the worst possible moment to destroy the copy of what it
+ * looked like before. Only files matching the name this function writes are
+ * touched, so a backup anyone else made is not ours to delete.
  */
 async function pruneOwnBackups(file: string): Promise<void> {
   const dir = path.dirname(file);
@@ -297,8 +259,7 @@ async function pruneOwnBackups(file: string): Promise<void> {
  * Write a sibling temp file, parse it BACK, and only then rename over the
  * original — rename within a directory is atomic, so a reader sees the old
  * file or the new one and never a truncated one. A half-written
- * `~/.claude.json` costs someone their entire Claude Code configuration, which
- * is a far worse outcome than failing to register.
+ * `~/.claude.json` costs someone their entire Claude Code configuration.
  */
 async function writeJsonAtomic(
   file: string,
@@ -311,16 +272,10 @@ async function writeJsonAtomic(
 
   // Carry the original's permissions onto the replacement.
   //
-  // `rename` swaps the INODE, so the file that survives has the temp file's
-  // mode — 0644 under a typical umask — not its own. A `~/.claude.json` that
-  // Claude Code created 0600 therefore came back group- and world-readable,
-  // and that file holds live API keys: registering a server would have
-  // silently widened access to somebody's credentials.
-  //
-  // The same module's backup() uses copyFile, which preserves mode, so the two
-  // halves of one write path disagreed about whether the mode mattered. Found
-  // by reading during an acceptance pass; POSIX-only, and unreproducible on
-  // the Windows machine it was found on, which is exactly why it survived.
+  // `rename` swaps the INODE, so without this the surviving file has the temp
+  // file's mode — 0644 under a typical umask. A `~/.claude.json` created 0600
+  // would come back group- and world-readable, silently widening access to the
+  // live API keys it holds. POSIX-only.
   const mode = await stat(file)
     .then((s) => s.mode & 0o777)
     .catch(() => opts.createMode);
@@ -350,9 +305,8 @@ export interface WriteOutcome {
  * Register (or re-register) this server in one client's config.
  *
  * Merges: every other server, and every field of an existing entry we do not
- * set, is preserved. `env` in particular holds live API keys on real machines
- * — dropping it while "fixing" an entry would break unrelated servers and leak
- * nothing but the user's afternoon.
+ * set, is preserved. `env` in particular holds live API keys, so dropping it
+ * while "fixing" an entry would break unrelated servers.
  */
 export async function writeClientEntry(
   plan: ClientPlan,
@@ -376,18 +330,11 @@ export async function writeClientEntry(
     );
     return { ...base, action: "written" };
   }
-  // An entry someone edited by hand is not ours to replace unasked.
-  //
-  // `removeClientEntry` has always refused this and this function did not, so
-  // the protection existed on the half where the cost is lower. An acceptance
-  // pass found OPERATIONS.md promising it for both and measured `connect
-  // --clients claude-code` printing the hand-written entry it was about to
-  // destroy and then destroying it, exit 0.
-  //
-  // `consented` is what the interactive path passes after showing the diff and
-  // getting a yes — that prompt IS the consent, so nothing changes for someone
-  // watching it happen. Naming a client on the command line is not the same
-  // thing: it says which client, not "and overwrite whatever I put there".
+  // An entry someone edited by hand is not ours to replace unasked;
+  // `removeClientEntry` refuses the same thing. `consented` is what the
+  // interactive path passes after showing the diff and getting a yes. Naming a
+  // client on the command line is not the same: it says which client, not
+  // "and overwrite whatever I put there".
   if (plan.state === "differs" && opts.consented !== true) {
     return {
       ...base,
@@ -423,12 +370,10 @@ export async function writeClientEntry(
 /**
  * Take our entry back out.
  *
- * Ships with the writer, not later: entries this tool created outliving the
- * feature that created them is the documented way this project has already
- * gone wrong once. An entry that no longer looks like ours is reported and
- * LEFT ALONE — someone edited it deliberately, and deleting a hand-tuned entry
- * because it no longer matches our template would be its own version of the
- * same mistake.
+ * Ships with the writer so an entry this tool created never outlives it. An
+ * entry that no longer looks like ours is reported and LEFT ALONE — someone
+ * edited it deliberately, and deleting a hand-tuned entry because it no longer
+ * matches our template would be its own mistake.
  */
 export async function removeClientEntry(
   plan: ClientPlan,
@@ -454,12 +399,9 @@ export async function removeClientEntry(
     return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
   }
   const root = mergeableRoot(parsed.value);
-  // Removal was already safe without this: our entry cannot be present in a
-  // file this shape, so the `ENTRY_KEY in servers` check below returns
-  // "unchanged" before anything is written. Kept anyway so both writers ask
-  // the same question of the same file, rather than one of them being correct
-  // by accident of a later check. A test for it was written and then deleted —
-  // it passed with the guard removed, so it was evidence of nothing.
+  // Removal is safe without this — our entry cannot be present in a file this
+  // shape — but both writers ask the same question of the same file rather
+  // than one being correct by accident of a later check.
   if (root === undefined) return { ...base, action: "unchanged" };
   const serversValue = mergeableRoot(root[plan.serversKey]);
   if (serversValue === undefined) return { ...base, action: "unchanged" };
