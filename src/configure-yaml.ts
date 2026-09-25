@@ -77,7 +77,9 @@ function baseUrlForYaml(
 ): string | undefined {
   const raw = svc.baseUrl;
   if (raw === undefined || raw === "") return raw;
-  const ref = config.envRefs?.get(raw);
+  // This route's OWN reference — never another route's whose variable merely
+  // resolves to the same text (see RouterConfig.fieldRefs).
+  const ref = config.fieldRefs?.get(svc.name)?.baseUrl;
   if (ref !== undefined) return ref;
   if (!opts.redactLiterals) return raw;
   try {
@@ -104,10 +106,10 @@ function baseUrlForYaml(
  * breaks the project's own invariant (plugin/commands/setup.md: "API keys MUST
  * be written as ${ENV_VAR} references — never literal").
  *
- * `config.envRefs` maps the resolved value back to the reference that produced
- * it, so a key from `${GROQ_API_KEY}` round-trips exactly. `config.apiKeyRefs`
- * covers the case envRefs structurally cannot — a reference whose variable is
- * unset, which resolves to "" and so has no distinct value to key on.
+ * `config.fieldRefs` holds each route's own raw `api_key` text, read before
+ * interpolation, so a key from `${GROQ_API_KEY}` round-trips exactly and a
+ * literal never picks up another route's reference. `config.apiKeyRefs` covers
+ * the whole-`${VAR}` case, including a variable that is unset here.
  *
  * A key written as a LITERAL has no reference to restore, and that case splits
  * by destination: `--yes` writes to disk, where the literal already lives and
@@ -125,7 +127,7 @@ function apiKeyForYaml(
   // tells the two apart — without it, `configure --yes --force` on such a
   // shell silently rewrites a working config with the key deleted.
   if (svc.apiKey === undefined || svc.apiKey === "") return config.apiKeyRefs?.get(svc.name);
-  const ref = config.envRefs?.get(svc.apiKey) ?? config.apiKeyRefs?.get(svc.name);
+  const ref = config.fieldRefs?.get(svc.name)?.apiKey ?? config.apiKeyRefs?.get(svc.name);
   if (ref !== undefined) return ref;
   if (!opts.redactLiterals) return svc.apiKey;
   // protocol.apiKeyEnvVar is the var the CHILD CLI reads, which is only a

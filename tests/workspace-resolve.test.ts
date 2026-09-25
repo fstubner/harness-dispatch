@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyWorkspace,
@@ -55,9 +55,13 @@ beforeEach(async () => {
   dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "hr-wsres-")));
   jobDir = path.join(dir, "job");
   await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
+  // The fixtures below build their workspaces under `dir`, and discard only
+  // deletes inside the workspaces directory — as real workspaces always are.
+  vi.stubEnv("HARNESS_DISPATCH_WORKSPACES_DIR", path.join(dir, "workspaces"));
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -78,7 +82,7 @@ async function makeRepo(name: string): Promise<string> {
 describe("copy workspaces", () => {
   async function copyRun(): Promise<WorkspaceRun> {
     const repo = await makeRepo("proj");
-    const wsRoot = path.join(dir, "ws");
+    const wsRoot = path.join(dir, "workspaces", "ws");
     const copy = path.join(wsRoot, "workspace");
     await fs.mkdir(copy, { recursive: true });
     await fs.copyFile(path.join(repo, "app.js"), path.join(copy, "app.js"));
@@ -291,7 +295,7 @@ describe("git_worktree workspaces", () => {
   async function worktreeRun(): Promise<WorkspaceRun> {
     const repo = await makeRepo("gproj");
     const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
-    const wsRoot = path.join(dir, "gws");
+    const wsRoot = path.join(dir, "workspaces", "gws");
     const worktree = path.join(wsRoot, "worktree");
     await fs.mkdir(wsRoot, { recursive: true });
     await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
@@ -483,7 +487,7 @@ describe("git_worktree workspaces", () => {
     await git(["commit", "-qm", "add sub"], repo);
     const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
 
-    const wsRoot = path.join(dir, "subws");
+    const wsRoot = path.join(dir, "workspaces", "subws");
     const worktree = path.join(wsRoot, "worktree");
     await fs.mkdir(wsRoot, { recursive: true });
     await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
@@ -545,7 +549,7 @@ describe("a copy job recorded before changed-file tracking", () => {
   // crash and not a patch built by some other route.
   it("is refused, naming the workspace so the work can still be recovered by hand", async () => {
     const repo = await makeRepo("legacy");
-    const wsRoot = path.join(dir, "legacy-ws");
+    const wsRoot = path.join(dir, "workspaces", "legacy-ws");
     const copy = path.join(wsRoot, "workspace");
     await fs.mkdir(copy, { recursive: true });
     await fs.writeFile(path.join(copy, "app.js"), "const a = 9;\n", "utf8");
@@ -589,7 +593,7 @@ describe("the copy patch must never touch what the copy excluded", () => {
    */
   it("excludes .git from the patch entirely", async () => {
     const repo = await makeRepo("excl");
-    const wsRoot = path.join(dir, "excl-ws");
+    const wsRoot = path.join(dir, "workspaces", "excl-ws");
     const copy = path.join(wsRoot, "workspace");
     await fs.mkdir(copy, { recursive: true });
     // A copy as copyTree makes one: source files, no .git.
@@ -889,4 +893,33 @@ describe("the size refusal names the right directory", () => {
       `still in ${path.dirname(repo)}\n`,
     );
   }, 60_000);
+});
+
+describe("discard only deletes inside the workspaces directory", () => {
+  // The workspace root comes from the job's own result record, and discard
+  // deletes it recursively. A record pointing elsewhere — edited by hand, or by
+  // a delegated agent with shell access to the state directory — made discard
+  // delete that directory: measured in an audit, an unrelated folder removed by
+  // `workspace discard --force`.
+  it("refuses a recorded root outside it, even with force", async () => {
+    const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "hr-victim-")));
+    await fs.writeFile(path.join(outside, "important.txt"), "precious", "utf8");
+    try {
+      const run: WorkspaceRun = {
+        policy: "copy",
+        originalWorkingDir: dir,
+        effectiveWorkingDir: outside,
+        workspaceRoot: outside,
+        isolated: true,
+        securityBoundary: "project_state_and_process_cwd",
+        changedFiles: [],
+      };
+      const out = await discardWorkspace("job-1", run, { force: true });
+      expect(out.discarded).toBe(false);
+      expect(out.message).toMatch(/not inside the workspaces directory/);
+      expect(await fs.readFile(path.join(outside, "important.txt"), "utf8")).toBe("precious");
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
 });

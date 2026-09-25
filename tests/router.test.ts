@@ -1550,6 +1550,102 @@ describe("Router.route", () => {
     }
   });
 
+  it("does not reclaim another project's root that a dispatch has only just marked", async () => {
+    // A dispatch marks its project root, then creates its run directory inside
+    // it. In between, the root holds nothing but the marker — exactly what an
+    // abandoned root looks like — and another project's dispatch used to
+    // delete it, so the first dispatch's mkdir failed with ENOENT. Measured in
+    // an audit: 19% of setups failed with two projects starting together, 46%
+    // with three. The marker's age is what separates "just marked" from
+    // "abandoned", and an old one must still be reclaimed.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hd-proj-"));
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-ws-home-"));
+    const stale = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+    const midSetup = path.join(wsHome, "other-project-0badc0de");
+    await fs.mkdir(midSetup, { recursive: true });
+    await fs.writeFile(path.join(midSetup, ".harness-dispatch-root"), "marker", "utf8");
+
+    const abandonedMarkerOnly = path.join(wsHome, "gone-project-feedface");
+    await fs.mkdir(abandonedMarkerOnly, { recursive: true });
+    await fs.writeFile(path.join(abandonedMarkerOnly, ".harness-dispatch-root"), "marker", "utf8");
+    await fs.utimes(path.join(abandonedMarkerOnly, ".harness-dispatch-root"), stale, stale);
+
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const router = new Router(
+      makeConfig([svc]),
+      quota,
+      { alpha: new StubDispatcher("alpha") },
+      leaderboard,
+    );
+    const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const { result } = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+      expect(result.success).toBe(true);
+      await expect(
+        fs.stat(midSetup),
+        "a root another dispatch had just marked was deleted mid-setup",
+      ).resolves.toBeDefined();
+      await expect(
+        fs.stat(abandonedMarkerOnly),
+        "an abandoned marker-only root survived — the leak is back",
+      ).rejects.toThrow();
+    } finally {
+      if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
+  it("freshens a project's marker every time it dispatches", async () => {
+    // The marker's age is what tells another project's prune that a root is in
+    // use. A project whose root was created days ago keeps its old marker, so
+    // without freshening, dispatching into it again leaves a root that looks
+    // abandoned in the moment before its new run directory exists.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hd-proj-"));
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-ws-home-"));
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const router = new Router(
+      makeConfig([svc]),
+      quota,
+      { alpha: new StubDispatcher("alpha") },
+      leaderboard,
+    );
+    const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const first = await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+      const marker = path.join(
+        path.dirname(first.result.workspace!.workspaceRoot!),
+        ".harness-dispatch-root",
+      );
+      const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      await fs.utimes(marker, old, old);
+
+      await router.route("noop", [], root, {
+        hints: { safetyProfile: "workspace_edit", workspacePolicy: "copy" },
+      });
+
+      const age = Date.now() - (await fs.stat(marker)).mtimeMs;
+      expect(age, "the marker kept its old age through a new dispatch").toBeLessThan(60_000);
+    } finally {
+      if (originalDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
   it("prunes git worktrees older than the retention window before creating a new one", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-worktree-prune-"));
     await git(root, ["init"]);

@@ -1585,3 +1585,29 @@ describe("a route block in the wrong shape does not turn detection on", () => {
     );
   });
 });
+
+describe("capability values are checked like every other number", () => {
+  // `capabilities.*` are nested, so the per-key numeric checks never saw them,
+  // and they are multiplied straight into the route's score. Measured in an
+  // audit: `review: .inf` made a weak route win every comparison, and a word
+  // like `review: high` silently became full capability, 1.0 — with no warning.
+  it.each([".inf", ".nan", "high", "-1"])("review: %s is warned about and ignored", async (bad) => {
+    const p = await writeTmpYaml(
+      "caps.yaml",
+      [
+        "endpoints:",
+        "  - name: ep",
+        "    base_url: http://localhost:11434/v1",
+        "    model: m",
+        `    capabilities: { execute: 0, plan: 0.2, review: ${bad} }`,
+        "",
+      ].join(NL),
+    );
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const caps = cfg.services["ep"]!.capabilities;
+    expect(Number.isFinite(caps.review), `review loaded as ${caps.review}`).toBe(true);
+    expect(caps.review).toBe(1.0); // the built-in default, not the bad value
+    expect(caps.plan).toBe(0.2); // the valid neighbours are untouched
+    expect((cfg.configWarnings ?? []).join(" ")).toMatch(/capabilities\.review/);
+  });
+});

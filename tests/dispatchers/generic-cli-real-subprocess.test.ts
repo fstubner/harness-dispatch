@@ -175,3 +175,43 @@ describe("a harness that exceeds the output limit", () => {
     expect(res.output.length, "what arrived before the limit was dropped").toBeGreaterThan(0);
   }, 60_000);
 });
+
+describe.skipIf(process.platform !== "win32")("a multi-line prompt through a Windows .cmd shim", () => {
+  // cmd.exe ends an argument at the first line break. A three-line prompt
+  // passed as an argument to a `.cmd` shim reached the program as its first
+  // line only — and the run reported success. Found in an audit. The same
+  // prompt reaches an `.exe` intact, so only the shim case is refused.
+  async function shim(): Promise<string> {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "hd-cmdshim-"));
+    writeFileSync(path.join(dir, "echo-args.js"), 'console.log("ARGV=" + JSON.stringify(process.argv.slice(2)));\n');
+    const cmd = path.join(dir, "fakeagent.cmd");
+    writeFileSync(cmd, '@ECHO off\r\nnode "%~dp0\echo-args.js" %*\r\n');
+    return cmd;
+  }
+
+  function shimRoute(command: string): ServiceConfig {
+    return {
+      ...nodeRoute(""),
+      command,
+      protocol: { args: ["--prompt", "{{prompt}}"], output: { mode: "text" } },
+    } as unknown as ServiceConfig;
+  }
+
+  it("refuses rather than silently dropping every line after the first", async () => {
+    const d = new GenericCliDispatcher(shimRoute(await shim()));
+    const res = await d.dispatch("line one\nline two\nline three", [], process.cwd());
+    expect(res.success, "a truncated prompt was reported as a success").toBe(false);
+    expect(res.inputRejected).toBe(true);
+    expect(res.error).toMatch(/line break/);
+  }, 30_000);
+
+  it("still runs a single-line prompt through the same shim", async () => {
+    const d = new GenericCliDispatcher(shimRoute(await shim()));
+    const res = await d.dispatch("just one line", [], process.cwd());
+    expect(res.success, res.error).toBe(true);
+    expect(res.output).toContain('"just one line"');
+  }, 30_000);
+});

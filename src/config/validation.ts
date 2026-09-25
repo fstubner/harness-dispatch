@@ -233,6 +233,28 @@ export function warnMistypedRouteValues(
 ): void {
   for (const [key, value] of Object.entries(entry)) {
     if (value === null || value === undefined) continue;
+    if (key === "capabilities" && typeof value === "object" && !Array.isArray(value)) {
+      // Nested, so the per-key checks below never saw these. They are
+      // multiplied straight into the route's score: `review: .inf` made a
+      // route win every comparison, `.nan` left the order to config position,
+      // and a word like `review: high` silently became full capability, 1.0 —
+      // all without a warning. Dropped, like the fields below, so the default
+      // really does apply.
+      const caps = value as Record<string, unknown>;
+      for (const task of ["execute", "plan", "review"] as const) {
+        const v = caps[task];
+        if (v === undefined || v === null) continue;
+        if (!readsAsNumber(v) || Number(v) < 0) {
+          warnings.push(
+            `${label}: capabilities.${task} is ${describeValue(v)}, which is not a number ` +
+              `of 0 or more — IGNORED, and the built-in default applies instead. Routing ` +
+              `multiplies this into the route's score for ${task} tasks.`,
+          );
+          delete caps[task];
+        }
+      }
+      continue;
+    }
     if (NUMERIC_ROUTE_KEYS.has(key) && !readsAsNumber(value)) {
       // Per field, for the same reason the range branch varies its text:
       // routing does not read `timeout_ms` or the token caps, so the routing

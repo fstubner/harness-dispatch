@@ -42,7 +42,7 @@ export async function cmdConfigure(
       (svc) =>
         svc.apiKey !== undefined &&
         svc.apiKey !== "" &&
-        config.envRefs?.get(svc.apiKey) === undefined &&
+        config.fieldRefs?.get(svc.name)?.apiKey === undefined &&
         config.apiKeyRefs?.get(svc.name) === undefined,
     );
     // The note has to name everything it redacted: a base_url can carry a
@@ -50,7 +50,7 @@ export async function cmdConfigure(
     // rest of the preview was sanitised when it was not.
     const urlRedacted = Object.values(config.services).some((svc) => {
       if (svc.baseUrl === undefined || svc.baseUrl === "") return false;
-      if (config.envRefs?.get(svc.baseUrl) !== undefined) return false;
+      if (config.fieldRefs?.get(svc.name)?.baseUrl !== undefined) return false;
       try {
         const url = new URL(svc.baseUrl);
         return (

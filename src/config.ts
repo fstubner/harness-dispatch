@@ -543,6 +543,38 @@ function markUnsetApiKeys(
  * route another route's variable name. Keyed by route name, which is unique
  * and is what `configure` has in hand when it rewrites the file.
  */
+/** Per route, the raw `api_key` / `base_url` text wherever it holds a `${...}`. */
+function collectFieldRefs(
+  parsed: Record<string, unknown>,
+): Map<string, { apiKey?: string; baseUrl?: string }> {
+  const refs = new Map<string, { apiKey?: string; baseUrl?: string }>();
+  const hasRef = (v: unknown): v is string => typeof v === "string" && v.includes("${");
+  const note = (name: unknown, entry: Record<string, unknown>): void => {
+    if (typeof name !== "string") return;
+    const found: { apiKey?: string; baseUrl?: string } = {};
+    if (hasRef(entry.api_key)) found.apiKey = entry.api_key;
+    if (hasRef(entry.base_url)) found.baseUrl = entry.base_url;
+    if (found.apiKey !== undefined || found.baseUrl !== undefined) refs.set(name, found);
+  };
+  for (const key of ["clis", "endpoints"] as const) {
+    const list = parsed[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry !== null && typeof entry === "object") {
+        const e = entry as Record<string, unknown>;
+        note(e.name, e);
+      }
+    }
+  }
+  const services = parsed.services;
+  if (services !== null && typeof services === "object" && !Array.isArray(services)) {
+    for (const [name, entry] of Object.entries(services as Record<string, unknown>)) {
+      if (entry !== null && typeof entry === "object") note(name, entry as Record<string, unknown>);
+    }
+  }
+  return refs;
+}
+
 function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {
   const refs = new Map<string, string>();
   const note = (name: unknown, value: unknown): void => {
@@ -784,6 +816,7 @@ async function loadConfigInner(
   const unsetEnvVars = new Set<string>();
   const envRefs = new Map<string, string>();
   const apiKeyRefs = new Map<string, string>();
+  let fieldRefs = new Map<string, { apiKey?: string; baseUrl?: string }>();
   if (path) {
     try {
       const text = await fs.readFile(path, "utf-8");
@@ -794,6 +827,7 @@ async function loadConfigInner(
         for (const [name, ref] of collectApiKeyRefs(parsed as Record<string, unknown>)) {
           apiKeyRefs.set(name, ref);
         }
+        fieldRefs = collectFieldRefs(parsed as Record<string, unknown>);
         raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
       }
     } catch (err: unknown) {
@@ -854,6 +888,7 @@ async function loadConfigInner(
       ...legacyCfg,
       ...(envRefs.size > 0 ? { envRefs } : {}),
       ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
+      ...(fieldRefs.size > 0 ? { fieldRefs } : {}),
     };
     if (envVarWarning !== undefined) {
       return { ...withRefs, configWarnings: [...(withRefs.configWarnings ?? []), envVarWarning] };
@@ -970,6 +1005,7 @@ async function loadConfigInner(
     ...topLevelSettings(raw, warnings),
     ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
+    ...(fieldRefs.size > 0 ? { fieldRefs } : {}),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;

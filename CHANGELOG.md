@@ -8,6 +8,38 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Isolated dispatches in different projects no longer break each other.**
+  A `copy` or `git_worktree` dispatch cleans up other projects' abandoned
+  workspace folders — and could delete one that another project's dispatch had
+  created a moment earlier and not yet filled, failing that dispatch. Measured:
+  with two projects starting together, 19% of setups failed; with three, 46%.
+  Now 0 of 370 in the same test. A folder counts as abandoned only once it has
+  gone unused for the retention period.
+
+- **A multi-line prompt is no longer silently cut to its first line on
+  Windows.** A route that passes the prompt as a command-line argument through
+  a `.cmd` wrapper lost everything after the first line break, and still
+  reported success. It is now refused with an explanation. Routes that take
+  the prompt on stdin — Codex, Claude Code, Cursor — are unaffected.
+  **Behaviour change:** Antigravity passes its prompt as an argument, so where
+  it is installed as `agy.cmd`, a prompt with line breaks (including any
+  dispatch with files attached) is now refused rather than truncated.
+
+- **`workspace discard` only deletes inside the workspaces directory.** It
+  deleted whatever directory a job's result record named, so a record edited by
+  hand — or by a delegated agent with shell access — could point it at any
+  folder. It now refuses anything outside, even with `force`.
+
+- **`configure` no longer turns one route's address into another route's
+  variable.** When two routes shared a base URL and one was written as
+  `${VAR}`, regenerating the config wrote both as `${VAR}`, so in any shell
+  without that variable the other route disappeared. Each route now keeps its
+  own form.
+
+- **Capability values are checked.** `capabilities: { review: high }` silently
+  became full capability, and `.inf` made a route win every comparison — with
+  no warning. Invalid values are now reported and ignored.
+
 - **A server running old code now says so.** A long-lived MCP server reloads
   its config on every call but keeps the code it started with, and an
   upgrade or unreleased rebuild keeps the same version number — so nothing

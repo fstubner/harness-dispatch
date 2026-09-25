@@ -12,7 +12,7 @@
 
 import { execFile as execFileCb } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -957,6 +957,17 @@ export interface DiscardResult {
  * removed through git, with a filesystem sweep afterwards for the wrapper
  * directory git does not own.
  */
+/** Whether `dir` lies inside the workspaces directory, compared as written and as resolved. */
+async function isInsideWorkspacesBase(dir: string): Promise<boolean> {
+  const base = workspacesBase();
+  if (isUnderOrEqual(dir, base)) return true;
+  try {
+    return isUnderOrEqual(await realpath(dir), await realpath(base));
+  } catch {
+    return false;
+  }
+}
+
 export async function discardWorkspace(
   jobId: string,
   run: WorkspaceRun,
@@ -980,6 +991,27 @@ export async function discardWorkspace(
       await git(["worktree", "prune"], run.originalWorkingDir).catch(() => undefined);
     }
     return { jobId, discarded: true, message: `Already gone: ${root}` };
+  }
+
+  // Only ever delete inside the workspaces directory.
+  //
+  // `root` comes from the job's own result record on disk, and discard removes
+  // it recursively. A record pointing anywhere else — edited by hand, or by a
+  // delegated agent with shell access to the state directory — made discard
+  // delete that directory instead: measured in an audit, an unrelated folder
+  // removed by `workspace discard --force`. Compared both as declared and as
+  // resolved, since the recorded root is the resolved path (on macOS `/var`
+  // resolves to `/private/var`).
+  if (!(await isInsideWorkspacesBase(root))) {
+    return {
+      jobId,
+      discarded: false,
+      message:
+        `Refused: this job's workspace is recorded as ${root}, which is not inside the ` +
+        `workspaces directory (${workspacesBase()}), so it is not something this tool created ` +
+        `and it will not delete it. If it really is a leftover workspace — for instance ` +
+        `HARNESS_DISPATCH_WORKSPACES_DIR has changed since the dispatch — delete it by hand.`,
+    };
   }
 
   // Refuse to destroy the only copy of work the project does not have.

@@ -214,8 +214,14 @@ const WINDOWS_CMD_SHIM_MAX = 8_180;
  */
 function commandLineBudget(command: string): number {
   if (process.platform !== "win32") return POSIX_ARG_MAX;
+  return runsThroughCmdExe(command) ? WINDOWS_CMD_SHIM_MAX : WINDOWS_CMDLINE_MAX;
+}
+
+/** Whether cross-spawn will run this command through cmd.exe (see above). */
+function runsThroughCmdExe(command: string): boolean {
+  if (process.platform !== "win32") return false;
   const ext = path.extname(command).toLowerCase();
-  return ext === ".exe" || ext === ".com" ? WINDOWS_CMDLINE_MAX : WINDOWS_CMD_SHIM_MAX;
+  return ext !== ".exe" && ext !== ".com";
 }
 
 /**
@@ -773,6 +779,31 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // would refuse work that route can do. Saying which routes CAN take it is
     // the useful half of the message.
     if (!protocol.stdin) {
+      // cmd.exe ends an argument at the first line break, so a multi-line
+      // prompt handed to a `.cmd` shim arrives as its first line only — and the
+      // run still reports success. Measured: a three-line prompt reached the
+      // program as `["--prompt","line one"]`, success=true. Refuse instead,
+      // like the length limit below; the same prompt reaches an `.exe` intact.
+      if (runsThroughCmdExe(resolved.command) && args.some((a) => /[\r\n]/.test(a))) {
+        yield {
+          type: "completion",
+          result: {
+            output: "",
+            service: this.id,
+            success: false,
+            error:
+              `prompt has line breaks, and ${this.id} passes it as a command-line argument ` +
+              `through a Windows command shim (${path.basename(resolved.command)}), which cuts ` +
+              `an argument at its first line break — the rest would be silently dropped. Use a ` +
+              `route that reads the prompt from stdin (codex, claude, cursor do), point this ` +
+              `route's command at the program's .exe, or set protocol stdin: true if it can read one.`,
+            // Not the route's fault, so not the route's failure.
+            inputRejected: true,
+            durationMs: 0,
+          },
+        };
+        return;
+      }
       const budget = commandLineBudget(resolved.command);
       const commandLineChars = commandLineLength(resolved.command, args);
       if (commandLineChars > budget) {
