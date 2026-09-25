@@ -263,3 +263,48 @@ describe("detect: survives a regenerate", () => {
     expect(out).toContain("detect: true");
   });
 });
+
+describe("a route only ever gets its own ${VAR} back", () => {
+  // configure rewrote the file by looking references up by RESOLVED VALUE, so
+  // a route whose literal base_url happened to equal another route's
+  // env-resolved one came back as that route's `${VAR}` — and in any shell
+  // without the variable, the literal route vanished. Found in an audit.
+  it("keeps a literal base_url literal when another route's variable resolves to it", async () => {
+    vi.stubEnv("HD_RT_SHARED_URL", "https://api.example.test/v1");
+    const src = path.join(dir, "shared.yaml");
+    await fs.writeFile(
+      src,
+      [
+        "detect: false",
+        "endpoints:",
+        "  - name: via_env",
+        "    base_url: ${HD_RT_SHARED_URL}",
+        "    model: m1",
+        "    billing_kind: free_quota",
+        "    paid_usage_possible: false",
+        "  - name: literal",
+        "    base_url: https://api.example.test/v1",
+        "    model: m2",
+        "    billing_kind: free_quota",
+        "    paid_usage_possible: false",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      const printed = await capture(() => main(["configure", "--print", "--config", src]));
+      expect(printed.code).toBe(0);
+      const block = (name: string): string => {
+        const start = printed.stdout.indexOf(`name: ${name}`);
+        const next = printed.stdout.indexOf("- name:", start + 1);
+        return printed.stdout.slice(start, next === -1 ? undefined : next);
+      };
+      expect(block("via_env")).toContain("base_url: ${HD_RT_SHARED_URL}");
+      expect(block("literal"), "the literal route was given another route's variable").toContain(
+        "base_url: https://api.example.test/v1",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});

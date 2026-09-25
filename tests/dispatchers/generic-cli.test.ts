@@ -415,7 +415,11 @@ describe("GenericCliDispatcher", () => {
   });
 
   it("appends a file list to the prompt using fileListHeader/fileListBullet when configured", async () => {
-    mockFound();
+    // A file list makes the prompt multi-line, and on Windows an extensionless
+    // command goes through cmd.exe, which cuts arguments at line breaks — so
+    // the route would be refused there. This test is about how the prompt is
+    // assembled, not that refusal, so on Windows it resolves to a native .exe.
+    mockFound(process.platform === "win32" ? "C:/bin/my-cli.exe" : "/usr/local/bin/my-cli");
     runSubprocessMock.mockResolvedValue(ok({ stdout: "ok" }));
     const d = new GenericCliDispatcher(
       svc({

@@ -509,6 +509,19 @@ export interface RouterConfig {
    */
   apiKeyRefs?: ReadonlyMap<string, string>;
   /**
+   * ROUTE NAME -> the raw `api_key` / `base_url` text, for each one written
+   * with a `${VAR}` in it, read before interpolation.
+   *
+   * `configure` rewrites the file from resolved values and needs the original
+   * reference back. Looking it up by resolved VALUE (envRefs) gave a literal
+   * the reference of any other route whose variable happened to resolve to the
+   * same text — two routes on one base URL, one via `${VAR}`, both came out as
+   * `${VAR}`, and the literal one vanished in any shell without the variable.
+   * Keyed by route, so a route only ever gets its own reference back. Never
+   * serialize this map.
+   */
+  fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string }>;
+  /**
    * Ceiling on agent CLIs running at once, machine-wide (default 4).
    *
    * Not a throughput knob — a resource guard. Every dispatch spawns a

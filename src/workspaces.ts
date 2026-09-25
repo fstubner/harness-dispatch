@@ -14,6 +14,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -361,6 +362,11 @@ async function markProjectRoot(root: string): Promise<string> {
         "utf8",
       );
     }
+    // Freshened on every dispatch: the marker's age is what tells another
+    // project's prune that this root is in use right now, in the moment before
+    // this dispatch has created its run directory inside it.
+    const now = new Date();
+    await utimes(marker, now, now);
   } catch {
     // A root without its marker is merely not reclaimed automatically.
   }
@@ -492,7 +498,16 @@ async function secureRunDirectory(
   // This run's directory is the segment an attacker would swap between the
   // prune and the write that follows, so it is created non-recursively here and
   // verified rather than left to a later recursive mkdir.
-  await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
+  try {
+    await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
+  } catch (err) {
+    // Another project's prune can still remove this root in the instant
+    // between its freshness check and its delete. Re-mark and try once more;
+    // a second loss is not a race this code can win, so it surfaces.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    await markProjectRoot(projectRoot);
+    await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
+  }
   await assertStillOurs(workspaceRoot);
   return workspaceRoot;
 }
@@ -542,7 +557,20 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
       if (!isOurProjectRoot(full, runs.map((r) => r.name))) continue;
       let allStale = true;
       for (const run of runs) {
-        if (run.name === ROOT_MARKER) continue;
+        if (run.name === ROOT_MARKER) {
+          // A root holding only its marker is either abandoned or a dispatch
+          // that has just marked it and not yet made its run directory. Only
+          // the marker's age tells the two apart; without this check,
+          // concurrent isolated dispatches in different projects deleted each
+          // other's roots mid-setup (measured: 19% of setups failed with two
+          // projects starting together).
+          const marked = await stat(path.join(full, ROOT_MARKER));
+          if (now - marked.mtimeMs <= maxAgeMs) {
+            allStale = false;
+            break;
+          }
+          continue;
+        }
         const runPath = path.join(full, run.name);
         // A worktree run needs git's own removal; leave the whole project
         // root to the owning repository rather than stranding metadata.

@@ -227,7 +227,11 @@ describe("Antigravity (GenericCliDispatcher + ANTIGRAVITY_PROTOCOL)", () => {
   });
 
   it("appends file context to the prompt and adds external dirs via --add-dir", async () => {
-    mockFound();
+    // A file list makes the prompt multi-line, and on Windows an extensionless
+    // command goes through cmd.exe, which cuts arguments at line breaks — so
+    // the route would be refused there. This test is about how the prompt is
+    // assembled, not that refusal, so on Windows it resolves to a native .exe.
+    mockFound(process.platform === "win32" ? "C:/bin/agy.exe" : "/usr/local/bin/agy");
     mockStream([exit()]);
     const dispatcher = new GenericCliDispatcher(baseSvc());
     await runToCompletion(
