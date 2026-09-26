@@ -25,6 +25,10 @@
  * cannot quietly come back.
  */
 
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+
 import { JOB_ID_RE, newJobId } from "../../src/jobs/store.js";
 import { workspaceRootFor, workspaceRunId } from "../../src/workspaces.js";
 
@@ -81,4 +85,17 @@ export function aRunDirName(routeName = "alpha"): string {
  */
 export function workspaceRootPathFor(projectDir: string): string {
   return workspaceRootFor(projectDir);
+}
+
+/**
+ * A quota state file no other test and no later run will read.
+ *
+ * Tests used names like `":memory-tokens:"`, which nothing special-cases: on
+ * Windows the name is invalid and every write failed quietly, and on POSIX it
+ * became a real file in the checkout, so a second `npm test` read the first
+ * run's counts back and failed (`expected 105, got 210`).
+ */
+export function throwawayQuotaStateFile(): string {
+  const root = process.env.HARNESS_DISPATCH_STATE_DIR ?? os.tmpdir();
+  return path.join(root, `quota-${randomUUID()}.json`);
 }

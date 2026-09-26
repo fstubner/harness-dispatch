@@ -140,9 +140,10 @@ function sameEntry(a: unknown, b: ServerEntry): boolean {
   return e.args.every((v, i) => v === b.args[i]);
 }
 
-function readJsonFile(file: string): { ok: true; value: unknown } | { ok: false } {
+function readJsonFile(file: string): { ok: true; value: unknown; text: string } | { ok: false } {
   try {
-    return { ok: true, value: JSON.parse(readFileSync(file, "utf8")) };
+    const text = readFileSync(file, "utf8");
+    return { ok: true, value: JSON.parse(text), text };
   } catch {
     return { ok: false };
   }
@@ -263,10 +264,20 @@ async function pruneOwnBackups(file: string): Promise<void> {
  * file or the new one and never a truncated one. A half-written
  * `~/.claude.json` costs someone their entire Claude Code configuration.
  */
-async function writeJsonAtomic(
+/**
+ * The client rewrote its config between our read and our replace. The caller
+ * merges again from the new contents; replacing anyway would erase whatever
+ * the client had just written.
+ */
+export class ConcurrentChangeError extends Error {}
+
+/** How many times a merge is redone before giving up on a busy file. */
+const MERGE_ATTEMPTS = 3;
+
+export async function writeJsonAtomic(
   file: string,
   value: unknown,
-  opts: { createMode?: number } = {},
+  opts: { createMode?: number; basedOn?: string } = {},
 ): Promise<void> {
   const tmp = `${file}.harness-dispatch-tmp-${process.pid}`;
   const text = `${JSON.stringify(value, null, 2)}\n`;
@@ -300,6 +311,17 @@ async function writeJsonAtomic(
       `Refusing to write ${file}: the replacement did not parse back as JSON (${String(err)}). ` +
         "The original file is untouched.",
     );
+  }
+  // Last look before the swap. Claude Code rewrites ~/.claude.json often, and
+  // a write of its landing between our read and this rename was lost. This
+  // narrows that window to the rename itself; no lock is shared with the
+  // client that could close it.
+  if (opts.basedOn !== undefined) {
+    const now = await readFile(file, "utf8").catch(() => undefined);
+    if (now !== opts.basedOn) {
+      await rm(tmp, { force: true });
+      throw new ConcurrentChangeError(`${file} changed while it was being updated`);
+    }
   }
   await rename(tmp, file);
 }
@@ -357,26 +379,33 @@ export async function writeClientEntry(
     };
   }
 
-  const parsed = readJsonFile(plan.file);
-  if (!parsed.ok) {
-    return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
-  }
-  const root = mergeableRoot(parsed.value);
-  if (root === undefined) return { ...base, action: "skipped", reason: NOT_AN_OBJECT };
-  const serversValue = mergeableRoot(root[plan.serversKey]);
-  if (serversValue === undefined) {
-    return { ...base, action: "skipped", reason: `its \`${plan.serversKey}\` is not a JSON object` };
-  }
-  const servers = { ...serversValue };
-  const existing = mergeableRoot(servers[ENTRY_KEY]);
-  if (existing === undefined) {
-    return { ...base, action: "skipped", reason: `its existing \`${ENTRY_KEY}\` entry is not a JSON object` };
-  }
-  servers[ENTRY_KEY] = { ...existing, ...plan.desired };
+  let backupPath: string | undefined;
+  for (let attempt = 1; ; attempt++) {
+    const parsed = readJsonFile(plan.file);
+    if (!parsed.ok) {
+      return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
+    }
+    const root = mergeableRoot(parsed.value);
+    if (root === undefined) return { ...base, action: "skipped", reason: NOT_AN_OBJECT };
+    const serversValue = mergeableRoot(root[plan.serversKey]);
+    if (serversValue === undefined) {
+      return { ...base, action: "skipped", reason: `its \`${plan.serversKey}\` is not a JSON object` };
+    }
+    const servers = { ...serversValue };
+    const existing = mergeableRoot(servers[ENTRY_KEY]);
+    if (existing === undefined) {
+      return { ...base, action: "skipped", reason: `its existing \`${ENTRY_KEY}\` entry is not a JSON object` };
+    }
+    servers[ENTRY_KEY] = { ...existing, ...plan.desired };
 
-  const backupPath = await backup(plan.file, opts.stamp);
-  await writeJsonAtomic(plan.file, { ...root, [plan.serversKey]: servers });
-  return { ...base, action: "written", backupPath };
+    backupPath ??= await backup(plan.file, opts.stamp);
+    try {
+      await writeJsonAtomic(plan.file, { ...root, [plan.serversKey]: servers }, { basedOn: parsed.text });
+      return { ...base, action: "written", backupPath };
+    } catch (err) {
+      if (!(err instanceof ConcurrentChangeError) || attempt >= MERGE_ATTEMPTS) throw err;
+    }
+  }
 }
 
 /**
@@ -406,22 +435,29 @@ export async function removeClientEntry(
     };
   }
 
-  const parsed = readJsonFile(plan.file);
-  if (!parsed.ok) {
-    return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
-  }
-  const root = mergeableRoot(parsed.value);
-  // Removal is safe without this — our entry cannot be present in a file this
-  // shape — but both writers ask the same question of the same file rather
-  // than one being correct by accident of a later check.
-  if (root === undefined) return { ...base, action: "unchanged" };
-  const serversValue = mergeableRoot(root[plan.serversKey]);
-  if (serversValue === undefined) return { ...base, action: "unchanged" };
-  const servers = { ...serversValue };
-  if (!(ENTRY_KEY in servers)) return { ...base, action: "unchanged" };
-  delete servers[ENTRY_KEY];
+  let backupPath: string | undefined;
+  for (let attempt = 1; ; attempt++) {
+    const parsed = readJsonFile(plan.file);
+    if (!parsed.ok) {
+      return { ...base, action: "skipped", reason: "its config file does not parse as JSON" };
+    }
+    const root = mergeableRoot(parsed.value);
+    // Removal is safe without this — our entry cannot be present in a file this
+    // shape — but both writers ask the same question of the same file rather
+    // than one being correct by accident of a later check.
+    if (root === undefined) return { ...base, action: "unchanged" };
+    const serversValue = mergeableRoot(root[plan.serversKey]);
+    if (serversValue === undefined) return { ...base, action: "unchanged" };
+    const servers = { ...serversValue };
+    if (!(ENTRY_KEY in servers)) return { ...base, action: "unchanged" };
+    delete servers[ENTRY_KEY];
 
-  const backupPath = await backup(plan.file, opts.stamp);
-  await writeJsonAtomic(plan.file, { ...root, [plan.serversKey]: servers });
-  return { ...base, action: "written", backupPath };
+    backupPath ??= await backup(plan.file, opts.stamp);
+    try {
+      await writeJsonAtomic(plan.file, { ...root, [plan.serversKey]: servers }, { basedOn: parsed.text });
+      return { ...base, action: "written", backupPath };
+    } catch (err) {
+      if (!(err instanceof ConcurrentChangeError) || attempt >= MERGE_ATTEMPTS) throw err;
+    }
+  }
 }

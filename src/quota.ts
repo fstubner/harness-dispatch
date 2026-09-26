@@ -89,6 +89,9 @@ export interface QuotaStateJSON {
 }
 
 /** Mutable quota snapshot for one service, updated reactively. */
+/** How long a rate-limit header reading keeps affecting a route's score. */
+const HEADER_READING_TTL_SEC = 300;
+
 export class QuotaState {
   service: string;
   remaining: number | null = null;
@@ -103,6 +106,14 @@ export class QuotaState {
   }
 
   get score(): number {
+    // A rate-limit reading describes a window, most often a minute. Kept
+    // forever, a route seen at 0 remaining scored 0 for the rest of a
+    // long-lived server's life — hours — long after its window reset. Past
+    // this age it no longer counts; a route still exhausted answers 429, and
+    // the breaker handles that.
+    if (this.source === "headers" && monotonicSec() - this.updatedAtSec > HEADER_READING_TTL_SEC) {
+      return 1.0;
+    }
     if (this.remaining !== null && this.limit && this.limit > 0) {
       return Math.max(0, Math.min(1, this.remaining / this.limit));
     }
@@ -558,6 +569,26 @@ export class QuotaCache {
       // defect this field exists to prevent.
       if (err instanceof LockNotAcquiredError) return;
       this.persistError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /**
+   * Keep trying to save pending counts, for a process about to exit.
+   *
+   * saveLocalCountsSync defers on a busy lock and leaves the delta for the
+   * next recorded result to write. A detached runner has no next result: it
+   * exits, and a deferred delta went with it — a repaired route's first
+   * success lost, leaving it excluded as never-succeeded. Bounded past the
+   * lock's 10 s staleness window, so a lock left by a crashed holder is taken
+   * and the save lands.
+   */
+  async flushBeforeExit(deadlineMs = 15_000): Promise<void> {
+    const end = Date.now() + deadlineMs;
+    for (;;) {
+      this.saveLocalCountsSync();
+      const done = Object.keys(this.pendingDelta).length === 0 || this.persistError !== undefined;
+      if (done || Date.now() >= end) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 

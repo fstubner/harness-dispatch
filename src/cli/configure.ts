@@ -1,6 +1,6 @@
 /** `configure`: generate or preview config.yaml. */
 
-import { existsSync, promises as fs } from "node:fs";
+import { constants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config.js";
 import { billingIsBlocked, buildRouteBilling } from "../billing.js";
@@ -150,15 +150,32 @@ export async function cmdConfigure(
   // reference, so `configure` can write a real credential to disk. POSIX only;
   // Windows ignores the mode.
   //
-  // Applied on create only: `writeFile`'s mode does not change an existing
-  // file's permissions, so re-running `configure` will not silently tighten a
-  // file the user deliberately made group-readable.
+  // Applied on create only: a replaced file keeps its existing permissions,
+  // so re-running `configure` will not silently tighten a file the user
+  // deliberately made group-readable.
   // The default target lives in the state directory, which a first run has
   // not created yet. Same mode the rest of the state dir gets.
   await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  await fs.writeFile(target, stampGenerated(yamlText), { encoding: "utf-8", mode: 0o600 });
+  // Replacing a file the user wrote keeps a copy of it, and the new file goes
+  // in by rename: a plain overwrite truncates first, so an interrupted write
+  // or a full disk left neither version, and a rewrite that dropped a setting
+  // left nothing to recover it from.
+  let mode = 0o600;
+  let backup: string | undefined;
+  if (existsSync(target)) {
+    mode = (await fs.stat(target)).mode & 0o777;
+    if (!regenerate) {
+      backup = `${target}.${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
+      await fs.copyFile(target, backup, constants.COPYFILE_EXCL);
+    }
+  }
+  const tmp = `${target}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, stampGenerated(yamlText), { encoding: "utf-8", mode, flag: "wx" });
+  await fs.rename(tmp, target);
   const absoluteTarget = path.resolve(target);
-  process.stdout.write(`Wrote ${absoluteTarget}.\n`);
+  process.stdout.write(
+    `Wrote ${absoluteTarget}.${backup !== undefined ? ` The previous version is at ${path.resolve(backup)}.` : ""}\n`,
+  );
 
   // Offer to register with clients rather than ending setup with JSON to
   // paste: nobody owns a pasted entry, and the paths in it go stale silently.

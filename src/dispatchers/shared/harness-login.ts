@@ -19,6 +19,7 @@
  */
 
 import spawn from "cross-spawn";
+import { killTree } from "./kill-tree.js";
 
 export type LoginState = "logged_in" | "logged_out" | "unknown";
 
@@ -40,13 +41,18 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
       child = spawn(command, ["login", "status"], {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        // Own process group on POSIX, so the timeout below reaches the whole
+        // tree, as for a dispatch.
+        detached: process.platform !== "win32",
       });
     } catch {
       finish("unknown");
       return;
     }
     timer = setTimeout(() => {
-      child.kill();
+      // The tree, not the child: `codex` is usually a .cmd shim on Windows,
+      // and killing only cmd.exe left the real Codex process running.
+      killTree(child, "SIGKILL");
       finish("unknown");
     }, timeoutMs);
     timer.unref();

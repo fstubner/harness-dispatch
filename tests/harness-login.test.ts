@@ -74,3 +74,34 @@ describe("codexLoginState when spawn throws synchronously", () => {
     await expect(codexLoginState("codex\u0000broken")).resolves.toBe("unknown");
   });
 });
+
+describe("a login check that hangs", () => {
+  // The timeout killed only the direct child. `codex` is usually a .cmd shim
+  // on Windows, so that was cmd.exe, and the real Codex process kept running.
+  // Found in an audit.
+  it("is stopped with everything it started", async () => {
+    const pidFile = path.join(dir, "hung.pid");
+    const script = "require('fs').writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 30000)";
+    let file: string;
+    if (process.platform === "win32") {
+      file = path.join(dir, "hung.cmd");
+      writeFileSync(file, `@echo off\r\nnode -e "${script}" "${pidFile}"\r\n`);
+    } else {
+      file = path.join(dir, "hung");
+      writeFileSync(file, `#!/bin/sh\nnode -e "${script}" "${pidFile}"\n`);
+      chmodSync(file, 0o755);
+    }
+    expect(await codexLoginState(file, 1_500)).toBe("unknown");
+    const { readFileSync } = await import("node:fs");
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    await new Promise((r) => setTimeout(r, 1_500));
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    if (alive) process.kill(pid);
+    expect(alive, "the process behind the shim outlived the timeout").toBe(false);
+  }, 20_000);
+});

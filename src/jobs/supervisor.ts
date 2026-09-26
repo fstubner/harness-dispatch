@@ -344,6 +344,21 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
  * compute-on-read and never persists its verdict, because the owner might
  * still be alive; here the owner is definitionally gone.
  */
+/**
+ * Still waiting for a slot, as the job's status file says NOW.
+ *
+ * The drainer and the orphan sweep act on a list read earlier, and a cancel,
+ * another server's drain or another server's sweep can change a job in
+ * between. Writing back the earlier copy undid that change: a cancelled job
+ * came back as `queued`, and a job another server had just released was
+ * marked orphaned and never ran. Read again right before writing, the window
+ * is the gap between one read and one write.
+ */
+async function stillWaiting(jobDir: string): Promise<JobStatus | undefined> {
+  const now = await readJson<JobStatus>(path.join(jobDir, "status.json")).catch(() => undefined);
+  return now?.slotQueued === true && now.status === "queued" ? now : undefined;
+}
+
 export async function orphanStrandedSlotQueue(): Promise<number> {
   // Only when nothing is left to work the queue. Several servers routinely
   // share one jobs root (`connect` registers with Claude Code AND Cursor, and
@@ -355,8 +370,10 @@ export async function orphanStrandedSlotQueue(): Promise<number> {
   if ((await countLiveSupervisors()) > 0) return 0;
   const jobs = await listAsyncJobs().catch(() => []);
   let marked = 0;
-  for (const status of jobs) {
-    if (status.slotQueued !== true) continue;
+  for (const listed of jobs) {
+    if (listed.slotQueued !== true) continue;
+    const status = await stillWaiting(listed.jobDir);
+    if (status === undefined) continue;
     const { slotQueued: _cleared, ...rest } = status;
     await updateStatus(status.jobDir, {
       ...rest,
@@ -457,7 +474,9 @@ async function drainSlotQueueLocked(
     // retry that runs the same task twice. Held here, the excess stays
     // slotQueued — reported as waiting — until supervisors free up.
     if (limit !== null && activeJobs >= SUPERVISOR_POOL_SIZE * jobsPerSupervisor(limit)) break;
-    const { slotQueued: _dropped, ...cleared } = status;
+    const now = await stillWaiting(jobDir);
+    if (now === undefined) continue;
+    const { slotQueued: _dropped, ...cleared } = now;
     await updateStatus(jobDir, {
       ...cleared,
       updatedAt: timestamp(),

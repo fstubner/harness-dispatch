@@ -8,6 +8,80 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`configure --yes --force` keeps a copy of the file it replaces, and more of
+  what you wrote.** It overwrote the file in place with no backup, and dropped
+  `billing_confidence` — so a route marked `unknown` became trusted — and
+  `resource_weight`. The old file is now saved beside the new one, the new one
+  goes in by rename, and both fields are written back.
+
+- **`doctor --allow-paid` without `--live` reports the real configuration.**
+  The flag widened every route before the checks ran, so metered routes read
+  as allowed and ready, and doctor passed, for a configuration the next
+  dispatch would still block. It now applies to the live probe only.
+
+- **`connect --clients <name>` fails when that client is not installed.** It
+  wrote nothing and exited 0.
+
+- **`status --json --watch` prints one JSON document per line**, instead of
+  pretty-printed documents back to back that parsed neither whole nor line by
+  line.
+
+- **An endpoint that sends an error and then stalls no longer outlives its
+  time limit.** Measured before: still waiting at 8 s on a 1 s limit.
+
+- **`doctor`'s Codex login check no longer leaves Codex running.** On timeout
+  it killed only the `.cmd` wrapper; it now stops the whole process tree.
+
+- **A cancel no longer signals processes from earlier fallback attempts**,
+  whose ids may by then belong to something unrelated.
+
+- **`dispatch` refuses `models` without `mode: "fanout"`**, which it used to
+  ignore, running whichever single route the router picked.
+
+- **A config saved twice in quick succession no longer loses the second
+  save.** The server recorded the file's timestamp after reading it, so an
+  edit landing in between counted as loaded and never was.
+
+- **`job_status` no longer promises every job**; it lists the 20 most recent,
+  with a count of the rest.
+
+- **Short bearer tokens are masked.** A token of 12 characters or fewer was
+  printed whole.
+
+- **Endpoint results keep only rate-limit headers.** Every response header,
+  `set-cookie` included, was written into each job's result file.
+
+- **The context preamble for chained jobs stays within its 24,000-character
+  cap.** Its fixed text, separators and notices were added on top: 24,718
+  characters in one measurement.
+
+- **`connect` no longer erases a change a client makes to its own config at
+  the same moment.** It now checks the file is unchanged just before replacing
+  it, and merges again if not.
+
+- **Rotating the dispatch log from two processes at once can no longer throw
+  away the archive.**
+
+- **A cancel, or a server starting, no longer races a queued job's release.**
+  A cancelled job could be written back as queued, and a job another server
+  had just released could be marked orphaned and never run. Each is now
+  re-read right before it is written, and a cancelled job leaves the slot
+  queue.
+
+- **A job whose result was saved is not reported as failed** when a later
+  write (its summary file, its status) fails; the write failure is reported
+  alongside the result instead.
+
+- **Usage counts deferred by a busy lock are saved before a runner exits**,
+  rather than lost with it — which could leave a repaired route excluded as
+  never having succeeded.
+
+- **A rate-limit reading stops counting after five minutes.** A route seen at
+  zero remaining was ranked last for the rest of a long-running server's life.
+
+- **Tests no longer leave files in the checkout on Linux and macOS**, where a
+  second `npm test` failed on the first run's leftovers.
+
 - **Codex answers on Windows are no longer thrown away as failures.** A run
   was failed as "could not spawn any child process" whenever Codex's sandbox
   refused two spawns — and Codex logs each refusal twice, so one intermittent

@@ -248,6 +248,17 @@ describe("jobs that do not fit the context budget", () => {
     expect(preamble).toContain(ids[4]!);
   });
 
+  it("keeps the whole preamble within the cap, not only the job sections", async () => {
+    // The fixed text, the separators, truncation notices and the omitted-jobs
+    // notice were added on top of the 24,000 characters. Measured in an audit:
+    // 16 large jobs gave 24,718. Sixteen is the most the schema allows.
+    const many = Array.from({ length: 16 }, (_, n) => `job-17000000006${String(n).padStart(2, "0")}-cccccc${String(n).padStart(2, "0")}`);
+    for (const [i, id] of many.entries()) await plantBig(id, `BIG-${i}`);
+    const preamble = await buildContextPreamble(many);
+    expect(preamble.length).toBeLessThanOrEqual(24_000);
+    expect(preamble).toContain("omitted");
+  });
+
   it("says nothing about omissions when everything fits", async () => {
     const small = "job-1700000000560-bbbbbbbb";
     const jd = path.join(jobsDir, small);

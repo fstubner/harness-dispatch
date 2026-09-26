@@ -20,6 +20,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAsyncJob, retryJob } from "../src/jobs.js";
+import { throwawayQuotaStateFile } from "./support/fixtures.js";
 
 /**
  * Wait for a started job to reach a terminal state.
@@ -78,7 +79,7 @@ async function buildDeps() {
   });
   const config = { services: { alpha: svc("alpha"), beta: svc("beta") } };
   const dispatchers = { alpha: makeDispatcher("alpha"), beta: makeDispatcher("beta") } as never;
-  const quota = new QuotaCache(dispatchers, { stateFile: ":memory-retry:" });
+  const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
   const leaderboard = new LeaderboardCache();
   const router = new Router(config as never, quota, dispatchers, leaderboard);
   return {

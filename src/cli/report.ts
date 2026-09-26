@@ -16,7 +16,11 @@ export async function cmdStatus(
       runtime.router,
       runtime.leaderboard,
     );
-    return opts.json ? `${JSON.stringify(status, null, 2)}\n` : `${renderStatusText(status)}\n`;
+    // Watching with --json prints one compact document per line (JSON Lines):
+    // pretty-printed documents back to back parse neither as one JSON value
+    // nor line by line.
+    if (opts.json) return `${JSON.stringify(status, null, opts.watch ? undefined : 2)}\n`;
+    return `${renderStatusText(status)}\n`;
   };
 
   if (!opts.watch) {

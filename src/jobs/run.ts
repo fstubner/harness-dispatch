@@ -49,6 +49,8 @@ export async function runJob(
   // terminal status and re-mark a completed job "running" (then "orphaned"
   // forever in the list view). The terminal paths await it before writing.
   let finished = false;
+  /** Set once result.json holds the run's outcome — see the catch below. */
+  let saved: DispatchResult | undefined;
   let pendingBeat: Promise<unknown> = Promise.resolve();
   const heartbeat = setInterval(() => {
     if (finished) return;
@@ -232,6 +234,7 @@ export async function runJob(
     await writeFile(path.join(jobDir, "output", "stdout.log"), redact(result.output), { encoding: "utf8", mode: 0o600 });
     await writeFile(path.join(jobDir, "output", "stderr.log"), redact(result.error ?? ""), { encoding: "utf8", mode: 0o600 });
     await writeJson(path.join(jobDir, "output", "result.json"), payload);
+    saved = result;
     await writeFile(
       path.join(jobDir, "output", "result.md"),
       redact(result.output || result.error || ""),
@@ -261,16 +264,31 @@ export async function runJob(
         encoding: "utf8",
         mode: 0o600,
       });
+      // The run's outcome is already in result.json when a LATER write
+      // fails (result.md, the status update itself). Recording that as a
+      // failed job contradicted the saved result, and a caller told "failed"
+      // retries work that had succeeded. The outcome stands; the write
+      // failure is reported beside it.
+      const warning =
+        saved !== undefined
+          ? `The result was saved, but writing the job's other files failed: ${message}`
+          : undefined;
+      const warnings = [manifest.warning, warning].filter((w): w is string => w !== undefined);
       await updateStatus(jobDir, {
         jobId: manifest.jobId,
-        status: "failed",
+        status: saved === undefined ? "failed" : saved.success ? "completed" : "failed",
         createdAt: manifest.createdAt,
         updatedAt: timestamp(),
         jobDir,
         ...(input.service !== undefined ? { service: input.service } : {}),
-        success: false,
-        error: boundedError(message)!,
-        ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
+        ...(saved !== undefined ? { route: saved.service } : {}),
+        success: saved?.success ?? false,
+        ...(saved === undefined
+          ? { error: boundedError(message)! }
+          : saved.error !== undefined
+            ? { error: boundedError(saved.error)! }
+            : {}),
+        ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
         durationMs: Date.now() - started,
       });
     } catch {

@@ -1072,3 +1072,43 @@ describe("credentials in a mid-stream error event", () => {
     expect(res.error ?? "").not.toContain(HDR_KEY);
   });
 });
+
+describe("an error status whose body never arrives", () => {
+  // The streaming path cleared its timeout before reading an error body, so an
+  // endpoint that sent a 500 and then stalled held the dispatch past its time
+  // limit: measured still pending at 8 s on a 1 s limit. Found in an audit.
+  it("still ends at the route's time limit", async () => {
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener("abort", () =>
+            controller.error(new DOMException("aborted", "AbortError")),
+          );
+        },
+      });
+      return new Response(body, { status: 500 });
+    });
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const started = Date.now();
+    let error: string | undefined;
+    for await (const ev of d.stream("hi", [], "", { timeoutMs: 500 })) {
+      if (ev.type === "completion") error = ev.result.error;
+    }
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(error).toMatch(/HTTP 500/);
+  }, 10_000);
+});
+
+describe("what is kept of a response's headers", () => {
+  // Every header was stored as `rateLimitHeaders` and written into each job's
+  // result.json, set-cookie included. Found in an audit.
+  it("keeps the rate-limit headers and nothing else", async () => {
+    fetchMock.mockResolvedValue(
+      mockJsonResponse(chatCompletion("ok"), {
+        headers: { "set-cookie": "session=secret", "x-ratelimit-remaining": "7", "x-request-id": "r1" },
+      }),
+    );
+    const res = await new OpenAICompatibleDispatcher(baseSvc()).dispatch("hi", [], "");
+    expect(res.rateLimitHeaders).toEqual({ "x-ratelimit-remaining": "7" });
+  });
+});

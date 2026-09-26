@@ -136,3 +136,23 @@ describe("a freshly installed Claude Code that has never been launched", () => {
     expect(written.mcpServers["harness-dispatch"]?.args).toContain("--config");
   });
 });
+
+describe("connect --clients naming a client that is not installed", () => {
+  // It was filtered out silently: `--clients cursor` without Cursor wrote
+  // nothing and exited 0. Found in an audit.
+  it("says so and exits 1", async () => {
+    const errs: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: unknown }).write = (c: string) => {
+      errs.push(String(c));
+      return true;
+    };
+    try {
+      const out = await capture(() => main(["connect", "--clients", "cursor", "--yes"]));
+      expect(out.code).toBe(1);
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origErr;
+    }
+    expect(errs.join("")).toMatch(/Cursor is not installed/);
+  });
+});

@@ -541,36 +541,45 @@ function markUnsetApiKeys(
  * route another route's variable name. Keyed by route name, which is unique
  * and is what `configure` has in hand when it rewrites the file.
  */
+/** Every route entry in the raw file, by name: `clis:`, `endpoints:` and the legacy `services:` map. */
+function rawRouteEntries(parsed: Record<string, unknown>): Array<[string, Record<string, unknown>]> {
+  const out: Array<[string, Record<string, unknown>]> = [];
+  for (const key of ["clis", "endpoints"] as const) {
+    const list = parsed[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry === null || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      if (typeof e.name === "string") out.push([e.name, e]);
+    }
+  }
+  const services = parsed.services;
+  if (services !== null && typeof services === "object" && !Array.isArray(services)) {
+    for (const [name, entry] of Object.entries(services as Record<string, unknown>)) {
+      if (entry !== null && typeof entry === "object") out.push([name, entry as Record<string, unknown>]);
+    }
+  }
+  return out;
+}
+
 /** Per route, the raw `api_key` / `base_url` text wherever it holds a `${...}`. */
 function collectFieldRefs(
   parsed: Record<string, unknown>,
 ): Map<string, { apiKey?: string; baseUrl?: string }> {
   const refs = new Map<string, { apiKey?: string; baseUrl?: string }>();
   const hasRef = (v: unknown): v is string => typeof v === "string" && v.includes("${");
-  const note = (name: unknown, entry: Record<string, unknown>): void => {
-    if (typeof name !== "string") return;
+  for (const [name, entry] of rawRouteEntries(parsed)) {
     const found: { apiKey?: string; baseUrl?: string } = {};
     if (hasRef(entry.api_key)) found.apiKey = entry.api_key;
     if (hasRef(entry.base_url)) found.baseUrl = entry.base_url;
     if (found.apiKey !== undefined || found.baseUrl !== undefined) refs.set(name, found);
-  };
-  for (const key of ["clis", "endpoints"] as const) {
-    const list = parsed[key];
-    if (!Array.isArray(list)) continue;
-    for (const entry of list) {
-      if (entry !== null && typeof entry === "object") {
-        const e = entry as Record<string, unknown>;
-        note(e.name, e);
-      }
-    }
-  }
-  const services = parsed.services;
-  if (services !== null && typeof services === "object" && !Array.isArray(services)) {
-    for (const [name, entry] of Object.entries(services as Record<string, unknown>)) {
-      if (entry !== null && typeof entry === "object") note(name, entry as Record<string, unknown>);
-    }
   }
   return refs;
+}
+
+/** Per route, the keys its entry wrote — see RouterConfig.userRouteKeys. */
+function collectUserRouteKeys(parsed: Record<string, unknown>): Map<string, ReadonlySet<string>> {
+  return new Map(rawRouteEntries(parsed).map(([name, entry]) => [name, new Set(Object.keys(entry))]));
 }
 
 function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {
@@ -812,6 +821,7 @@ async function loadConfigInner(
   const envRefs = new Map<string, string>();
   const apiKeyRefs = new Map<string, string>();
   let fieldRefs = new Map<string, { apiKey?: string; baseUrl?: string }>();
+  let userRouteKeys = new Map<string, ReadonlySet<string>>();
   if (path) {
     try {
       const text = await fs.readFile(path, "utf-8");
@@ -823,6 +833,7 @@ async function loadConfigInner(
           apiKeyRefs.set(name, ref);
         }
         fieldRefs = collectFieldRefs(parsed as Record<string, unknown>);
+        userRouteKeys = collectUserRouteKeys(parsed as Record<string, unknown>);
         raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
       }
     } catch (err: unknown) {
@@ -884,6 +895,7 @@ async function loadConfigInner(
       ...(envRefs.size > 0 ? { envRefs } : {}),
       ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
       ...(fieldRefs.size > 0 ? { fieldRefs } : {}),
+      ...(userRouteKeys.size > 0 ? { userRouteKeys } : {}),
     };
     if (envVarWarning !== undefined) {
       return { ...withRefs, configWarnings: [...(withRefs.configWarnings ?? []), envVarWarning] };
@@ -1001,6 +1013,7 @@ async function loadConfigInner(
     ...(envRefs.size > 0 ? { envRefs } : {}),
     ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
     ...(fieldRefs.size > 0 ? { fieldRefs } : {}),
+    ...(userRouteKeys.size > 0 ? { userRouteKeys } : {}),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
   return cfg;

@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { invokeTool, TOOL_NAMES } from "../../src/mcp/tools.js";
-import { fixedJobId } from "../support/fixtures.js";
+import { fixedJobId, throwawayQuotaStateFile } from "../support/fixtures.js";
 import { z } from "zod";
 import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
@@ -96,7 +96,7 @@ function buildHolder(
   dispatchers: Record<string, Dispatcher>,
 ): RuntimeHolder {
   const config: RouterConfig = { services };
-  const quota = new QuotaCache(dispatchers, { stateFile: ":memory-not-used:" });
+  const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
   const leaderboard = new LeaderboardCache();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (leaderboard as any).fetchedAt = Date.now();
@@ -303,6 +303,19 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool("dispatch", { prompt: "hi", hints: { model: "   " } }, { holder }),
     ).rejects.toThrow(/must not be empty/i);
+  });
+
+  it("refuses `models` in single mode instead of ignoring it", async () => {
+    // Single mode never read `models`, so a call that meant to fan out and
+    // forgot `mode` ran on whatever route the router picked, and nothing said
+    // the list had been ignored. Found in an audit.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
+    );
+    await expect(
+      invokeTool("dispatch", { prompt: "hi", models: ["a"], workingDir: process.cwd() }, { holder }),
+    ).rejects.toThrow(/mode: 'fanout'/);
   });
 
   it("rejects a whitespace-only prompt, like the HTTP surface always has", async () => {

@@ -158,6 +158,9 @@ export function isAuthorized(
 }
 
 export function maskToken(token: string): string {
-  if (token.length <= 12) return token;
+  // Twelve characters shown is fine for a generated 46-character token, and
+  // was the whole secret, or all but one character of it, for a short one a
+  // user set themselves.
+  if (token.length < 24) return `${token.slice(0, 2)}... (${token.length} characters)`;
   return `${token.slice(0, 6)}...${token.slice(-6)}`;
 }

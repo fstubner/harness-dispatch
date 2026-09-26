@@ -37,13 +37,18 @@ async function main(): Promise<void> {
   // Pool mode: claim work from the queue and run several jobs at once, so
   // supervision costs a bounded number of processes rather than one per job.
   if (arg === "--supervisor") {
-    await runSupervisor({ holder: new RuntimeHolder(state) }, process.argv[3]);
+    const holder = new RuntimeHolder(state);
+    await runSupervisor({ holder }, process.argv[3]);
+    await holder.state.quota.flushBeforeExit();
     process.exit(0);
   }
 
   // Single-job mode: the narrowest way to run one job dir, which is what the
   // end-to-end runner test drives against the real build.
-  await executeJobDir({ holder: new RuntimeHolder(state) }, arg);
+  const holder = new RuntimeHolder(state);
+  await executeJobDir({ holder }, arg);
+  // Counts a busy lock deferred would otherwise leave with this process.
+  await holder.state.quota.flushBeforeExit();
   // This runner's slot just freed — hand it to whoever is waiting. Doing it
   // here rather than in a daemon is what keeps the queue moving between
   // dispatches, and a failed drain must not fail a run that already succeeded.

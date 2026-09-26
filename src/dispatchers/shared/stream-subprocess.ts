@@ -169,7 +169,10 @@ export function streamSubprocess(
   }
 
   function terminateChild(sig: NodeJS.Signals): void {
-    if (!child) return;
+    // A settled child is gone and its pid may already belong to something
+    // else. One job signal is shared by every fallback attempt, so a cancel
+    // during a later attempt reached this for each earlier, finished one.
+    if (!child || settled) return;
     killTree(child, sig);
     setTimeout(() => {
       if (!settled && child) killTree(child, "SIGKILL");

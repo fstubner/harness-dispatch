@@ -121,3 +121,33 @@ describe("--json is a promise about the shape of the output, including on failur
   });
 });
 
+
+describe("status --json --watch", () => {
+  // It printed pretty-printed documents back to back, which parse neither as
+  // one JSON value nor line by line. Found in an audit.
+  it.skipIf(!existsSync(bin))("prints one JSON document per line", async () => {
+    const { spawn } = await import("node:child_process");
+    const { writeFileSync } = await import("node:fs");
+    const dir = mkdtempSync(path.join(tmpdir(), "hd-watch-"));
+    try {
+      const config = path.join(dir, "config.yaml");
+      writeFileSync(config, "detect: false\n", "utf8");
+      const out = await new Promise<string>((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [bin, "status", "--json", "--watch", "--interval", "200", "--config", config],
+          { env: { ...process.env, HARNESS_DISPATCH_STATE_DIR: dir } },
+        );
+        let text = "";
+        child.stdout.on("data", (d: Buffer) => (text += d.toString()));
+        setTimeout(() => child.kill(), 2_500);
+        child.on("close", () => resolve(text));
+      });
+      const lines = out.split("\n").filter((l) => l.trim() !== "");
+      expect(lines.length).toBeGreaterThanOrEqual(2);
+      for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+});

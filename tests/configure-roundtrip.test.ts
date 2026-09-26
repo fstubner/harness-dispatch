@@ -332,3 +332,46 @@ describe("a route only ever gets its own ${VAR} back", () => {
     }
   });
 });
+
+describe("a rewrite keeps what the user declared, and the file it replaces", () => {
+  // Found in an audit: `configure --yes --force` dropped `billing_confidence`
+  // (so a route marked `unknown` became trusted) and `resource_weight` (so a
+  // different number of agents ran at once), and overwrote the file in place
+  // with no copy, leaving nothing to recover the dropped settings from.
+  const BODY = [
+    "endpoints:",
+    "  - name: ep",
+    "    base_url: http://localhost:11434/v1",
+    "    model: m",
+    "    billing_kind: local_compute",
+    "    paid_usage_possible: false",
+    "    billing_confidence: unknown",
+    "    resource_weight: 2.5",
+    "",
+  ].join("\n");
+
+  it("writes billing_confidence and resource_weight back", async () => {
+    const src = path.join(dir, "declared.yaml");
+    await fs.writeFile(src, BODY, "utf8");
+    const printed = await capture(() => main(["configure", "--print", "--config", src]));
+    expect(printed.code).toBe(0);
+    const reloaded = path.join(dir, "declared-out.yaml");
+    await fs.writeFile(reloaded, printed.stdout, "utf8");
+    const cfg = await loadConfig(reloaded, { whichFn: async () => null });
+    expect(cfg.services["ep"]!.billingConfidence).toBe("unknown");
+    expect(cfg.services["ep"]!.resourceWeight).toBe(2.5);
+  });
+
+  it("keeps a copy of the file --force replaces", async () => {
+    const src = path.join(dir, "replaced.yaml");
+    await fs.writeFile(src, BODY, "utf8");
+    const out = await capture(() =>
+      main(["configure", "--yes", "--force", "--no-clients", "--config", src]),
+    );
+    expect(out.code).toBe(0);
+    const backups = (await fs.readdir(dir)).filter((f) => f.startsWith("replaced.yaml.") && f.endsWith(".bak"));
+    expect(backups).toHaveLength(1);
+    expect(await fs.readFile(path.join(dir, backups[0]!), "utf8")).toBe(BODY);
+    expect(out.stdout).toMatch(/previous version is at/);
+  });
+});

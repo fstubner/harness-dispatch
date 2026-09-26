@@ -719,8 +719,12 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     }
 
     if (res.status >= 400) {
-      clearTimeout(timer);
+      // The timeout spans the error body too, as it does in dispatch() above:
+      // cleared first, an endpoint that sent an error status and then stalled
+      // held the dispatch far past its time limit (measured: still pending at
+      // 8 s on a 1 s limit).
       const rawBody = await res.text().catch(() => "");
+      clearTimeout(timer);
       const parsedBody = this.#parseBody(rawBody);
       // Scrubbed against the base URL, like every other error this
       // dispatcher returns. An endpoint that echoes the request URL back in
@@ -924,10 +928,16 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The rate-limit headers of a response, and nothing else.
+ *
+ * Every header used to be kept, under the name `rateLimitHeaders`, and written
+ * into each job's result.json — `set-cookie` included.
+ */
 function headersToObject(h: Headers): Record<string, string> {
   const out: Record<string, string> = {};
   h.forEach((value, key) => {
-    out[key] = value;
+    if (/ratelimit|rate-limit|retry-after/i.test(key)) out[key] = value;
   });
   return out;
 }
