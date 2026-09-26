@@ -18,6 +18,9 @@ import { claimJobDir } from "../src/jobs.js";
 
 type Status = Parameters<typeof claimJobDir>[1];
 
+/** Above every platform's pid range, so never a live process. */
+const DEAD_PID = 0x7ffffffe;
+
 let dir: string;
 
 beforeEach(async () => {
@@ -39,7 +42,7 @@ describe("claimJobDir — stale-claim reclaim", () => {
     await fs.mkdir(jobDir, { recursive: true });
     await fs.writeFile(
       path.join(jobDir, "claim.json"),
-      JSON.stringify({ pid: 999_999, at: "2026-01-01T00:00:00Z" }),
+      JSON.stringify({ pid: DEAD_PID, at: "2026-01-01T00:00:00Z" }),
       "utf8",
     );
 
@@ -68,7 +71,9 @@ describe("claimJobDir — stale-claim reclaim", () => {
   it("leaves no tombstones behind after a reclaim", async () => {
     const jobDir = path.join(dir, "job-1700000000000-beefbeef");
     await fs.mkdir(jobDir, { recursive: true });
-    await fs.writeFile(path.join(jobDir, "claim.json"), JSON.stringify({ pid: 1 }), "utf8");
+    // A pid that cannot be running: a claim whose holder is alive (pid 1 is
+    // init on Linux) is not reclaimed however stale its job's heartbeat.
+    await fs.writeFile(path.join(jobDir, "claim.json"), JSON.stringify({ pid: DEAD_PID }), "utf8");
 
     expect(await claimJobDir(jobDir, staleStatus())).toBe(true);
     const leftovers = (await fs.readdir(jobDir)).filter((f) => f.startsWith("claim.stale-"));
