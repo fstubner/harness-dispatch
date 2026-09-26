@@ -577,9 +577,25 @@ function collectFieldRefs(
   return refs;
 }
 
-/** Per route, the keys its entry wrote — see RouterConfig.userRouteKeys. */
+/**
+ * Per route, the keys the file wrote for it — see RouterConfig.userRouteKeys.
+ * A detected route's `overrides:` entry counts: its values are the user's too.
+ */
 function collectUserRouteKeys(parsed: Record<string, unknown>): Map<string, ReadonlySet<string>> {
-  return new Map(rawRouteEntries(parsed).map(([name, entry]) => [name, new Set(Object.keys(entry))]));
+  const keys = new Map<string, Set<string>>();
+  const add = (name: string, entry: Record<string, unknown>): void => {
+    const set = keys.get(name) ?? new Set<string>();
+    for (const key of Object.keys(entry)) set.add(key);
+    keys.set(name, set);
+  };
+  for (const [name, entry] of rawRouteEntries(parsed)) add(name, entry);
+  const overrides = parsed.overrides;
+  if (overrides !== null && typeof overrides === "object" && !Array.isArray(overrides)) {
+    for (const [name, entry] of Object.entries(overrides as Record<string, unknown>)) {
+      if (entry !== null && typeof entry === "object") add(name, entry as Record<string, unknown>);
+    }
+  }
+  return keys;
 }
 
 function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string> {

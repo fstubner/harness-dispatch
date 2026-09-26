@@ -360,7 +360,7 @@ describe("the listing and the router agree about a dead route", () => {
       } as never,
       {
         circuitBreakerStatus: () => ({}),
-        breakerStateUnreadable: () => [],
+        breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
         pickService: () => undefined,
         getBreaker: () => undefined,
       } as never,

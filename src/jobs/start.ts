@@ -64,9 +64,16 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   const preamble = await buildContextPreamble(input.contextJobs ?? []);
   const effectivePrompt = preamble + input.prompt;
   await writeFile(promptPath, effectivePrompt, { encoding: "utf8", mode: 0o600 });
-  const fileSnapshots = await snapshotFiles(jobDir, input.files ?? []);
-  const createdAt = timestamp();
   const resolvedWorkingDir = resolveWorkingDir(input.workingDir);
+  // Relative paths resolve against the job's working directory, once, here.
+  // Left relative, the snapshot resolved them against the server's own cwd,
+  // an endpoint route read them from the runner's, and a CLI delegate against
+  // its workspace — three different files for one path.
+  const files = (input.files ?? []).map((f) =>
+    path.isAbsolute(f) ? f : path.resolve(resolvedWorkingDir.workingDir, f),
+  );
+  const fileSnapshots = await snapshotFiles(jobDir, files);
+  const createdAt = timestamp();
   const warning = workingDirWarning(resolvedWorkingDir);
   const manifest: JobManifest = {
     jobId,
@@ -112,7 +119,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     // The DETACHED runner re-reads prompt.md, which carries the context
     // preamble — so the in-process run must dispatch the same frozen prompt,
     // not input.prompt, which would silently drop contextJobs.
-    const completion = runJob(deps, jobDir, manifest, { ...input, prompt: effectivePrompt });
+    const completion = runJob(deps, jobDir, manifest, { ...input, files, prompt: effectivePrompt });
     return { status, completion };
   }
 

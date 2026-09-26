@@ -572,6 +572,27 @@ describe("CLI parser", () => {
     expect(result.stdout).not.toContain("services:");
   });
 
+  it("writes only the settings the user wrote, not the preset's defaults", async () => {
+    // Every rewrite froze the defaults of the day into the file: a route that
+    // named only its harness came back with tier, weight, capabilities and
+    // more that nobody chose, which then stopped tracking the preset. Found in
+    // an audit.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-own-"));
+    const configPath = path.join(dir, "config.yaml");
+    await fs.writeFile(
+      configPath,
+      "clis:\n  - name: my_cursor\n    harness: cursor\n    command: cursor-agent\n    tier: 3\n",
+      "utf-8",
+    );
+    const result = await capture(() => main(["configure", "--print", "--config", configPath]));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("tier: 3");
+    for (const computed of ["weight:", "cli_capability:", "capabilities:", "escalate_on:", "model_hint:"]) {
+      expect(result.stdout, `${computed} was written though nobody set it`).not.toContain(computed);
+    }
+  });
+
   it("does not write a misleading safety_profile for a route whose real effective_safety is a stricter floor", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-cli-safety-"));
@@ -587,14 +608,19 @@ describe("CLI parser", () => {
 
     const result = await capture(() => main(["configure", "--print", "--config", configPath]));
     expect(result.code).toBe(0);
-    // The route's real capability floor must be written faithfully. For cursor
-    // that is now a PER-REQUEST map, because --mode plan is genuinely
-    // read-only while default print mode has write and shell — one value
-    // cannot express both, and flattening it to a string here would either
-    // overstate the floor for read-only work or understate it for the rest.
-    expect(result.stdout).toContain("effective_safety:");
-    expect(result.stdout).toContain("read_only: read_only");
-    expect(result.stdout).toContain("workspace_edit: full_auto");
+    // The capability floor comes from the harness preset, so it is NOT copied
+    // into the file: a copy would freeze today's floor and keep it if the
+    // preset were ever corrected. What matters is that the rewritten file
+    // yields the same floor — for cursor a PER-REQUEST map, because --mode
+    // plan is genuinely read-only while default print mode has write and shell.
+    expect(result.stdout).not.toContain("effective_safety:");
+    const rewritten = path.join(dir, "rewritten.yaml");
+    await fs.writeFile(rewritten, result.stdout, "utf-8");
+    const { loadConfig } = await import("../src/config.js");
+    const reloaded = await loadConfig(rewritten, { whichFn: async () => "/fake/cursor-agent" });
+    expect(reloaded.services["my_cursor"]!.effectiveSafety).toEqual(
+      expect.objectContaining({ read_only: "read_only", workspace_edit: "full_auto" }),
+    );
     // ...and must NOT also claim safety_profile: workspace_edit, which used
     // to be baked in as a fallback default even though nobody chose it and
     // it contradicts the effective_safety `status` actually enforces.

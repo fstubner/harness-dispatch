@@ -343,3 +343,66 @@ describe("Router restart survival — breaker state persists across process boun
     expect(text).not.toContain("Config warnings");
   });
 });
+
+describe("breaker state shared between live processes", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "hr-breaker-live-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function build(stateDir: string, dispatchers: Record<string, Dispatcher>): Router {
+    const services = {
+      flaky: makeService("flaky"),
+      backup: { ...makeService("backup"), tier: 2 },
+    };
+    return new Router(
+      { services },
+      new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
+      dispatchers,
+      new LeaderboardCache(),
+      new BreakerStore(stateDir),
+    );
+  }
+
+  it("a route another process took out of service is not chosen", async () => {
+    // Breakers were loaded once at construction, so a long-lived process kept
+    // choosing a route another process had tripped, until it failed there
+    // itself. Found in an audit.
+    const stateDir = path.join(dir, "breaker_state");
+    const limited = {
+      flaky: new FakeDispatcher("flaky", { output: "", service: "flaky", success: false, rateLimited: true, retryAfter: 300 }),
+      backup: new FakeDispatcher("backup", { output: "ok", service: "backup", success: true }),
+    };
+    const a = build(stateDir, limited);
+    const b = build(stateDir, limited); // already running when A trips the route
+    await a.routeTo("flaky", "go", [], "/tmp");
+    expect(a.getBreaker("flaky")!.isTripped).toBe(true);
+
+    const decision = await b.pickService({ hints: { taskType: "execute" } });
+    expect(decision?.service, "picked a route another process had tripped").toBe("backup");
+  });
+
+  it("a trip that cannot be saved is reported in status", async () => {
+    // Swallowed so it cannot fail the dispatch, but then invisible: every
+    // other process kept using the route. Found in an audit.
+    const notADir = path.join(dir, "a-file");
+    writeFileSync(notADir, "x");
+    const limited = {
+      flaky: new FakeDispatcher("flaky", { output: "", service: "flaky", success: false, rateLimited: true, retryAfter: 300 }),
+      backup: new FakeDispatcher("backup", { output: "ok", service: "backup", success: true }),
+    };
+    const router = build(path.join(notADir, "breaker_state"), limited);
+    await router.routeTo("flaky", "go", [], "/tmp");
+    const status = await buildStatus(
+      { services: { flaky: makeService("flaky") } },
+      limited,
+      new QuotaCache(limited, { stateFile: path.join(dir, "quota_state.json") }),
+      router,
+      new LeaderboardCache(),
+    );
+    expect((status.stateWarnings ?? []).join(" ")).toMatch(/circuit-breaker state is not reaching disk/);
+  });
+});

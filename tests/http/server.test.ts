@@ -417,6 +417,29 @@ describe("HTTP server", () => {
     expect(res.status).toBe(413);
   }, 20000);
 
+  it("applies the same body limit to /mcp", async () => {
+    // /mcp handed the raw request to the MCP library, which read any size:
+    // measured, 40 MiB accepted there while REST answered 413. Found in an
+    // audit.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const oversized = "x".repeat(10 * 1024 * 1024 + 1);
+    const res = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { pad: oversized } }),
+    });
+    expect(res.status).toBe(413);
+  }, 20000);
+
   it.each([["single"], ["fanout"]])(
     "enforces routePolicy in %s mode, not just in the one that was tested",
     async (mode) => {

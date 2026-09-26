@@ -521,3 +521,21 @@ describe("a client that rewrites its config while we update it", () => {
     expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ ours: true });
   });
 });
+
+describe("a client config that is a symlink", () => {
+  // Renaming onto the link path replaced the link with a plain file, so a
+  // dotfile managed by stow or home-manager stopped being managed and the
+  // file it pointed at never got the entry. Found in an audit.
+  it("is written through, leaving the link in place", async () => {
+    const target = path.join(home, "dotfiles-claude.json");
+    await fs.writeFile(target, '{"mcpServers":{}}\n', "utf8");
+    try {
+      await fs.symlink(target, claudeFile());
+    } catch {
+      return; // No symlink privilege (Windows without developer mode).
+    }
+    await writeJsonAtomic(claudeFile(), { mcpServers: { x: 1 } });
+    expect((await fs.lstat(claudeFile())).isSymbolicLink(), "the link was replaced by a file").toBe(true);
+    expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ mcpServers: { x: 1 } });
+  });
+});

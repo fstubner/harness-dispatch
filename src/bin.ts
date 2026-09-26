@@ -10,7 +10,7 @@ import { parseArgs } from "node:util";
 import { resolveConfigPath } from "./config.js";
 import { VERSION } from "./version.js";
 import { startMcpServer } from "./mcp/server.js";
-import { initObservability } from "./observability/index.js";
+import { initObservability, shutdownObservability } from "./observability/index.js";
 import { SAFETY_PROFILES, TASK_TYPES, UsageError, enumFlag, parsePositiveInt, wantsJsonOutput } from "./cli/common.js";
 import { cmdConfigure } from "./cli/configure.js";
 import { cmdConnect } from "./cli/connect.js";
@@ -272,7 +272,11 @@ function isThisFile(invoked: string): boolean {
 }
 if (isThisFile(entrypoint)) {
   void main(process.argv.slice(2))
-    .then((code) => {
+    .then(async (code) => {
+      // Spans are exported in batches; ending without a shutdown dropped
+      // whatever the batch still held, which for a one-shot command is all
+      // of them.
+      await shutdownObservability();
       finish(code);
     })
     .catch((err: unknown) => {

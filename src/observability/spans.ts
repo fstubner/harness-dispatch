@@ -122,6 +122,42 @@ export async function withRouterSpan<T>(
   return withSpan(`harness-dispatch.router.${op}`, { ...rest, "router.op": op }, fn);
 }
 
+/**
+ * A router span around a whole event stream, ended when the stream finishes,
+ * throws, or is abandoned.
+ *
+ * Streaming is how every job dispatches — MCP and HTTP alike — and only the
+ * buffered `route()` had a span, so a job produced none at all even with
+ * telemetry on. `onEvent` sees each event, to record the outcome.
+ */
+export async function* withRouterStreamSpan<T>(
+  attrs: RouterSpanAttrs,
+  source: AsyncIterable<T>,
+  onEvent: (span: Span, event: T) => void,
+): AsyncGenerator<T> {
+  const { "router.op": op, ...rest } = attrs;
+  const span = tracer().startSpan(`harness-dispatch.router.${op}`);
+  assignAttrs(span, { ...rest, "router.op": op });
+  const t0 = Date.now();
+  try {
+    for await (const event of source) {
+      onEvent(span, event);
+      yield event;
+    }
+    span.setStatus({ code: SpanStatusCode.OK });
+  } catch (err) {
+    const e = err instanceof Error ? err : new Error(String(err));
+    const safe = new Error(redact(e.message));
+    safe.name = e.name;
+    span.recordException(safe);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: safe.message });
+    throw err;
+  } finally {
+    span.setAttribute("duration_ms", Date.now() - t0);
+    span.end();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // MCP tool spans
 // ---------------------------------------------------------------------------
