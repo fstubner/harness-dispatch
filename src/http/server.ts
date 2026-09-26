@@ -19,7 +19,16 @@ import { VERSION } from "../version.js";
 import type { RouteHints, RouteSkip } from "../types.js";
 import { evaluateRoutePolicy } from "../route-policy.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
-import { getAsyncJob, orphanStrandedSlotQueue, startAsyncJobTracked } from "../jobs.js";
+import {
+  cancelJob,
+  getAsyncJob,
+  orphanStrandedSlotQueue,
+  readJobEvents,
+  startAsyncJobTracked,
+} from "../jobs.js";
+
+/** How often a streaming response reads its job's event log. */
+const STREAM_POLL_MS = 100;
 import {
   BadRequestError,
   completionEnvelope,
@@ -266,18 +275,37 @@ async function handleChatCompletions(
       });
       return;
     }
+    // A single-route stream runs as a job, like every other dispatch, and the
+    // response follows the job's event log. It used to run in this request
+    // alone — the one dispatch path with no job record — so a dropped
+    // connection, a sleep or a restart lost work that had finished, and there
+    // was no jobId to recover it with. Started before the headers, so the
+    // jobId can go in one.
+    const single =
+      parsed.mode === "fanout"
+        ? undefined
+        : await startAsyncJobTracked(
+            { holder },
+            {
+              prompt: parsed.prompt,
+              files: parsed.files,
+              workingDir: parsed.workingDir,
+              hints: parsed.hints,
+            },
+          );
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
       connection: "keep-alive",
+      ...(single !== undefined ? { "x-harness-dispatch-job-id": single.status.jobId } : {}),
     });
     // Send the headers NOW, not when the first chunk happens to arrive.
     //
     // For a CLI harness no delta exists until the run completes, so otherwise
     // nothing reaches the client — not even the status line — for as long as
     // the run takes. Any client or proxy with a response-header timeout gives
-    // up on a live stream, and a streaming request creates no job record, so
-    // there is no jobId to recover with.
+    // up on a live stream — and the job id header is only useful if it
+    // arrives.
     res.flushHeaders();
     sse.started = true;
     // One identity for the whole stream, minted before the first frame: every
@@ -312,44 +340,39 @@ async function handleChatCompletions(
       // CLI harness produces protocol on stdout and its answer only once
       // parsed, so it is sent at completion. Never both, or the answer would
       // arrive twice.
+      const { status: jobStatus, completion } = single!;
+      const jobId = jobStatus.jobId;
       const answer = createAnswerStream();
       let succeeded = false;
+      let committedFailure = false;
       let pendingFailure: { error: { message: string; route: string } } | undefined;
-      // Stop the run when the caller hangs up.
-      //
-      // Without this an aborted stream leaves the harness running to
-      // completion. This is the ONE dispatch path with no job record, so there
-      // is also no `jobId` to cancel it with: on a CLI route that means an
-      // agent with file access still working in the user's directory for a
-      // caller that no longer exists.
-      //
-      // `close` fires on normal completion too, hence the `writableEnded`
-      // guard — aborting a finished response would cancel nothing but would
-      // make every clean stream look like a cancellation in the logs.
-      const clientGone = new AbortController();
-      res.on("close", () => {
-        if (!res.writableEnded) clientGone.abort();
+      let finished = false;
+      void completion.then(() => {
+        finished = true;
       });
-      for await (const { event, decision } of state.router.stream(
-        parsed.prompt,
-        parsed.files,
-        parsed.workingDir,
-        { hints: parsed.hints, maxFallbacks: 2, signal: clientGone.signal },
-      )) {
-        // Filled in before the first frame goes out, so the whole stream names
-        // the model the picked route actually runs.
-        if (decision?.model !== undefined) identity.model = decision.model;
-        const text = answer.next(event);
-        if (text !== undefined) {
-          writeSse(
-            res,
-            sseContent(identity, text, {
-              harness_dispatch: decision ? { route: decision.service } : undefined,
-            }),
-          );
-        }
-        if (event.type === "completion" && event.result.success) succeeded = true;
-        if (event.type === "completion" && !event.result.success) {
+      // A caller that hangs up stops being streamed to; the job carries on and
+      // its result stays collectable by the jobId in the response header.
+      let clientGone = false;
+      res.on("close", () => {
+        if (!res.writableEnded) clientGone = true;
+      });
+      let offset = 0;
+      for (;;) {
+        // Read BEFORE draining, so the last pass sees everything written by
+        // the time the job ended.
+        const ended = finished;
+        const batch = await readJobEvents(jobId, offset);
+        offset = batch.offset;
+        for (const event of batch.events) {
+          const text = answer.next(event);
+          if (text !== undefined) {
+            writeSse(res, sseContent(identity, text, { harness_dispatch: { jobId } }));
+          }
+          if (event.type !== "completion") continue;
+          if (event.result.success) {
+            succeeded = true;
+            continue;
+          }
           const frame = {
             error: {
               message: event.result.error ?? "routing failed",
@@ -359,22 +382,32 @@ async function handleChatCompletions(
           // Once any answer text has gone out, this response is committed to
           // that route: a fallback's answer cannot be spliced onto a half-sent
           // one without garbling it, and running the fallback only to discard
-          // its output means paying for work nobody sees. Breaking here ends
-          // the router's iteration, so no further route is attempted.
+          // its output means paying for work nobody sees. So the job is
+          // stopped here, before it tries another route.
           if (answer.committed) {
             writeSse(res, frame);
+            committedFailure = true;
+            await cancelJob(jobId, "the stream had already sent another route's answer").catch(
+              () => undefined,
+            );
             break;
           }
-          // Not committed, so the router is about to try another route. The
-          // OpenAI streaming contract has no non-fatal error frame, so
-          // writing one here would make a client that treats it as terminal
-          // report a failure for a request the fallback went on to answer.
-          // Held until the end, and sent only if nothing ever succeeded.
+          // Not committed, so the job is about to try another route. The
+          // OpenAI streaming contract has no non-fatal error frame, so writing
+          // one here would make a client that treats it as terminal report a
+          // failure for a request the fallback went on to answer. Held until
+          // the end, and sent only if nothing ever succeeded.
           pendingFailure = frame;
         }
+        if (committedFailure || ended || clientGone) break;
+        await new Promise((resolve) => setTimeout(resolve, STREAM_POLL_MS));
       }
-      // Nothing recovered it, so the failure was the outcome after all.
-      if (!succeeded && pendingFailure !== undefined) writeSse(res, pendingFailure);
+      // Nothing recovered it, so the failure was the outcome after all. Not
+      // after a committed failure, whose frame is already out: a second one
+      // named an earlier route that was not the one that failed.
+      if (!succeeded && !committedFailure && pendingFailure !== undefined) {
+        writeSse(res, pendingFailure);
+      }
     }
     writeSse(res, sseStop(identity));
     res.write("data: [DONE]\n\n");
@@ -412,13 +445,28 @@ async function handleChatCompletions(
       return;
     }
     const rows = await runFanoutArms(holder, selected.routes, parsed);
+    // Every arm failing is a failed request, answered the way the single-route
+    // branch answers one: 502 with an `error` member. It was a 200 with
+    // `finish_reason: "stop"`, so a CI caller saw success. Some arms
+    // succeeding is a 200 — the rows say which.
+    const allFailed = rows.length > 0 && rows.every((row) => !row.success);
     sendJson(
       res,
-      200,
+      allFailed ? 502 : 200,
       completionEnvelope(
         JSON.stringify(rows, null, 2),
         typeof parsed.hints.model === "string" ? parsed.hints.model : "harness-dispatch",
         {
+          ...(allFailed
+            ? {
+                error: {
+                  message:
+                    `every fanout arm failed — ` +
+                    rows.map((row) => `${row.route}: ${row.error ?? "failed"}`).join("; "),
+                  type: "upstream_error",
+                },
+              }
+            : {}),
           harness_dispatch: {
             mode: "fanout",
             skippedRoutes: selected.skippedRoutes,
@@ -744,6 +792,13 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
       if (url.pathname === mcpRoute) {
         if (!requireAuth(req, res)) return;
+        // The body is read HERE, under the same size limit as the REST routes,
+        // and handed over parsed. Left to the SDK, it read any size at all:
+        // measured, a 40 MiB POST was accepted on /mcp while REST answered 413.
+        // Read BEFORE a session server exists: a malformed or oversized body
+        // throws, and thrown after, it skipped that server's cleanup — one
+        // leaked server per bad request (2,000 requests, +104 MiB).
+        const body = req.method === "POST" ? await readJson(req) : undefined;
         sweepIdleSessions();
         const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
         let transport: StreamableHTTPServerTransport;
@@ -779,10 +834,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           };
           await sessionServer.connect(transport as unknown as Transport);
         }
-        // The body is read HERE, under the same size limit as the REST routes,
-        // and handed over parsed. Left to the SDK, it read any size at all:
-        // measured, a 40 MiB POST was accepted on /mcp while REST answered 413.
-        const body = req.method === "POST" ? await readJson(req) : undefined;
         await transport.handleRequest(req, res, body);
         // Dispose of a server whose session never came into existence.
         //

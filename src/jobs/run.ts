@@ -11,6 +11,7 @@ import {
   boundedError,
   cancelReason,
   cancelRequested,
+  JOB_EVENTS_LOG,
   readJson,
   timestamp,
   updateStatus,
@@ -71,6 +72,7 @@ export async function runJob(
     // Stream the dispatch so agents polling action=get can watch progress in
     // stdout.partial.log instead of waiting blind for the final result.
     const partialPath = path.join(jobDir, "output", "stdout.partial.log");
+    const eventsPath = path.join(jobDir, "output", JOB_EVENTS_LOG);
     // Cancellation travels DOWN to the child process, not up through the
     // iterator. Returning from an async generator that is suspended at an
     // `await` does not take effect until that await settles — which for an
@@ -175,6 +177,21 @@ export async function runJob(
       } else if (event.type === "completion") {
         // Fallback chains yield one completion per attempt; last one wins.
         finalResult = event.result;
+      }
+      // The events a caller streaming this job needs, in order: answer text
+      // as it arrives, and each attempt's completion. A streaming HTTP request
+      // follows this file instead of the router, which is what gives it a job
+      // record — before, it was the one dispatch path with none, so a dropped
+      // connection or a restart lost work that had finished.
+      if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
+        try {
+          await appendFile(eventsPath, `${redact(JSON.stringify(event))}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+        } catch {
+          // Best-effort, like the partial log; result.json still lands.
+        }
       }
     }
     if (cancelled) {

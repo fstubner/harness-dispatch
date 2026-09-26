@@ -376,7 +376,14 @@ function jobCompleted(job: Awaited<ReturnType<typeof getAsyncJob>>): boolean {
  */
 function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteResponse {
   if (job.result) {
-    return routeResponse(job.result.result, job.result.decision, job.status.warning);
+    const response = routeResponse(job.result.result, job.result.decision, job.status.warning);
+    // A failed result with no output of its own: what the delegate wrote is
+    // in the partial log, which getAsyncJob read for exactly this case.
+    if (job.partialOutput !== undefined && job.partialOutput !== "" && !response.output) {
+      response.output = job.partialOutput;
+      response.warning = [response.warning, PARTIAL_NOTE].filter(Boolean).join(" ");
+    }
+    return response;
   }
   // A job that ended without a result.json still has whatever the delegate
   // managed to write. PRODUCT.md makes that the defining criterion — work that
@@ -402,13 +409,14 @@ function jobRouteResponse(job: Awaited<ReturnType<typeof getAsyncJob>>): RouteRe
   // completed answer, and salvage mistaken for a result is worse than no
   // output at all.
   if (job.partialOutput !== undefined && job.partialOutput !== "") {
-    const note =
-      `\`output\` is PARTIAL — everything the delegate wrote before it stopped, not a ` +
-      `finished answer. Inspect or salvage it; re-dispatch if you need the work completed.`;
-    response.warning = response.warning === undefined ? note : `${response.warning} ${note}`;
+    response.warning = response.warning === undefined ? PARTIAL_NOTE : `${response.warning} ${PARTIAL_NOTE}`;
   }
   return response;
 }
+
+const PARTIAL_NOTE =
+  `\`output\` is PARTIAL — everything the delegate wrote before it stopped, not a ` +
+  `finished answer. Inspect or salvage it; re-dispatch if you need the work completed.`;
 
 /** Progress forwarder for the inline grace window — goes quiet once the MCP call has returned. */
 function makeProgressTap(

@@ -144,8 +144,9 @@ export function evaluateRoutePolicy(
       route,
       "unknown_billing",
       `${why} and paid usage is not allowed — this is a config-level ` +
-        `block, not an availability problem; the operator must add \`allow_paid_usage: true\` ` +
-        `to '${route}' in config.yaml to enable it`,
+        `block, not an availability problem. If '${route}' cannot bill you (a local model, a ` +
+        `free endpoint), declare that in config.yaml with \`billing_kind: local_compute\` (or ` +
+        `\`free_quota\`); if it can, add \`allow_paid_usage: true\` to accept that it may`,
     );
   }
   if (billingIsBlocked(billing)) {

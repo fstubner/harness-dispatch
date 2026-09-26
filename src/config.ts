@@ -312,9 +312,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
 
   const cfg: RouterConfig = {
     services,
-    ...(Array.isArray(raw.disabled)
-      ? { disabled: (raw.disabled as string[]).slice() }
-      : {}),
+    ...(disabledList(raw.disabled).length > 0 ? { disabled: disabledList(raw.disabled) } : {}),
     ...topLevelSettings(raw, warnings),
     ...(warnings.length > 0 ? { configWarnings: warnings } : {}),
   };
@@ -486,7 +484,7 @@ function addClis(
       if (entry.protocol === undefined || entry.protocol === null) {
         warnings.push(
           `clis[${index}] "${name}": harness: generic requires a "protocol" block — entry ignored. ` +
-            "See README.md#adding-a-harness.",
+            "See docs/configuration.md#adding-a-harness.",
         );
         continue;
       }
@@ -541,6 +539,17 @@ function markUnsetApiKeys(
  * route another route's variable name. Keyed by route name, which is unique
  * and is what `configure` has in hand when it rewrites the file.
  */
+/**
+ * `disabled:` as a list. A single name written without list syntax —
+ * `disabled: codex_cli` — was silently ignored, leaving the route the user
+ * switched off detected and routable; it means the same as a one-item list.
+ */
+function disabledList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string");
+  if (typeof raw === "string" && raw.trim() !== "") return [raw.trim()];
+  return [];
+}
+
 /** Every route entry in the raw file, by name: `clis:`, `endpoints:` and the legacy `services:` map. */
 function rawRouteEntries(parsed: Record<string, unknown>): Array<[string, Record<string, unknown>]> {
   const out: Array<[string, Record<string, unknown>]> = [];
@@ -919,9 +928,7 @@ async function loadConfigInner(
     return withRefs;
   }
 
-  const disabled: string[] = Array.isArray(raw.disabled)
-    ? (raw.disabled as string[]).slice()
-    : [];
+  const disabled = disabledList(raw.disabled);
   const overrides = (raw.overrides ?? {}) as Record<string, Record<string, unknown>>;
 
   const warnings: string[] = [];

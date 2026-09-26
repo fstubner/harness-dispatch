@@ -396,6 +396,35 @@ describe("git_worktree cleanup when git refuses", () => {
     }
   }, 60_000);
 
+  it("keeps a failed worktree whose only edits are in a directory the fingerprint skips", async () => {
+    // bin/, dist/, build/, target/ and obj/ are skipped by the fingerprint, so
+    // a run whose edits were only there recorded no change and its worktree
+    // was removed with them. Found in an audit (an edit to bin/cli.js lost).
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-bin-"));
+    await execFile("git", ["init", "-q"], { cwd: repo });
+    await execFile("git", ["config", "user.email", "t@example.com"], { cwd: repo });
+    await execFile("git", ["config", "user.name", "t"], { cwd: repo });
+    await fs.mkdir(path.join(repo, "bin"));
+    await fs.writeFile(path.join(repo, "bin", "cli.js"), "one\n", "utf8");
+    await execFile("git", ["add", "-A"], { cwd: repo });
+    await execFile("git", ["commit", "-qm", "initial"], { cwd: repo });
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "hd-wt-binhome-"));
+    const prevDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const prepared = await prepareWorkspace({ routeName: "alpha", policy: "git_worktree", workingDir: repo, files: [] });
+      await fs.writeFile(path.join(prepared.effectiveWorkingDir, "bin", "cli.js"), "the agent's edit\n", "utf8");
+      await prepared.finish({ output: "", service: "alpha", success: false, error: "boom" });
+      expect(existsSync(prepared.workspaceRoot!), "the worktree holding the edit was removed").toBe(true);
+    } finally {
+      if (prevDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = prevDir;
+      await execFile("git", ["worktree", "prune"], { cwd: repo }).catch(() => undefined);
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(repo, { recursive: true, force: true, maxRetries: 3 });
+    }
+  }, 60_000);
+
   it("a copy workspace SAYS which directories it left out", async () => {
     // EXCLUDED_DIRS drops bin, dist, build, target, obj and .venv, and said
     // nothing about it. Those are build output in most projects and real

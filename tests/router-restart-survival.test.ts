@@ -385,6 +385,26 @@ describe("breaker state shared between live processes", () => {
     expect(decision?.service, "picked a route another process had tripped").toBe("backup");
   });
 
+  it("a route another process healed is used again", async () => {
+    // A healthy route is stored as no record, and the refresh restored only
+    // records that exist, so this process kept refusing a route a runner had
+    // just proved healthy until its own cooldown ended. Found in an audit.
+    const stateDir = path.join(dir, "breaker_state");
+    const limited = {
+      flaky: new FakeDispatcher("flaky", { output: "", service: "flaky", success: false, rateLimited: true, retryAfter: 300 }),
+      backup: new FakeDispatcher("backup", { output: "ok", service: "backup", success: true }),
+    };
+    const server = build(stateDir, limited);
+    await build(stateDir, limited).routeTo("flaky", "go", [], "/tmp");
+    expect((await server.pickService({ hints: { taskType: "execute" } }))?.service).toBe("backup");
+
+    // A dispatch to it that was already in flight in another runner succeeds:
+    // that runner writes the healthy state, which the store keeps as no file.
+    new BreakerStore(stateDir).update("flaky", () => ({ failures: 0, blockedUntilMs: null, lastFailureAtMs: null }));
+    const decision = await server.pickService({ hints: { taskType: "execute" } });
+    expect(decision?.service, "a healed route stayed out of service").toBe("flaky");
+  });
+
   it("a trip that cannot be saved is reported in status", async () => {
     // Swallowed so it cannot fail the dispatch, but then invisible: every
     // other process kept using the route. Found in an audit.

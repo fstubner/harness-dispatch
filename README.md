@@ -110,9 +110,11 @@ found one.
 provider. Add `--live` when you want it to prove a dispatch really works end to
 end — that one sends a real request through an eligible route and spends
 whatever quota that route bills against, so it is a deliberate step rather than
-part of setup. `configure` is optional too: the tool auto-detects installed
-harnesses and runs without a `config.yaml` at all. Write one when you want to
-pin routes, add an endpoint, or change a default.
+part of setup. `configure` is optional for dispatching: the tool auto-detects
+installed harnesses and runs without a `config.yaml` at all. Write one when you
+want to pin routes, add an endpoint, or change a default — or to use `connect`,
+which registers clients against a config file and refuses to point them at one
+that does not exist.
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
 tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
@@ -125,8 +127,9 @@ Without `--yes` it previews and writes nothing.
 register this server with each client it finds (Claude Code, Cursor), showing
 what it would write and what is already there before changing anything.
 `--no-clients` skips the offer and prints a snippet to paste instead.
-`harness-dispatch connect` does the same registration later on its own, and
-`connect --remove` undoes it.
+`harness-dispatch connect` does the same registration later on its own (it
+needs the config file to exist; `--yes` skips its confirmation for scripted
+use), and `connect --remove` undoes it.
 
 **Re-running it.** A file `configure` wrote and you have not edited is
 regenerated, so installing a harness later is just `configure --yes` again. A
@@ -153,7 +156,7 @@ No global install needed either: `npx harness-dispatch configure`.
 ### Plugin install (Claude Code / Claude Desktop / Codex)
 
 The `plugin/` directory packages the MCP server plus a delegation skill and
-`/route` + `/jobs` commands for one-step installs — see
+`/setup`, `/route` and `/jobs` commands for one-step installs — see
 [plugin/README.md](https://github.com/fstubner/harness-dispatch/blob/main/plugin/README.md)
 (absolute link on purpose: `plugin/` is not shipped in the npm tarball, so a
 relative link is dead on npmjs.com). Claude Code:
@@ -197,8 +200,9 @@ credits), harness-dispatch will spend that too. It cannot see or change provider
 billing state. What it does is refuse routes where *no* provider-side ceiling exists
 at all.
 
-Run `status` (or `status --json`) for any route's billing classification; the `note:`
-lines spell out the reasoning per route.
+Run `status` (or `status --json`) for any route's billing classification. Where the
+classification needs explaining — Claude Code's surfaces, a local endpoint whose billing
+is unknown — a `note:` line under the route says why.
 
 <details>
 <summary>Renamed from <code>harness-router</code> — upgrade notes</summary>
@@ -218,7 +222,7 @@ is currently on the npm registry, which can lag a local clone's `dist/`. Check w
 
 </details>
 
-## Safety profiles, and Cursor on Windows
+## Safety profiles, and Cursor
 
 A caller asks for one of three profiles, and each is a limit rather than a
 capability:
@@ -238,13 +242,14 @@ given more access than the caller requested.
 - `read_only` uses `--mode plan`, which is genuinely read-only (verified: asked
   to create one file and overwrite another, it did neither).
 - `full_auto` uses print mode, which edits and runs shell.
-- `workspace_edit` is **skipped on Windows**. Cursor's print mode grants write
-  and shell together, and `--sandbox enabled` — the flag that would constrain
-  shell while allowing edits — is macOS/Linux only. There is no edit-without-shell
-  mode to route to, so claiming that level would mean handing shell access to a
-  caller who explicitly asked not to have it.
+- `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
+  write and shell together. `--sandbox enabled` — the flag that would constrain
+  shell while allowing edits — exists only on macOS and Linux, so the shipped
+  route does not use it anywhere. There is no edit-without-shell mode to route
+  to, and claiming that level would mean handing shell access to a caller who
+  explicitly asked not to have it.
 
-Cursor still edits code on Windows. Ask for `full_auto`.
+Cursor still edits code. Ask for `full_auto`.
 
 ### Overriding it
 

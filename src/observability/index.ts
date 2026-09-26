@@ -113,6 +113,15 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
     ? `${existingRes},${resourceParts.join(",")}`
     : resourceParts.join(",");
 
+  // The SDK's default resource detectors include the process detector, whose
+  // `process.command_args` is the full argv — and for `harness-dispatch
+  // dispatch "<prompt>"` the prompt IS an argv element, so every span carried
+  // it to the collector. Measured: a canary prompt appeared in the export.
+  // The same defaults minus that one; an explicit setting is the user's.
+  if (!process.env["OTEL_NODE_RESOURCE_DETECTORS"]) {
+    process.env["OTEL_NODE_RESOURCE_DETECTORS"] = "env,host";
+  }
+
   const sdk = new NodeSDK({
     traceExporter: exporter,
     instrumentations: instrumentations as never,

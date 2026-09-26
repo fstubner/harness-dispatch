@@ -246,3 +246,25 @@ describe("Cursor (GenericCliDispatcher + CURSOR_PROTOCOL)", () => {
   });
 
 });
+
+describe("a Cursor reply that reports its own error", () => {
+  // Exit 0 with {"is_error": true, "result": "<usage limit>"} was a success:
+  // strict mode asks only for a parsed result, so the limit text came back as
+  // the answer and the rate-limit scan never ran. Found in an audit.
+  it("is a failure, and a usage limit is recognised as one", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: JSON.stringify({
+          type: "result",
+          subtype: "error",
+          is_error: true,
+          result: "You've hit your usage limit. Try again later.",
+        }),
+      }),
+    );
+    const res = await cursor().dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.rateLimited).toBe(true);
+  });
+});

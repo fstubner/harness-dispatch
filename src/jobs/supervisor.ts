@@ -18,9 +18,11 @@ import { acquireWorkspaceLock } from "../workspace-lock.js";
 import { staleCodeWarning } from "../status.js";
 import {
   cancelRequested,
+  claimHolder,
   jobsRoot,
   ORPHAN_THRESHOLD_MS,
   pollInstructions,
+  processAlive,
   readJson,
   timestamp,
   updateStatus,
@@ -188,6 +190,12 @@ export async function claimJobDir(jobDir: string, status: JobStatus): Promise<bo
   } catch {
     const beat = Date.parse(status.updatedAt);
     if (!Number.isFinite(beat) || Date.now() - beat <= ORPHAN_THRESHOLD_MS) return false;
+    // The job's heartbeat is stale, but that is the RELEASE time for a job not
+    // yet running — so any released job older than 90 s let a second
+    // supervisor steal a claim made a moment ago, and both ran it. A claim
+    // whose holder is alive is not stale, however old the job.
+    const holder = claimHolder(jobDir);
+    if (holder !== undefined && processAlive(holder)) return false;
     // Reclaiming a crashed supervisor's claim must pick exactly ONE winner, or
     // two supervisors deciding "stale" in the same window both run the job —
     // a duplicate CLI execution billed twice. Renaming the stale claim aside

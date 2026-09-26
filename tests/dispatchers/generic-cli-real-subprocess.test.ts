@@ -248,3 +248,23 @@ describe.skipIf(process.platform !== "win32")("a multi-line prompt through a Win
     expect(res.output).toContain('"just one line"');
   }, 30_000);
 });
+
+describe("a command that cannot be started", () => {
+  // A spawn failure ended the stream by throwing, which bypassed the router:
+  // no fallback to another route and no breaker record. Found in an audit.
+  it("is reported as a failed attempt, not thrown", async () => {
+    const { mkdtempSync, writeFileSync, chmodSync } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "hd-nospawn-"));
+    // Not a program: a text file with an .exe name on Windows, a file with no
+    // execute bit elsewhere.
+    const bogus = path.join(dir, process.platform === "win32" ? "not-a-program.exe" : "not-a-program");
+    writeFileSync(bogus, "this is not a program\n");
+    if (process.platform !== "win32") chmodSync(bogus, 0o644);
+    const d = new GenericCliDispatcher({ ...nodeRoute(""), command: bogus } as unknown as ServiceConfig);
+    const res = await d.dispatch("hello", [], process.cwd());
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/could not run not-a-program/);
+  }, 30_000);
+});

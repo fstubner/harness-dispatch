@@ -10,6 +10,7 @@ harness-dispatch                         # stdio MCP
 harness-dispatch configure               # detect harnesses and prepare config
 harness-dispatch configure --print       # inspect generated config YAML
 harness-dispatch connect                 # register with the MCP clients you have
+harness-dispatch connect --yes           # no prompts (needs a config: configure --yes first)
 harness-dispatch connect --clients cursor  # no prompt; ids from the listing it prints
 harness-dispatch connect --dev           # point clients at THIS checkout's build
 harness-dispatch connect --remove        # take the entry back out
@@ -124,10 +125,10 @@ Endpoints:
 - `POST /v1/chat/completions` with `stream: true` sends the answer as SSE
   deltas. An endpoint route streams its text as it arrives; a CLI harness emits
   protocol on stdout, so its answer is sent once, at completion — the deltas
-  never carry harness protocol either way. **Streaming creates no job record**,
-  so unlike the non-streaming call there is no `jobId` to poll and an
-  interrupted stream cannot be recovered. Use the non-streaming form for work
-  you would mind losing.
+  never carry harness protocol either way. A streamed request is a job like any
+  other: its id arrives in the `x-harness-dispatch-job-id` response header, and
+  if the connection drops the run continues and its result stays collectable
+  with `job_status` (`cancel_job` stops it).
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
   `harness-dispatch://status.json`). Authenticated, because that answer is not
   for strangers.
@@ -162,7 +163,9 @@ curl http://127.0.0.1:3333/v1/chat/completions \
 ```
 
 The REST surface is OpenAI-compatible enough for local clients that can speak
-`/v1/chat/completions`. The `model` field is treated as a routing/model hint.
+`/v1/chat/completions`. The `model` field is treated as a routing/model hint;
+it is also the way to pick a route here, since the MCP `service` parameter is
+refused on this surface rather than silently ignored.
 
 Non-streaming completions are backed by the same persisted job pipeline as the
 MCP `dispatch` tool: the reply carries `harness_dispatch.jobId`, and the same id

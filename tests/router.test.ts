@@ -55,8 +55,21 @@ vi.mock("../src/breaker-store.js", () => ({
     // the previous value would make every failure the first one and quietly
     // disable the threshold these tests exercise.
     private readonly mem = new Map<string, unknown>();
+    // What the real store returns: every record except a healthy one, which
+    // it deletes rather than writes.
     loadAll() {
-      return {};
+      const out: Record<string, unknown> = {};
+      for (const [name, snap] of this.mem) {
+        const s = snap as { failures: number; blockedUntilMs: number | null };
+        if (s.failures !== 0 || s.blockedUntilMs !== null) out[name] = snap;
+      }
+      return out;
+    }
+    unreadableRoutes() {
+      return [];
+    }
+    lastWriteError() {
+      return undefined;
     }
     save() {}
     update(service: string, mutate: (cur: unknown) => unknown) {
@@ -465,6 +478,36 @@ describe("Router.pickService", () => {
     const decision = await router.pickService({ hints: { service: "beta" } });
     expect(decision?.service).toBe("beta");
     expect(decision?.reason).toBe("forced");
+  });
+
+  it("does not send the caller's model to a fallback route that does not declare it", async () => {
+    // The model was forwarded to whichever route won, fallbacks included, so
+    // `gpt-5.6-sol` reached a Claude route when Codex failed, that attempt
+    // failed too, and a healthy route took a breaker failure. Found in an
+    // audit.
+    const first = makeService({ name: "codexish", tier: 1, model: "gpt-5.6-terra", models: ["gpt-5.6-sol"] });
+    const second = makeService({ name: "claudeish", tier: 2, model: "claude-model" });
+    const failing = new StubDispatcher("codexish", { success: false, error: "boom" });
+    const fallback = new StubDispatcher("claudeish");
+    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, claudeish: fallback }, leaderboard);
+    const { result } = await router.route("go", [], "/tmp", { hints: { model: "gpt-5.6-sol" } });
+    expect(result.success).toBe(true);
+    expect(failing.calls[0]?.model, "the route that declares it got it").toBe("gpt-5.6-sol");
+    expect(fallback.calls[0]?.model, "the fallback was sent a model it cannot run").toBe("claude-model");
+  });
+
+  it("still sends the caller's model to a fallback route that lists it in models:", async () => {
+    // The other half of the rule above: `models:` is where a route declares
+    // the models it can run beyond its default, so a fallback listing the
+    // hinted model there must get it, not its default.
+    const first = makeService({ name: "codexish", tier: 1, model: "gpt-5.6-terra", models: ["gpt-5.6-sol"] });
+    const second = makeService({ name: "otherish", tier: 2, model: "other-default", models: ["gpt-5.6-sol"] });
+    const failing = new StubDispatcher("codexish", { success: false, error: "boom" });
+    const fallback = new StubDispatcher("otherish");
+    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, otherish: fallback }, leaderboard);
+    const { result } = await router.route("go", [], "/tmp", { hints: { model: "gpt-5.6-sol" } });
+    expect(result.success).toBe(true);
+    expect(fallback.calls[0]?.model, "a route declaring the model lost it").toBe("gpt-5.6-sol");
   });
 
   it("does not forward a ROUTE ID to the harness as a model override", async () => {
@@ -1381,6 +1424,40 @@ describe("Router.route", () => {
       : undefined;
     if (worktreeRoot) {
       await git(root, ["worktree", "remove", "--force", worktreeRoot]);
+    }
+  });
+
+  it("a workspace age limit of 0 is ignored, not read as 'delete everything'", async () => {
+    // `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS=0` made every run directory of
+    // the project count as expired, so the next isolated dispatch deleted the
+    // workspaces of runs still in progress. Found in an audit.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-copy-zero-"));
+    await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
+    const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-ws-home-"));
+    const svc = makeService({ name: "alpha", tier: 1 });
+    const router = new Router(makeConfig([svc]), quota, { alpha: new StubDispatcher("alpha") }, leaderboard);
+    const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+    const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+    process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = "0";
+    process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
+    try {
+      const hints = { safetyProfile: "workspace_edit" as const, workspacePolicy: "copy" as const };
+      const first = await router.route("noop", [], root, { hints });
+      expect(first.result.success).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const second = await router.route("noop", [], root, { hints });
+      expect(second.result.success).toBe(true);
+      await expect(
+        fs.stat(first.result.workspace!.workspaceRoot!),
+        "the previous dispatch's workspace was deleted under an age limit of 0",
+      ).resolves.toBeDefined();
+    } finally {
+      if (originalEnv === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
+      else process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = originalEnv;
+      if (originalDir === undefined) delete process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
+      else process.env.HARNESS_DISPATCH_WORKSPACES_DIR = originalDir;
+      await fs.rm(wsHome, { recursive: true, force: true, maxRetries: 3 });
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 

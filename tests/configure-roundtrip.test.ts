@@ -375,3 +375,27 @@ describe("a rewrite keeps what the user declared, and the file it replaces", () 
     expect(out.stdout).toMatch(/previous version is at/);
   });
 });
+
+describe("a file configure rewrote from the user's own", () => {
+  // It was stamped "unedited configure output", so the next `configure --yes`
+  // (no --force) rebuilt it from detection alone — dropping `detect: false`
+  // and the endpoint, with no backup. Found in an audit.
+  it("is not treated as disposable by the next run", async () => {
+    const src = path.join(dir, "own.yaml");
+    const body = [
+      "detect: false",
+      "endpoints:",
+      "  - name: ep",
+      "    base_url: http://localhost:11434/v1",
+      "    model: m",
+      "",
+    ].join("\n");
+    await fs.writeFile(src, body, "utf8");
+    expect((await capture(() => main(["configure", "--yes", "--force", "--no-clients", "--config", src]))).code).toBe(0);
+    const second = await capture(() => main(["configure", "--yes", "--no-clients", "--config", src]));
+    expect(second.code, "the second run overwrote the file without --force").toBe(1);
+    const text = await fs.readFile(src, "utf8");
+    expect(text).toContain("detect: false");
+    expect(text).toContain("name: ep");
+  });
+});

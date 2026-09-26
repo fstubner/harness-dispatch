@@ -510,3 +510,24 @@ describe("the job list tells one caller's jobs from another's", () => {
     expect(row("job-1700000000032-bbbbbbbb")?.promptPreview).toBe("write the release notes");
   });
 });
+
+describe("a failed result with no output of its own", () => {
+  // A cancelled copy/git_worktree run writes result.json with `output: ""`,
+  // and job_status returned that, never reading the partial log where the
+  // delegate's work actually was. Found in an audit.
+  it("hands back the partial log, marked as partial", async () => {
+    const jobId = "job-1700000000061-aaaaaaaa";
+    const dir = await plantJob(jobId, "cancelled", { error: "Cancelled: changed my mind" });
+    await fs.writeFile(path.join(dir, "output", "stdout.partial.log"), "AGENT PROGRESS: step 2 of 5\n", "utf8");
+    await fs.writeFile(
+      path.join(dir, "output", "result.json"),
+      JSON.stringify({ jobId, decision: null, result: { output: "", service: "editor", success: false, error: "Cancelled" } }),
+      "utf8",
+    );
+    const { invokeTool } = await import("../src/mcp/tools.js");
+    const invoked = await invokeTool("job_status", { jobId }, {} as never);
+    const res = (invoked as { data: unknown }).data as { result?: { output: string; warning?: string } };
+    expect(res.result?.output).toContain("AGENT PROGRESS");
+    expect(res.result?.warning).toMatch(/PARTIAL/);
+  });
+});

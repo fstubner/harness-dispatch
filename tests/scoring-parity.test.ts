@@ -49,6 +49,12 @@ vi.mock("../src/breaker-store.js", () => ({
     loadAll() {
       return {};
     }
+    unreadableRoutes() {
+      return [];
+    }
+    lastWriteError() {
+      return undefined;
+    }
     save() {}
     update(service: string, mutate: (cur: unknown) => unknown) {
       const next = mutate(this.mem.get(service));

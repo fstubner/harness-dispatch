@@ -108,6 +108,17 @@ describe("copy workspaces", () => {
     };
   }
 
+  it("a changed file missing from the workspace is not applied as a deletion", async () => {
+    // Diffed against nothing, the agent's edit became a deletion of the
+    // user's file, applied and reported `applied: true`. Found in an audit.
+    const run = await copyRun();
+    await fs.rm(path.join(run.effectiveWorkingDir, "app.js"));
+    await expect(applyWorkspace("job-1700000000031-aaaaaaaa", jobDir, run)).rejects.toThrow(
+      /no longer has app\.js/,
+    );
+    expect(await readNorm(path.join(run.originalWorkingDir, "app.js"))).toBe("const a = 1;\n");
+  });
+
   it("a gone workspace does not blame retention for it", async () => {
     // `discardWorkspace` already knows a root goes missing three ways —
     // retention pruned it, a user deleted it, or a worktree was removed through

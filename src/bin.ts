@@ -48,6 +48,7 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  --json                Print JSON where supported.",
       "  --print               configure: print generated config YAML without writing it.",
       "  --yes                 configure: write config.yaml instead of only previewing it.",
+      "                        connect: do not prompt (never replaces an entry you edited).",
       "  --force               configure: overwrite an existing config file.",
       "  --clients <ids>       connect: comma-separated client ids, instead of prompting.",
       "  --no-clients          configure: skip the offer to register with clients.",

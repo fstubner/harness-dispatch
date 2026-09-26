@@ -267,15 +267,15 @@ clis:
         mode: json_field
         fields: [result, output, text]
         usage: { input: [usage.input_tokens, usage.prompt_tokens], output: [usage.output_tokens, usage.completion_tokens] }
+        # The success reply verified above carries "is_error": false beside
+        # "result". Without this, a reply with "is_error": true and exit 0 —
+        # a usage limit reported in the body — was taken as a success,
+        # because a parsed "result" is all strict mode asks for: the text was
+        # returned as the answer and the rate-limit scan never ran. Found in
+        # an audit. The error text is in "result", read as usual.
+        error: { field: is_error }
       # success_requires_output omitted -> strict: exit 0 with no parseable
       # output still counts as failure.
-      # No protocol.output.error entry: unlike Codex/Claude Code above (both
-      # verified live 2026-07-24 against real exhausted-quota responses),
-      # cursor-agent isn't installed on this machine to capture its actual
-      # on-quota-exhaustion JSON shape — deliberately not guessing one. A
-      # real Cursor exhaustion still falls through to detectRateLimit's raw
-      # text scan (rate limit/quota exceeded/usage limit/429), just without
-      # a structured message or forced-failure-past-exit-0 override.
 
   # ── Antigravity ─────────────────────────────────────────────────────────────
   # Google's successor to Gemini CLI (shut down 2026-06-18). Best for plan +
@@ -353,7 +353,7 @@ clis:
   # Everything else in args passes through literally. You can also reuse an
   # entry above by name (protocol: cursor) or extend one (protocol: { extends:
   # codex, model: { flag: "--llm-model" } }) — safety merges per-profile.
-  # See README.md#adding-a-harness for the full reference.
+  # See docs/configuration.md#adding-a-harness for the full reference.
   #
   # - name: my_cli
   #   harness: generic

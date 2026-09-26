@@ -1644,3 +1644,14 @@ describe("quoted booleans in billing fields", () => {
     expect(cfg.configWarnings ?? []).toEqual([]);
   });
 });
+
+describe("disabled: written as a single name", () => {
+  // `disabled: codex_cli` without list syntax was dropped with no warning,
+  // so the switched-off route stayed detected and routable. Found in an audit.
+  it("disables that route, as a one-item list does", async () => {
+    const p = await writeTmpYaml("disabled-scalar.yaml", ["disabled: codex_cli", ""].join(NL));
+    const cfg = await loadConfig(p, { whichFn: async (cmd: string) => `/fake/bin/${cmd}` });
+    expect(Object.keys(cfg.services)).not.toContain("codex_cli");
+    expect(Object.keys(cfg.services)).toContain("claude_code_cli");
+  });
+});

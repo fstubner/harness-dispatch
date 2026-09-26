@@ -8,6 +8,87 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Telemetry no longer exports the prompt.** OpenTelemetry's default process
+  detector exports the command line, and for `harness-dispatch dispatch
+  "<prompt>"` that is the prompt; once CLI spans started flushing, it was sent
+  to the collector (measured with a canary prompt). The resource detectors now
+  default to `env,host`, unless you set `OTEL_NODE_RESOURCE_DETECTORS`.
+
+- **A bad request to `/mcp` no longer leaks a server session.** A malformed or
+  oversized body was read after the session was created, so every such request
+  left one behind (2,000 requests: 2,000 sessions, +104 MiB). The body is now
+  read first.
+
+- **A file missing from a `copy` workspace is no longer applied as a
+  deletion.** If a file the agent changed or created is gone from the
+  workspace, building the patch now fails and nothing is applied; before, the
+  user's own copy was deleted and the apply reported success.
+
+- **A failed `git_worktree` run keeps its worktree when it has changes.**
+  Edits only under `bin/`, `dist/`, `build/`, `target/` or `obj/` counted as no
+  changes, so the worktree was deleted with them. It is now removed only when
+  `git status` shows nothing.
+
+- **A job is no longer declared orphaned while its runner is alive.** A stale
+  heartbeat from a process that still exists (a laptop waking from sleep) is
+  given 30 s to recover instead of being final, and a second supervisor cannot
+  take over a claim whose holder is alive. A job released to run that no
+  supervisor picked up now says to use `retry_job`, not to dispatch it again —
+  re-dispatching ran and billed it twice.
+
+- **Lock waits respect their timeout.** When removing a dead lock failed (a
+  Windows file handle), both lock loops retried without pausing and ignored
+  their deadline (a 2 s timeout blocked the process for 14 s).
+
+- **A harness that cannot be started falls back to another route.** A spawn
+  error (missing binary, no permission) escaped the dispatcher, so there was no
+  fallback and no breaker record. It is now an ordinary failed run.
+
+- **Cursor's `is_error: true` counts as a failure even at exit 0**, so a usage
+  limit is reported as one rather than as an empty success.
+
+- **A route healed in one process is usable again in the others.** A breaker
+  tripped in one process never re-closed from another process's success,
+  because a healthy route is stored as a deleted file and refreshing only read
+  files that exist.
+
+- **A model hint no longer follows the dispatch onto fallback routes that do
+  not have that model.** The fallback route ran with its own default model;
+  before, the unknown model failed there and was charged to the healthy
+  route's breaker.
+
+- **`job_status` shows the partial output of a run whose result is empty**
+  (a cancelled isolated run, for instance), instead of nothing.
+
+- **A non-streaming fanout in which every arm failed answers 502**, naming each
+  arm's error, instead of 200 with `finish_reason: stop`.
+
+- **Streamed HTTP requests are jobs.** A single-route `stream: true` request
+  now runs as a job like every other dispatch: its id is in the
+  `x-harness-dispatch-job-id` header, a dropped connection no longer loses the
+  run, and `cancel_job` stops it. A stream that ended in an error no longer
+  sends a second, stale error frame.
+
+- **`configure --yes` no longer discards a config you edited.** A file
+  rewritten by `configure --force` was stamped as unedited generated output, so
+  the next `configure --yes` replaced it, without a backup.
+
+- **`disabled: codex_cli` written as a single value works**, instead of being
+  ignored.
+
+- **The unknown-billing error offers the right fix for a local endpoint**:
+  declaring `billing_kind: local_compute` (or `free_quota`), not only
+  `allow_paid_usage: true`.
+
+- **Documentation corrected against the code:** Cursor skips `workspace_edit`
+  on every platform, not only Windows; `connect` needs a config file and has a
+  `--yes`; a broken config refuses dispatches; the starting-over advice would
+  have deleted the default config; `job_status` lists the 20 most recent jobs;
+  the POSIX workspaces path, the health-check port, the "streams then stops"
+  behaviour, stale `README.md#adding-a-harness` references and dead relative
+  links. Every `HARNESS_DISPATCH_*` environment variable is now listed in
+  docs/operations.md.
+
 - **Telemetry now covers dispatches.** Every MCP and HTTP dispatch runs in a
   background job runner, which never set up telemetry, and the streaming path
   jobs use had no span anyway — so with telemetry on, not one dispatch span was

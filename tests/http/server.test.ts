@@ -164,6 +164,26 @@ async function startUnusableOpenAi(): Promise<{ port: number; close(): Promise<v
   return { port, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
+/** Streams some text, then drops the connection: a failure after the answer began. */
+async function startBreakingOpenAi(): Promise<{ port: number; close(): Promise<void> }> {
+  const server: Server = createServer(async (req, res) => {
+    for await (const _chunk of req) void _chunk;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+    setTimeout(() => res.socket?.destroy(), 50);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  return {
+    port,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
 /** Two endpoint routes, the first preferred, so a failure falls to the second. */
 async function writeTwoRouteConfig(primary: string, secondary: string): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-http2-"));
@@ -637,6 +657,36 @@ describe("HTTP server", () => {
     ]);
   });
 
+  it("gives a streamed request a job the caller can come back to", async () => {
+    // A single-route stream ran in the request alone — the one dispatch path
+    // with no job record — so a dropped connection or a restart lost work that
+    // had finished, with no jobId to recover it. Found in an audit (and noted
+    // in OPERATIONS.md as a real gap).
+    const jobsDir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-http-stream-jobs-"));
+    const prev = process.env.HARNESS_DISPATCH_JOBS_DIR;
+    process.env.HARNESS_DISPATCH_JOBS_DIR = jobsDir;
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    try {
+      const config = await writeConfig(`http://127.0.0.1:${fake.port}`);
+      const handle = await startHttpServer({ configPath: config, token: "secret" });
+      handles.push(handle);
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({ model: "local-test", stream: true, messages: [{ role: "user", content: "say hello" }] }),
+      });
+      const jobId = res.headers.get("x-harness-dispatch-job-id");
+      expect(jobId, "no jobId in the stream's headers").toMatch(/^job-/);
+      expect(await res.text()).toContain("hello");
+      const result = JSON.parse(await fs.readFile(path.join(jobsDir, jobId!, "output", "result.json"), "utf8"));
+      expect(result.result.success).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.HARNESS_DISPATCH_JOBS_DIR;
+      else process.env.HARNESS_DISPATCH_JOBS_DIR = prev;
+    }
+  }, 30_000);
+
   it("streams chat completions as SSE", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);
@@ -784,6 +834,41 @@ describe("HTTP server", () => {
     expect(text, "every route failed and nothing said so").toContain('"error"');
   });
 
+  it("sends one error frame, the right route's, when the answering route fails mid-stream", async () => {
+    // The first route failed before any text, so its error was held back; the
+    // second streamed text and then failed, which writes its own frame. The
+    // held one was then sent as well — a second error naming a route that
+    // was not the one that failed. Found in an audit.
+    const bad = await startUnusableOpenAi();
+    const breaking = await startBreakingOpenAi();
+    fakes.push(bad, breaking);
+    const config = await writeTwoRouteConfig(
+      `http://127.0.0.1:${bad.port}/v1`,
+      `http://127.0.0.1:${breaking.port}/v1`,
+    );
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "local-test",
+        stream: true,
+        messages: [{ role: "user", content: "say hello" }],
+      }),
+    });
+    const text = await res.text();
+    expect(text, "the second route's text never streamed").toContain("partial");
+    const errors = text
+      .split("\n\n")
+      .map((block) => block.replace(/^data: /, "").trim())
+      .filter((payload) => payload.startsWith("{"))
+      .map((payload) => JSON.parse(payload) as { error?: { route?: string } })
+      .filter((frame) => frame.error !== undefined);
+    expect(errors.map((frame) => frame.error?.route)).toEqual(["ep_secondary"]);
+  });
+
   it("rejects explicit write-capable fanout until workspace isolation is available", async () => {
     const fake = await startFakeOpenAi();
     fakes.push(fake);
@@ -840,6 +925,23 @@ describe("HTTP server", () => {
     expect(body.harness_dispatch?.mode).toBe("fanout");
     expect(body.choices[0]!.message.content).toContain("workspace");
   });
+
+  it("answers 502 with an error when every fanout arm failed", async () => {
+    // It answered 200 with `finish_reason: "stop"` and no `error`, so a CI
+    // caller whose every route failed saw success — while the single-route
+    // branch answered the same failure with 502. Found in an audit.
+    const config = await writeConfig("http://127.0.0.1:9/v1");
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+    const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret", "content-type": "application/json" },
+      body: JSON.stringify({ model: "local-test", mode: "fanout", messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error?: { message: string } };
+    expect(body.error?.message).toMatch(/every fanout arm failed/);
+  }, 30_000);
 
   it("leaves a durable trail for every fanout arm, not just a response", async () => {
     // These arms called router.routeTo directly, so an arm's work existed ONLY
@@ -1061,6 +1163,33 @@ describe("MCP sessions that never come into existence", () => {
       handle.openMcpSessions(),
       "one MCP server leaked per rejected request",
     ).toBe(0);
+    } finally {
+      await handle.close();
+      await fake.close();
+    }
+  });
+
+  it("does not leave one behind for a body it cannot read", async () => {
+    // The size-limited body read threw after the session server was created,
+    // skipping its cleanup: 2,000 malformed requests left 2,000 servers.
+    // Found in an audit.
+    const fake = await startFakeOpenAi();
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    try {
+      for (let i = 0; i < 5; i++) {
+        const res = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer secret",
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+          body: "{ not json",
+        });
+        expect(res.status).toBe(400);
+      }
+      expect(handle.openMcpSessions(), "a server leaked per unreadable body").toBe(0);
     } finally {
       await handle.close();
       await fake.close();

@@ -126,3 +126,19 @@ It sends nothing about you or your prompts. It is off by default because a
 benchmark maintained elsewhere should not quietly reorder the subscriptions
 you are paying for, and because a routing tool should not need the network to
 decide which of your local CLIs to run.
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `HARNESS_DISPATCH_CONFIG` | Path of the config file to load instead of `~/.harness-dispatch/config.yaml`. |
+| `HARNESS_DISPATCH_STATE_DIR` | Root of all state (default `~/.harness-dispatch`): config, jobs, breaker state, quota counters, logs, token. |
+| `HARNESS_DISPATCH_HOME` | Directory holding the HTTP token file only (default: the state root). |
+| `HARNESS_DISPATCH_HTTP_TOKEN` | HTTP bearer token. Overrides the token file; `auth rotate` refuses while it is set. |
+| `HARNESS_DISPATCH_JOBS_DIR` | Where job bundles live (default `<state root>/jobs`). |
+| `HARNESS_DISPATCH_JOB_MAX_AGE_MS` | Job retention in milliseconds; overrides `retention.jobs_days`. |
+| `HARNESS_DISPATCH_WORKSPACES_DIR` | Where `copy` and `git_worktree` workspaces are made (default: under the system temp directory). |
+| `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS` | Age after which a project's old workspaces are deleted on its next isolated dispatch. Positive milliseconds; default 24 h. |
+| `HARNESS_DISPATCH_LOG_DIR` | Directory of the local dispatch log. |
+| `HARNESS_DISPATCH_TELEMETRY` | `1` or `true` turns on OpenTelemetry tracing. |
+| `HARNESS_DISPATCH_INPROC_JOBS` | `1` runs jobs inside the server process instead of a detached runner — for tests. Such runs die with the server, and the concurrency cap does not apply. |

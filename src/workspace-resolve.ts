@@ -295,8 +295,20 @@ async function buildCopyPatchFromChanges(
     // deletion makes the guard below fire every time, so no copy patch carries
     // a deletion at all — and a rename is a delete plus an add, so renames go
     // with it.
+    // A file the agent changed or added that the workspace no longer has is
+    // NOT a deletion — the workspace lost it (a partial prune, a temp cleaner,
+    // an unreadable path). Diffing it against nothing turned the agent's edit
+    // into a deletion of the user's file, applied and reported as success.
+    // Measured in an audit. Refused, naming the file, so nothing is applied.
+    if (change.kind !== "deleted" && !workspaceHas) {
+      throw new Error(
+        `the workspace no longer has ${rel}, which the agent ${change.kind === "added" ? "created" : "changed"}, ` +
+          `so a correct patch cannot be built — nothing has been applied. The saved patch beside the ` +
+          `job, if any, is used once the workspace itself is gone.`,
+      );
+    }
     const left = projectHas ? toPosix(projectFile) : NULL_PATH;
-    const right = change.kind === "deleted" || !workspaceHas ? NULL_PATH : toPosix(workspaceFile);
+    const right = change.kind === "deleted" ? NULL_PATH : toPosix(workspaceFile);
 
     // Nothing on either side: cannot be diffed. Skipping leaves the patch
     // shorter than changedFiles, which is precisely the state applyWorkspace's

@@ -795,7 +795,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
           success: false,
           error:
             `Route '${this.id}' is missing 'command' and/or 'protocol' — both are ` +
-            "required for harness: generic. See README.md#adding-a-harness.",
+            "required for harness: generic. See docs/configuration.md#adding-a-harness.",
         },
       };
       return;
@@ -931,35 +931,56 @@ export class GenericCliDispatcher extends BaseDispatcher {
     const eventDriven = protocol.output.mode === "jsonl_stream" && protocol.output.eventRules;
     const acc = eventDriven ? new JsonlAccumulator(protocol.output.eventRules!) : undefined;
     let lineBuffer = "";
+    const startedAt = Date.now();
 
-    for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
-      // One `continue` per event kind, rather than nested ifs, so the part
-      // that has to be exactly right — holding a partial line across reads —
-      // sits at the top level of the loop.
-      if (!("stream" in evt)) {
-        exitCode = evt.exitCode;
-        durationMs = evt.durationMs;
-        timedOut = evt.timedOut;
-        truncated = evt.truncated;
-        continue;
+    // A process that could not be started (a corrupt binary, EACCES, a
+    // command line the OS refuses) or a runaway that overflowed the queue ends
+    // the stream by THROWING. Uncaught, that bypassed the router entirely: no
+    // fallback to another route, no breaker record, the route scored as
+    // healthy next time — measured, against an exit-1 control that did fall
+    // back. It is a failed attempt, so it is reported as one.
+    try {
+      for await (const evt of streamSubprocess(resolved.command, args, subOpts)) {
+        // One `continue` per event kind, rather than nested ifs, so the part
+        // that has to be exactly right — holding a partial line across reads —
+        // sits at the top level of the loop.
+        if (!("stream" in evt)) {
+          exitCode = evt.exitCode;
+          durationMs = evt.durationMs;
+          timedOut = evt.timedOut;
+          truncated = evt.truncated;
+          continue;
+        }
+
+        if (evt.stream === "stderr") {
+          stderrBuf.push(evt.chunk);
+          yield { type: "stderr", chunk: evt.chunk };
+          continue;
+        }
+
+        stdoutBuf.push(evt.chunk);
+        yield { type: "stdout", chunk: evt.chunk };
+        if (!acc) continue;
+
+        lineBuffer += evt.chunk;
+        const split = takeCompleteLines(lineBuffer);
+        lineBuffer = split.rest;
+        for (const line of split.lines) {
+          for (const out of acc.process(line)) yield out;
+        }
       }
-
-      if (evt.stream === "stderr") {
-        stderrBuf.push(evt.chunk);
-        yield { type: "stderr", chunk: evt.chunk };
-        continue;
-      }
-
-      stdoutBuf.push(evt.chunk);
-      yield { type: "stdout", chunk: evt.chunk };
-      if (!acc) continue;
-
-      lineBuffer += evt.chunk;
-      const split = takeCompleteLines(lineBuffer);
-      lineBuffer = split.rest;
-      for (const line of split.lines) {
-        for (const out of acc.process(line)) yield out;
-      }
+    } catch (err) {
+      yield {
+        type: "completion",
+        result: {
+          output: stdoutBuf.join(""),
+          service: this.id,
+          success: false,
+          error: `could not run ${path.basename(resolved.command)}: ${err instanceof Error ? err.message : String(err)}`,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+      return;
     }
     if (acc && lineBuffer.length > 0) {
       for (const out of acc.process(lineBuffer)) yield out;
