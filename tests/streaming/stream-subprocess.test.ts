@@ -372,3 +372,47 @@ describe("a child that exits without reading its stdin", () => {
     expect(out).toBe("EXIT 0");
   }, 60_000);
 });
+
+describe("a child that exits while a process it started still holds its output", () => {
+  // `close` waits for every stdio pipe to close, and a descendant that
+  // inherited them (a dev server, a build daemon the agent left running) keeps
+  // them open after the agent itself has exited. Waiting for `close` alone
+  // held a finished run open until the timeout fired, then recorded it as
+  // timed out. Windows closes the pipes with the child, so this only ever
+  // failed on POSIX. Found in an audit.
+  it("ends with the child's exit code, not a timeout", async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const bg = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      bg.unref();
+      process.stdout.write("bg " + bg.pid + "\\n" + "final answer\\n");
+      process.exit(0);
+    `;
+    let out = "";
+    let end: { exitCode: number; timedOut: boolean } | undefined;
+    const started = Date.now();
+    try {
+      for await (const evt of streamSubprocess(NODE, ["-e", script], {
+        timeoutMs: 8_000,
+        exitDrainMs: 200,
+      })) {
+        if ("stream" in evt) out += evt.chunk;
+        else end = { exitCode: evt.exitCode, timedOut: evt.timedOut };
+      }
+    } finally {
+      const pid = Number(/bg (\d+)/.exec(out)?.[1]);
+      if (pid > 0) {
+        try {
+          process.kill(pid);
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+    expect(end).toEqual({ exitCode: 0, timedOut: false });
+    expect(out).toContain("final answer");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }, 20_000);
+});

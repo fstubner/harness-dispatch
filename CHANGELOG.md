@@ -8,6 +8,23 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A finished run is no longer recorded as timed out on macOS and Linux
+  when its agent leaves a background process running.** A dev server or build
+  daemon the agent started kept the run's output open after the agent had
+  exited, so the run waited out its whole time limit — an hour by default —
+  and was then reported as a failure. Measured on Linux: a run that answered
+  and exited at once returned "timed out" after its full 15 s limit; it now
+  returns its answer in 3 s. Windows was not affected.
+
+- **Two workspace actions on the same job no longer interfere.** Sending
+  `diff` and `apply`, or two `apply`s, at the same moment — as an orchestrator
+  issuing tool calls in parallel does — let one read the other's half-written
+  patch file or a half-applied project. The losing `apply` of a pair reported
+  conflict markers that were never written and advised undoing the files the
+  winner had just landed; measured on Linux, 5 of 5 paired applies. Actions on
+  one job now take turns, and the second `apply` reports that the work is
+  already applied.
+
 - **Isolated dispatches in different projects no longer break each other.**
   A `copy` or `git_worktree` dispatch cleans up other projects' abandoned
   workspace folders — and could delete one that another project's dispatch had

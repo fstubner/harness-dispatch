@@ -69,12 +69,18 @@ export interface StreamSubprocessOpts {
    * `runSubprocess`.
    */
   killGraceMs?: number;
+  /**
+   * How long output may keep arriving after the child has exited before its
+   * pipes are closed from this side. Defaults to 2s.
+   */
+  exitDrainMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_BUFFERED_CHUNKS = 1000;
 const DEFAULT_KILL_GRACE_MS = 2_000;
+const DEFAULT_EXIT_DRAIN_MS = 2_000;
 
 /**
  * Stream a subprocess's stdout/stderr as an AsyncIterable.
@@ -91,6 +97,7 @@ export function streamSubprocess(
   const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const maxBufferedChunks = opts.maxBufferedChunks ?? DEFAULT_MAX_BUFFERED_CHUNKS;
   const killGraceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  const exitDrainMs = opts.exitDrainMs ?? DEFAULT_EXIT_DRAIN_MS;
 
   const start = Date.now();
 
@@ -250,6 +257,21 @@ export function streamSubprocess(
     clearTimeout(timer);
     errored = err;
     finish();
+  });
+
+  // `close` waits for the child's stdio pipes as well as the child, and a
+  // descendant that inherited them — a dev server or build daemon the agent
+  // left running — holds them open after the agent has exited. On POSIX that
+  // kept a finished run open until the timer fired, and the run was recorded
+  // as timed out. So once the child has exited, give its last output a moment
+  // to arrive, then close the pipes from this side; `close` follows with the
+  // child's own exit code.
+  child.on("exit", () => {
+    setTimeout(() => {
+      if (settled) return;
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    }, exitDrainMs).unref();
   });
 
   child.on("close", (code, signal) => {
