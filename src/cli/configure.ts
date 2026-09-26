@@ -170,7 +170,19 @@ export async function cmdConfigure(
     }
   }
   const tmp = `${target}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, stampGenerated(yamlText), { encoding: "utf-8", mode, flag: "wx" });
+  // A killed earlier run can leave one at this name; `wx` would then fail
+  // after the backup was already taken.
+  await fs.rm(tmp, { force: true });
+  // Stamped as regenerable only when it came from detection alone. A rewrite
+  // of the user's own file carries their settings, and stamped, the next
+  // `configure --yes` treated it as disposable: rebuilt it from detection,
+  // dropping `detect: false` and every endpoint, with no backup.
+  const fromDetectionOnly = existing === undefined || regenerate;
+  await fs.writeFile(tmp, fromDetectionOnly ? stampGenerated(yamlText) : yamlText, {
+    encoding: "utf-8",
+    mode,
+    flag: "wx",
+  });
   await fs.rename(tmp, target);
   const absoluteTarget = path.resolve(target);
   process.stdout.write(

@@ -249,3 +249,57 @@ describe("a relative path in files", () => {
     }
   });
 });
+
+describe("a job whose heartbeat is old but whose process is alive", () => {
+  // A laptop waking from sleep: the supervisor is alive, its next heartbeat
+  // up to 15 s away. `job_status` said "Nothing will advance it now", and a
+  // retry acting on that cancelled the live run. Found in an audit.
+  async function plant(status: string, claimPid: number | undefined): Promise<string> {
+    const jobId = `job-${Date.now()}-${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+    const jobDir = path.join(tmpDir, jobId);
+    await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
+    const old = new Date(Date.now() - 100_000).toISOString();
+    await fs.writeFile(
+      path.join(jobDir, "status.json"),
+      JSON.stringify({ jobId, status, createdAt: old, updatedAt: old, jobDir }),
+    );
+    await fs.writeFile(
+      path.join(jobDir, "manifest.json"),
+      JSON.stringify({ jobId, createdAt: old, workingDir: tmpDir, promptPath: "", files: [] }),
+    );
+    if (claimPid !== undefined) {
+      await fs.writeFile(path.join(jobDir, "claim.json"), JSON.stringify({ pid: claimPid, at: old }));
+    }
+    return jobId;
+  }
+
+  it("is still running when first seen stale", async () => {
+    const jobId = await plant("running", process.pid);
+    expect((await getAsyncJob(jobId)).status.status).toBe("running");
+  });
+
+  it("is orphaned at once when its process is gone", async () => {
+    const jobId = await plant("running", 0x7ffffffe);
+    expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");
+  });
+
+  it("an unclaimed released job says to retry, not to re-dispatch", async () => {
+    // It has not started and WILL start when a supervisor next runs, so a
+    // fresh dispatch of the same task ran it twice.
+    const jobId = await plant("queued", undefined);
+    const job = await getAsyncJob(jobId);
+    expect(job.status.status).toBe("orphaned");
+    expect(job.status.error).toMatch(/retry_job/);
+    expect(job.status.error).toMatch(/Do NOT re-dispatch/);
+  });
+
+  it("a live claim on it cannot be taken by a second supervisor", async () => {
+    // Staleness was judged from the job's status age — the RELEASE time for a
+    // job not yet running — so two supervisors could both claim and run it.
+    const { claimJobDir } = await import("../src/jobs/supervisor.js");
+    const jobId = await plant("queued", process.pid);
+    const jobDir = path.join(tmpDir, jobId);
+    const status = JSON.parse(await fs.readFile(path.join(jobDir, "status.json"), "utf8"));
+    expect(await claimJobDir(jobDir, status)).toBe(false);
+  });
+});

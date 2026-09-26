@@ -130,7 +130,7 @@ Each verified 2026-08-31 rather than carried forward; method in brackets.
 
 | Limit | Why it stands |
 |---|---|
-| Cursor cannot serve `workspace_edit` on Windows | `--sandbox enabled` still errors "requires macOS or Linux" — live-probed today against CLI 2026.08.25 (it fails locally, before any dispatch). Cursor's 2026 Windows-sandbox announcement covers the IDE, not the CLI. Re-probe on CLI updates |
+| Cursor cannot serve `workspace_edit` | Its print mode grants write and shell together, on every platform. `--sandbox enabled`, the flag that would separate them, still errors "requires macOS or Linux" on Windows — live-probed 2026-08-31 against CLI 2026.08.25 — so the shipped route does not use it anywhere. Cursor's 2026 Windows-sandbox announcement covers the IDE, not the CLI. Re-probe on CLI updates |
 | `usage` reports tokens, never money | [domain research] Subscription CLIs have no per-call price; pricing tokens needs a rate card that goes stale silently; prepaid API balances are not exposed by any endpoint |
 | No graduated quota preference between routes | [domain research] No provider exposes a trustworthy headroom signal — subscription CLIs have none, rate-limit headers count requests not money, and Antigravity's quota API demonstrably disagrees with its own 429s. Reactive-only routing is a domain constraint, not an implementation gap |
 | Spend cannot be measured, so it is never gated in real time | [domain research] Cost is knowable only after generation; there is nothing to meter before the call. `allow_paid_usage` is the only honest control available |

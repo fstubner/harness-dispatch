@@ -43,18 +43,19 @@ const LOCK_STALE_MS = 10_000;
  * means another waiter got there first, and a leftover tombstone is inert
  * because nothing reads `*.stale-*` names.
  */
-function stealStaleLock(lockDir: string): void {
+function stealStaleLock(lockDir: string): boolean {
   const tomb = `${lockDir}.stale-${process.pid}-${Date.now().toString(36)}`;
   try {
     renameSync(lockDir, tomb);
   } catch {
-    return; // lost the steal race to another waiter
+    return false; // lost the steal race to another waiter, or the rename is refused
   }
   try {
     rmSync(tomb, { recursive: true, force: true });
   } catch {
     // Leftover tombstone; nothing reads `*.stale-*` names.
   }
+  return true;
 }
 
 /** Pause between acquisition attempts, so waiting costs no CPU. */
@@ -157,10 +158,10 @@ export function withFileLock<T>(
     } catch {
       try {
         const age = Date.now() - statSync(lockDir).mtimeMs;
-        if (age > LOCK_STALE_MS) {
-          stealStaleLock(lockDir);
-          continue;
-        }
+        // A failed steal waits like any contended attempt: `continue`d, a
+        // rename that stays refused spun this synchronous loop past its
+        // timeout (measured: a 2 s limit blocked for 14 s).
+        if (age > LOCK_STALE_MS && stealStaleLock(lockDir)) continue;
       } catch {
         // mkdir failed for a reason that is not "already exists": the lock
         // vanished between the two calls, or the directory is unwritable, or

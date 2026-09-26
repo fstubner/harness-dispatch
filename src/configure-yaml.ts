@@ -163,7 +163,7 @@ function cliEntryToYaml(
   // `harness: generic` has NO shipped preset behind it, so anything omitted
   // here is not recoverable on reload — it is gone. Dropping `protocol:` is
   // fatal: config.ts refuses a generic entry without one, so a round-trip would
-  // delete every user-added harness (the documented README#adding-a-harness
+  // delete every user-added harness (the documented docs/configuration.md#adding-a-harness
   // path) and `configure --yes --force` would write that over their file.
   //
   // Built-in harnesses keep the lean output: their preset supplies protocol and

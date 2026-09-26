@@ -7,7 +7,7 @@ installed CLIs and runs without one.
 ## Adding a harness
 
 `config.yaml` is entirely optional. There is no separate hidden defaults format —
-harness-dispatch ships with its own [`config.default.yaml`](config.default.yaml), the
+harness-dispatch ships with its own [`config.default.yaml`](../config.default.yaml), the
 same shape you'd write yourself, and reads it as its built-in config. With no
 `config.yaml` of your own, the shipped one is filtered down to whichever of `claude`,
 `codex`, `agy` (Antigravity), and `cursor-agent` are on your PATH:
@@ -50,7 +50,7 @@ Which one you want depends on the goal:
 | Nothing but auto-detection, minus a route | no `clis:`/`endpoints:`, plus `disabled: [name]` |
 | No routes at all | `detect: false` |
 
-See the shipped [`config.default.yaml`](config.default.yaml) for the full field
+See the shipped [`config.default.yaml`](../config.default.yaml) for the full field
 reference (capability weights, tiers, escalation, workspace policy, and more) — copy
 it to your own `config.yaml` and edit, or run `harness-dispatch configure` to generate
 a starting point.
@@ -94,7 +94,7 @@ The full token reference:
 
 **Protocols are named and selectable, not just inline.** `claude_code`, `codex`,
 `cursor`, and `antigravity_cli` are registered presets — every entry's `harness:` value
-in the shipped [`config.default.yaml`](config.default.yaml)'s `clis:` list is
+in the shipped [`config.default.yaml`](../config.default.yaml)'s `clis:` list is
 automatically selectable as a preset name. Reference one by name instead of retyping it:
 
 ```yaml
@@ -128,7 +128,7 @@ other route.
 The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
 either — there is no per-harness dispatcher class or hardcoded TypeScript data for any
 of them in this codebase. All 4 are ordinary `clis:` entries in the shipped
-[`config.default.yaml`](config.default.yaml) — not a separate "defaults registry" in
+[`config.default.yaml`](../config.default.yaml) — not a separate "defaults registry" in
 some other format, loaded through the exact same parser as your own `config.yaml`,
 covering each CLI's real flags including Codex's mid-run tool_use/thinking/usage
 streaming events via `event_rules` (see below). Every CLI-type route — built-in or
@@ -231,7 +231,7 @@ clis:
     tier: 3
     weight: 0.75
     cli_capability: 1.0
-    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`)
+    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`). An endpoint route's own HTTP request timeout defaults to 120 s when unset
     capabilities:
       execute: 0.8
       plan: 0.7

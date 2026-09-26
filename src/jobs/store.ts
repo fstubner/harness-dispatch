@@ -10,7 +10,7 @@
  * through tmp+rename with a retry for Windows EPERM.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { redact } from "../redaction.js";
 import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -26,6 +26,13 @@ import type { JobManifest, JobStatus } from "./types.js";
  * surfaces returned over MCP carry a bounded copy.
  */
 const MAX_JSON_ERROR_CHARS = 4000;
+
+/**
+ * A job's answer text and per-attempt completions, one JSON event per line,
+ * under output/. What a streaming caller follows — see jobs/read.ts
+ * readJobEvents.
+ */
+export const JOB_EVENTS_LOG = "events.jsonl";
 
 /** Suggested delay before an agent checks `job_status` again. */
 export const SUGGESTED_POLL_SECONDS = 300;
@@ -51,7 +58,41 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
   if (status.slotQueued) return status;
   if (status.status !== "running" && status.status !== "queued") return status;
   const beat = Date.parse(status.updatedAt);
-  if (Number.isFinite(beat) && Date.now() - beat <= ORPHAN_THRESHOLD_MS) return status;
+  if (Number.isFinite(beat) && Date.now() - beat <= ORPHAN_THRESHOLD_MS) {
+    staleSeen.delete(status.jobId);
+    return status;
+  }
+  // An old heartbeat alone is not death. A laptop that slept freezes the
+  // supervisor with everything else, and on waking its next beat is up to 15 s
+  // away: in that gap `job_status` said "nothing will advance it", and a
+  // `retry_job` acting on that cancelled the live run. While the claiming
+  // process is alive, the stale beat must stay unchanged under observation
+  // before the job is called orphaned — the rule the workspace lock uses.
+  const holder = claimHolder(status.jobDir);
+  if (holder !== undefined && processAlive(holder)) {
+    const seen = staleSeen.get(status.jobId);
+    if (seen?.beat !== beat) {
+      staleSeen.set(status.jobId, { beat, since: Date.now() });
+      return status;
+    }
+    if (Date.now() - seen.since < LIVE_STALE_OBSERVE_MS) return status;
+  }
+  staleSeen.delete(status.jobId);
+  if (status.status === "queued" && holder === undefined) {
+    // Released but never claimed: it has not started, and it WILL start when
+    // a supervisor next runs — so re-dispatching it ran and billed the task
+    // twice. retry_job cancels this copy first.
+    return {
+      ...status,
+      status: "orphaned",
+      success: false,
+      error:
+        "This job was released to run but no supervisor has picked it up, so it has not " +
+        "started. It will still start the next time a supervisor runs (another dispatch " +
+        "starts one). Use `retry_job` to run it now — it cancels this copy first. Do NOT " +
+        "re-dispatch the same task: both would run.",
+    };
+  }
   return {
     ...status,
     status: "orphaned",
@@ -66,6 +107,33 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
       "advance it now. Its partial output is on disk; `retry_job` re-runs the same " +
       "task, or re-dispatch it.",
   };
+}
+
+/** How long a live claimant's stale heartbeat is watched before "orphaned". */
+const LIVE_STALE_OBSERVE_MS = 30_000;
+
+/** Per job, the stale heartbeat this process first saw and when. */
+const staleSeen = new Map<string, { beat: number; since: number }>();
+
+/** The pid in a job's claim, if it has one. */
+export function claimHolder(jobDir: string | undefined): number | undefined {
+  if (jobDir === undefined) return undefined;
+  try {
+    const claim = JSON.parse(readFileSync(path.join(jobDir, "claim.json"), "utf8")) as { pid?: unknown };
+    return typeof claim.pid === "number" && claim.pid > 0 ? claim.pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Does this pid exist? EPERM means it does, under another user. */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 export function boundedError(error: string | undefined): string | undefined {

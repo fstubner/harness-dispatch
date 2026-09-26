@@ -20,8 +20,11 @@ is the only unauthenticated route, and answers with liveness, the service name,
 and the version:
 
 ```bash
-curl -s http://127.0.0.1:3333/health
+curl -s http://127.0.0.1:<port>/health
 ```
+
+`serve` picks a free port unless you pass `--port`, and prints the one it chose
+on startup.
 
 Everything else needs the bearer token. For the stdio server (the usual case)
 there is no endpoint at all: the signal is that the client shows the six tools.
@@ -56,17 +59,16 @@ live run from an abandoned one.
 **Tracing.** OpenTelemetry spans are emitted when `telemetry.enabled` is set in
 config. Off by default.
 
-Two known defects here, both found by an acceptance pass and neither yet fixed,
-so do not rely on this signal:
+Spans cover every dispatch: the background job runner, where MCP and HTTP
+dispatches run, exports them, and one-shot CLI commands flush theirs before
+exiting.
 
-- **Spans are never flushed.** `shutdownObservability()` is exported and called
-  from nowhere, so a CLI dispatch exports nothing. Measured: 0 bytes to a local
-  collector from a real run.
-- **The exported resource attributes would carry the prompt.** OpenTelemetry's
-  default process detector includes `process.command_args`, and for
-  `harness-dispatch dispatch "<prompt>"` the prompt *is* an argv element. This
-  is currently masked by the missing flush; fixing the flush alone would ship
-  the leak.
+**The prompt is kept out of them.** OpenTelemetry's default process detector
+exports `process.command_args`, and for `harness-dispatch dispatch "<prompt>"`
+the prompt *is* an argv element. harness-dispatch therefore uses the default
+detectors minus that one (`OTEL_NODE_RESOURCE_DETECTORS=env,host`) unless you
+set the variable yourself — if you include `process` there, a CLI dispatch's
+prompt is exported with every span.
 
 ## Alerts
 
@@ -130,34 +132,23 @@ reported `orphaned` at the next server start — deliberately reported rather
 than resumed, because silently running an abandoned job against your repository
 is not a decision a restart should make.
 
-**A streamed request is interrupted.** `POST /v1/chat/completions` with
-`stream: true` on a SINGLE-ROUTE request creates no job record, so there is no
-`jobId` and nothing to recover. That run is now STOPPED when the client
-disconnects — it used to keep going to completion, spending quota with no way
-to cancel it, because nothing connected the disconnect to the dispatch. Either
-way its output is gone with the connection.
-
-A streamed FANOUT request is different, and the paragraph above used to cover
-it wrongly: each arm runs as its own job, so `jobId`s DO exist and the work is
-recoverable with `job_status` — but the disconnect abort is wired into the
-single-route branch only, so those arms keep running after the caller leaves.
-Collect their ids from the response, or call `job_status` with no id to list
-them.
-
-Every other dispatch path
-survives a client timeout or a server restart. This is a real gap rather than a
-design choice: streaming is the mode where a long run is most likely to be
-interrupted, and it is the one mode with no record. Prefer the non-streaming
-form for work you would mind losing.
+**A streamed request is interrupted.** A `stream: true` request runs as a job
+like every other dispatch, and its id is in the `x-harness-dispatch-job-id`
+response header (a fanout's arms each report theirs in the response). If the
+connection drops, the run carries on and its result stays collectable with
+`job_status`; `cancel_job` stops it. Every dispatch path survives a client
+timeout or a server restart.
 
 **Quota exhaustion on one route.** Repeated failures trip the breaker and
 routing moves on. Nothing is lost; the dispatch falls back unless
 `--no-fallback` was passed.
 
 **A harness streams and then stops.** Some CLIs emit progress and exit without
-an answer. That is reported as what it is — how many events streamed, the last
-one, the exit code — rather than handing you the raw stream as if it were an
-error message.
+an answer. When that run fails (a non-zero exit, or a route that requires an
+answer to count as success), it is reported as what it is — how many events
+streamed, the last one, the exit code — rather than handing you the raw stream
+as if it were an error message. On a lenient route (`success_requires_output:
+false`) a zero exit is still a success, and what it streamed is the output.
 
 ## Recovery
 
@@ -181,17 +172,25 @@ producing a mangled merge, and refuses a second time once applied. If `git` is
 missing the response still carries `workspaceRoot`, so the changes are
 recoverable by hand.
 
-**A broken config.** The server keeps running the last config that loaded and
-reports the parse error; it does not fall back to defaults and does not exit.
-Fix the file and it reloads within a few seconds. `harness-dispatch configure
---print` regenerates a valid one without writing.
+**A broken config.** The server stays up and reports the parse error; it does
+not fall back to defaults. While the file does not load, every new dispatch is
+refused with that error — a background run would have to load it too. Fix the
+file and it reloads within a few seconds. To see a working config instead, move
+the broken file aside and run `harness-dispatch configure --print`, which
+previews one without writing (run against the broken file itself, it reports
+the same parse error).
 
 **A leaked HTTP token.** `harness-dispatch auth rotate`. A running server picks
-up the new value, and the old one stops working immediately.
+up the new value, and the old one stops working immediately. If the token comes
+from `HARNESS_DISPATCH_HTTP_TOKEN` instead of the token file, rotate refuses —
+rotating the file would change nothing — so change or unset the variable and
+restart `serve`.
 
 **A client entry pointing at a path that no longer exists.**
 `harness-dispatch connect` rewrites it; `connect --remove` takes it out. Both
-back the file up next to itself first and merge rather than replace.
+back the file up next to itself first and merge rather than replace. `connect`
+needs the config file it points clients at to exist: if you have none, run
+`harness-dispatch configure --yes` first.
 
 Neither replaces an entry you edited by hand without your say-so: run `connect`
 with no `--clients` and it shows you the difference and asks, and `--force`
@@ -202,10 +201,12 @@ while `connect` printed the hand-written entry it was about to destroy and then
 destroyed it. Both now behave as described.)
 
 **Reclaiming disk now.** Delete `~/.harness-dispatch/jobs/` and the workspaces
-base (`%TEMP%/harness-dispatch/workspaces` unless overridden). Nothing there is
-required for the server to start; you lose the ability to inspect or apply past
-runs.
+base — `%TEMP%\harness-dispatch\workspaces` on Windows,
+`<tmp>/harness-dispatch-<uid>/workspaces` on Linux and macOS, or
+`HARNESS_DISPATCH_WORKSPACES_DIR` if set. Nothing there is required for the
+server to start; you lose the ability to inspect or apply past runs.
 
 **Starting over.** Remove `~/.harness-dispatch/` entirely. It holds the token,
-quota counters, breaker state and job bundles — all regenerated on next use.
-Your `config.yaml` lives in the project, not there.
+quota counters, breaker state and job bundles — all regenerated on next use —
+and, unless you keep yours elsewhere, your `config.yaml`: `configure` writes it
+there by default. Copy it out first if you want to keep it.

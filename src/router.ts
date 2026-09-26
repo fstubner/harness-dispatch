@@ -214,7 +214,9 @@ export function declaresModel(svc: ServiceConfig, model: string | undefined): bo
   return (
     sameModel(svc.model, model) ||
     sameModel(svc.leaderboardModel, model) ||
-    sameModel(svc.escalateModel, model)
+    sameModel(svc.escalateModel, model) ||
+    // The operator's known-good list, which `usage` advertises as such.
+    (svc.models ?? []).some((m) => sameModel(m, model))
   );
 }
 
@@ -458,6 +460,8 @@ export class Router {
   private readonly breakers: Map<string, CircuitBreaker> = new Map();
   private lastSkippedRoutes: RouteSkip[] = [];
   private readonly breakerStore: BreakerStore;
+  /** Routes that had a persisted breaker record at the last read. */
+  private persistedBreakers = new Set<string>();
 
   constructor(
     private readonly config: RouterConfig,
@@ -471,6 +475,7 @@ export class Router {
     // would otherwise come back with a clean slate the instant the server
     // restarts — hydrate any cooldown still in effect from the last process.
     const persisted = this.breakerStore.loadAll();
+    this.persistedBreakers = new Set(Object.keys(persisted));
     for (const name of Object.keys(config.services)) {
       const breaker = new CircuitBreaker();
       const snapshot = persisted[name];
@@ -929,6 +934,16 @@ export class Router {
       lastDecision = decision;
       if (attempt > 0) {
         decision.reason += ` (fallback #${attempt} — prev failed)`;
+        // The caller's model was meant for the route the router picked first.
+        // Forwarded to a fallback that does not declare it, it was a request
+        // that route could not serve — `--model gpt-5.6-sol` reaching Claude
+        // Code — so the fallback failed too and charged a breaker failure to
+        // a healthy route. A fallback runs its own model unless it declares
+        // the one asked for.
+        if (decision.modelHintMatched === false) {
+          decision.model = resolveModel(this.config.services[decision.service]!, decision.taskType);
+          decision.reason += " (model hint not sent: this route does not declare it)";
+        }
       }
 
       const dispatcher = this.dispatchers[decision.service]!;
@@ -1373,6 +1388,18 @@ export class Router {
       const breaker = this.breakers.get(name);
       if (breaker) breaker.restore(snapshot);
     }
+    // A healthy route is stored as NO record — the store deletes the file —
+    // so restoring only what came back never re-closed a breaker another
+    // process had healed: after a runner's success, this process kept
+    // refusing the route for the rest of its cooldown. A record that was
+    // there at the last read and is gone now was healed; a route that never
+    // had one (its own write failed, or it was never written) proves nothing.
+    const unreadable = new Set(this.breakerStore.unreadableRoutes());
+    for (const name of this.persistedBreakers) {
+      if (Object.hasOwn(persisted, name) || unreadable.has(name)) continue;
+      this.breakers.get(name)?.restore({ failures: 0, blockedUntilMs: null, lastFailureAtMs: null });
+    }
+    this.persistedBreakers = new Set(Object.keys(persisted));
   }
 }
 

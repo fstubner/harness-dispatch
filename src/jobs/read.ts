@@ -11,6 +11,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import {
   assertValidJobId,
+  JOB_EVENTS_LOG,
   jobsRoot,
   pollInstructions,
   readJson,
@@ -18,6 +19,7 @@ import {
   withOrphanCheck,
 } from "./store.js";
 import type { JobManifest, JobResultPayload, JobStatus } from "./types.js";
+import type { DispatcherEvent } from "../types.js";
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;
 
 export async function getAsyncJob(jobId: string): Promise<{
@@ -56,7 +58,14 @@ export async function getAsyncJob(jobId: string): Promise<{
     throw err;
   }
   if (result !== undefined) {
-    return { manifest, status, result };
+    // A failed result with no output of its own — a cancelled isolated run,
+    // or a fallback chain whose last attempt printed nothing — says nothing
+    // about what the delegate DID write. That is in the partial log, and
+    // returning only the result dropped it: the durability rule held or not
+    // depending on the workspace policy.
+    const bare = result.result?.success === false && !result.result.output;
+    const partialOutput = bare ? await readPartial(jobDir) : undefined;
+    return { manifest, status, result, ...(partialOutput !== undefined ? { partialOutput } : {}) };
   }
   // Terminal: no poll guidance — polling will never resolve an orphaned job.
   // But it still falls through to the partial-output read below, which is the
@@ -77,20 +86,24 @@ export async function getAsyncJob(jobId: string): Promise<{
           instructions: pollInstructions(jobId),
         },
   };
-  const partialPath = path.join(jobDir, "output", "stdout.partial.log");
-  if (existsSync(partialPath)) {
-    try {
-      const partial = await readFile(partialPath, "utf8");
-      out.partialOutput =
-        partial.length <= MAX_PARTIAL_OUTPUT_CHARS
-          ? partial
-          : `… [${partial.length - MAX_PARTIAL_OUTPUT_CHARS} chars omitted] …` +
-            partial.slice(-MAX_PARTIAL_OUTPUT_CHARS);
-    } catch {
-      // Best-effort; absence of partial output isn't an error.
-    }
-  }
+  const partial = await readPartial(jobDir);
+  if (partial !== undefined) out.partialOutput = partial;
   return out;
+}
+
+/** The tail of a job's live output log, if it wrote one. */
+async function readPartial(jobDir: string): Promise<string | undefined> {
+  const partialPath = path.join(jobDir, "output", "stdout.partial.log");
+  if (!existsSync(partialPath)) return undefined;
+  try {
+    const partial = await readFile(partialPath, "utf8");
+    return partial.length <= MAX_PARTIAL_OUTPUT_CHARS
+      ? partial
+      : `… [${partial.length - MAX_PARTIAL_OUTPUT_CHARS} chars omitted] …` +
+          partial.slice(-MAX_PARTIAL_OUTPUT_CHARS);
+  } catch {
+    return undefined; // Best-effort; absence of partial output isn't an error.
+  }
 }
 
 export async function listAsyncJobs(): Promise<JobStatus[]> {
@@ -129,4 +142,34 @@ export async function jobListingContext(
   } catch {
     return {};
   }
+}
+
+/**
+ * Events a job has recorded since `offset` (a byte position in its events
+ * log), and the offset to continue from. Only whole lines are returned, so a
+ * line being written while this reads is picked up on the next call.
+ */
+export async function readJobEvents(
+  jobId: string,
+  offset: number,
+): Promise<{ events: DispatcherEvent[]; offset: number }> {
+  assertValidJobId(jobId);
+  let buf: Buffer;
+  try {
+    buf = await readFile(path.join(jobsRoot(), jobId, "output", JOB_EVENTS_LOG));
+  } catch {
+    return { events: [], offset };
+  }
+  const end = buf.lastIndexOf(0x0a);
+  if (end < offset) return { events: [], offset };
+  const events: DispatcherEvent[] = [];
+  for (const line of buf.subarray(offset, end).toString("utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      events.push(JSON.parse(line) as DispatcherEvent);
+    } catch {
+      // A line that does not parse is skipped rather than ending the stream.
+    }
+  }
+  return { events, offset: end + 1 };
 }

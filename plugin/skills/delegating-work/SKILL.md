@@ -51,7 +51,9 @@ a short grace window (default 25s, tune with `graceSeconds`):
 
 CLI harnesses take 3–15 minutes, so expect the check-later path for real
 work. `graceSeconds: 0` on `dispatch` skips the inline wait entirely;
-`job_status` with no `jobId` shows every known background dispatch.
+`job_status` with no `jobId` lists the 20 most recent background dispatches,
+newest first, each with its `workingDir` and the start of its prompt
+(`promptPreview`) so you can pick out your own among other sessions' jobs.
 
 ## Stopping work
 

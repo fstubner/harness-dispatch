@@ -151,3 +151,67 @@ describe("status --json --watch", () => {
     }
   }, 20_000);
 });
+
+describe("telemetry and the prompt", () => {
+  // `harness-dispatch dispatch "<prompt>"` puts the prompt in argv, and the
+  // SDK's default process detector exports argv as `process.command_args`
+  // on every span. Measured: a canary prompt reached the collector. Found in
+  // an audit.
+  it.skipIf(!existsSync(bin))("exports spans without the prompt in them", async () => {
+    const { spawn } = await import("node:child_process");
+    const { writeFileSync } = await import("node:fs");
+    const { createServer } = await import("node:http");
+    const bodies: string[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c: Buffer) => (body += c.toString()));
+      req.on("end", () => {
+        bodies.push(body);
+        res.writeHead(200).end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const dir = mkdtempSync(path.join(tmpdir(), "hd-otel-"));
+    try {
+      const config = path.join(dir, "config.yaml");
+      writeFileSync(
+        config,
+        [
+          "telemetry: { enabled: true }",
+          "clis:",
+          "  - name: echo_node",
+          "    harness: generic",
+          "    command: node",
+          "    billing_kind: local_compute",
+          "    paid_usage_possible: false",
+          "    protocol:",
+          '      args: ["-e", "console.log(1)", "{{prompt}}"]',
+          "      output: { mode: text }",
+        ].join("\n"),
+        "utf8",
+      );
+      await new Promise<void>((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [bin, "dispatch", "--config", config, "--service", "echo_node", "--task-type", "review", "PROMPT-CANARY-7731"],
+          {
+            env: {
+              ...process.env,
+              HARNESS_DISPATCH_STATE_DIR: dir,
+              OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
+              OTEL_NODE_RESOURCE_DETECTORS: "",
+            },
+            stdio: "ignore",
+          },
+        );
+        child.on("exit", () => resolve());
+      });
+      expect(bodies.length, "no spans were exported, so this proves nothing").toBeGreaterThan(0);
+      expect(bodies.some((b) => b.includes("PROMPT-CANARY-7731")), "the prompt was exported").toBe(false);
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});

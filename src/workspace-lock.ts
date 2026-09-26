@@ -170,16 +170,19 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       // Exists but unreadable, or vanished between the two calls — see
       // UNREADABLE_GRACE_MS.
       unreadableSince ??= Date.now();
+      // A steal that fails falls through to the deadline and the wait below:
+      // `continue`d, a rename that stays refused (a Windows handle opened
+      // without share-delete) spun this loop synchronously, ignoring the
+      // timeout and starving the event loop — measured, a 2 s wait blocked
+      // for 14 s, with every heartbeat in the process stopped.
       if (Date.now() - unreadableSince >= UNREADABLE_GRACE_MS) {
         unreadableSince = undefined;
-        stealLock(file);
-        continue;
+        if (stealLock(file)) continue;
       }
     } else {
       unreadableSince = undefined;
       if (isDead(record)) {
-        stealLock(file);
-        continue;
+        if (stealLock(file)) continue;
       }
       if (Date.now() - record.beatMs > LOCK_STALE_MS) {
         // A live process with an old heartbeat: see LIVE_STALE_OBSERVE_MS.
@@ -187,8 +190,7 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
           staleSeen = { beatMs: record.beatMs, since: Date.now() };
         } else if (Date.now() - staleSeen.since >= LIVE_STALE_OBSERVE_MS) {
           staleSeen = undefined;
-          stealLock(file);
-          continue;
+          if (stealLock(file)) continue;
         }
       } else {
         staleSeen = undefined;

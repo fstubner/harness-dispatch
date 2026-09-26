@@ -202,6 +202,17 @@ describe("route policy", () => {
     ).toBe(false);
   });
 
+  it("offers the billing declaration, not only the paid opt-in, for an unknown-billing route", () => {
+    // The only remedy printed was "add allow_paid_usage: true" — the setting
+    // that accepts charges — for what is usually a local box that cannot
+    // charge at all, whose right fix is declaring that. Found in an audit.
+    const dispatcher = new AvailableDispatcher();
+    const local = svc({ name: "box", type: "openai_compatible", baseUrl: "http://127.0.0.1:9/v1" });
+    const skip = evaluateRoutePolicy("box", local, { dispatcher }).skipped;
+    expect(skip?.code).toBe("unknown_billing");
+    expect(skip?.message).toMatch(/billing_kind: local_compute/);
+  });
+
   it("blocks metered/unknown-billing routes until explicitly allowed — no provider-side backstop exists", () => {
     const dispatcher = new AvailableDispatcher();
     const metered = svc({ name: "codex", harness: "codex", surface: "codex_cli", apiKey: "sk-test" });

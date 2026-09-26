@@ -409,7 +409,9 @@ const DEFAULT_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 function workspaceMaxAgeMs(): number {
   const raw = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
   const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_WORKSPACE_MAX_AGE_MS;
+  // Positive only: 0 read as "no age at all" deleted every workspace of the
+  // project, live ones included, on the next isolated dispatch.
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WORKSPACE_MAX_AGE_MS;
 }
 
 /**
@@ -1083,7 +1085,18 @@ async function prepareGitWorktreeWorkspace(
       //
       // Only when the attempt both failed AND changed nothing: a failure that
       // wrote files may still hold work worth recovering.
-      if (!result.success && changedFiles.length === 0) {
+      // Git is asked too: the fingerprint skips bin/, dist/, build/, target/
+      // and obj/ at any depth, so a run whose edits were only there recorded
+      // no change and lost them with the worktree — measured with an edit to
+      // bin/cli.js. Anything git reports, or a git that cannot be asked,
+      // keeps it.
+      const gitSeesChanges =
+        !result.success && changedFiles.length === 0
+          ? await git(["status", "--porcelain"], worktreeRoot)
+              .then((out) => out.trim() !== "")
+              .catch(() => true)
+          : true;
+      if (!result.success && changedFiles.length === 0 && !gitSeesChanges) {
         // The directory goes only if GIT let go of it first: when
         // `git worktree remove` fails — an index lock, a concurrent git
         // operation — deleting it anyway strands `.git/worktrees/<name>`
