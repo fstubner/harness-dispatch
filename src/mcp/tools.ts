@@ -52,7 +52,7 @@ import {
   redactEndpointHost,
   scrubEndpointSecrets,
 } from "../status.js";
-import { endpointUrl } from "../dispatchers/openai-compatible.js";
+import { endpointUrl, readBodyCapped } from "../dispatchers/openai-compatible.js";
 
 import {
   cancelJobInputShape,
@@ -806,7 +806,8 @@ async function fetchEndpointModels(
         ),
       };
     }
-    const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    // Capped like every other endpoint body: a catalog is kilobytes.
+    const body = JSON.parse(await readBodyCapped(res)) as { data?: Array<{ id?: unknown }> };
     const models = (body.data ?? [])
       .map((m) => m.id)
       .filter((id): id is string => typeof id === "string");

@@ -167,6 +167,7 @@ export class BreakerStore {
    * loadAll(). See loadAll() for why this is tracked rather than shrugged off.
    */
   private unreadable: string[] = [];
+  private writeError: string | undefined;
 
   /**
    * @param stateDir directory holding one JSON file per route. Older builds
@@ -225,6 +226,17 @@ export class BreakerStore {
   }
 
   /**
+   * Why the last breaker write failed, or undefined once one has succeeded.
+   *
+   * A write failure is swallowed so it cannot fail the dispatch — but a trip
+   * that never reaches disk is invisible to every other process, which keeps
+   * sending work to the route. `status` reports this so that is not silent.
+   */
+  lastWriteError(): string | undefined {
+    return this.writeError;
+  }
+
+  /**
    * Persist one route's snapshot, synchronously — a CLI invocation can exit
    * immediately after a dispatch, same rationale as
    * QuotaCache.saveLocalCountsSync. A fully-healthy snapshot (no failures,
@@ -243,8 +255,10 @@ export class BreakerStore {
     }
     try {
       this.writeAtomicSync(file, JSON.stringify(snapshot, null, 2));
-    } catch {
-      // Best-effort — persistence failure shouldn't fail the dispatch.
+      this.writeError = undefined;
+    } catch (err) {
+      // Never fails the dispatch; reported through lastWriteError().
+      this.writeError = err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -274,6 +288,7 @@ export class BreakerStore {
       // then sits "running" until the 90s heartbeat window reports the server
       // exited. Losing breaker state is survivable; losing the user's finished
       // work to report a false cause is not.
+      this.writeError = `cannot create ${path.dirname(file)}`;
       return mutate(undefined);
     }
     return withFileLock(file, () => {

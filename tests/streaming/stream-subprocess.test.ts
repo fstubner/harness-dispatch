@@ -362,15 +362,6 @@ describe("a child that exits without reading its stdin", () => {
     );
     expect(out).toBe("END 0");
   }, 60_000);
-
-  it.skipIf(!existsSync(DIST))("runSubprocess resolves instead of crashing", async () => {
-    const out = await survives(
-      "subprocess.js",
-      `const r = await m.runSubprocess(process.execPath, quit, { stdin: big });
-       console.log("EXIT " + r.exitCode);`,
-    );
-    expect(out).toBe("EXIT 0");
-  }, 60_000);
 });
 
 describe("a child that exits while a process it started still holds its output", () => {

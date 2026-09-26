@@ -20,7 +20,7 @@
  * cmd.exe entirely by spawning node directly on the underlying script — faster,
  * and immune to shell metacharacters since there is no shell in the loop. Every
  * other .cmd/.bat shape (pnpm, yarn, scoop, hand-rolled) goes straight to
- * cross-spawn (see subprocess.ts/stream-subprocess.ts), which detects the
+ * cross-spawn (see stream-subprocess.ts), which detects the
  * .bat/.cmd target itself and applies correct, tested escaping.
  */
 

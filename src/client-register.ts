@@ -18,7 +18,7 @@
  */
 
 import { constants as fsConstants, existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { commandAvailable } from "./dispatchers/shared/which-available.js";
@@ -279,6 +279,11 @@ export async function writeJsonAtomic(
   value: unknown,
   opts: { createMode?: number; basedOn?: string } = {},
 ): Promise<void> {
+  // Through a symlink, to the file it points at. Renaming onto the link path
+  // replaced the LINK with a plain file — a dotfile managed by stow or
+  // home-manager stopped being managed, and the file it pointed at never got
+  // the entry.
+  file = await realpath(file).catch(() => file);
   const tmp = `${file}.harness-dispatch-tmp-${process.pid}`;
   const text = `${JSON.stringify(value, null, 2)}\n`;
   await mkdir(path.dirname(file), { recursive: true });

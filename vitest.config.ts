@@ -33,12 +33,6 @@ export default defineConfig({
       // (job-runner.test.ts, job-concurrency.test.ts) — v8 coverage in THIS
       // process cannot see that, so it reports a misleading 0%.
       // index.ts/version.ts are re-export and package-version shims.
-      //
-      // Deliberately NOT excluded: dispatchers/shared/subprocess.ts, which
-      // sits at ~4% statements / 0% functions because six suites vi.mock it
-      // away. That is a real gap (see the mock-detection branch in
-      // stream-subprocess.ts), and hiding it behind an exclude would convert
-      // a visible problem into an invisible one.
       exclude: ["src/index.ts", "src/version.ts", "src/job-runner.ts"],
       reporter: ["text", "lcov"],
       /**
@@ -51,8 +45,7 @@ export default defineConfig({
        * threshold at all.
        *
        * Raise them when coverage rises. The thin spots behind these numbers
-       * are bin.ts (~56%), dispatchers/shared/subprocess.ts (~4%, mocked away
-       * by six suites) and mcp/config-hot-reload.ts.
+       * are bin.ts (~56%) and mcp/config-hot-reload.ts.
        */
       thresholds: {
         statements: 80,

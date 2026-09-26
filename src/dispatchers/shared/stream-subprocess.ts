@@ -1,7 +1,7 @@
 /**
  * Streaming subprocess runner.
  *
- * Companion to `runSubprocess` — same spawn/kill/timeout semantics but emits
+ * Spawns a child with a timeout, an output cap and tree-kill, and emits its
  * stdout and stderr chunks as the child writes them via an `AsyncIterable`.
  * A bounded internal queue protects against runaway processes flooding memory
  * (exceeding the bound kills the child).
@@ -65,8 +65,7 @@ export interface StreamSubprocessOpts {
    */
   maxBufferedChunks?: number;
   /**
-   * Graceful-kill window before SIGKILL is sent. Defaults to 2s — matches
-   * `runSubprocess`.
+   * Graceful-kill window before SIGKILL is sent. Defaults to 2s.
    */
   killGraceMs?: number;
   /**
@@ -353,9 +352,8 @@ export function streamSubprocess(
 }
 
 /**
- * Convenience: drain a `streamSubprocess` iterable into a `SubprocessResult`
- * (same shape as `runSubprocess`) by buffering every chunk. Used by the
- * dispatchers' legacy `dispatch()` wrappers.
+ * Convenience: drain a `streamSubprocess` iterable into one buffered result.
+ * Used by the dispatchers' legacy `dispatch()` wrappers.
  */
 export interface DrainedResult {
   stdout: string;

@@ -8,6 +8,46 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Telemetry now covers dispatches.** Every MCP and HTTP dispatch runs in a
+  background job runner, which never set up telemetry, and the streaming path
+  jobs use had no span anyway — so with telemetry on, not one dispatch span was
+  exported. The runner now starts telemetry from the config or environment,
+  streaming dispatches get a router span, and one-shot CLI commands honour
+  `telemetry: { enabled: true }` and flush their spans before exiting.
+
+- **Endpoint responses and `/mcp` requests have a size limit.** An endpoint
+  response is cut off past 10 MB, the same ceiling a CLI route's output has
+  (measured before: a 64 MB stream took the process to 768 MB). A request to
+  `/mcp` gets the 10 MB limit the REST routes already had (40 MB was accepted
+  before).
+
+- **A relative path in `files` means the same file everywhere.** It resolved
+  against the server's working directory for the snapshot, the runner's for
+  an endpoint route and the workspace's for a CLI agent; it now resolves
+  against the job's `workingDir`, once.
+
+- **`configure` writes only the settings you wrote.** Every rewrite copied
+  the preset's defaults for tier, weight, capabilities, safety floor and more
+  into the file, where they stopped tracking the preset.
+
+- **A route another process took out of service is avoided at once.** A
+  long-running server or supervisor kept choosing it until it failed there
+  itself; breaker state is now re-read before each choice.
+
+- **An upgrade takes effect for background jobs straight away.** A job
+  supervisor started by the previous build kept claiming jobs submitted after
+  the upgrade for as long as work kept arriving. It now stops claiming once a
+  newer build is installed and hands over to one started from it.
+
+- **`connect` writes through a symlinked client config** instead of replacing
+  the link with a plain file.
+
+- **`status` reports circuit-breaker state that cannot be saved.** The failure
+  was swallowed, leaving other processes using a route this one had taken out
+  of service.
+
+- **The `doctor` Codex login check caps the output it collects.**
+
 - **`configure --yes --force` keeps a copy of the file it replaces, and more of
   what you wrote.** It overwrote the file in place with no backup, and dropped
   `billing_confidence` — so a route marked `unknown` became trusted — and

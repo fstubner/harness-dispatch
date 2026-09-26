@@ -657,7 +657,7 @@ describe("usage tells the truth about its own durability", () => {
     };
     const router = {
       circuitBreakerStatus: () => ({}),
-      breakerStateUnreadable: () => [],
+      breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
       pickService: () => undefined,
       getBreaker: () => undefined,
     };
@@ -680,7 +680,7 @@ describe("usage tells the truth about its own durability", () => {
       {} as never,
       { fullStatus: async () => ({}), getQuotaScore: async () => 1,
         localCountsPersistError: () => undefined } as never,
-      { circuitBreakerStatus: () => ({}), breakerStateUnreadable: () => [],
+      { circuitBreakerStatus: () => ({}), breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
         pickService: () => undefined, getBreaker: () => undefined } as never,
       { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
     );

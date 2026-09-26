@@ -106,7 +106,7 @@ describe("status payload redaction", () => {
     };
     const router = {
       circuitBreakerStatus: () => ({}),
-      breakerStateUnreadable: () => [],
+      breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
       pickService: () => undefined,
       getBreaker: () => undefined,
     };

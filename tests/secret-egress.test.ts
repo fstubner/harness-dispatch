@@ -85,7 +85,7 @@ const quotaStub = {
 };
 const routerStub = {
   circuitBreakerStatus: () => ({}),
-  breakerStateUnreadable: () => [],
+  breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
   pickService: () => undefined,
   getBreaker: () => undefined,
 };

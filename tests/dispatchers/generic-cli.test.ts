@@ -1,11 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { streamFromBuffered } from "../support/buffered-stream.js";
-import type { SubprocessResult, RunSubprocessOpts } from "../../src/dispatchers/shared/subprocess.js";
+import type { SubprocessResult, RunSubprocessOpts } from "../support/buffered-stream.js";
 import type { CliProtocolConfig, ServiceConfig } from "../../src/types.js";
 
-vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
-  runSubprocess: vi.fn(),
-}));
 // The dispatcher calls `streamSubprocess`, never `runSubprocess`. Production
 // code used to notice the mock above and quietly reroute through a buffered
 // adapter; that branch is gone, so the seam is declared here instead. The
@@ -30,7 +27,7 @@ vi.mock("which", () => {
   return { default: fn };
 });
 
-const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const runSubprocess = vi.fn();
 const { streamSubprocess } = await import(
   "../../src/dispatchers/shared/stream-subprocess.js"
 );

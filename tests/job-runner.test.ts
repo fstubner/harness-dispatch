@@ -108,3 +108,76 @@ describe("detached job runner", () => {
     60_000,
   );
 });
+
+describe("telemetry from the detached runner", () => {
+  // Every MCP and HTTP dispatch runs in this process, and it never set up
+  // telemetry, so router and dispatcher spans were never exported whatever
+  // the config said. Found in an audit.
+  it.skipIf(!existsSync(RUNNER))(
+    "exports the run's spans when the config enables telemetry",
+    async () => {
+      const { createServer } = await import("node:http");
+      const posts: string[] = [];
+      const server = createServer((req, res) => {
+        posts.push(req.url ?? "");
+        req.resume();
+        req.on("end", () => res.writeHead(200).end("{}"));
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+      const port = (server.address() as { port: number }).port;
+      try {
+        const configPath = path.join(tmpDir, "config.yaml");
+        await fs.writeFile(
+          configPath,
+          [
+            "telemetry: { enabled: true }",
+            "clis:",
+            "  - name: echo_node",
+            "    harness: generic",
+            "    command: node",
+            "    billing_kind: local_compute",
+            "    paid_usage_possible: false",
+            "    protocol:",
+            '      args: ["-e", "console.log(1)", "{{prompt}}"]',
+            "      output: { mode: text }",
+          ].join("\n"),
+          "utf8",
+        );
+        const jobId = "job-1786977300003-0f0ddddd";
+        const jobDir = path.join(tmpDir, jobId);
+        await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
+        const promptPath = path.join(jobDir, "prompt.md");
+        await fs.writeFile(promptPath, "hello", "utf8");
+        const createdAt = new Date().toISOString();
+        await fs.writeFile(
+          path.join(jobDir, "manifest.json"),
+          JSON.stringify({ jobId, createdAt, workingDir: tmpDir, promptPath, files: [], service: "echo_node" }),
+          "utf8",
+        );
+        await fs.writeFile(
+          path.join(jobDir, "status.json"),
+          JSON.stringify({ jobId, status: "queued", createdAt, updatedAt: createdAt, jobDir }),
+          "utf8",
+        );
+        const exitCode = await new Promise<number | null>((resolve) => {
+          const child = spawn(process.execPath, [RUNNER, jobDir], {
+            env: {
+              ...process.env,
+              HARNESS_DISPATCH_CONFIG: configPath,
+              HARNESS_DISPATCH_JOBS_DIR: tmpDir,
+              OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
+              OTEL_SDK_DISABLED: "false",
+            },
+            stdio: "ignore",
+          });
+          child.on("exit", (code) => resolve(code));
+        });
+        expect(exitCode).toBe(0);
+        expect(posts.filter((u) => u.startsWith("/v1/traces")).length).toBeGreaterThan(0);
+      } finally {
+        server.close();
+      }
+    },
+    60_000,
+  );
+});

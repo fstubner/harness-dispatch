@@ -779,7 +779,11 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           };
           await sessionServer.connect(transport as unknown as Transport);
         }
-        await transport.handleRequest(req, res);
+        // The body is read HERE, under the same size limit as the REST routes,
+        // and handed over parsed. Left to the SDK, it read any size at all:
+        // measured, a 40 MiB POST was accepted on /mcp while REST answered 413.
+        const body = req.method === "POST" ? await readJson(req) : undefined;
+        await transport.handleRequest(req, res, body);
         // Dispose of a server whose session never came into existence.
         //
         // The McpServer and transport are built BEFORE it is known whether

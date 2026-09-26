@@ -15,6 +15,7 @@ import { loadConfig } from "../config.js";
 import { ConfigHotReloader } from "../mcp/config-hot-reload.js";
 import type { RouterConfig } from "../types.js";
 import { acquireWorkspaceLock } from "../workspace-lock.js";
+import { staleCodeWarning } from "../status.js";
 import {
   cancelRequested,
   jobsRoot,
@@ -274,6 +275,8 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
     }
   };
 
+  // Set once the installed build is newer than this process's code.
+  let outdated = false;
   try {
 
     for (;;) {
@@ -283,7 +286,15 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
       // otherwise leave it polling a path that no longer exists.
       if (!existsSync(jobsRoot())) return;
 
-      if (inflight.size < jobsPerSupervisor(limit)) {
+      // A supervisor outlives the server that started it, and keeps claiming
+      // while work keeps arriving — so after an upgrade, jobs a NEW server
+      // submitted ran on this OLD code, for as long as it stayed busy
+      // (observed comparing two installs). Once the build on disk is newer,
+      // claim nothing more, finish what is running, and hand over to a
+      // supervisor started from the new build.
+      outdated ||= staleCodeWarning() !== undefined;
+
+      if (!outdated && inflight.size < jobsPerSupervisor(limit)) {
         // Pick up config edits before claiming anything. A supervisor outlives
         // the server that spawned it by up to SUPERVISOR_IDLE_EXIT_MS, and
         // without this it also outlives its CONFIG: restart with a route
@@ -316,6 +327,13 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
       }
 
       if (inflight.size === 0) {
+        if (outdated) {
+          // The runner path is the installed one, so this starts the new
+          // build. If there is no work it finds none and exits when idle.
+          const runnerPath = resolveRunnerPath();
+          if (runnerPath !== undefined) spawnDetachedSupervisor(runnerPath, deps.holder.state.configPath);
+          return;
+        }
         if (Date.now() - idleSince > SUPERVISOR_IDLE_EXIT_MS) return;
         await new Promise((r) => setTimeout(r, SUPERVISOR_POLL_MS));
         continue;
