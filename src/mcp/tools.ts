@@ -698,6 +698,15 @@ export async function handleDispatch(
       }
       return startFanout(deps, input, extra);
     }
+    // The mirror of the check above. Single mode never read `models`, so a
+    // call that meant to fan out and forgot `mode` ran on whatever single
+    // route the router picked, with nothing saying the list was ignored.
+    if (input.models !== undefined) {
+      throw new Error(
+        "dispatch: `models` selects routes for mode='fanout' only, and this call is single mode — " +
+          "add mode: 'fanout' to run on those routes, or use `service` to force one route",
+      );
+    }
     return startSingle(deps, input, extra);
   });
 }

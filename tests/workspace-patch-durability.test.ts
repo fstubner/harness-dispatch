@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { throwawayQuotaStateFile } from "./support/fixtures.js";
 
 let jobsDir: string;
 let workDir: string;
@@ -73,7 +74,7 @@ async function buildDeps() {
   };
   const config = { services: { editor: svc } };
   const dispatchers = { editor: dispatcher } as never;
-  const quota = new QuotaCache(dispatchers, { stateFile: ":memory-wspatch:" });
+  const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
   const leaderboard = new LeaderboardCache();
   const router = new Router(config as never, quota, dispatchers, leaderboard);
   return {

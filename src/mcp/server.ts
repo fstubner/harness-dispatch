@@ -30,7 +30,7 @@ const SERVER_INSTRUCTIONS =
   "runs the task as a background job and waits a short grace window — a fast task " +
   "returns its full result inline (completed: true); a slow one returns completed: " +
   "false plus a jobId. Check on it with `job_status` (partial output while running, " +
-  "full result once done, or omit jobId to list every known job) — nothing is ever " +
+  "full result once done, or omit jobId to list the 20 most recent jobs) — nothing is ever " +
   "lost to a timeout, including this MCP call's own. Always pass workingDir " +
   "(the caller's project root — it is NOT inferred) and hints.taskType " +
   "(execute | plan | review | local) on every " +

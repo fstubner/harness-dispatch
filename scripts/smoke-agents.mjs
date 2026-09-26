@@ -351,7 +351,13 @@ async function main() {
     }
   }
   const dispatchers = await buildDispatchers(config);
-  const quota = new QuotaCache(dispatchers, { stateFile: ":memory-smoke:" });
+  // Quota counters and breaker state both go to one throwaway directory. The
+  // counters used to go to `:memory-smoke:`, which is not special-cased
+  // anywhere: on Windows the name is invalid and the write failed quietly, and
+  // on POSIX it became a real file in the current directory, accumulating
+  // counts across smoke runs.
+  const breakerDir = await mkdtemp(path.join(tmpdir(), "harness-dispatch-smoke-state-"));
+  const quota = new QuotaCache(dispatchers, { stateFile: path.join(breakerDir, "quota_state.json") });
   const leaderboard = new LeaderboardCache();
   // Breaker state is isolated for the same reason the quota counters above
   // are, and it was NOT: Router defaults to a BreakerStore pointed at the
@@ -360,7 +366,6 @@ async function main() {
   // circuit-broken in the actual install. Accurate that time, but a smoke
   // failure for any unrelated reason would block a healthy route for real
   // dispatches, and a test harness must not do that to the thing it tests.
-  const breakerDir = await mkdtemp(path.join(tmpdir(), "harness-dispatch-smoke-breaker-"));
   const router = new Router(config, quota, dispatchers, leaderboard, new BreakerStore(breakerDir));
   const runtime = { config, dispatchers, quota, leaderboard, router };
 

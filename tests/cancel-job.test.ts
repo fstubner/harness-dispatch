@@ -21,6 +21,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { cancelJob } from "../src/jobs.js";
+import { throwawayQuotaStateFile } from "./support/fixtures.js";
 
 let jobsDir: string;
 
@@ -74,8 +75,13 @@ describe("cancelJob", () => {
     const status = JSON.parse(await fs.readFile(path.join(dir, "status.json"), "utf8")) as {
       status: string;
       error: string;
+      slotQueued?: boolean;
     };
     expect(status.status).toBe("cancelled");
+    // Out of the slot queue too: left marked, a cancelled job still counted
+    // as waiting, and a drain that had read it moments earlier could write it
+    // back as queued. Found in an audit.
+    expect(status.slotQueued).toBeUndefined();
     // The reason is recorded so a later reader knows it was deliberate rather
     // than that the job mysteriously died.
     expect(status.error).toContain("sent to the wrong directory");
@@ -191,7 +197,7 @@ describe("cancelJob — end to end against a real run", () => {
     const { LeaderboardCache } = await import("../src/leaderboard.js");
     const config = { services: { stuck: svc } };
     const dispatchers = { stuck: stuckDispatcher } as never;
-    const quota = new QuotaCache(dispatchers, { stateFile: ":memory-cancel:" });
+    const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
     const leaderboard = new LeaderboardCache();
     const router = new Router(config as never, quota, dispatchers, leaderboard);
     const holder = new RuntimeHolder({
@@ -432,7 +438,7 @@ describe("a cancelled isolated run keeps its work reachable", () => {
     const { LeaderboardCache } = await import("../src/leaderboard.js");
     const config = { services: { editor: svc } };
     const dispatchers = { editor: editsThenHangs } as never;
-    const quota = new QuotaCache(dispatchers, { stateFile: ":memory-cancel-ws:" });
+    const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
     const leaderboard = new LeaderboardCache();
     const router = new Router(config as never, quota, dispatchers, leaderboard);
     const holder = new RuntimeHolder({

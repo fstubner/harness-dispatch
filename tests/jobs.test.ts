@@ -186,3 +186,41 @@ describe("orphaned job detection", () => {
     expect(job.status.instructions).toMatch(/job_status/);
   });
 });
+
+describe("a write failing after the result was saved", () => {
+  // result.json is written, then result.md and the status. When a later write
+  // failed, the catch recorded the job as failed — contradicting the result
+  // already on disk, so a caller retried work that had succeeded. Found in an
+  // audit.
+  it("keeps the saved outcome and reports the write failure beside it", async () => {
+    const deps = {
+      holder: {
+        state: {
+          router: {
+            stream: async function* () {
+              // Make result.md unwritable: a directory where the file goes.
+              const [jobId] = await fs.readdir(tmpDir);
+              await fs.mkdir(path.join(tmpDir, jobId!, "output", "result.md"), { recursive: true });
+              yield {
+                event: {
+                  type: "completion",
+                  result: { output: "the answer", service: "fake", success: true },
+                },
+                decision: null,
+              };
+            },
+          },
+        },
+      } as unknown as RuntimeHolder,
+    };
+    const { status, completion } = await startAsyncJobTracked(deps, {
+      prompt: "hello",
+      workingDir: tmpDir,
+    });
+    await completion;
+    const job = await getAsyncJob(status.jobId);
+    expect(job.result?.result.success).toBe(true);
+    expect(job.status.status, "a saved success was recorded as failed").toBe("completed");
+    expect(job.status.warning).toMatch(/result was saved/);
+  });
+});

@@ -24,8 +24,8 @@ import type { RouterConfig, ServiceConfig } from "./types.js";
  * computed from the harness/endpoint defaults every time the config loads
  * (see buildRouteBilling), so writing them out freezes a snapshot that stops
  * tracking future default changes and looks like a deliberate user override.
- * `allow_paid_usage` is the one real opt-in flag here, so it's the only
- * billing-adjacent field written.
+ * `allow_paid_usage` is the one real opt-in flag here, so it's always
+ * written; `billing_confidence` is written only where the user wrote it.
  *
  * `safety_profile`/`effective_safety` are only emitted when the service
  * actually carries an explicit value — never a fallback default. Baking in
@@ -33,7 +33,8 @@ import type { RouterConfig, ServiceConfig } from "./types.js";
  * route whose real effective_safety (the capability floor that governs it) is
  * full_auto, making the file self-contradictory next to `status`.
  */
-function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
+function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<string, unknown> {
+  const wrote = (key: string): boolean => config.userRouteKeys?.get(svc.name)?.has(key) ?? false;
   return {
     enabled: svc.enabled ? undefined : false,
     model: svc.model,
@@ -58,6 +59,12 @@ function commonEntryFields(svc: ServiceConfig): Record<string, unknown> {
     workspace_policy: svc.workspacePolicy,
     models: svc.models && svc.models.length > 0 ? svc.models : undefined,
     model_hint: svc.modelHint,
+    // No default exists, so the loaded value is always the user's own.
+    resource_weight: svc.resourceWeight,
+    // Inferred on load when absent, so written only when the user wrote it:
+    // `unknown` is how a route is marked untrusted, and dropping it on a
+    // rewrite made that route trusted again.
+    billing_confidence: wrote("billing_confidence") ? svc.billingConfidence : undefined,
   };
 }
 
@@ -161,7 +168,7 @@ function cliEntryToYaml(
     harness: svc.harness,
     command: svc.command,
     api_key: apiKeyForYaml(svc, config, opts),
-    ...commonEntryFields(svc),
+    ...commonEntryFields(svc, config),
     ...(isGeneric
       ? {
           provider: svc.provider,
@@ -185,7 +192,7 @@ function endpointEntryToYaml(
     name: svc.name,
     base_url: baseUrlForYaml(svc, config, opts),
     api_key: apiKeyForYaml(svc, config, opts),
-    ...commonEntryFields(svc),
+    ...commonEntryFields(svc, config),
     // Endpoints have no shipped preset behind them, so an omitted billing
     // field is not recomputed on reload — it is lost. An endpoint declaring
     // `billing_kind: local_compute` and `paid_usage_possible: false` would come

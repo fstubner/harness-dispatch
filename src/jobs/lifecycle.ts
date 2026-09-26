@@ -101,8 +101,11 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   // `queued` because an orphaned job has no live runner by definition, so
   // nothing would act on the marker and it would sit at "cancelling" forever.
   if (current === "queued" || current === "orphaned") {
+    // Out of the slot queue as well: left marked, a cancelled job was still
+    // counted as waiting for a slot.
+    const { slotQueued: _waiting, ...rest } = job.status;
     await updateStatus(jobDir, {
-      ...job.status,
+      ...rest,
       status: "cancelled",
       updatedAt: timestamp(),
       success: false,

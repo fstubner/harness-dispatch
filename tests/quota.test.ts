@@ -27,6 +27,7 @@ vi.mock("../src/types.js", () => ({}));
 import { QuotaCache, QuotaState } from "../src/quota.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 import type { DispatchResult, QuotaInfo } from "../src/types.js";
+import { throwawayQuotaStateFile } from "./support/fixtures.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +164,28 @@ describe("QuotaCache.recordResult", () => {
     expect(status["svc"]!.remaining).toBe(2);
     expect(status["svc"]!.limit, "the known limit was erased by a partial update").toBe(100);
     expect(status["svc"]!.score).toBeCloseTo(0.02, 8);
+  });
+
+  it("a reading stops counting once its window has surely passed", async () => {
+    // Most rate-limit headers describe a one-minute window. Kept forever, a
+    // route seen at 0 remaining scored 0 for the rest of a long-lived server's
+    // life. Found in an audit.
+    const cache = new QuotaCache({ svc: makeDispatcher("svc") }, { stateFile: tmpFile() });
+    cache.recordResult("svc", {
+      output: "",
+      service: "svc",
+      success: true,
+      rateLimitHeaders: { "x-ratelimit-remaining": "0", "x-ratelimit-limit": "100" },
+    });
+    expect(await cache.getQuotaScore("svc")).toBe(0);
+
+    const realNow = performance.now.bind(performance);
+    const later = vi.spyOn(performance, "now").mockImplementation(() => realNow() + 301_000);
+    try {
+      expect(await cache.getQuotaScore("svc")).toBe(1);
+    } finally {
+      later.mockRestore();
+    }
   });
 
   it("a limit-only response does not erase the remaining it already knew", async () => {
@@ -503,7 +526,7 @@ describe("token totals — the honest answer to 'what has this cost me'", () => 
     });
     const q = new QuotaCache(
       { alpha: stub("alpha"), beta: stub("beta") } as never,
-      { stateFile: ":memory-tokens:" },
+      { stateFile: throwawayQuotaStateFile() },
     );
 
     q.recordResult("alpha", {
@@ -663,4 +686,48 @@ describe("usage tells the truth about its own durability", () => {
     );
     expect(JSON.stringify(status)).not.toContain("not reaching disk");
   });
+});
+
+describe("counts a busy lock deferred, at exit", () => {
+  // A deferred count waits for the next recorded result to write it. A
+  // detached runner exits after its one job, so the count left with it — a
+  // repaired route's first success lost, and the route still excluded as
+  // never-succeeded. Found in an audit.
+  it("are saved before the process exits", async () => {
+    const { QuotaCache } = await import("../src/quota.js");
+    const { throwawayQuotaStateFile } = await import("./support/fixtures.js");
+    const { mkdirSync, readFileSync, utimesSync, writeFileSync } = await import("node:fs");
+    const stub = (id: string) => ({
+      id,
+      async dispatch() { return { output: "", service: id, success: true }; },
+      async *stream() {},
+      async checkQuota() { return { service: id, source: "unknown" as const }; },
+      isAvailable: () => true,
+    });
+    const file = throwawayQuotaStateFile();
+    const q = new QuotaCache({ alpha: stub("alpha") } as never, { stateFile: file });
+
+    // Another process holds the lock: the save is deferred.
+    const lockDir = `${file}.lock`;
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(`${lockDir}/owner`, "someone-else");
+    q.recordResult("alpha", { output: "ok", service: "alpha", success: true });
+    const before = (() => {
+      try {
+        return JSON.parse(readFileSync(file, "utf8")) as Record<string, { local_success?: number }>;
+      } catch {
+        return {};
+      }
+    })();
+    expect(before.alpha?.local_success).toBeUndefined();
+
+    // That holder crashed: its lock is about to go stale.
+    // Old enough to be taken within the flush, too young for one attempt.
+    const nearlyStale = new Date(Date.now() - 7_000);
+    utimesSync(lockDir, nearlyStale, nearlyStale);
+    await q.flushBeforeExit();
+
+    const after = JSON.parse(readFileSync(file, "utf8")) as Record<string, { local_success?: number }>;
+    expect(after.alpha?.local_success, "the deferred success never reached disk").toBe(1);
+  }, 30_000);
 });

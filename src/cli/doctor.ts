@@ -43,11 +43,6 @@ export async function cmdDoctor(
   opts: { json: boolean; live: boolean; allowPaid: boolean },
 ): Promise<number> {
   const runtime = await buildRuntime(configPath);
-  if (opts.allowPaid) {
-    for (const svc of Object.values(runtime.config.services)) {
-      svc.allowPaidUsage = true;
-    }
-  }
   const status = await buildStatus(
     runtime.config,
     runtime.dispatchers,
@@ -347,6 +342,15 @@ export async function cmdDoctor(
       }
     | undefined;
   if (opts.live) {
+    // --allow-paid widens the PROBE only, applied after every check above has
+    // read the real configuration. Applied before them, it reported metered
+    // routes as allowed and ready — and passed doctor — without --live, for a
+    // configuration the next normal dispatch would still block.
+    if (opts.allowPaid) {
+      for (const svc of Object.values(runtime.config.services)) {
+        svc.allowPaidUsage = true;
+      }
+    }
     const { result } = await runtime.router.route(
       "Reply with exactly: harness-dispatch live probe ok. Do not inspect or modify files.",
       [],

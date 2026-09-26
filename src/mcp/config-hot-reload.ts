@@ -69,6 +69,11 @@ export async function bootstrapRuntime(opts: {
   configPath?: string;
   leaderboard?: LeaderboardCache;
 }): Promise<RuntimeState> {
+  // The mtime BEFORE the read. Taken after it, an edit landing in between was
+  // recorded as already loaded, so the old content ran under the new mtime
+  // and the newer edit never loaded. Taken first, such an edit leaves the
+  // recorded mtime behind the file's, and the next poll reloads it.
+  const mtimeMs = await statMtime(opts.configPath);
   const config = await loadConfig(opts.configPath);
   // Runs at boot AND on every hot reload, so config-driven retention tracks
   // the live config.
@@ -78,7 +83,6 @@ export async function bootstrapRuntime(opts: {
   const leaderboard =
     opts.leaderboard ?? new LeaderboardCache(undefined, { enabled: config.leaderboard?.enabled === true });
   const router = new Router(config, quota, dispatchers, leaderboard);
-  const mtimeMs = await statMtime(opts.configPath);
   return {
     config,
     dispatchers,

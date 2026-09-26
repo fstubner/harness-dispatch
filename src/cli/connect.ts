@@ -65,6 +65,17 @@ export async function cmdConnect(
   }
 
   const installed = plans.filter((p) => p.state !== "absent");
+  // A client named with --clients but not on this machine: said, and a
+  // failure. It used to be filtered out silently, so `--clients cursor`
+  // without Cursor wrote nothing and exited 0.
+  const missing = plans.filter((p) => p.state === "absent" && requested?.includes(p.id));
+  if (missing.length > 0) {
+    process.stderr.write(
+      `connect: ${missing.map((p) => p.client).join(", ")} ${missing.length > 1 ? "are" : "is"} not ` +
+        `installed here (no ${missing.map((p) => p.file).join(", ")}), so nothing was written.\n`,
+    );
+    return 1;
+  }
   if (installed.length === 0) {
     process.stdout.write(
       "No MCP clients found on this machine (looked for Claude Code and Cursor).\n" +

@@ -14,12 +14,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  ConcurrentChangeError,
   ENTRY_KEY,
   desiredEntry,
   devLaunchCommand,
   planClientWrites,
   removeClientEntry,
   writeClientEntry,
+  writeJsonAtomic,
 } from "../src/client-register.js";
 
 let home: string;
@@ -494,5 +496,28 @@ describe("writing another client's config never goes through a planted entry", (
     expect(await fs.readFile(target, "utf8"), "the backup went through the planted link").toBe(
       "untouched\n",
     );
+  });
+});
+
+describe("a client that rewrites its config while we update it", () => {
+  // Claude Code rewrites ~/.claude.json often. Our read, merge and replace
+  // took long enough for one of its writes to land in between, and the
+  // replace then erased it. Found in an audit.
+  it("refuses to replace a file that changed since it was read, leaving the new contents", async () => {
+    const file = claudeFile();
+    await fs.writeFile(file, '{"theirs":"newer"}\n', "utf8");
+    await expect(
+      writeJsonAtomic(file, { ours: true }, { basedOn: '{"theirs":"older"}\n' }),
+    ).rejects.toBeInstanceOf(ConcurrentChangeError);
+    expect(await fs.readFile(file, "utf8")).toBe('{"theirs":"newer"}\n');
+    expect((await fs.readdir(home)).filter((f) => f.includes("tmp"))).toEqual([]);
+  });
+
+  it("still replaces a file nobody else touched", async () => {
+    const file = claudeFile();
+    const text = '{"theirs":"same"}\n';
+    await fs.writeFile(file, text, "utf8");
+    await writeJsonAtomic(file, { ours: true }, { basedOn: text });
+    expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ ours: true });
   });
 });

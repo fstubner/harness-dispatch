@@ -53,8 +53,14 @@ describe("generateHttpToken / maskToken", () => {
     expect(masked).toContain("...");
   });
 
-  it("returns short tokens unmasked", () => {
-    expect(maskToken("short")).toBe("short");
+  it("does not print a short token whole", () => {
+    // It returned tokens of 12 characters or fewer unmasked, and printed 12
+    // of a 13-character one. Found in an audit.
+    for (const token of ["short", "abcdefghijkl", "abcdefghijklm"]) {
+      const masked = maskToken(token);
+      expect(masked).not.toContain(token.slice(0, 3));
+      expect(masked).toContain(`${token.length} characters`);
+    }
   });
 });
 

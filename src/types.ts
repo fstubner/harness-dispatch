@@ -522,6 +522,13 @@ export interface RouterConfig {
    */
   fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string }>;
   /**
+   * Per route, the keys its entry in the file actually wrote. `configure`
+   * emits a field whose loaded value may be a computed default only when the
+   * user wrote it, so a rewrite neither drops a declaration nor freezes a
+   * default into the file. Never serialize this map.
+   */
+  userRouteKeys?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
    * Ceiling on agent CLIs running at once, machine-wide (default 4).
    *
    * Not a throughput knob — a resource guard. Every dispatch spawns a

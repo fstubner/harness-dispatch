@@ -726,6 +726,21 @@ describe("CLI parser", () => {
     );
   });
 
+  it("does not let --allow-paid change what doctor reports without --live", async () => {
+    // --allow-paid is for the live probe. Applied before the checks, it
+    // reported a metered route as allowed and ready — for a configuration the
+    // next normal dispatch would still block. Found in an audit.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const config = await writeConfig({ includePaidRoute: true });
+    const result = await capture(() => main(["doctor", "--json", "--allow-paid", "--config", config]));
+    const parsed = JSON.parse(result.stdout) as {
+      status: { skippedRoutes: Array<{ route: string; code: string }> };
+    };
+    expect(parsed.status.skippedRoutes).toEqual([
+      expect.objectContaining({ route: "paid", code: "paid_blocked" }),
+    ]);
+  });
+
   it("reports paid blockers without failing doctor when a safe route is ready", async () => {
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig({ includePaidRoute: true });

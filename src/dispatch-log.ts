@@ -14,6 +14,7 @@
  */
 
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { withFileLock } from "./file-lock.js";
 import { redact } from "./redaction.js";
 import path from "node:path";
 
@@ -123,12 +124,24 @@ export function logDispatch(
   try {
     const file = dispatchLogPath();
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    try {
-      if (statSync(file).size > MAX_LOG_BYTES) {
-        renameSync(file, `${file}.1`);
+    // Checked again under a lock. Two processes that both saw the log over
+    // the limit both renamed it, and the second rename replaced the 5 MB
+    // archive the first had just made with the one line written since.
+    const oversized = (): boolean => {
+      try {
+        return statSync(file).size > MAX_LOG_BYTES;
+      } catch {
+        return false; // Not created yet.
       }
-    } catch {
-      // File doesn't exist yet (or rotation raced another process) — fine.
+    };
+    if (oversized()) {
+      withFileLock(file, () => {
+        try {
+          if (oversized()) renameSync(file, `${file}.1`);
+        } catch {
+          // A failed rotation must not cost the entry; the next write retries.
+        }
+      });
     }
     // Sink: this file is read by people and pasted into issues.
     const line = redact(JSON.stringify(buildDispatchLogEntry(route, result, decision))) + "\n";

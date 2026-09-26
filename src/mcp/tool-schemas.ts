@@ -364,8 +364,8 @@ export const jobStatusInputShape = {
     .optional()
     .describe(
       "Check a previously started dispatch: returns partialOutput while running and " +
-        "the full result once completed or failed. Omit to list every known background " +
-        "dispatch instead.",
+        "the full result once completed or failed. Omit to list the 20 most recent " +
+        "background dispatches instead, with a count of any older ones.",
     ),
 } as const;
 
