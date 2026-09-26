@@ -14,7 +14,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   exited, so the run waited out its whole time limit — an hour by default —
   and was then reported as a failure. Measured on Linux: a run that answered
   and exited at once returned "timed out" after its full 15 s limit; it now
-  returns its answer in 3 s. Windows was not affected.
+  returns its answer in 3 to 5 s. Windows was not affected.
 
 - **Two workspace actions on the same job no longer interfere.** Sending
   `diff` and `apply`, or two `apply`s, at the same moment — as an orchestrator

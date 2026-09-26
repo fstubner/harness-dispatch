@@ -415,4 +415,39 @@ describe("a child that exits while a process it started still holds its output",
     expect(out).toContain("final answer");
     expect(Date.now() - started).toBeLessThan(5_000);
   }, 20_000);
+
+  // The time limit landing inside that drain window is the same run: the agent
+  // had already finished, so it is not a timeout.
+  it("is not a timeout when the limit passes while its last output drains", async () => {
+    const script = `
+      const { spawn } = require("node:child_process");
+      const bg = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+        stdio: ["ignore", "inherit", "inherit"],
+      });
+      bg.unref();
+      process.stdout.write("bg " + bg.pid + "\\n");
+      process.exit(0);
+    `;
+    let out = "";
+    let end: { exitCode: number; timedOut: boolean } | undefined;
+    try {
+      for await (const evt of streamSubprocess(NODE, ["-e", script], {
+        timeoutMs: 1_000,
+        exitDrainMs: 3_000,
+      })) {
+        if ("stream" in evt) out += evt.chunk;
+        else end = { exitCode: evt.exitCode, timedOut: evt.timedOut };
+      }
+    } finally {
+      const pid = Number(/bg (\d+)/.exec(out)?.[1]);
+      if (pid > 0) {
+        try {
+          process.kill(pid);
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+    expect(end).toEqual({ exitCode: 0, timedOut: false });
+  }, 20_000);
 });

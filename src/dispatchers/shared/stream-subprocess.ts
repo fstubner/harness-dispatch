@@ -117,6 +117,7 @@ export function streamSubprocess(
   let truncated = false;
   let timedOut = false;
   let settled = false;
+  let exited = false;
 
   function push(evt: SubprocessStreamEvent): void {
     if (done) return;
@@ -208,7 +209,8 @@ export function streamSubprocess(
   }
 
   const timer = setTimeout(() => {
-    if (settled) return;
+    // An exited child has finished; the drain below settles it.
+    if (settled || exited) return;
     timedOut = true;
     terminateChild("SIGTERM");
   }, timeoutMs);
@@ -267,6 +269,7 @@ export function streamSubprocess(
   // to arrive, then close the pipes from this side; `close` follows with the
   // child's own exit code.
   child.on("exit", () => {
+    exited = true;
     setTimeout(() => {
       if (settled) return;
       child?.stdout?.destroy();
