@@ -17,7 +17,7 @@ import type {
   EndpointProvider,
   SafetyProfile,
 } from "../types.js";
-import { str } from "./coercions.js";
+import { boolOrUndefined, str } from "./coercions.js";
 
 const SAFETY_PROFILES: readonly SafetyProfile[] = ["read_only", "workspace_edit", "full_auto"];
 
@@ -181,7 +181,7 @@ export function parseProtocolFields(
 
   const protocol: CliProtocolConfig = { args, output };
 
-  const stdin = typeof r.stdin === "boolean" ? r.stdin : base?.stdin;
+  const stdin = boolOrUndefined(r.stdin) ?? base?.stdin;
   if (stdin !== undefined) protocol.stdin = stdin;
 
   const modelRaw = r.model;
@@ -276,6 +276,14 @@ export function parseProtocolFields(
           `${[...KNOWN_ARG_PLACEHOLDERS].join(", ")}.`,
       );
     }
+  }
+  if (protocol.safety !== undefined && !protocol.args.includes("{{safety}}")) {
+    warnings.push(
+      `${routeLabel}: protocol.safety lists flags, but protocol.args has no {{safety}} ` +
+        `placeholder — the flags are never passed, so the CLI runs with no safety argument ` +
+        `and this route is treated as full_auto (skipped for stricter requests). Add ` +
+        `"{{safety}}" to args.`,
+    );
   }
   if (!protocol.stdin && !protocol.args.includes("{{prompt}}")) {
     warnings.push(

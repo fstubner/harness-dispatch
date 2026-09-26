@@ -38,6 +38,7 @@ import { evaluateRoutePolicy } from "../route-policy.js";
 import {
   cancelJob,
   getAsyncJob,
+  jobListingContext,
   listAsyncJobs,
   resolveJobWorkspace,
   retryJob,
@@ -733,10 +734,16 @@ export async function handleJobStatus(
     // lives behind a per-job check, since including it for every job costs
     // several KB of tokens on each list call.
     const all = await listAsyncJobs();
-    const jobs = all.slice(0, LIST_LIMIT).map((j) => ({
+    const listed = all.slice(0, LIST_LIMIT);
+    // Where each ran and how its prompt starts: every session on the machine
+    // lists the same jobs, so this is what a caller that lost its dispatch
+    // reply recognises its own job by.
+    const contexts = await Promise.all(listed.map((j) => jobListingContext(j.jobId)));
+    const jobs = listed.map((j, i) => ({
       jobId: j.jobId,
       status: j.status,
       createdAt: j.createdAt,
+      ...contexts[i],
       ...(j.route !== undefined ? { route: j.route } : {}),
       ...(j.service !== undefined && j.service !== j.route ? { service: j.service } : {}),
       ...(j.success !== undefined ? { success: j.success } : {}),
@@ -849,8 +856,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "MCP call's own: the run executes in a detached process that survives even a " +
         "server restart, and results " +
         "persist on disk — if THIS call times out client-side, the jobId was lost with " +
-        "the reply, so call `job_status` with no arguments and pick the newest running " +
-        "entry (it is yours). Keep graceSeconds under your MCP client's own request " +
+        "the reply, so call `job_status` with no arguments and pick the newest entry whose " +
+        "workingDir and promptPreview are yours — other sessions on this machine share the " +
+        "same list, so the newest entry may not be. Keep graceSeconds under your MCP client's own request " +
         "timeout, or skip the inline wait entirely with graceSeconds: 0. Always pass " +
         "`workingDir` (the caller's project root) and `hints.taskType`.",
       inputSchema: dispatchInputShape,

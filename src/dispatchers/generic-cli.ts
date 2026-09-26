@@ -9,6 +9,7 @@
  * specific CLI, so a new harness needs zero new TypeScript.
  */
 
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import which from "which";
@@ -161,7 +162,13 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   // fall off the end of a single joined tail.
   const lines = streams.flatMap((s) => rateLimitScanTail(s).split(/\r?\n/));
   const diagnostics = lines.filter((line) => /CreateProcessAsUserW failed:\s*\d+/i.test(line));
-  if (diagnostics.length >= 2) {
+  // "Could not spawn ANY child" is disproved by one that ran. Codex's sandbox
+  // refuses spawns intermittently, and logs each refusal on TWO lines, so a
+  // single refusal met the threshold: all six of one day's real Codex runs
+  // were failed this way, each after 22 to 45 commands that completed and an
+  // answer citing the files they read. The harness's own event stream says
+  // which commands completed, so ask it.
+  if (diagnostics.length >= 2 && !streams.some(reportsACompletedCommand)) {
     return (
       "the harness could not spawn any child process — its sandbox refused " +
       "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
@@ -171,6 +178,17 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
     );
   }
   return undefined;
+}
+
+/**
+ * Does this transcript show a command the harness ran to a clean exit?
+ *
+ * Codex's JSON event stream reports every shell command as a
+ * `command_execution` item with its exit code. Other harnesses print nothing
+ * matching, and for them the diagnostic count alone decides, as before.
+ */
+function reportsACompletedCommand(stream: string): boolean {
+  return /"type":"command_execution"[^\n]*"exit_code":0[,}]/.test(stream);
 }
 
 /**
@@ -215,6 +233,70 @@ const WINDOWS_CMD_SHIM_MAX = 8_180;
 function commandLineBudget(command: string): number {
   if (process.platform !== "win32") return POSIX_ARG_MAX;
   return runsThroughCmdExe(command) ? WINDOWS_CMD_SHIM_MAX : WINDOWS_CMDLINE_MAX;
+}
+
+/**
+ * The first argument cmd.exe would mangle or execute on its way through a
+ * Windows command shim, with what is wrong and what would happen.
+ *
+ * cmd.exe parses a shim's arguments TWICE: once for `cmd /c`, and again when
+ * the batch file forwards them with `%*`. cross-spawn escapes for the second
+ * pass only for npm's `node_modules\.bin` shims (npm's global shims never
+ * reach cmd.exe at all, see windows-cmd.ts), so through any other .cmd —
+ * Cursor's own launcher, pnpm, scoop, a hand-written wrapper — three things go
+ * wrong:
+ *
+ *   - a line break ends the argument, and the rest is silently dropped.
+ *     Measured: a three-line prompt reached the program as
+ *     `["--prompt","line one"]`, and the run reported success;
+ *   - a `"` closes the quoting, and whatever follows runs as a command.
+ *     Measured: the shipped cursor route, read_only, given the model name
+ *     `gpt-5" & echo x> f & rem "`, created the file and reported success;
+ *   - in a shim that enables delayed expansion (Cursor's does), `!NAME!` is
+ *     replaced with that environment variable's value.
+ *
+ * Refused rather than escaped: escaping for a second pass that may or may not
+ * happen, with or without delayed expansion, is guesswork about a file this
+ * tool does not control, and a guess that is wrong runs commands.
+ */
+async function unsafeForCmdShim(
+  command: string,
+  args: readonly string[],
+): Promise<{ index: number; problem: string; consequence: string } | undefined> {
+  let delayedExpansion: boolean | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (/[\r\n]/.test(arg)) {
+      return {
+        index,
+        problem: "has line breaks",
+        consequence: "which cuts an argument at its first line break — the rest would be silently dropped",
+      };
+    }
+    if (arg.includes('"')) {
+      return {
+        index,
+        problem: 'contains a double quote (")',
+        consequence:
+          "where cmd.exe reads it as the end of the quoting and runs whatever follows as a command",
+      };
+    }
+    if (arg.includes("!")) {
+      delayedExpansion ??= await readFile(command, "utf8").then(
+        (text) => /enabledelayedexpansion/i.test(text),
+        () => false,
+      );
+      if (delayedExpansion) {
+        return {
+          index,
+          problem: "contains an exclamation mark (!)",
+          consequence:
+            "which enables delayed expansion, so cmd.exe would replace !NAME! with that environment variable's value",
+        };
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Whether cross-spawn will run this command through cmd.exe (see above). */
@@ -770,6 +852,32 @@ export class GenericCliDispatcher extends BaseDispatcher {
       }
     }
 
+    // Arguments a Windows command shim would mangle or execute, refused before
+    // spawning. See unsafeForCmdShim.
+    if (runsThroughCmdExe(resolved.command)) {
+      const unsafe = await unsafeForCmdShim(resolved.command, args);
+      if (unsafe !== undefined) {
+        const culprit = args[unsafe.index] === fullPrompt ? "the prompt" : "a command-line argument";
+        yield {
+          type: "completion",
+          result: {
+            output: "",
+            service: this.id,
+            success: false,
+            error:
+              `${culprit} ${unsafe.problem}, and ${this.id} passes it through a Windows command ` +
+              `shim (${path.basename(resolved.command)}), ${unsafe.consequence}. Use a route that ` +
+              `reads the prompt from stdin (codex, claude, cursor do) and a plain model name, or ` +
+              `point this route's command at the program's .exe.`,
+            // Not the route's fault, so not the route's failure.
+            inputRejected: true,
+            durationMs: 0,
+          },
+        };
+        return;
+      }
+    }
+
     // A prompt too long for this route's COMMAND LINE, caught before spawning:
     // past the OS limit the spawn fails with a raw `spawn ENAMETOOLONG`,
     // pointing at nothing the caller could act on.
@@ -779,31 +887,6 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // would refuse work that route can do. Saying which routes CAN take it is
     // the useful half of the message.
     if (!protocol.stdin) {
-      // cmd.exe ends an argument at the first line break, so a multi-line
-      // prompt handed to a `.cmd` shim arrives as its first line only — and the
-      // run still reports success. Measured: a three-line prompt reached the
-      // program as `["--prompt","line one"]`, success=true. Refuse instead,
-      // like the length limit below; the same prompt reaches an `.exe` intact.
-      if (runsThroughCmdExe(resolved.command) && args.some((a) => /[\r\n]/.test(a))) {
-        yield {
-          type: "completion",
-          result: {
-            output: "",
-            service: this.id,
-            success: false,
-            error:
-              `prompt has line breaks, and ${this.id} passes it as a command-line argument ` +
-              `through a Windows command shim (${path.basename(resolved.command)}), which cuts ` +
-              `an argument at its first line break — the rest would be silently dropped. Use a ` +
-              `route that reads the prompt from stdin (codex, claude, cursor do), point this ` +
-              `route's command at the program's .exe, or set protocol stdin: true if it can read one.`,
-            // Not the route's fault, so not the route's failure.
-            inputRejected: true,
-            durationMs: 0,
-          },
-        };
-        return;
-      }
       const budget = commandLineBudget(resolved.command);
       const commandLineChars = commandLineLength(resolved.command, args);
       if (commandLineChars > budget) {

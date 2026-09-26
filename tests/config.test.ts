@@ -1611,3 +1611,36 @@ describe("capability values are checked like every other number", () => {
     expect((cfg.configWarnings ?? []).join(" ")).toMatch(/capabilities\.review/);
   });
 });
+
+describe("quoted booleans in billing fields", () => {
+  // The validator lets quoted "true"/"false" through without a warning, as
+  // bool() accepts them — but the billing parsers took only real booleans. So
+  // `paid_usage_possible: "true"`, the documented way to say a subscription
+  // has overage enabled, was silently read as absent and the route fell back
+  // to "cannot bill", opening the paid-usage gate. Found in an audit.
+  it("reads paid_usage_possible: \"true\" as written, on an endpoint and a CLI route", async () => {
+    const p = await writeTmpYaml(
+      "quoted-bools.yaml",
+      [
+        "clis:",
+        "  - name: my_codex",
+        "    harness: codex",
+        "    command: codex",
+        '    paid_usage_possible: "true"',
+        "endpoints:",
+        "  - name: ep",
+        "    base_url: http://localhost:11434/v1",
+        "    model: m",
+        "    billing_kind: local_compute",
+        '    paid_usage_possible: "true"',
+        '    allow_paid_usage: "true"',
+        "",
+      ].join(NL),
+    );
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services["ep"]!.paidUsagePossible).toBe(true);
+    expect(cfg.services["ep"]!.allowPaidUsage).toBe(true);
+    expect(cfg.services["my_codex"]!.paidUsagePossible).toBe(true);
+    expect(cfg.configWarnings ?? []).toEqual([]);
+  });
+});

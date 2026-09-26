@@ -16,7 +16,7 @@ export {
   runSupervisor,
   SUPERVISOR_POOL_SIZE,
 } from "./jobs/supervisor.js";
-export { getAsyncJob, listAsyncJobs } from "./jobs/read.js";
+export { getAsyncJob, jobListingContext, listAsyncJobs } from "./jobs/read.js";
 export { startAsyncJob, startAsyncJobTracked } from "./jobs/start.js";
 export {
   cancelJob,

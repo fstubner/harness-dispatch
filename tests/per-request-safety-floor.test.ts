@@ -250,3 +250,42 @@ describe("a CLI route with no flags for the requested profile", () => {
     expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(true);
   });
 });
+
+describe("a safety map that is never passed to the CLI", () => {
+  // `{{safety}}` is what puts a profile's flags on the command line. A map
+  // without it in args was still treated as proof of enforcement: a route
+  // declaring `read_only: ["--read-only"]` was reported read_only while the
+  // CLI launched with no such flag. Found in an audit.
+  async function routeWith(args: string): Promise<{ svc: ServiceConfig; warnings: string[] }> {
+    const file = path.join(dir, "config.yaml");
+    await fs.writeFile(
+      file,
+      [
+        "clis:",
+        "  - name: probe",
+        "    harness: generic",
+        "    command: node",
+        "    protocol:",
+        `      args: ${args}`,
+        "      output: { mode: text }",
+        '      safety: { read_only: ["--read-only"] }',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const cfg = await loadConfig(file, { whichFn: async () => null });
+    return { svc: cfg.services["probe"]!, warnings: [...(cfg.configWarnings ?? [])] };
+  }
+
+  it("is not trusted for read_only, and says why", async () => {
+    const { svc, warnings } = await routeWith('["{{prompt}}"]');
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(false);
+    expect(warnings.join(" ")).toMatch(/no \{\{safety\}\} placeholder/);
+  });
+
+  it("is trusted once args carry the placeholder", async () => {
+    const { svc, warnings } = await routeWith('["{{safety}}", "{{prompt}}"]');
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+    expect(warnings.join(" ")).not.toMatch(/\{\{safety\}\}/);
+  });
+});

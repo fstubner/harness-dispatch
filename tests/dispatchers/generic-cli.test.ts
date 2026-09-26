@@ -1284,6 +1284,26 @@ describe("an environment failure is the harness's, not the agent's prose", () =>
     expect(detectHarnessEnvironmentFailure(broken)).toMatch(/could not spawn/i);
   });
 
+  it("does not fire when the harness reports commands that ran", () => {
+    // Codex logs each refused spawn on two lines, so ONE intermittent refusal
+    // met the threshold. Measured: six real review runs in one day, each with
+    // 22 to 45 commands completed and a correct, file-citing answer, all
+    // reported "could not spawn any child process" and failed.
+    const diag = [
+      "ERROR codex_core::exec: exec error: windows sandbox: CreateProcessAsUserW failed: 5 (Access is denied.)",
+      "ERROR codex_core::tools::router: error=execution error: CreateProcessAsUserW failed: 5 (Access is denied.)",
+    ].join("\n");
+    const ran =
+      '{"type":"item.completed","item":{"id":"item_3","type":"command_execution",' +
+      '"command":"Get-Content src/a.ts","aggregated_output":"x","exit_code":0,"status":"completed"}}';
+    const refused =
+      '{"type":"item.completed","item":{"id":"item_4","type":"command_execution",' +
+      '"command":"rg x","aggregated_output":"execution error","exit_code":-1,"status":"failed"}}';
+    expect(detectHarnessEnvironmentFailure(`${ran}\n${refused}`, diag)).toBeUndefined();
+    // Every command refused is still the failure this exists for.
+    expect(detectHarnessEnvironmentFailure(`${refused}\n${refused}`, diag)).toMatch(/could not spawn/i);
+  });
+
   it("scans each stream's tail, not one joined tail", () => {
     // The failure is on stdout; stderr then buries it under progress noise.
     // Joining first put the real diagnostics past the end of a single tail

@@ -208,6 +208,30 @@ describe("detect: survives a regenerate", () => {
     expect(out).toContain("max_concurrent_runs: 2");
   });
 
+  it("keeps disabled: when detect: true runs beside listed routes", async () => {
+    // Dropped whenever the file also listed routes, on the reasoning that a
+    // listed config is authoritative — true only while detection is off.
+    // `detect: true` turns it back on, so the disabled harness was detected
+    // again and routable after a rewrite. Found in an audit.
+    const out = await regenerate(
+      [
+        "detect: true",
+        "disabled: [codex_cli]",
+        "endpoints:",
+        "  - name: ep",
+        "    base_url: http://localhost:11434/v1",
+        "    model: m",
+        "",
+      ].join("\n"),
+      "d-dis.yaml",
+    );
+    const reloaded = path.join(dir, "d-dis-out.yaml");
+    await fs.writeFile(reloaded, out, "utf8");
+    const cfg = await loadConfig(reloaded, { whichFn: pretendInstalled });
+    expect(Object.keys(cfg.services)).not.toContain("codex_cli");
+    expect(Object.keys(cfg.services)).toContain("ep");
+  });
+
   it("keeps a bare detect: false, which otherwise regenerates as nothing at all", async () => {
     const out = await regenerate("detect: false\n", "d2.yaml");
     expect(out).toContain("detect: false");

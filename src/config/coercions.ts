@@ -37,6 +37,19 @@ export function int(v: unknown, def: number): number {
   return Math.trunc(num(v, def));
 }
 
+/**
+ * A boolean, or undefined when the value is not one — an absent flag must stay
+ * absent. Quoted "true"/"false" count, as they do for bool(): YAML quoting is
+ * easy to do by accident, and the validator does not warn about it, so reading
+ * it as absent would silently apply the default instead of what was written.
+ */
+export function boolOrUndefined(v: unknown): boolean | undefined {
+  if (typeof v === "boolean") return v;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return undefined;
+}
+
 export function bool(v: unknown, def: boolean): boolean {
   if (typeof v === "boolean") return v;
   if (typeof v === "string") {

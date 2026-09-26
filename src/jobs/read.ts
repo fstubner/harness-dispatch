@@ -110,3 +110,23 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
   }
   return statuses.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
+
+/**
+ * Where a job ran and how its prompt starts, for the job list — what lets a
+ * caller whose dispatch reply was lost pick out ITS job, since every session
+ * on the machine lists the same jobs. Empty for a job that predates the
+ * preview, or whose manifest cannot be read.
+ */
+export async function jobListingContext(
+  jobId: string,
+): Promise<{ workingDir?: string; promptPreview?: string }> {
+  try {
+    const manifest = await readJson<JobManifest>(path.join(jobsRoot(), jobId, "manifest.json"));
+    return {
+      ...(typeof manifest.workingDir === "string" ? { workingDir: manifest.workingDir } : {}),
+      ...(typeof manifest.promptPreview === "string" ? { promptPreview: manifest.promptPreview } : {}),
+    };
+  } catch {
+    return {};
+  }
+}

@@ -158,19 +158,73 @@ describe("acquireWorkspaceLock — recovery", () => {
     expect(true).toBe(true);
   });
 
-  it("steals a lock whose heartbeat has gone stale", async () => {
+  it("does not take a live holder's lock on an old heartbeat alone", async () => {
+    // A laptop that sleeps makes every heartbeat stale at once; on waking, a
+    // waiter's retry can run before the holder's overdue beat. Taking the lock
+    // then puts a second agent in a workspace the first is still editing.
+    // Measured in an audit: a live pid with a 100 s-old beat taken in 8 ms.
     mkdirSync(lockDir(), { recursive: true });
     const file = path.join(lockDir(), readdirSyncSafeName(workDir));
     writeFileSync(
       file,
-      JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
+      JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - 100_000 }),
       "utf8",
     );
-    // Note the pid is THIS process, i.e. definitely alive: only staleness can
-    // release it here.
-    const release = await acquireWorkspaceLock(workDir, 3000);
-    release();
-    expect(true).toBe(true);
+    await expect(acquireWorkspaceLock(workDir, 2000)).rejects.toThrow(/timed out/);
+  });
+
+  it("takes it once the old heartbeat has stayed unchanged while watched", async () => {
+    // A live pid whose beat never moves is hung, or the pid now belongs to an
+    // unrelated process: the lock must not wedge.
+    vi.useFakeTimers();
+    try {
+      mkdirSync(lockDir(), { recursive: true });
+      const file = path.join(lockDir(), readdirSyncSafeName(workDir));
+      writeFileSync(
+        file,
+        JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
+        "utf8",
+      );
+      let acquired = false;
+      const pending = acquireWorkspaceLock(workDir, 120_000).then((release) => {
+        acquired = true;
+        return release;
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(acquired, "taken before the heartbeat had been watched long enough").toBe(false);
+      await vi.advanceTimersByTimeAsync(15_000);
+      (await pending)();
+      expect(acquired).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves it alone when the holder's heartbeat resumes", async () => {
+    // The sleeping-laptop case: the holder wakes and beats again.
+    vi.useFakeTimers();
+    try {
+      mkdirSync(lockDir(), { recursive: true });
+      const file = path.join(lockDir(), readdirSyncSafeName(workDir));
+      writeFileSync(
+        file,
+        JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
+        "utf8",
+      );
+      const pending = acquireWorkspaceLock(workDir, 60_000);
+      const settled = pending.then(
+        () => "acquired",
+        () => "timed out",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      writeFileSync(file, JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() }), "utf8");
+      await vi.advanceTimersByTimeAsync(10_000);
+      writeFileSync(file, JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() }), "utf8");
+      await vi.advanceTimersByTimeAsync(50_000);
+      expect(await settled).toBe("timed out");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stops refreshing once the lock has been stolen, instead of clobbering the thief", async () => {
@@ -240,7 +294,7 @@ describe("acquireWorkspaceLock — recovery", () => {
     const file = path.join(lockDir(), readdirSyncSafeName(workDir));
     writeFileSync(
       file,
-      JSON.stringify({ pid: process.pid, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
+      JSON.stringify({ pid: 0x7ffffffe, key: workDir, beatMs: Date.now() - LOCK_STALE_MS - 1000 }),
       "utf8",
     );
     const release = await acquireWorkspaceLock(workDir, 3000);
@@ -295,6 +349,21 @@ describe("pruneDeadWorkspaceLocks", () => {
     expect(existsSync(dead), "a dead lock was kept").toBe(false);
     expect(existsSync(corrupt), "a stale unreadable lock was kept").toBe(false);
     expect(existsSync(live), "a LIVE lock was deleted").toBe(true);
+  });
+
+  it("keeps a live process's lock however old its heartbeat", async () => {
+    // The sweep runs before every job start, so after a laptop sleep it would
+    // otherwise delete the lock of a holder that is only waking up.
+    const { pruneDeadWorkspaceLocks } = await import("../src/workspace-lock.js");
+    await fs.mkdir(lockDir(), { recursive: true });
+    const sleeping = path.join(lockDir(), "asleep0000000000.json");
+    await fs.writeFile(
+      sleeping,
+      JSON.stringify({ pid: process.pid, key: "/asleep", beatMs: Date.now() - 10 * 60_000 }),
+      "utf8",
+    );
+    await pruneDeadWorkspaceLocks();
+    expect(existsSync(sleeping), "a live holder's lock was swept").toBe(true);
   });
 
   it("gives a freshly unreadable lock the same grace the acquire path gives it", async () => {
