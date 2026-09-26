@@ -18,6 +18,7 @@ import { resolveConfigPath } from "./config.js";
 import { installOutputRedaction } from "./redaction.js";
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
 import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
+import { initObservability, shutdownObservability } from "./observability/index.js";
 
 async function main(): Promise<void> {
   // This process writes its own stdout/stderr straight into
@@ -33,6 +34,10 @@ async function main(): Promise<void> {
   const state = await bootstrapRuntime(
     configPath !== undefined ? { configPath } : {},
   );
+  // Every MCP and HTTP dispatch runs HERE, not in the server, so without this
+  // their router and dispatcher spans were never exported, whatever the
+  // config or environment said. Shut down before each exit to flush them.
+  await initObservability(state.config.telemetry?.enabled ? { enabled: true } : {});
 
   // Pool mode: claim work from the queue and run several jobs at once, so
   // supervision costs a bounded number of processes rather than one per job.
@@ -40,6 +45,7 @@ async function main(): Promise<void> {
     const holder = new RuntimeHolder(state);
     await runSupervisor({ holder }, process.argv[3]);
     await holder.state.quota.flushBeforeExit();
+    await shutdownObservability();
     process.exit(0);
   }
 
@@ -59,6 +65,7 @@ async function main(): Promise<void> {
   }
   // executeJobDir never throws (runJob writes failures to the job dir), but
   // dispatcher/OTEL handles can keep the loop alive — exit deliberately.
+  await shutdownObservability();
   process.exit(0);
 }
 

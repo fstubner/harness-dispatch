@@ -24,6 +24,7 @@
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { parseRetryAfter } from "./shared/rate-limit-headers.js";
+import { DEFAULT_MAX_OUTPUT_BYTES } from "./shared/stream-subprocess.js";
 import { redactEndpointHost, scrubEndpointSecrets } from "../status.js";
 
 const CHAT_PATH = "/chat/completions";
@@ -606,7 +607,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     // with no body", which is what the streaming path's own wording agrees on.
     let bodyReadError: string | undefined;
     try {
-      rawBody = await res.text();
+      rawBody = await readBodyCapped(res);
     } catch (err) {
       bodyReadError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -723,7 +724,7 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
       // cleared first, an endpoint that sent an error status and then stalled
       // held the dispatch far past its time limit (measured: still pending at
       // 8 s on a 1 s limit).
-      const rawBody = await res.text().catch(() => "");
+      const rawBody = await readBodyCapped(res).catch(() => "");
       clearTimeout(timer);
       const parsedBody = this.#parseBody(rawBody);
       // Scrubbed against the base URL, like every other error this
@@ -793,10 +794,20 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
 
+    let received = 0;
     try {
       outer: while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        // The same ceiling a CLI route's output has. Unbounded, a broken or
+        // hostile endpoint streaming without frame boundaries grew this buffer
+        // until the process ran short of memory: measured, 64 MiB in took
+        // 768 MiB at peak.
+        received += value.byteLength;
+        if (received > DEFAULT_MAX_OUTPUT_BYTES) {
+          streamError = `response exceeded the ${DEFAULT_MAX_OUTPUT_BYTES / (1024 * 1024)} MB limit — stopped reading`;
+          break outer;
+        }
         const text = decoder.decode(value, { stream: true });
         buffer += text;
         if (rawSeen.length < RAW_HEAD_CHARS) rawSeen = (rawSeen + text).slice(0, RAW_HEAD_CHARS);
@@ -989,4 +1000,30 @@ async function buildPromptWithFiles(
     }
   }
   return parts.join("\n");
+}
+
+/**
+ * A response body as text, refusing past the same ceiling a CLI route's
+ * output has. `res.text()` read any size into memory.
+ */
+export async function readBodyCapped(
+  res: Response,
+  maxBytes: number = DEFAULT_MAX_OUTPUT_BYTES,
+): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let received = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`response exceeded the ${maxBytes / (1024 * 1024)} MB limit — stopped reading`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }

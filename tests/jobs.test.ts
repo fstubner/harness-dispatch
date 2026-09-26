@@ -224,3 +224,28 @@ describe("a write failing after the result was saved", () => {
     expect(job.status.warning).toMatch(/result was saved/);
   });
 });
+
+describe("a relative path in files", () => {
+  // Resolved against the SERVER's cwd for the snapshot, the runner's for an
+  // endpoint route, and the workspace for a CLI delegate — three different
+  // files for one path. Found in an audit.
+  it("is resolved against the job's working directory", async () => {
+    const work = await fs.mkdtemp(path.join(os.tmpdir(), "hr-relfiles-"));
+    try {
+      await fs.writeFile(path.join(work, "notes-only-here.txt"), "the right file", "utf8");
+      const { status, completion } = await startAsyncJobTracked(fakeDeps(), {
+        prompt: "hello",
+        workingDir: work,
+        files: ["notes-only-here.txt"],
+      });
+      await completion;
+      const manifest = JSON.parse(await fs.readFile(path.join(status.jobDir, "manifest.json"), "utf8")) as {
+        files: Array<{ originalPath: string; error?: string }>;
+      };
+      expect(manifest.files[0]!.originalPath).toBe(path.join(work, "notes-only-here.txt"));
+      expect(manifest.files[0]!.error).toBeUndefined();
+    } finally {
+      await fs.rm(work, { recursive: true, force: true });
+    }
+  });
+});

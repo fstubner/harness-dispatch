@@ -671,10 +671,13 @@ describe("OpenAICompatibleDispatcher — mid-stream error handling (openai_chat_
     // buffered path asserted the endpoint had sent nothing, while the
     // streaming path reported "terminated" and kept the partial output — so
     // the two paths disagreed while a comment claimed they agreed.
-    const res = new Response("", { status: 200, headers: { "content-type": "application/json" } });
-    Object.defineProperty(res, "text", {
-      value: () => Promise.reject(new Error("terminated")),
+    // A body stream that fails mid-read, the way a reset socket does.
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("terminated"));
+      },
     });
+    const res = new Response(body, { status: 200, headers: { "content-type": "application/json" } });
     fetchMock.mockResolvedValue(res);
 
     const d = new OpenAICompatibleDispatcher(baseSvc());
@@ -1111,4 +1114,34 @@ describe("what is kept of a response's headers", () => {
     const res = await new OpenAICompatibleDispatcher(baseSvc()).dispatch("hi", [], "");
     expect(res.rateLimitHeaders).toEqual({ "x-ratelimit-remaining": "7" });
   });
+});
+
+describe("a response larger than any real answer", () => {
+  // Neither path had a byte limit: a broken or hostile endpoint could stream
+  // without frame boundaries until the process ran short of memory
+  // (measured: 64 MiB in, 768 MiB at peak). Found in an audit.
+  function endless(): ReadableStream<Uint8Array> {
+    const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+    return new ReadableStream({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+    });
+  }
+
+  it("is cut off at the limit on the streaming path", async () => {
+    fetchMock.mockImplementation(async () => new Response(endless(), { status: 200 }));
+    let error: string | undefined;
+    for await (const ev of new OpenAICompatibleDispatcher(baseSvc()).stream("hi", [], "")) {
+      if (ev.type === "completion") error = ev.result.error;
+    }
+    expect(error).toMatch(/exceeded the 10 MB limit/);
+  }, 30_000);
+
+  it("is cut off at the limit on the buffered path", async () => {
+    fetchMock.mockImplementation(async () => new Response(endless(), { status: 200 }));
+    const res = await new OpenAICompatibleDispatcher(baseSvc()).dispatch("hi", [], "");
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/exceeded the 10 MB limit/);
+  }, 30_000);
 });

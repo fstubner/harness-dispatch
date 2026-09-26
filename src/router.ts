@@ -86,7 +86,8 @@ import { QuotaCache } from "./quota.js";
 import { LeaderboardCache } from "./leaderboard.js";
 import type { DispatchOpts, Dispatcher } from "./dispatchers/base.js";
 import { drainDispatcherStream } from "./dispatchers/base.js";
-import { withDispatcherSpan, withRouterSpan } from "./observability/spans.js";
+import type { Span } from "@opentelemetry/api";
+import { withDispatcherSpan, withRouterSpan, withRouterStreamSpan } from "./observability/spans.js";
 import { buildRouteBilling } from "./billing.js";
 import { logDispatch } from "./dispatch-log.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
@@ -437,6 +438,13 @@ export interface RouterStreamEvent {
   decision: RoutingDecision | null;
 }
 
+/** The route that answered and whether it succeeded, onto a stream's span. */
+function recordStreamOutcome(span: Span, ev: RouterStreamEvent): void {
+  if (ev.event.type !== "completion") return;
+  span.setAttribute("service", ev.event.result.service);
+  span.setAttribute("success", ev.event.result.success);
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -526,6 +534,11 @@ export class Router {
   } = {}): Promise<RoutingDecision | null> {
     const hints = opts.hints ?? {};
     const exclude = opts.exclude ?? new Set<string>();
+    // Other processes' trips, read before choosing. Breakers were loaded once
+    // at construction, so a long-lived server or supervisor kept picking a
+    // route another process had already taken out of service, and learned of
+    // it only by failing there itself. A few small file reads per decision.
+    this.refreshBreakersFromStore();
 
     const forceService = hints.service;
     // A ROUTE ID is not a model name. `hints.model` accepts either, and a
@@ -857,7 +870,11 @@ export class Router {
       onWorkspace?: (workspace: PreparedWorkspace) => void;
     } = {},
   ): AsyncIterable<RouterStreamEvent> {
-    return this.#runStream(prompt, files, workingDir, opts);
+    return withRouterStreamSpan(
+      { "router.op": "stream", ...(opts.hints?.taskType ? { task_type: opts.hints.taskType } : {}) },
+      this.#runStream(prompt, files, workingDir, opts),
+      recordStreamOutcome,
+    );
   }
 
   async *#runStream(
@@ -990,7 +1007,11 @@ export class Router {
     workingDir: string,
     opts: ExplicitDispatchOpts = {},
   ): AsyncIterable<RouterStreamEvent> {
-    return this.#runStreamTo(service, prompt, files, workingDir, opts);
+    return withRouterStreamSpan(
+      { "router.op": "stream", service },
+      this.#runStreamTo(service, prompt, files, workingDir, opts),
+      recordStreamOutcome,
+    );
   }
 
   async *#runStreamTo(
@@ -1315,6 +1336,11 @@ export class Router {
    */
   breakerStateUnreadable(): string[] {
     return this.breakerStore.unreadableRoutes();
+  }
+
+  /** Why breaker state last failed to reach disk — see BreakerStore.lastWriteError. */
+  breakerWriteError(): string | undefined {
+    return this.breakerStore.lastWriteError();
   }
 
   /**

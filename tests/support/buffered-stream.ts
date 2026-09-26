@@ -21,7 +21,23 @@
  * `tests/dispatchers/antigravity.test.ts` does.
  */
 
-import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
+/** What a buffered run returns: the shape the suites build their fake results in. */
+export interface SubprocessResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  durationMs: number;
+  timedOut: boolean;
+}
+
+/** The options a buffered run is handed, as the suites assert on them. */
+export interface RunSubprocessOpts {
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
 import type {
   StreamSubprocessOpts,
   SubprocessStreamEvent,

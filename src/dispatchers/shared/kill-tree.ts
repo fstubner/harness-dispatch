@@ -13,7 +13,7 @@
  * POSIX has no shell-indirection layer here, but the same problem one level
  * down: the direct child is an agent CLI that spawns its own shells and test
  * runners, which outlive a kill aimed at the CLI alone. Children are spawned
- * `detached` there (subprocess.ts / stream-subprocess.ts) so each is its own
+ * `detached` there (stream-subprocess.ts) so each is its own
  * process-group leader, and the group is signalled as a whole.
  */
 import { execFile, type ChildProcess } from "node:child_process";

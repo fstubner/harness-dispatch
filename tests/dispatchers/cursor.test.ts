@@ -3,7 +3,7 @@ import { streamFromBuffered } from "../support/buffered-stream.js";
 import type {
   SubprocessResult,
   RunSubprocessOpts,
-} from "../../src/dispatchers/shared/subprocess.js";
+} from "../support/buffered-stream.js";
 import type { ServiceConfig } from "../../src/types.js";
 import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
@@ -13,9 +13,6 @@ const CURSOR_PROTOCOL = PROTOCOL_PRESETS.cursor!;
 // parameterized by the cursor preset (see the shipped config.default.yaml),
 // including its workingDir.fallback: "home" behavior for an empty workingDir.
 
-vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
-  runSubprocess: vi.fn(),
-}));
 // The dispatcher calls `streamSubprocess`, never `runSubprocess`. Production
 // code used to notice the mock above and quietly reroute through a buffered
 // adapter; that branch is gone, so the seam is declared here instead. The
@@ -40,9 +37,7 @@ vi.mock("which", () => {
   return { default: fn };
 });
 
-const { runSubprocess } = await import(
-  "../../src/dispatchers/shared/subprocess.js"
-);
+const runSubprocess = vi.fn();
 const { streamSubprocess } = await import(
   "../../src/dispatchers/shared/stream-subprocess.js"
 );

@@ -399,6 +399,7 @@ export async function buildStatus(
   // `toString` would otherwise match on Object.prototype and suppress its own
   // warning.
   const quotaPersistError = quota.localCountsPersistError();
+  const breakerWriteError = router.breakerWriteError();
   const stale = staleCodeWarning();
   const stateWarnings = [
     ...(stale !== undefined ? [stale] : []),
@@ -406,6 +407,12 @@ export async function buildStatus(
       ? [
           `usage counters are not reaching disk (${quotaPersistError}) — the numbers ` +
             `below are this process's only, and reset to zero when it restarts`,
+        ]
+      : []),
+    ...(breakerWriteError !== undefined
+      ? [
+          `circuit-breaker state is not reaching disk (${breakerWriteError}) — a route this ` +
+            `process took out of service is still being used by every other one`,
         ]
       : []),
     ...(config.reloadError !== undefined

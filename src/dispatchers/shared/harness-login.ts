@@ -21,6 +21,9 @@
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
 
+/** Plenty for `codex login status`, whose answer is a single line. */
+const MAX_LOGIN_OUTPUT_CHARS = 64 * 1024;
+
 export type LoginState = "logged_in" | "logged_out" | "unknown";
 
 export function codexLoginState(command: string, timeoutMs = 15_000): Promise<LoginState> {
@@ -56,13 +59,14 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
       finish("unknown");
     }, timeoutMs);
     timer.unref();
+    // Capped: the answer is one line, and a CLI that floods its output during
+    // the check must not grow this without bound.
     let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
+    const collect = (chunk: Buffer): void => {
+      if (output.length < MAX_LOGIN_OUTPUT_CHARS) output += chunk.toString("utf8");
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
     child.on("error", () => finish("unknown"));
     child.on("close", (code) => {
       // Exit 0 alone is not enough: a Codex build without the `login status`

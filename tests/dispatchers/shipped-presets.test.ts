@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { streamFromBuffered } from "../support/buffered-stream.js";
 
-import type { SubprocessResult } from "../../src/dispatchers/shared/subprocess.js";
+import type { SubprocessResult } from "../support/buffered-stream.js";
 import type { ServiceConfig } from "../../src/types.js";
 import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
@@ -27,9 +27,6 @@ import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 // visible: the table is derived from PROTOCOL_PRESETS, and a preset with no
 // row here fails the completeness check at the bottom.
 
-vi.mock("../../src/dispatchers/shared/subprocess.js", () => ({
-  runSubprocess: vi.fn(),
-}));
 // The dispatcher calls `streamSubprocess`, never `runSubprocess`. Production
 // code used to notice the mock above and quietly reroute through a buffered
 // adapter; that branch is gone, so the seam is declared here instead. The
@@ -54,7 +51,7 @@ vi.mock("which", () => {
   return { default: fn };
 });
 
-const { runSubprocess } = await import("../../src/dispatchers/shared/subprocess.js");
+const runSubprocess = vi.fn();
 const { streamSubprocess } = await import(
   "../../src/dispatchers/shared/stream-subprocess.js"
 );

@@ -35,30 +35,37 @@ import type { RouterConfig, ServiceConfig } from "./types.js";
  */
 function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<string, unknown> {
   const wrote = (key: string): boolean => config.userRouteKeys?.get(svc.name)?.has(key) ?? false;
+  // Fields a harness preset or the loader fills in when absent are written
+  // only where the user wrote them. Written unconditionally, every rewrite
+  // froze the defaults of the day into the file — a detected route came back
+  // with a dozen settings nobody chose, which then stopped tracking the preset.
+  const own = <T>(key: string, value: T): T | undefined => (wrote(key) ? value : undefined);
   return {
     enabled: svc.enabled ? undefined : false,
-    model: svc.model,
-    tier: svc.tier,
-    weight: svc.weight,
-    cli_capability: svc.cliCapability,
-    leaderboard_model: svc.leaderboardModel,
-    thinking_level: svc.thinkingLevel,
+    model: own("model", svc.model),
+    tier: own("tier", svc.tier),
+    weight: own("weight", svc.weight),
+    cli_capability: own("cli_capability", svc.cliCapability),
+    leaderboard_model: own("leaderboard_model", svc.leaderboardModel),
+    thinking_level: own("thinking_level", svc.thinkingLevel),
     escalate_model: svc.escalateModel,
-    escalate_on: svc.escalateOn.length > 0 ? svc.escalateOn : undefined,
-    capabilities:
+    escalate_on: own("escalate_on", svc.escalateOn.length > 0 ? svc.escalateOn : undefined),
+    capabilities: own(
+      "capabilities",
       Object.keys(svc.capabilities).length > 0 ? svc.capabilities : undefined,
+    ),
     timeout_ms: svc.timeoutMs,
-    max_output_tokens: svc.maxOutputTokens,
-    max_input_tokens: svc.maxInputTokens,
+    max_output_tokens: own("max_output_tokens", svc.maxOutputTokens),
+    max_input_tokens: own("max_input_tokens", svc.maxInputTokens),
     allow_paid_usage: svc.allowPaidUsage ? true : undefined,
     safety_profile: svc.safetyProfile,
-    effective_safety: svc.effectiveSafety,
-    endpoint_mode: svc.endpointMode,
-    endpoint_provider: svc.endpointProvider,
-    wire_protocol: svc.wireProtocol,
+    effective_safety: own("effective_safety", svc.effectiveSafety),
+    endpoint_mode: own("endpoint_mode", svc.endpointMode),
+    endpoint_provider: own("endpoint_provider", svc.endpointProvider),
+    wire_protocol: own("wire_protocol", svc.wireProtocol),
     workspace_policy: svc.workspacePolicy,
-    models: svc.models && svc.models.length > 0 ? svc.models : undefined,
-    model_hint: svc.modelHint,
+    models: own("models", svc.models && svc.models.length > 0 ? svc.models : undefined),
+    model_hint: own("model_hint", svc.modelHint),
     // No default exists, so the loaded value is always the user's own.
     resource_weight: svc.resourceWeight,
     // Inferred on load when absent, so written only when the user wrote it:

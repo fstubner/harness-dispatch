@@ -4,6 +4,7 @@ import { loadConfig } from "../config.js";
 import { LeaderboardCache } from "../leaderboard.js";
 import { buildDispatchers } from "../mcp/dispatcher-factory.js";
 import { QuotaCache } from "../quota.js";
+import { initObservability } from "../observability/index.js";
 import { Router } from "../router.js";
 import type { RouterConfig } from "../types.js";
 
@@ -17,6 +18,10 @@ interface Runtime {
 
 export async function buildRuntime(configPath: string | undefined): Promise<Runtime> {
   const config = await loadConfig(configPath);
+  // `telemetry: { enabled: true }` is known only now; bin.ts's early call can
+  // see the environment variable only. Without this, one-shot commands
+  // ignored the config setting.
+  if (config.telemetry?.enabled) await initObservability({ enabled: true });
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
   const leaderboard = new LeaderboardCache(undefined, {
