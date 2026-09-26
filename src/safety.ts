@@ -51,9 +51,13 @@ export function effectiveSafetyProfile(
   // `read_only` only, deliberately (the other profiles run print mode with no
   // extra flags), so two of its three profiles report `full_auto`. That is the
   // safe direction rather than a defect, but it is worth expecting.
+  //
+  // A map whose args never say `{{safety}}` is the same gap: the flags are
+  // declared and never passed, so the harness launches with none of them.
   if (svc.protocol?.safety !== undefined) {
     const request = requestedSafetyProfile(svc, requested);
     if (svc.protocol.safety[request] === undefined) return "full_auto";
+    if (!svc.protocol.args.includes("{{safety}}")) return "full_auto";
   }
 
   // A route's declared capability floor wins over the request — this comes

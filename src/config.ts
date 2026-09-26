@@ -14,7 +14,7 @@ import which from "which";
 
 import { inferredPaidUsagePossible } from "./billing.js";
 import {
-  authSourceFrom, billingKindFrom, bool, capsFrom, endpointModeFrom,
+  authSourceFrom, billingKindFrom, bool, boolOrUndefined, capsFrom, endpointModeFrom,
   endpointProviderFrom, inferEndpointProvider, int, num, providerFrom, str,
   surfaceFrom, wireProtocolFrom,
 } from "./config/coercions.js";
@@ -190,9 +190,8 @@ function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
   if (surface !== undefined) out.surface = surface;
   if (authSource !== undefined) out.authSource = authSource;
   if (billingKind !== undefined) out.billingKind = billingKind;
-  if (typeof raw.paid_usage_possible === "boolean") {
-    out.paidUsagePossible = raw.paid_usage_possible;
-  }
+  const paidUsagePossible = boolOrUndefined(raw.paid_usage_possible);
+  if (paidUsagePossible !== undefined) out.paidUsagePossible = paidUsagePossible;
   return out;
 }
 
@@ -387,13 +386,12 @@ function buildCliServiceConfig(
       // true — a key means a metered account exists whatever the kind claims.
       const declaredKind = billingKindFrom(override.billing_kind);
       const paidUsagePossible =
-        typeof override.paid_usage_possible === "boolean"
-          ? override.paid_usage_possible
-          : apiKey
-            ? true
-            : declaredKind !== undefined
-              ? inferredPaidUsagePossible(declaredKind)
-              : defaults.paidUsagePossible;
+        boolOrUndefined(override.paid_usage_possible) ??
+        (apiKey
+          ? true
+          : declaredKind !== undefined
+            ? inferredPaidUsagePossible(declaredKind)
+            : defaults.paidUsagePossible);
       return paidUsagePossible !== undefined ? { paidUsagePossible } : {};
     })(),
     ...endpointFields(override, "cli", str(override.base_url)),
@@ -689,11 +687,8 @@ function addEndpoints(
         auth_source: ep.auth_source ?? (inferEndpointProvider(baseUrl) === "custom" ? undefined : "local_network"),
         billing_kind: ep.billing_kind ?? (inferEndpointProvider(baseUrl) === "custom" ? undefined : "local_compute"),
         paid_usage_possible:
-          typeof ep.paid_usage_possible === "boolean"
-            ? ep.paid_usage_possible
-            : inferEndpointProvider(baseUrl) === "custom"
-              ? ep.paid_usage_possible
-              : false,
+          boolOrUndefined(ep.paid_usage_possible) ??
+          (inferEndpointProvider(baseUrl) === "custom" ? undefined : false),
         billing_confidence:
           ep.billing_confidence ?? (inferEndpointProvider(baseUrl) === "custom" ? undefined : "documented"),
       }),

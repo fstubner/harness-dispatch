@@ -78,6 +78,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
+    promptPreview: promptPreview(input.prompt),
     ...(warning !== undefined ? { warning } : {}),
   };
   await writeJson(path.join(jobDir, "manifest.json"), manifest);
@@ -130,4 +131,10 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
   const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
   return { status: settled, completion: watchUntilTerminal(jobDir) };
+}
+
+/** The first line or so of a prompt, on one line. */
+function promptPreview(prompt: string): string {
+  const flat = prompt.replace(/\s+/g, " ").trim();
+  return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
 }

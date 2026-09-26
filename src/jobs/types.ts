@@ -119,6 +119,13 @@ export interface JobManifest {
   retryOf?: string;
   /** Set when workingDir was omitted and defaulted to the router's own cwd. */
   warning?: string;
+  /**
+   * The start of the caller's own prompt, for the job list. Every session on
+   * the machine shares one jobs directory, so a caller whose dispatch reply
+   * was lost needs something to recognise its job by; prompt.md cannot give
+   * it, because a context preamble comes first.
+   */
+  promptPreview?: string;
 }
 
 export interface JobResultPayload {

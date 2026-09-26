@@ -474,3 +474,33 @@ describe("a cancelled isolated run keeps its work reachable", () => {
     }
   }, 60_000);
 });
+
+describe("the job list tells one caller's jobs from another's", () => {
+  // Every session on the machine lists the same jobs, and the documented way
+  // to recover a lost dispatch reply was "pick the newest running entry (it is
+  // yours)" — wrong whenever anything else had dispatched since, with nothing
+  // in the list to tell. Found in an audit.
+  it("shows where each job ran and how its prompt starts", async () => {
+    const mine = await plantJob("job-1700000000031-aaaaaaaa", "running");
+    const theirs = await plantJob("job-1700000000032-bbbbbbbb", "running");
+    for (const [dir, preview] of [
+      [mine, "refactor the parser"],
+      [theirs, "write the release notes"],
+    ] as const) {
+      const file = path.join(dir, "manifest.json");
+      const manifest = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+      await fs.writeFile(file, JSON.stringify({ ...manifest, promptPreview: preview }), "utf8");
+    }
+    const { invokeTool } = await import("../src/mcp/tools.js");
+    const invoked = await invokeTool("job_status", {}, {} as never);
+    const { jobs } = (invoked as { data: unknown }).data as {
+      jobs: Array<{ jobId: string; workingDir?: string; promptPreview?: string }>;
+    };
+    const row = (id: string) => jobs.find((j) => j.jobId === id);
+    expect(row("job-1700000000031-aaaaaaaa")).toMatchObject({
+      workingDir: mine,
+      promptPreview: "refactor the parser",
+    });
+    expect(row("job-1700000000032-bbbbbbbb")?.promptPreview).toBe("write the release notes");
+  });
+});

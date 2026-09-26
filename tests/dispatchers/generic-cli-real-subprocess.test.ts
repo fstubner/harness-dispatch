@@ -208,6 +208,39 @@ describe.skipIf(process.platform !== "win32")("a multi-line prompt through a Win
     expect(res.error).toMatch(/line break/);
   }, 30_000);
 
+  it("refuses a double quote, which would run the rest as a command", async () => {
+    // cmd.exe parses a shim's arguments a second time when it forwards %*, so
+    // a `"` closes the quoting and whatever follows runs. Measured through
+    // Cursor's own launcher: a model name created a file and the run reported
+    // success. Found in an audit.
+    const { existsSync } = await import("node:fs");
+    const path = await import("node:path");
+    const cmd = await shim();
+    const canary = path.join(path.dirname(cmd), "injected.txt");
+    const d = new GenericCliDispatcher(shimRoute(cmd));
+    const res = await d.dispatch(`hi" & echo pwned> "${canary}" & rem "`, [], process.cwd());
+    expect(existsSync(canary), "a command in the prompt ran").toBe(false);
+    expect(res.success).toBe(false);
+    expect(res.inputRejected).toBe(true);
+    expect(res.error).toMatch(/double quote/);
+  }, 30_000);
+
+  it("refuses ! in a shim that enables delayed expansion, and only there", async () => {
+    // With delayed expansion on (Cursor's launcher turns it on), cmd.exe
+    // replaces !NAME! with that environment variable's value.
+    const { writeFileSync } = await import("node:fs");
+    const cmd = await shim();
+    const plain = new GenericCliDispatcher(shimRoute(cmd));
+    const ok = await plain.dispatch("fix this!", [], process.cwd());
+    expect(ok.success, ok.error).toBe(true);
+
+    writeFileSync(cmd, '@ECHO off\r\nsetlocal enabledelayedexpansion\r\nnode "%~dp0\\echo-args.js" %*\r\n');
+    const res = await new GenericCliDispatcher(shimRoute(cmd)).dispatch("show !PATH!", [], process.cwd());
+    expect(res.success).toBe(false);
+    expect(res.inputRejected).toBe(true);
+    expect(res.error).toMatch(/exclamation mark/);
+  }, 30_000);
+
   it("still runs a single-line prompt through the same shim", async () => {
     const d = new GenericCliDispatcher(shimRoute(await shim()));
     const res = await d.dispatch("just one line", [], process.cwd());

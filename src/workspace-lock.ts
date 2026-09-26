@@ -18,9 +18,11 @@
  * repository would show up in `git status` and in the workspace diff the
  * caller is handed back.
  *
- * A holder that dies must not wedge the directory forever, so the lock carries
- * a heartbeat refreshed while held, and a lock whose heartbeat has gone stale
- * is stolen — the same rule and threshold the job orphan check uses.
+ * A holder that dies must not wedge the directory forever. A lock whose
+ * holder's process is gone is taken at once; one whose process is alive but
+ * whose heartbeat has gone stale is taken only after that heartbeat has stayed
+ * unchanged under observation (LIVE_STALE_OBSERVE_MS) — a sleeping laptop
+ * makes every heartbeat stale at once.
  */
 
 import { createHash } from "node:crypto";
@@ -80,19 +82,39 @@ function readRecord(file: string): LockRecord | undefined {
   }
 }
 
+/** True if the recorded holder's process no longer exists. */
+function holderGone(record: LockRecord): boolean {
+  if (record.pid <= 0) return false;
+  try {
+    // Signal 0 tests for existence without touching the process.
+    process.kill(record.pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 /** True if the recorded holder is definitely gone. */
 function isDead(record: LockRecord): boolean {
-  if (Date.now() - record.beatMs > LOCK_STALE_MS) return true;
-  if (record.pid > 0) {
-    try {
-      // Signal 0 tests for existence without touching the process.
-      process.kill(record.pid, 0);
-    } catch {
-      return true;
-    }
-  }
-  return false;
+  if (holderGone(record)) return true;
+  // A record with no pid has nothing else to go on.
+  return record.pid <= 0 && Date.now() - record.beatMs > LOCK_STALE_MS;
 }
+
+/**
+ * How long a stale heartbeat from a LIVE process must go on not changing, as
+ * this waiter watches it, before the lock is taken anyway.
+ *
+ * An old heartbeat alone is not evidence of death. A laptop that sleeps
+ * freezes the holder and the waiter together, and on waking the waiter's
+ * retry can run before the holder's overdue beat — stealing the lock from a
+ * holder whose agent is still editing, so two agents edit one workspace.
+ * Measured in an audit: a live pid with a 100 s-old beat was taken in 8 ms.
+ * A holder that is merely waking beats within one interval; one that never
+ * does is hung, or its pid now belongs to an unrelated process, and the lock
+ * is taken after this long.
+ */
+const LIVE_STALE_OBSERVE_MS = HEARTBEAT_MS * 2;
 
 function tryCreate(file: string, key: string): boolean {
   try {
@@ -137,6 +159,8 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
   const file = lockFileFor(key);
   const deadline = Date.now() + timeoutMs;
   let unreadableSince: number | undefined;
+  // The stale heartbeat of a live holder, and when this waiter first saw it.
+  let staleSeen: { beatMs: number; since: number } | undefined;
 
   for (;;) {
     if (tryCreate(file, key)) break;
@@ -156,6 +180,18 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       if (isDead(record)) {
         stealLock(file);
         continue;
+      }
+      if (Date.now() - record.beatMs > LOCK_STALE_MS) {
+        // A live process with an old heartbeat: see LIVE_STALE_OBSERVE_MS.
+        if (staleSeen?.beatMs !== record.beatMs) {
+          staleSeen = { beatMs: record.beatMs, since: Date.now() };
+        } else if (Date.now() - staleSeen.since >= LIVE_STALE_OBSERVE_MS) {
+          staleSeen = undefined;
+          stealLock(file);
+          continue;
+        }
+      } else {
+        staleSeen = undefined;
       }
     }
 
@@ -277,7 +313,8 @@ export async function acquireWorkspaceLock(
  * against once and moved on from. The files are tiny; the cost is the count,
  * since this directory is walked whenever locks are examined.
  *
- * Reuses `isDead` for a readable record, and honours the same
+ * Reuses `isDead` for a readable record, so a live process's lock is never
+ * swept here however old its heartbeat, and honours the same
  * `UNREADABLE_GRACE_MS` the acquire path gives an unreadable one.
  */
 export async function pruneDeadWorkspaceLocks(): Promise<void> {

@@ -8,6 +8,56 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Codex answers on Windows are no longer thrown away as failures.** A run
+  was failed as "could not spawn any child process" whenever Codex's sandbox
+  refused two spawns — and Codex logs each refusal twice, so one intermittent
+  refusal was enough. All six of one day's Codex review runs were failed this
+  way, each after 22 to 45 commands that completed and a correct answer; each
+  also counted as a Codex failure. A run is now failed for this only when no
+  command completed at all.
+
+- **A quote in a model name or prompt can no longer run commands through a
+  Windows `.cmd` launcher.** cmd.exe reads a launcher's arguments a second
+  time, and only npm's own shims were escaped for it, so through any other
+  `.cmd` — including Cursor's `cursor-agent.cmd` — a `"` ended the quoting and
+  the rest ran as a command. Measured: a read-only Cursor dispatch with a
+  crafted model name created a file and reported success. Such an argument is
+  now refused, as a line break already was; so is a `!` in a launcher that
+  enables delayed expansion, where cmd.exe would substitute environment
+  variables. **Behaviour change:** a route that passes the prompt as an
+  argument through such a launcher now refuses prompts containing `"`.
+
+- **Quoted `"true"` / `"false"` in billing fields now mean what they say.**
+  `paid_usage_possible: "true"` passed validation without a warning but was
+  read as absent, so the route fell back to "cannot bill" and ran without the
+  `allow_paid_usage` opt-in — the documented way to declare Codex or Cursor
+  overage did nothing when quoted. `allow_paid_usage` and protocol `stdin`
+  read quoted values the same way.
+
+- **`configure --yes --force` keeps `disabled:` when `detect: true` is set.**
+  With routes listed and detection also on, the rewrite dropped `disabled:`,
+  and the harness it excluded — a paid CLI switched off on purpose — was
+  detected and routable again.
+
+- **A custom route's safety flags must actually reach the CLI to count.** A
+  protocol could declare `safety: { read_only: [...] }` without `{{safety}}`
+  in its args; the flags were never passed, yet the route was reported as
+  enforcing `read_only`. It is now treated as `full_auto` (skipped for stricter
+  requests), with a warning naming the missing placeholder.
+
+- **A laptop waking from sleep no longer lets two agents into one
+  `shared_locked` workspace.** An old heartbeat alone counted as a dead
+  holder, so a waiting dispatch could take the lock from one whose agent was
+  still editing: measured, a live holder with a 100 s-old heartbeat lost the
+  lock in 8 ms. A live holder's lock is now taken only if its heartbeat stays
+  unchanged for a further 30 s while watched.
+
+- **The job list says where each job ran.** Each entry now carries its
+  `workingDir` and the start of its prompt. The documented recovery for a lost
+  `dispatch` reply was "pick the newest running entry (it is yours)", which is
+  wrong whenever another session dispatched in between; it now says to match
+  those two fields.
+
 - **A finished run is no longer recorded as timed out on macOS and Linux
   when its agent leaves a background process running.** A dev server or build
   daemon the agent started kept the run's output open after the agent had

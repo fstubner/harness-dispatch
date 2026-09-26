@@ -218,12 +218,16 @@ function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<st
   // every real subscription on the machine, and the safety warning does not
   // fire because the emptied document fails its own trigger condition.
   if (config.detect !== undefined) out.detect = config.detect;
-  // `disabled:` only means something to AUTO-DETECTION, and a config that
-  // lists its own routes is authoritative — a disabled route is simply absent
-  // from that list. Carrying the name forward therefore says nothing and breaks
-  // the file: `doctor` warns that `disabled:` had no effect and exits 1. Kept
-  // when the config defines NO routes, where it is still doing the work.
-  if (!definesRoutes && config.disabled && config.disabled.length > 0) {
+  // `disabled:` only means something to AUTO-DETECTION. A config that lists its
+  // own routes is authoritative and detection is off, so there a disabled route
+  // is simply absent and carrying the name forward breaks the file (`doctor`
+  // warns that it had no effect and exits 1). But `detect: true` turns
+  // detection back on beside the listed routes, and dropping `disabled:` there
+  // brought the excluded harness back — a paid CLI the user had switched off,
+  // routable again after `configure --yes --force`. Kept whenever detection
+  // runs, which is the same rule the loader applies.
+  const detectionRuns = config.detect ?? !definesRoutes;
+  if (detectionRuns && config.disabled && config.disabled.length > 0) {
     out.disabled = [...config.disabled];
   }
   if (config.maxConcurrentRuns !== undefined) out.max_concurrent_runs = config.maxConcurrentRuns;

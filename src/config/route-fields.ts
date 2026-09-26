@@ -39,6 +39,7 @@
 import { normalizeSafetyProfile } from "../safety.js";
 import type { SafetyProfile, ServiceConfig } from "../types.js";
 import {
+  boolOrUndefined,
   confidenceFrom,
   str,
   thinkingFrom,
@@ -84,11 +85,6 @@ function numberOnly(raw: unknown): number | undefined {
   return typeof raw === "number" ? raw : undefined;
 }
 
-/** Likewise for booleans: an absent flag must stay absent, not become false. */
-function booleanOnly(raw: unknown): boolean | undefined {
-  return typeof raw === "boolean" ? raw : undefined;
-}
-
 /**
  * `effective_safety` is either one profile for every request, or a per-request
  * map. Shared by all three shapes.
@@ -131,7 +127,7 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   // Billing fields that are plain declarations. The INFERRED ones
   // (provider/surface/auth_source/billing_kind/paid_usage_possible) stay in
   // the builders — see the header.
-  { key: "allow_paid_usage", field: "allowPaidUsage", parse: booleanOnly },
+  { key: "allow_paid_usage", field: "allowPaidUsage", parse: boolOrUndefined },
   { key: "billing_confidence", field: "billingConfidence", parse: confidenceFrom },
   { key: "billing_notes", field: "billingNotes", parse: str },
   { key: "models", field: "models", parse: stringArrayFrom, fromDefaults: (d) => d.models },
