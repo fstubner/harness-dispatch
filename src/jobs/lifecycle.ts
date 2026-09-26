@@ -17,6 +17,7 @@ import {
   isResolvable,
   workspaceDiff,
 } from "../workspace-resolve.js";
+import { acquireWorkspaceLock } from "../workspace-lock.js";
 import {
   requestCancel,
   jobsRoot,
@@ -133,6 +134,9 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   };
 }
 
+/** Long enough for a large apply to finish; a crashed holder is detected sooner. */
+const JOB_ACTION_LOCK_TIMEOUT_MS = 120_000;
+
 /**
  * Inspect or resolve the isolated workspace a finished job left behind.
  *
@@ -160,11 +164,33 @@ export async function resolveJobWorkspace(
     );
   }
   const jobDir = path.join(jobsRoot(), jobId);
-  if (action === "diff") return workspaceDiff(jobId, jobDir, run);
-  if (action === "apply") return applyWorkspace(jobId, jobDir, run, opts);
-  // force reaches discard too: it refuses to destroy work the project does
-  // not have, so the caller needs the same override apply offers.
-  return discardWorkspace(jobId, run, opts);
+
+  // One action per job at a time, across processes. Each action reads the
+  // project and the workspace and rewrites output/workspace.patch, which apply
+  // then hands to git by path — so two at once (an orchestrator issuing diff
+  // and apply in parallel is enough) let git read a patch file another action
+  // had just truncated, let a diff read the project halfway through an apply
+  // and cache that partial patch, and made the losing apply of two report
+  // conflict markers that were not there and advise undoing the winner's
+  // work. Keyed on the job directory, so it never contends with a dispatch.
+  let release: () => void;
+  try {
+    release = await acquireWorkspaceLock(jobDir, JOB_ACTION_LOCK_TIMEOUT_MS);
+  } catch {
+    throw new Error(
+      `Another workspace action on ${jobId} is still running after ` +
+        `${JOB_ACTION_LOCK_TIMEOUT_MS / 1000}s. Wait for it to finish, then try again.`,
+    );
+  }
+  try {
+    if (action === "diff") return await workspaceDiff(jobId, jobDir, run);
+    if (action === "apply") return await applyWorkspace(jobId, jobDir, run, opts);
+    // force reaches discard too: it refuses to destroy work the project does
+    // not have, so the caller needs the same override apply offers.
+    return await discardWorkspace(jobId, run, opts);
+  } finally {
+    release();
+  }
 }
 
 export interface RetryOutcome {

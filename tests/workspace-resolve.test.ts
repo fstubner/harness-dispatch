@@ -923,3 +923,61 @@ describe("discard only deletes inside the workspaces directory", () => {
     }
   });
 });
+
+describe("two workspace actions on one job at once", () => {
+  // An orchestrator issuing tool calls in parallel is enough to send two.
+  // Unserialised, the second apply of a pair found the first's changes
+  // mid-flight, failed, and reported conflict markers that were never
+  // written — telling the user to `git checkout` the files the first apply
+  // had just landed. Measured in an audit: 15 of 30 paired applies on Windows.
+  it("the second apply finds the first's work instead of reporting damage", async () => {
+    const repo = await makeRepo("par");
+    const wsRoot = path.join(dir, "workspaces", "par-ws");
+    const copy = path.join(wsRoot, "workspace");
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "app.js"), "const a = 2;\n", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: copy,
+      workspaceRoot: wsRoot,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [
+        { path: "app.js", kind: "modified", baseHash: eolDigest(Buffer.from("const a = 1;\n")) },
+      ],
+    };
+    vi.stubEnv("HARNESS_DISPATCH_STATE_DIR", path.join(dir, "state"));
+    vi.stubEnv("HARNESS_DISPATCH_JOBS_DIR", path.join(dir, "state", "jobs"));
+    const jobId = `job-${Date.now()}-abcdef01`;
+    const job = path.join(dir, "state", "jobs", jobId);
+    await fs.mkdir(path.join(job, "output"), { recursive: true });
+    const now = new Date().toISOString();
+    await fs.writeFile(
+      path.join(job, "manifest.json"),
+      JSON.stringify({ jobId, createdAt: now, workingDir: repo, promptPath: "", files: [] }),
+    );
+    await fs.writeFile(
+      path.join(job, "status.json"),
+      JSON.stringify({ jobId, status: "completed", createdAt: now, updatedAt: now, jobDir: job }),
+    );
+    await fs.writeFile(
+      path.join(job, "output", "result.json"),
+      JSON.stringify({ jobId, decision: null, result: { success: true, output: "", workspace: run } }),
+    );
+    const { resolveJobWorkspace } = await import("../src/jobs.js");
+
+    for (let round = 0; round < 5; round++) {
+      await git(["reset", "-q", "--hard"], repo);
+      const results = (await Promise.all([
+        resolveJobWorkspace(jobId, "apply"),
+        resolveJobWorkspace(jobId, "apply"),
+      ])) as Array<{ applied: boolean; message: string }>;
+      const messages = results.map((r) => r.message).join(" | ");
+      expect(results.filter((r) => r.applied).length, messages).toBe(1);
+      expect(messages).toMatch(/Already applied/);
+      expect(messages).not.toMatch(/MODIFIED ANYWAY|git apply failed/);
+      expect(await readNorm(path.join(repo, "app.js"))).toBe("const a = 2;\n");
+    }
+  }, 60_000);
+});
