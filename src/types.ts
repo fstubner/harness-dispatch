@@ -425,6 +425,12 @@ export interface ServiceConfig {
    * status/usage; declared per entry in config, not hardcoded in code.
    */
   modelHint?: string;
+  /**
+   * Operator instructions for this route (`instructions:` in config), sent to
+   * every connecting agent in the server's instructions and shown in `usage`.
+   * Capped — see config/instructions.ts.
+   */
+  instructions?: string;
   endpointMode?: EndpointMode;
   endpointProvider?: EndpointProvider;
   wireProtocol?: WireProtocol;
@@ -455,6 +461,12 @@ export interface ServiceConfig {
 
 export interface RouterConfig {
   services: Record<string, ServiceConfig>;
+  /**
+   * Operator instructions for every connecting agent (top-level
+   * `instructions:` in config), appended to the server's own. Capped — see
+   * config/instructions.ts.
+   */
+  instructions?: string;
   disabled?: readonly string[];
   /**
    * Whether auto-detection ran, as the loaded config resolved it.

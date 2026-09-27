@@ -379,3 +379,31 @@ describe("MCP server — near-miss top-level keys", () => {
     }
   });
 });
+
+describe("MCP server — operator instructions", () => {
+  // A route's `instructions:` is policy the calling agent should follow when it
+  // picks a model; `usage` is where agents look before choosing one.
+  it("shows a route's instructions in the usage tool's answer", async () => {
+    const state = buildState();
+    state.config.services["a"]!.instructions = "haiku for sweeps, opus only for hard judgment";
+    const server = new McpServer({ name: "harness-dispatch-test", version: "test" }, {});
+    const holder = new RuntimeHolder(state);
+    registerTools(server, { holder });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "usage-test", version: "test" }, { capabilities: {} });
+    await server.connect(serverT);
+    await client.connect(clientT);
+    try {
+      const resp = await client.callTool({ name: "usage", arguments: {} });
+      const content = resp.content as Array<{ type: string; text: string }>;
+      const usage = JSON.parse(content[0]!.text) as { routes: Array<{ id: string; instructions?: string }> };
+      expect(usage.routes.find((r) => r.id === "a")?.instructions).toBe(
+        "haiku for sweeps, opus only for hard judgment",
+      );
+      expect(usage.routes.find((r) => r.id === "b")?.instructions).toBeUndefined();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});

@@ -6,6 +6,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Routing policy in config.yaml, told to every connecting agent.** A top-level
+  `instructions:` block and a per-route `instructions:` (on `clis:`,
+  `endpoints:`, `overrides:` or `services:` entries) are appended to the
+  instructions the server sends each agent when it connects, and a route's text
+  is returned by `usage`. Policy such as "which model for which kind of task" is
+  written once instead of in every client's CLAUDE.md or AGENTS.md. Capped at
+  1,000 characters each; secrets the config holds are scrubbed from it.
+
 ### Fixed
 
 - **The server instructions and the delegating-work skill now ask for a model on

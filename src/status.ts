@@ -204,6 +204,8 @@ export interface RouteStatus {
   model?: string;
   models?: string[];
   modelHint?: string;
+  /** Operator instructions for this route (`instructions:` in config). */
+  instructions?: string;
   leaderboardModel?: string;
   tier: number;
   weight: number;
@@ -362,6 +364,7 @@ export async function buildStatus(
     if (svc.model !== undefined) route.model = svc.model;
     if (svc.models !== undefined) route.models = svc.models;
     if (svc.modelHint !== undefined) route.modelHint = svc.modelHint;
+    if (svc.instructions !== undefined) route.instructions = svc.instructions;
     if (svc.leaderboardModel !== undefined) route.leaderboardModel = svc.leaderboardModel;
     if (svc.maxInputTokens !== undefined) route.maxInputTokens = svc.maxInputTokens;
     if (svc.maxOutputTokens !== undefined) route.maxOutputTokens = svc.maxOutputTokens;
@@ -457,6 +460,8 @@ export interface RouteUsage {
   model?: string;
   models?: string[];
   modelHint?: string;
+  /** Operator instructions for this route (`instructions:` in config). */
+  instructions?: string;
   billingKind: RouteBilling["kind"];
   paidUsagePossible: boolean;
   callCount: number;
@@ -535,6 +540,7 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
       if (route.models !== undefined) usage.models = route.models;
       const hint = modelDiscoveryHint(route);
       if (hint !== undefined) usage.modelHint = hint;
+      if (route.instructions !== undefined) usage.instructions = route.instructions;
       if (typeof route.quota.remaining === "number") usage.quotaRemaining = route.quota.remaining;
       if (typeof route.quota.limit === "number") usage.quotaLimit = route.quota.limit;
       if (route.quota.resetAt !== undefined) usage.quotaResetAt = route.quota.resetAt;
@@ -616,6 +622,7 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
     }
     if (route.skipped) lines.push(`  skipped=${route.skipped.code}: ${route.skipped.message}`);
     if (route.modelHint) lines.push(`  models: ${route.modelHint}`);
+    if (route.instructions) lines.push(`  instructions: ${route.instructions}`);
   }
   return lines.join("\n");
 }
