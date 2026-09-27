@@ -80,6 +80,14 @@ Two things cancelling does NOT do, and both matter before you rely on it:
 
 - Call `usage` first when unsure: it lists valid route ids, their default
   models, per-session call counts, quota, and breaker state.
+- Set `hints.model` on every dispatch, chosen for the task: a cheap model for
+  mechanical sweeps and lookups, a mid-tier one for ordinary work and most
+  reviews, the strongest only for hard judgment. A route left on its default
+  may run its most expensive model on a trivial task.
+- A model name belongs to one harness, so name that route with `service` as
+  well. Without it, the first route the router picks is sent the name as-is
+  even when it does not declare it (`routing.modelHintMatched: false`); only
+  fallback routes fall back to their own default.
 - `hints.model` is not validated against the harness's own catalog — an unknown
   name is forwarded to the picked harness as-is and fails there. Two values are
   handled before that: an empty or whitespace-only string is refused by the

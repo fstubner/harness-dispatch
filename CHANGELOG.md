@@ -8,6 +8,12 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **The server instructions and the delegating-work skill now ask for a model on
+  every dispatch.** Left unset, each route ran its default — for Claude Code
+  often its most expensive model — even on mechanical work. They also say to
+  name the route with `service` alongside a model, because the first route
+  picked is sent the name as-is even when it does not declare it.
+
 - **Telemetry no longer exports the prompt.** OpenTelemetry's default process
   detector exports the command line, and for `harness-dispatch dispatch
   "<prompt>"` that is the prompt; once CLI spans started flushing, it was sent
