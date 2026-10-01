@@ -190,6 +190,12 @@ describe("connect: a client file created after the plan was made", () => {
 });
 
 describe("a flag that takes a value, given none", () => {
+  it("--service followed by another flag is a missing value, not a route called --config", async () => {
+    await expect(main(["dispatch", "hi", "--service", "--config", "x.yaml"])).rejects.toThrow(
+      /--service needs a value/,
+    );
+  });
+
   for (const flag of ["--service", "--clients", "--host", "--interval"]) {
     it(`${flag} with no value is a usage error`, async () => {
       await expect(main(["dispatch", "hi", flag])).rejects.toThrow(

@@ -144,7 +144,9 @@ export async function main(argv: string[]): Promise<number> {
   // with exit 0. `--config` has its own message further down.
   for (const flag of ["interval", "port", "host", "http", "service", "safety", "task-type", "clients"]) {
     const v = values[flag];
-    if (v !== undefined && (typeof v !== "string" || v === "")) {
+    // `--service --config x` hands `--config` to --service as its value, so a
+    // value that is itself a flag is a missing value too.
+    if (v !== undefined && (typeof v !== "string" || v === "" || v.startsWith("--"))) {
       throw new UsageError(`--${flag} needs a value, e.g. --${flag} <value>`);
     }
   }
