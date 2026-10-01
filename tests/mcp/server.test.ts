@@ -141,6 +141,25 @@ describe("MCP server — public surface", () => {
     }
   });
 
+  it("annotates the tools so a client can tell polling from stopping work", async () => {
+    // No tool carried annotations, so a client that honours them could not
+    // auto-approve `job_status` or `usage`, nor warn on `workspace discard`.
+    const { client, close } = await startLinked();
+    try {
+      const byName = Object.fromEntries(
+        (await client.listTools()).tools.map((t) => [t.name, t.annotations]),
+      );
+      expect(byName["job_status"]?.readOnlyHint).toBe(true);
+      expect(byName["usage"]?.readOnlyHint).toBe(true);
+      expect(byName["cancel_job"]?.destructiveHint).toBe(true);
+      expect(byName["workspace"]?.destructiveHint).toBe(true);
+      // dispatch starts work that can edit files: never advertised read-only.
+      expect(byName["dispatch"]?.readOnlyHint).not.toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
   it("dispatch round-trips through the in-memory transport", async () => {
     const { client, close } = await startLinked();
     try {

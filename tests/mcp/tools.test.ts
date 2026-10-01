@@ -1356,6 +1356,52 @@ describe("MCP tools — usage listModels", () => {
   });
 });
 
+describe("every tool emits an MCP span", () => {
+  // spans.ts says it covers MCP tool invocations; only `dispatch` and
+  // `job_status` did, so the other four were invisible to a trace.
+  it("names the tool on a span for all six", async () => {
+    const seen: string[] = [];
+    const span = {
+      setAttributes: (a: Record<string, unknown>) => {
+        if (typeof a["tool.name"] === "string") seen.push(a["tool.name"]);
+      },
+      setAttribute: () => undefined,
+      setStatus: () => undefined,
+      recordException: () => undefined,
+      end: () => undefined,
+      isRecording: () => true,
+    };
+    const tracer = {
+      startActiveSpan: (_name: string, fn: (s: unknown) => unknown) => fn(span),
+    };
+    const { trace } = await import("@opentelemetry/api");
+    const spy = vi.spyOn(trace, "getTracer").mockReturnValue(tracer as never);
+    try {
+      const holder = buildHolder(
+        { a: makeService("a") },
+        { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+      );
+      const id = "job-1700000000001-aaaaaaaa";
+      const calls: Array<[string, Record<string, unknown>]> = [
+        ["dispatch", { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } }],
+        ["job_status", {}],
+        ["usage", {}],
+        ["cancel_job", { jobId: id }],
+        ["retry_job", { jobId: id }],
+        ["workspace", { jobId: id, action: "diff" }],
+      ];
+      for (const [name, args] of calls) {
+        // cancel_job, retry_job and workspace refuse an unknown job; the span
+        // is what is under test, not the refusal.
+        await invokeTool(name, args, { holder }).catch(() => undefined);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect([...new Set(seen)].sort()).toEqual([...TOOL_NAMES].sort());
+  });
+});
+
 describe("the tools that only TOOL_NAMES was asserting", () => {
   // `cancel_job`, `retry_job` and `workspace` were listed in TOOL_NAMES and
   // never invoked through `invokeTool` — so the surface an orchestrator
