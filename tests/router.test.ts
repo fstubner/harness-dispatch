@@ -1800,7 +1800,7 @@ describe("Router.route", () => {
       retryAfter: 1800,
       error: "the harness could not spawn any child process",
     } as Partial<DispatchResult>);
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.route("hi", [], "/tmp");
     const status = router.circuitBreakerStatus().alpha!;
     expect(status.tripped).toBe(true);
