@@ -135,12 +135,23 @@ after a directory rename. `doctor` fails on it now, and
 one.
 
 **A run outlives its server.** Jobs run in a detached process, so a client
-timeout or a server restart does not kill them. If the process running the job
+timeout or a server restart does not kill them. On Windows that holds even
+behind a launcher that kills the whole process tree when the session ends (the
+nvx shim does): the supervisor that runs the job is started through WMI, outside the
+launcher's job object. If WMI cannot be used the runner falls back to a plain detached spawn,
+writes that to its spawn log, and a run started that way can be killed with the
+session. `doctor`'s `job-runner` check starts a real probe under the same
+launcher and fails when the probe is killed with its parent. If the process running the job
 itself dies (a crash, a kill, a reboot), the job is reported `orphaned` within
-90 seconds. If the server dies while a job is waiting for a concurrency slot, that job is
-reported `orphaned` at the next server start — deliberately reported rather
-than resumed, because silently running an abandoned job against your repository
-is not a decision a restart should make.
+90 seconds. If the server dies while a job is waiting for a concurrency slot and no
+supervisor is alive, that job is reported `orphaned` at the next server start —
+deliberately reported rather than resumed, because silently running an abandoned
+job against your repository is not a decision a restart should make. A job that
+is waiting while every supervisor has died, but that was not abandoned by a
+restart, is different: polling it with `job_status` starts a supervisor (when
+none is alive and nothing is running) so the queue drains under the usual
+`max_concurrent_runs` cap, and the job's reply says where it stands in the
+queue and what it is waiting on.
 
 **A streamed request is interrupted.** A `stream: true` request runs as a job
 like every other dispatch, and its id is in the `x-harness-dispatch-job-id`
@@ -151,7 +162,18 @@ timeout or a server restart.
 
 **Quota exhaustion on one route.** Repeated failures trip the breaker and
 routing moves on. Nothing is lost; the dispatch falls back unless
-`--no-fallback` was passed.
+`--no-fallback` was passed. When the provider's message states when the limit
+lifts (Codex's "try again at ...", Claude Code's "resets 1:30am (Europe/Dublin)"),
+the route is skipped until then, at most 24 hours at a time. A Codex run that
+fails because its Windows sandbox refused the repository commands skips the
+route for 30 minutes.
+
+**A harness goes silent.** A CLI route with an idle limit (`idle_timeout_ms`;
+shipped as 15 minutes for Codex and Antigravity, which print as they work) is
+stopped when it has printed nothing on either stream for that long, and the
+failure says so, instead of holding a concurrency slot until the 60-minute job
+ceiling. Claude Code and Cursor print only their final answer, so they ship
+without one; set it per route only where the harness streams.
 
 **A harness streams and then stops.** Some CLIs emit progress and exit without
 an answer. When that run fails (a non-zero exit, or a route that requires an

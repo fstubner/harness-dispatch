@@ -173,7 +173,7 @@ repeats a flag once per unique file directory (Antigravity's `--add-dir`);
 clears it if ambient but unconfigured, so a stray key never leaks into a
 subscription-auth call); `success_requires_output: false` switches from the default
 strict contract (exit 0 AND a non-empty parsed field) to the lenient one Claude
-Code/Codex/Antigravity use (exit 0 alone, falling back to raw stdout/stderr text when
+Code/Codex use (exit 0 alone, falling back to raw stdout/stderr text when
 parsing yields nothing). Billing for a `generic` route defaults to `unknown` (blocked
 until you classify it — there's no way to know an arbitrary CLI's real billing model) —
 set `billing_kind:` / `paid_usage_possible:` explicitly once you know it.
@@ -357,7 +357,7 @@ is missing from these tables.
 | `max_concurrent_runs` | integer >= 0 | `4` | Agent CLIs running at once, machine-wide; more queue. `0` lifts the cap. A value that is not a non-negative number is ignored with a warning. |
 | `retention` | `{ jobs_days: N }` | `7` | Days a job's files are kept after it last changed. `0` keeps them forever. |
 | `telemetry` | `{ enabled: true or false }` | `false` | OpenTelemetry tracing. See [Status and observability](operations.md#observability--privacy). |
-| `leaderboard` | `{ enabled: true or false }` | `false` | Use public Arena ELO data in route scoring (one daily GET to a third-party host). |
+| `leaderboard` | anything | none | **Removed.** Accepted so an old config keeps loading, reported as removed by `doctor` and `status`, and has no effect. Routing is tier, then weight x capability. |
 | `instructions` | text, at most 1,000 characters | none | Policy told to every connecting agent. See [Instructions for connecting agents](#instructions-for-connecting-agents). |
 | `services` | map of route id to route keys | none | The older route format. A file that uses it has `clis:`, `endpoints:` and `overrides:` ignored with a warning; do not mix them. |
 | `version` | anything | none | Accepted and ignored. |
@@ -387,12 +387,14 @@ These work on `clis:` and `endpoints:` entries, on `overrides:` entries, and on 
 | `capabilities` | `{ execute, plan, review }`, numbers | harness default; `1.0` each for an endpoint | Per-task fit, multiplied into the score. |
 | `escalate_model` | text | none | Model to use instead of `model` when the dispatch's `hints.taskType` is in `escalate_on`. |
 | `escalate_on` | list of `execute`, `plan`, `review`, `local` | `[plan, review]` | Task types that get `escalate_model`. Does nothing without it. |
-| `timeout_ms` | integer, milliseconds | none (60 minutes on MCP and HTTP dispatches) | Hard ceiling for a run on this route. `hints.timeoutMs` wins over it. |
+| `timeout_ms` | integer, milliseconds | none (60 minutes on MCP and HTTP dispatches); `antigravity_cli` ships 25 minutes | Hard ceiling for a run on this route. `hints.timeoutMs` wins over it. See [Time limits](#time-limits). |
+| `idle_timeout_ms` | integer, milliseconds | none; `codex_cli` and `antigravity_cli` ship 15 minutes | CLI routes only: stop a run that has printed nothing on either stream for this long, and report it as hung. Accepted and ignored on an `endpoints:` entry. See [Time limits](#time-limits). |
 | `resource_weight` | number >= 0 | `1.0` for a CLI route, `0.1` for an endpoint | What one run of this route counts for against `max_concurrent_runs`. |
 | `max_input_tokens`, `max_output_tokens` | integer | harness default | Context and output limits. The input limit feeds `preferLargeContext`; the output limit is the `max_tokens` an endpoint is sent. |
-| `thinking_level` | `low`, `medium`, `high` | harness default | Which reasoning variant of the model the leaderboard data is read for. |
-| `leaderboard_model` | text | harness default | The Arena ELO model name this route is scored as, and an extra name `hints.model` can match. |
+| `thinking_level` | `low`, `medium`, `high` | harness default | Sent to an endpoint route as `reasoning_effort`. A CLI route does not read it. |
+| `leaderboard_model` | text | none | **Removed.** Accepted and reported as removed; it has no effect. Delete the line. |
 | `api_key` | text | none | A credential for this route; write `${ENV_VAR}`. A key on a CLI route marks it metered. |
+| `api_key_file` | path | none | Read the key from this file when the config loads, instead of writing it or an env var here. Relative to the config file; `~/` is your home directory. Setting it together with `api_key`, or pointing it at an unreadable or empty file, is an error naming the route. See [API keys](#api-keys). |
 | `base_url` | URL | none (required for an endpoint) | The endpoint's API root. |
 | `protocol` | preset name, or a block | harness default | How to call a CLI. See [Adding a harness](#adding-a-harness). |
 | `filter` | anything | none | Accepted and ignored. |

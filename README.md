@@ -85,7 +85,11 @@ Real agent work usually runs longer than that, so the reply you will see most is
 
 Carry on working, then call `job_status` with that id for a live output tail or the
 finished result. The run lives in a detached process, so **nothing is lost to a client
-timeout — or to the server itself restarting mid-run** (see
+timeout — or to the server itself restarting mid-run**. On Windows the process is
+started through WMI so that a launcher which kills its child processes when the
+session ends cannot take it along; if WMI is unavailable it falls back to a plain
+detached process, which does not survive such a launcher, and `doctor` says which
+you have (see
 [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md#failure-modes)
 for the cases where a job is reported `orphaned` instead).
 
@@ -153,7 +157,9 @@ from a fresh detection. It says so when that happens; the rule behind it is
 **What `doctor` checks.** The whole chain: binary, config load, harness
 detection, auth and billing classification, route readiness, whether
 `dist/job-runner.js` is present (without it jobs run in-process and the
-concurrency cap does not apply), and for a Codex route it asks `codex login
+concurrency cap does not apply) and that a background process started the way jobs
+are started outlives its parent (on Windows, behind the launcher the MCP server runs
+under), and for a Codex route it asks `codex login
 status` whether the CLI is logged in. The other harnesses have no equivalent
 this tool has verified, so their login state is not checked. `--live` goes
 further and routes one tiny real prompt through an eligible route, so you see a

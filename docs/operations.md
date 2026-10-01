@@ -144,7 +144,7 @@ with no effect.
 
 | Variable | Effect |
 | --- | --- |
-| `HARNESS_DISPATCH_CONFIG` | Path of the config file to load instead of `~/.harness-dispatch/config.yaml`. |
+| `HARNESS_DISPATCH_CONFIG` | Path of the config file to load instead of `<state dir>/config.yaml` (`~/.harness-dispatch/config.yaml` by default). `--config` wins over it. A `config.yaml` in the current directory is never loaded unless named here or with `--config`. |
 | `HARNESS_DISPATCH_STATE_DIR` | Root of all state (default `~/.harness-dispatch`): config, jobs, breaker state, quota counters, logs, token. |
 | `HARNESS_DISPATCH_HOME` | Directory holding the HTTP token file only (default: the state root). |
 | `HARNESS_DISPATCH_HTTP_TOKEN` | HTTP bearer token. Overrides the token file; `auth rotate` refuses while it is set. |
