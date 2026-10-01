@@ -54,14 +54,19 @@ this order:
 > one actually launched.
 
 Config resolution, in order: the `--config` flag, else the
-`HARNESS_DISPATCH_CONFIG` env var, else `./config.yaml` in the directory the
-server was launched from, else `~/.harness-dispatch/config.yaml`, else the
-server's built-in CLI auto-detection. The user file moves with
+`HARNESS_DISPATCH_CONFIG` env var, else `~/.harness-dispatch/config.yaml`, else
+the server's built-in CLI auto-detection. A `config.yaml` in the directory the
+server was launched from is not read: a cloned repository can carry one, and
+the config decides which commands run and what every connecting agent is told.
+Point `HARNESS_DISPATCH_CONFIG` at a project config to use one. The user file moves with
 `HARNESS_DISPATCH_STATE_DIR` when that is set; note that this plugin's launcher
 does not forward that variable, so a client started through the plugin reads the
 default location.
 
-Endpoint API keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, …) are read from the
-inherited environment by `config.yaml`'s `${VAR}` interpolation. CLI-based
-routes (Claude Code, Codex, Cursor, Antigravity) use product logins and need
-no keys.
+Endpoint API keys are best kept in files the server reads at load time
+(`api_key_file: ~/.harness-dispatch/keys/groq`), so they never enter any
+process environment. `${VAR}` references (`api_key: ${GROQ_API_KEY}`) also
+work, read from the inherited environment; do not put keys in an MCP client's
+`env` block, which is plaintext JSON that any delegate able to read your home
+directory can read. CLI-based routes (Claude Code, Codex, Cursor, Antigravity)
+use product logins and need no keys.

@@ -7,7 +7,8 @@
  */
 
 import { existsSync, promises as fs } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
+import { dirname, resolve as resolvePath } from "node:path";
 import { userConfigPath } from "./state-dir.js";
 import { registerSecretValue, setActiveSecrets } from "./redaction.js";
 import yaml from "js-yaml";
@@ -601,6 +602,65 @@ function collectFieldRefs(
 }
 
 /**
+ * `api_key_file:` — a route's key read from a file at load time, as an
+ * alternative to `api_key: ${VAR}`.
+ *
+ * A key in an environment variable is inherited by every process the user
+ * runs, and the usual way to give an MCP server one — an `env` block in the
+ * client's config — is plaintext JSON in the home directory, readable by any
+ * delegate that can read files there (audit5 F6). A key read from a file the
+ * server alone opens never enters any process environment; the route's own
+ * harness still receives it through its api_key_env_var, as with `api_key:`.
+ *
+ * Resolved in the RAW tree, into `api_key`, so everything downstream — billing
+ * classification, redaction, the endpoint header — treats it exactly like an
+ * inline key. The file name is kept in `fieldRefs` so `configure` writes
+ * `api_key_file:` back rather than the key itself. A path is relative to the
+ * config file; `~/` is the home directory. Unreadable or empty is an error
+ * naming the route: carrying on would route to a key-less endpoint and come
+ * back 401.
+ */
+async function resolveApiKeyFiles(
+  raw: Record<string, unknown>,
+  configDir: string,
+  fieldRefs: Map<string, { apiKey?: string; baseUrl?: string; apiKeyFile?: string }>,
+): Promise<void> {
+  const entries = rawRouteEntries(raw);
+  const overrides = raw.overrides;
+  if (overrides !== null && typeof overrides === "object" && !Array.isArray(overrides)) {
+    for (const [name, entry] of Object.entries(overrides as Record<string, unknown>)) {
+      if (entry !== null && typeof entry === "object") entries.push([name, entry as Record<string, unknown>]);
+    }
+  }
+  for (const [name, entry] of entries) {
+    const file = entry.api_key_file;
+    if (file === undefined) continue;
+    delete entry.api_key_file;
+    if (typeof file !== "string" || file.trim() === "") {
+      throw new Error(`route "${name}": api_key_file must be a path to a file holding the key.`);
+    }
+    if (entry.api_key !== undefined) {
+      throw new Error(`route "${name}": set api_key or api_key_file, not both.`);
+    }
+    const resolved = file.startsWith("~/") || file.startsWith("~\\")
+      ? resolvePath(homedir(), file.slice(2))
+      : resolvePath(configDir, file);
+    let key: string;
+    try {
+      key = (await fs.readFile(resolved, "utf8")).trim();
+    } catch (err) {
+      throw new Error(
+        `route "${name}": api_key_file ${resolved} could not be read ` +
+          `(${(err as NodeJS.ErrnoException).code ?? String(err)}).`,
+      );
+    }
+    if (key === "") throw new Error(`route "${name}": api_key_file ${resolved} is empty.`);
+    entry.api_key = key;
+    fieldRefs.set(name, { ...fieldRefs.get(name), apiKeyFile: file });
+  }
+}
+
+/**
  * Per route, the keys the file wrote for it — see RouterConfig.userRouteKeys.
  * A detected route's `overrides:` entry counts: its values are the user's too.
  */
@@ -789,10 +849,18 @@ export interface LoadConfigOptions {
 
 /**
  * The config file a process should load: an explicit `--config`, else
- * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else the
- * state directory's `config.yaml` (where `configure` writes) if it exists,
- * else nothing (auto-detect). The current directory stays ahead of the user
- * file so a per-project config still wins when one is present.
+ * `HARNESS_DISPATCH_CONFIG`, else the state directory's `config.yaml` (where
+ * `configure` writes) if it exists, else nothing (auto-detect).
+ *
+ * NOT the current directory's `config.yaml`. The config is the operator's: it
+ * defines commands to run, credential references, billing labels and the
+ * "Operator instructions" every connecting agent is told to follow. A
+ * `config.yaml` is among the most common filenames in any repository, so
+ * picking one up from the cwd made a cloned repo the operator for every CLI
+ * command run inside it and for any MCP server started there without
+ * `--config` — measured: a repo's file added a route that ran its own command
+ * under a `read_only` dispatch (audit5 F2). A project config is opted into
+ * with `--config ./config.yaml` or `HARNESS_DISPATCH_CONFIG`.
  *
  * ONE function, shared by bin.ts and job-runner.ts: two copies disagreeing
  * about the environment variable would leave a server and the runner it
@@ -805,7 +873,6 @@ export function resolveConfigPath(explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
   const fromEnv = process.env["HARNESS_DISPATCH_CONFIG"];
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  if (existsSync("config.yaml")) return "config.yaml";
   const user = userConfigPath();
   return existsSync(user) ? user : undefined;
 }
@@ -884,7 +951,7 @@ async function loadConfigInner(
   const unsetEnvVars = new Set<string>();
   const envRefs = new Map<string, string>();
   const apiKeyRefs = new Map<string, string>();
-  let fieldRefs = new Map<string, { apiKey?: string; baseUrl?: string }>();
+  let fieldRefs = new Map<string, { apiKey?: string; baseUrl?: string; apiKeyFile?: string }>();
   let userRouteKeys = new Map<string, ReadonlySet<string>>();
   if (path) {
     try {
@@ -899,6 +966,7 @@ async function loadConfigInner(
         fieldRefs = collectFieldRefs(parsed as Record<string, unknown>);
         userRouteKeys = collectUserRouteKeys(parsed as Record<string, unknown>);
         raw = interpolateTree(parsed as Record<string, unknown>, unsetEnvVars, envRefs);
+        await resolveApiKeyFiles(raw, dirname(resolvePath(path)), fieldRefs);
       }
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;

@@ -17,7 +17,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { eolDigest, GIT_ENV, isUnderOrEqual, workspacesBase } from "./workspaces.js";
+import {
+  eolDigest,
+  GIT_ENV,
+  isUnderOrEqual,
+  workspacesBase,
+  worktreeGitArgs,
+} from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -193,9 +199,13 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
           `${root}, or re-run the dispatch.`,
       );
     }
+    // Never git's own discovery from inside the worktree: the agent could
+    // have rewritten its `.git` — see worktreeGitArgs. Throws, with the
+    // reason, when the worktree no longer points at its own registration.
+    const pinned = await worktreeGitArgs(root, run.originalWorkingDir);
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
-    await git(["add", "-A", "-N"], root).catch(() => undefined);
+    await git([...pinned, "add", "-A", "-N"], root).catch(() => undefined);
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
     // a filesystem fingerprint. So an agent that writes a gitignored file (a
     // `.env`, a local config) has that file reported as changed and applied
@@ -216,9 +226,21 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       .map((c) => c.path);
     for (let i = 0; i < ignoredCandidates.length; i += 100) {
       const batch = ignoredCandidates.slice(i, i + 100);
-      await git(["add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
+      await git([...pinned, "add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
     }
-    return gitDiff(["diff", "--binary", run.baseCommit, "--"], root);
+    return gitDiff(
+      [
+        ...pinned,
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=dirty",
+        run.baseCommit,
+        "--",
+      ],
+      root,
+    );
   }
 
   // A copy patch is built FILE BY FILE, from the list of what the agent

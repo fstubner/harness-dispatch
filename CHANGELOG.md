@@ -732,6 +732,89 @@ pre-1.0, so minor versions can carry behaviour changes.
   it. `@types/node` is pinned to the supported floor (22), and `fast-uri` and
   `ip-address` are bumped so `npm audit` is clean.
 
+### Security
+
+- **A delegate in a `git_worktree` can no longer make harness-dispatch run a
+  command.** The worktree's `.git` is a file the agent can rewrite. An agent
+  that only wrote files replaced it with a repository whose config set
+  `core.fsmonitor`, and harness-dispatch's own `git add` / `git diff` at job
+  end ran that command as you, outside any harness sandbox; an embedded
+  repository in a subdirectory reached the same place through its fsmonitor
+  and clean filters. Post-run git now runs against the worktree's registration
+  in your repository, never discovers one from the worktree, overrides
+  `core.fsmonitor` and `core.hooksPath`, and does not look inside embedded
+  repositories. A worktree whose `.git` no longer points at its own
+  registration is refused with an explanation instead of diffed.
+
+- **A `config.yaml` in the current directory is no longer loaded on its own.**
+  It ranked above your own config, and the config decides which commands
+  routes run, which credentials go where, and the "Operator instructions" every
+  connecting agent is told to follow — so any cloned repository carrying a
+  `config.yaml` became the operator for CLI commands run inside it and for an
+  MCP server started there without `--config` (measured: a repo's route ran its
+  own command under a `read_only` dispatch). **If you relied on it**, pass
+  `--config ./config.yaml` or set `HARNESS_DISPATCH_CONFIG`; `configure` now
+  writes to the state directory unless one of those names a file.
+
+- **A route whose `effective_safety` pins a profile it has no flags for is
+  skipped instead of launched unrestricted.** The flag check looked at the
+  requested profile, but the harness is launched with the flags of the profile
+  the pin turns it into. A route pinning `read_only` with flags only for
+  `workspace_edit` reported `read_only` for a `workspace_edit` request and ran
+  with no safety argument at all. Such a route now reports `full_auto`, so a
+  stricter request refuses it. No shipped route was affected.
+
+- **Claude Code delegates at `read_only` and `workspace_edit` get only the file
+  tools, and no MCP servers.** The shipped flags were `--allowedTools`, which
+  only adds approvals on top of your own settings, so Bash stayed available
+  wherever your allow rules permitted it, and every MCP server you had
+  registered (harness-dispatch included) loaded into the delegate. The profiles
+  now pass `--tools` (Read, Grep, Glob, plus Edit and Write for
+  `workspace_edit`) and `--strict-mcp-config`. `full_auto` is unchanged.
+
+- **`antigravity_cli` no longer serves `workspace_edit`.** Its edit-mode flags
+  auto-approve every tool request with nothing restricting the terminal, so
+  "edit files, no arbitrary shell" was not what it ran. It now declares a
+  `full_auto` floor for `workspace_edit`, as `cursor_cli` does, and is skipped
+  for that profile unless you override the floor; `read_only` and `full_auto`
+  are unchanged.
+
+- **Delegates no longer inherit credentials that switch billing or belong to
+  this server.** `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` are blanked for every
+  agent CLI (each can move a subscription route onto metered billing without
+  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN` and
+  `GITHUB_TOKEN`. A route that names one of them as its own
+  `api_key_env_var` still receives it. A delegate that needs GitHub access uses
+  the `gh` login stored on the machine rather than the inherited token.
+
+- **Only `${VAR}`s that hold a credential are hidden from delegates.** Every
+  variable named anywhere in `config.yaml` was blanked in every agent's
+  environment, so `command: ${LOCALAPPDATA}\...` on one route emptied
+  `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
+  `api_key`, or holds a value the config treats as a secret.
+
+- **Dispatches can nest only one level.** Every agent harness-dispatch starts
+  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate can still dispatch (it may
+  have this server among its own MCP servers, or a shell), but an agent it
+  starts that way cannot start another: the dispatch is refused with an
+  explanation and does not count against the route.
+
+- **`api_key_file:` keeps a route's key out of every process environment.**
+  The documented ways to hand the server a key were an environment variable,
+  which every process you start inherits, or an MCP client's `env` block, which
+  is plaintext JSON in your home directory that any delegate able to read files
+  there can read. `api_key_file: ~/.harness-dispatch/keys/groq` reads the key
+  when the config loads; it is redacted like any other key, `configure` writes
+  the file name back rather than the key, and an unreadable or empty file is an
+  error naming the route. The setup command and plugin docs now recommend it.
+
+- **A key split across two output chunks no longer lands in the partial log.**
+  `stdout.partial.log` was scrubbed chunk by chunk, so a key whose halves
+  arrived in two reads was written whole, while the result and the final logs
+  were scrubbed. The partial log now holds back a short tail until the next
+  chunk can complete any key that starts in it.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security

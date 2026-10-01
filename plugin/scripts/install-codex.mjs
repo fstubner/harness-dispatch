@@ -146,5 +146,5 @@ if (dryRun) {
 console.log("\nharness-dispatch installed for Codex:");
 console.log("  - MCP server: codex mcp list   (look for harness-dispatch)");
 console.log(`  - Skill:      ${path.join(skillDir, "SKILL.md")}`);
-console.log("\nEndpoint API keys (GROQ_API_KEY, GEMINI_API_KEY, ...) must be present in");
-console.log("the environment Codex runs in; CLI-based routes need no keys.");
+console.log("\nEndpoint API keys: name a key file with api_key_file: in config.yaml, or set");
+console.log("the ${VAR} it references in the environment Codex runs in. CLI-based routes need no keys.");

@@ -153,6 +153,17 @@ function apiKeyForYaml(
   return `\${${envVar}}`;
 }
 
+/** `api_key_file:` back as itself, never as the key it resolved to; else `api_key:`. */
+function apiKeyFieldForYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: { redactLiterals: boolean },
+): Record<string, string | undefined> {
+  const file = config.fieldRefs?.get(svc.name)?.apiKeyFile;
+  if (file !== undefined) return { api_key_file: file };
+  return { api_key: apiKeyForYaml(svc, config, opts) };
+}
+
 export interface YamlOpts {
   redactLiterals: boolean;
 }
@@ -180,7 +191,7 @@ function cliEntryToYaml(
     name: svc.name,
     harness: svc.harness ?? "generic",
     command: svc.command,
-    api_key: apiKeyForYaml(svc, config, opts),
+    ...apiKeyFieldForYaml(svc, config, opts),
     ...commonEntryFields(svc, config),
     ...(isGeneric
       ? {
@@ -204,7 +215,7 @@ function endpointEntryToYaml(
   return {
     name: svc.name,
     base_url: baseUrlForYaml(svc, config, opts),
-    api_key: apiKeyForYaml(svc, config, opts),
+    ...apiKeyFieldForYaml(svc, config, opts),
     ...commonEntryFields(svc, config),
     // Endpoints have no shipped preset behind them, so an omitted billing
     // field is not recomputed on reload — it is lost. An endpoint declaring

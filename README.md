@@ -128,8 +128,10 @@ that does not exist.
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
 tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
-— unless a `config.yaml` already exists in the current directory or
-`HARNESS_DISPATCH_CONFIG` is set, in which case that file is the target.
+— unless `--config` names a file or `HARNESS_DISPATCH_CONFIG` is set, in which
+case that file is the target. A `config.yaml` in the current directory is never
+picked up on its own: a repository can carry one, and the config decides what
+commands run, so a project config is opted into with `--config ./config.yaml`.
 
 Without `--yes` it previews and writes nothing.
 
@@ -290,6 +292,18 @@ is conservative because the tool cannot verify what a given `cursor-agent`
 build will do. On macOS and Linux the better route is `--sandbox enabled`,
 which constrains shell for real — untested here, so it is not shipped on by
 default.
+
+`antigravity_cli` declares the same floor, for the same reason: in headless
+mode every profile has to auto-approve tool requests, and its edit mode does
+that with nothing restricting the terminal. It serves `read_only` (`--mode plan
+--sandbox`) and `full_auto`, and the same override applies.
+
+Each profile is enforced by the harness itself, and the strength differs: Codex
+runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
+permission rules, and Antigravity's `full_auto` approves everything. A Claude
+Code delegate at `read_only` or `workspace_edit` gets only the file tools
+(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
+Claude Code login, user settings, hooks and `CLAUDE.md` files.
 
 ## CLI
 

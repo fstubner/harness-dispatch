@@ -542,7 +542,7 @@ export interface RouterConfig {
    * Keyed by route, so a route only ever gets its own reference back. Never
    * serialize this map.
    */
-  fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string }>;
+  fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string; apiKeyFile?: string }>;
   /**
    * Per route, the keys its entry in the file actually wrote. `configure`
    * emits a field whose loaded value may be a computed default only when the

@@ -60,6 +60,21 @@ export function effectiveSafetyProfile(
     if (!svc.protocol.args.includes("{{safety}}")) return "full_auto";
   }
 
+  const floored = declaredOrRequested(svc, requested);
+  // ...and the same gap for the profile a declared floor turns the request
+  // INTO, because that is the one whose flags the router hands the harness
+  // (dispatchOpts.safetyProfile is the effective profile). Checking only the
+  // request left the case above open one level down: a route pinning
+  // `effective_safety: read_only` with flags for `workspace_edit` alone passed
+  // a `workspace_edit` request, reported `read_only`, and launched with NO
+  // safety argument (audit4 A3-1: argv `["hello"]`).
+  if (svc.protocol?.safety !== undefined && svc.protocol.safety[floored] === undefined) {
+    return "full_auto";
+  }
+  return floored;
+}
+
+function declaredOrRequested(svc: ServiceConfig, requested?: SafetyProfile): SafetyProfile {
   // A route's declared capability floor wins over the request — this comes
   // from config (`effective_safety:` on the route or its harness defaults),
   // NOT from harness-name special cases in code. openai_compatible is the

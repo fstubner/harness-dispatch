@@ -1262,6 +1262,88 @@ async function git(args: string[], cwd: string): Promise<string> {
   return String(stdout).trim();
 }
 
+/**
+ * The leading git arguments for every command run INSIDE a git_worktree after
+ * the agent has had it: the worktree's own registration, pinned, and no
+ * config-driven command honoured from anything the agent could have written.
+ *
+ * Without this, git DISCOVERS its repository from the worktree, and the
+ * worktree's `.git` is a file the agent can replace. An agent that only writes
+ * files swapped it for a `.git` directory whose config set `core.fsmonitor`,
+ * and harness-dispatch's own post-run `git add` / `git diff` then ran that
+ * command as the user, outside any harness sandbox (audit5 F1). An embedded
+ * repository the agent creates in a subdirectory reaches the same place
+ * another way: `git diff` checks a gitlink for local changes by running
+ * `git status` INSIDE it, which honours that repository's fsmonitor and its
+ * clean filters (measured, git 2.45).
+ *
+ * So:
+ *  - `--git-dir` is the registration under `<repo>/.git/worktrees/`, which
+ *    lives in the user's project, outside the agent's tree. The worktree's
+ *    gitfile is only read to find it, and is refused unless it points at
+ *    exactly this worktree's registration — a replaced or redirected `.git`
+ *    means nothing here runs git against the worktree at all.
+ *  - `-c core.fsmonitor=false` and an unusable `core.hooksPath` reach every
+ *    child git through GIT_CONFIG_PARAMETERS and outrank repository config,
+ *    an embedded repository's included.
+ *  - Callers that diff or ask for status also pass `--ignore-submodules=dirty`,
+ *    so git never starts a child inside an embedded repository (its filters
+ *    are not covered by the overrides above), and `--no-ext-diff
+ *    --no-textconv` where a patch is produced.
+ *
+ * Nothing run here fetches or pages, so `core.sshCommand`, `core.pager` and
+ * credential helpers are never consulted; diff and filter drivers come only
+ * from config, which with the gitdir pinned is the user's own.
+ */
+export async function worktreeGitArgs(worktreeRoot: string, projectDir: string): Promise<string[]> {
+  const refuse = (why: string): Error =>
+    new Error(
+      `The git worktree at ${worktreeRoot} no longer points at its own registration in the ` +
+        `project's repository (${why}). Only the agent that ran there could have changed ` +
+        `that, and a repository written by the agent can make git run commands, so ` +
+        `harness-dispatch will not run git against this worktree. Nothing has been applied. ` +
+        `Inspect its files by hand, ignoring its .git.`,
+    );
+  const commonDir = path.resolve(
+    projectDir,
+    await git(["rev-parse", "--git-common-dir"], projectDir),
+  );
+  const gitfile = path.join(worktreeRoot, ".git");
+  // Unreadable (EISDIR) when a `.git` directory was planted in place of the file.
+  const content = await readFile(gitfile, "utf8").catch(() => undefined);
+  const declared = content === undefined ? undefined : /^gitdir:\s*(.+?)\s*$/m.exec(content)?.[1];
+  if (declared === undefined) throw refuse(".git is no longer a gitfile");
+  const [adminDir, registrations] = await Promise.all([
+    realpath(path.resolve(worktreeRoot, declared)).catch(() => undefined),
+    realpath(path.join(commonDir, "worktrees")).catch(() => undefined),
+  ]);
+  if (
+    adminDir === undefined ||
+    registrations === undefined ||
+    adminDir === registrations ||
+    !isUnderOrEqual(adminDir, registrations)
+  ) {
+    throw refuse(".git points outside the repository's worktree registrations");
+  }
+  // And it must be THIS worktree's registration, not another job's.
+  const backLink = await readFile(path.join(adminDir, "gitdir"), "utf8").catch(() => "");
+  const [registered, actual] = await Promise.all([
+    realpath(backLink.trim()).catch(() => undefined),
+    realpath(gitfile).catch(() => undefined),
+  ]);
+  if (registered === undefined || registered !== actual) {
+    throw refuse(".git points at another worktree's registration");
+  }
+  return [
+    `--git-dir=${adminDir}`,
+    `--work-tree=${worktreeRoot}`,
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    `core.hooksPath=${os.devNull}`,
+  ];
+}
+
 async function prepareGitWorktreeWorkspace(
   routeName: string,
   workingDir: string,
@@ -1354,7 +1436,10 @@ async function prepareGitWorktreeWorkspace(
       // git reports, or a git that cannot be asked, keeps it.
       const gitSeesChanges =
         !result.success && changedFiles.length === 0
-          ? await git(["status", "--porcelain"], worktreeRoot)
+          ? await worktreeGitArgs(worktreeRoot, gitRoot)
+              .then((pinned) =>
+                git([...pinned, "status", "--porcelain", "--ignore-submodules=dirty"], worktreeRoot),
+              )
               .then((out) => out.trim() !== "")
               .catch(() => true)
           : true;

@@ -479,18 +479,24 @@ describe("CLI parser", () => {
     expect(Array.isArray(parsed.skippedRoutes)).toBe(true);
   });
 
-  it("loads ./config.yaml by default when --config is omitted", async () => {
+  it("does NOT load ./config.yaml from the current directory when --config is omitted", async () => {
+    // It used to: ./config.yaml ranked above the user's own config, so any
+    // cloned repository carrying one became the operator config — its routes
+    // ran its own commands (audit5 F2). Now only --config,
+    // HARNESS_DISPATCH_CONFIG and the state directory's file are read.
     vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
     const config = await writeConfig();
     const dir = path.dirname(config);
     const originalCwd = process.cwd();
-    // This test is ABOUT the config-path precedence ladder, and the suite-wide
-    // isolation guard in setup-env.ts occupies the rung above the one under
-    // test (HARNESS_DISPATCH_CONFIG beats ./config.yaml). So it has to own the
-    // variable rather than inherit it — otherwise it asserts the guard's
-    // behaviour instead of its own.
+    // The suite-wide isolation guard in setup-env.ts occupies a rung of the
+    // ladder under test, so this owns the variable. The state directory holds
+    // a no-routes config, so nothing here auto-detects the real harnesses.
     const savedEnvConfig = process.env["HARNESS_DISPATCH_CONFIG"];
+    const savedState = process.env["HARNESS_DISPATCH_STATE_DIR"];
+    const state = await fs.mkdtemp(path.join(os.tmpdir(), "hd-cwd-config-state-"));
+    await fs.writeFile(path.join(state, "config.yaml"), "detect: false\n", "utf8");
     delete process.env["HARNESS_DISPATCH_CONFIG"];
+    process.env["HARNESS_DISPATCH_STATE_DIR"] = state;
     process.chdir(dir);
     try {
       const result = await capture(() => main(["status", "--json"]));
@@ -498,11 +504,19 @@ describe("CLI parser", () => {
       const parsed = JSON.parse(result.stdout) as {
         routes: Array<{ id: string }>;
       };
-      expect(parsed.routes[0]!.id).toBe("local");
+      expect(parsed.routes.map((r) => r.id)).not.toContain("local");
+      // Opting in by name still works.
+      const named = await capture(() => main(["status", "--json", "--config", "./config.yaml"]));
+      expect(
+        (JSON.parse(named.stdout) as { routes: Array<{ id: string }> }).routes[0]!.id,
+      ).toBe("local");
     } finally {
       process.chdir(originalCwd);
       if (savedEnvConfig === undefined) delete process.env["HARNESS_DISPATCH_CONFIG"];
       else process.env["HARNESS_DISPATCH_CONFIG"] = savedEnvConfig;
+      if (savedState === undefined) delete process.env["HARNESS_DISPATCH_STATE_DIR"];
+      else process.env["HARNESS_DISPATCH_STATE_DIR"] = savedState;
+      await fs.rm(state, { recursive: true, force: true });
     }
   });
 
@@ -570,7 +584,7 @@ describe("CLI parser", () => {
     );
   });
 
-  it("still refuses to overwrite an existing ./config.yaml on bare configure --yes", async () => {
+  it("still refuses to overwrite an existing config on bare configure --yes", async () => {
     const config = await writeConfig();
     const dir = path.dirname(config);
     const originalCwd = process.cwd();

@@ -15,9 +15,9 @@
  *   2. ~/.harness-dispatch/config.yaml — conventional user config location.
  *   3. none — the server auto-detects installed CLIs with built-in defaults.
  *
- * API keys for endpoint routes (GROQ_API_KEY, GEMINI_API_KEY, ...) are read
- * from the inherited environment by config.yaml's ${VAR} interpolation; the
- * launcher does not handle them.
+ * API keys for endpoint routes are read by the server itself, from files named
+ * by `api_key_file:` or from the inherited environment through config.yaml's
+ * ${VAR} interpolation; the launcher does not handle them.
  */
 
 import { spawn } from "node:child_process";
@@ -50,6 +50,8 @@ function resolveConfigArgs() {
   if (fromEnv) return ["--config", fromEnv];
   // The conventional location is different: its ABSENCE is the normal case
   // for someone who never wrote a config, so falling through is right here.
+  // The server then auto-detects; it never reads a config.yaml from the
+  // directory the client launched it in, which is often a cloned repository.
   const userConfig = path.join(homedir(), ".harness-dispatch", "config.yaml");
   if (existsSync(userConfig)) return ["--config", userConfig];
   return [];

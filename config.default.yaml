@@ -71,9 +71,22 @@ clis:
       stdin: true
       args: ["-p", "--output-format", "json", "{{safety}}", "{{model}}"]
       model: { flag: "--model" }
+      # --allowedTools only ADDS auto-approvals on top of the user's own
+      # settings, so on its own "workspace_edit: no shell" meant "no shell
+      # beyond the user's allow rules" — 17 of them start with Bash on the
+      # maintainer's machine. --tools is the flag that sets which built-in
+      # tools exist at all, and --strict-mcp-config (with no --mcp-config)
+      # loads no MCP servers, so the user's servers — harness-dispatch itself
+      # among them — are not handed to a read_only or workspace_edit delegate.
+      # Each variadic list is followed by another option so it cannot swallow
+      # the next argument. Flags checked against `claude --help`, 2.1.278.
       safety:
-        read_only: ["--allowedTools", "Read", "--permission-mode", "plan"]
-        workspace_edit: ["--allowedTools", "Read,Edit,Write", "--permission-mode", "acceptEdits"]
+        read_only:
+          ["--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
+           "--strict-mcp-config", "--permission-mode", "plan"]
+        workspace_edit:
+          ["--tools", "Read,Grep,Glob,Edit,Write", "--allowedTools", "Read,Grep,Glob,Edit,Write",
+           "--strict-mcp-config", "--permission-mode", "acceptEdits"]
         full_auto: ["--allowedTools", "Bash,Read,Edit,Write", "--permission-mode", "acceptEdits"]
       # Claude Code reads ANTHROPIC_API_KEY itself to switch from
       # subscription/OAuth session auth to API-key billing — without this,
@@ -135,10 +148,15 @@ clis:
       stdin: true
       working_dir: { flag: "--cd", extra_args_when_set: ["--skip-git-repo-check"] }
       model: { flag: "--model" }
+      # full_auto was `--full-auto`, which `codex exec --help` (0.146) no longer
+      # lists; it was still accepted and meant the workspace-write sandbox. It
+      # is spelled out here so a removal cannot change what runs. Codex's
+      # full_auto therefore still runs shell inside its sandbox — the safe
+      # direction; `danger-full-access` would be the unsandboxed reading.
       safety:
         read_only: ["--sandbox", "read-only"]
         workspace_edit: ["--sandbox", "workspace-write"]
-        full_auto: ["--full-auto"]
+        full_auto: ["--sandbox", "workspace-write"]
       api_key_env_var: OPENAI_API_KEY
       file_list_header: "Files to work with:"
       file_list_bullet: "  "
@@ -294,6 +312,19 @@ clis:
     auth_source: product_login
     billing_kind: free_quota
     paid_usage_possible: false
+    # workspace_edit promises "no arbitrary shell", and the workspace_edit
+    # flags below auto-approve every tool request — shell included — with
+    # nothing restricting the terminal: it is --sandbox ("Run in a sandbox
+    # with terminal restrictions enabled", `agy --help`) that does that for
+    # read_only, and whether edits still work under it is not verified, nor
+    # whether it does anything on Windows (Cursor's equivalent does not). So
+    # this route declares what it can actually guarantee, the same way the
+    # cursor route does: a workspace_edit request is skipped unless full_auto
+    # is acceptable.
+    effective_safety:
+      read_only: read_only
+      workspace_edit: full_auto
+      full_auto: full_auto
     protocol:
       args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--print", "{{prompt}}"]
       # --print is headless: agy cannot prompt for per-tool permissions, so
