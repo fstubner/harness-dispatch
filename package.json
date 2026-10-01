@@ -30,7 +30,6 @@
   },
   "files": [
     "dist/",
-    "data/",
     "config.default.yaml",
     "README.md",
     "CHANGELOG.md"

@@ -91,7 +91,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
  * drift, each missing something the other has.
  */
 export const KNOWN_ROUTE_KEYS = new Set([
-  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
+  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint", "api_key_file",
   "instructions",
   "tier", "weight", "cli_capability", "capabilities", "timeout_ms", "idle_timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
