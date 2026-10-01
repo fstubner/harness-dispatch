@@ -55,9 +55,6 @@ class Fake implements Dispatcher {
 
 const ok = (id: string): DispatchResult => ({ output: "ok", service: id, success: true });
 const fail = (id: string): DispatchResult => ({ output: "", service: id, success: false, error: "boom" });
-const limited = (id: string): DispatchResult => ({
-  output: "", service: id, success: false, rateLimited: true, retryAfter: 300,
-});
 
 function svc(name: string, over: Partial<ServiceConfig> = {}): ServiceConfig {
   return {

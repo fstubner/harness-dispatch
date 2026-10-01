@@ -64,8 +64,8 @@ pre-1.0, so minor versions can carry behaviour changes.
   set `leaderboard_model` to a nonsense value only to make `tier:` win no longer
   needs to). `LeaderboardCache` is no longer exported, and the `qualityScore` /
   `elo` fields are gone from routing results, fanout items, `status` and the
-  dispatch log's `scores`. The shipped `data/coding_benchmarks.json` and
-  `scripts/fetch_benchmarks.py` are deleted.
+  dispatch log's `scores`. The shipped `data/coding_benchmarks.json` and <!-- claims-check-ignore -->
+  `scripts/fetch_benchmarks.py` are deleted. <!-- claims-check-ignore -->
 
 ### Fixed
 
@@ -1502,7 +1502,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   here — `scripts/check-claims.mjs` could not see tool descriptions at all, and
   now does.
 
-- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its
+- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its <!-- claims-check-ignore -->
   bundled fallback when the network fails. It swallowed every exception,
   returned an empty set, wrote it out and exited 0 — turning a transient outage
   into a permanent downgrade of the file that ships in the package.
