@@ -165,6 +165,12 @@ async function runFanoutArms(
   });
 }
 
+function allFailedMessage(rows: Array<{ route: string; error?: string }>): string {
+  return (
+    `every fanout arm failed — ` + rows.map((row) => `${row.route}: ${row.error ?? "failed"}`).join("; ")
+  );
+}
+
 /**
  * One request's SSE state, shared with the top-level catch so a mid-stream
  * failure ends with an error frame instead of a silent truncation.
@@ -316,9 +322,12 @@ async function handleChatCompletions(
     // One identity for the whole stream, minted before the first frame: every
     // chunk must repeat the same `id` and `created`, or a client that groups
     // or dedupes by id sees one response per frame. The model starts as what
-    // the caller asked for and is filled in below once the router has picked a
-    // route.
+    // the caller asked for and becomes the routed model once the run succeeds,
+    // as the non-streaming reply's does: frames sent before then (an endpoint
+    // route streaming text) carry the requested name, the rest the real one.
     const identity = newStreamIdentity(parsed.hints.model ?? "harness-dispatch");
+    // Extra members for the final frame; only the single-route stream has any.
+    let stopExtra: Record<string, unknown> = {};
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
       const rows = await runFanoutArms(holder, selected.routes, parsed);
@@ -334,6 +343,11 @@ async function handleChatCompletions(
           },
         }),
       );
+      // The status line is already out as a 200, so the non-streaming 502 for
+      // "every arm failed" can only be an error frame here.
+      if (rows.length > 0 && rows.every((row) => !row.success)) {
+        writeSse(res, { error: { message: allFailedMessage(rows), type: "upstream_error" } });
+      }
     } else {
       // What reaches `delta.content` must be the ANSWER. Forwarding every
       // stdout chunk would hand a client concatenating deltas from a CLI
@@ -369,6 +383,14 @@ async function handleChatCompletions(
         const batch = await readJobEvents(jobId, offset);
         offset = batch.offset;
         for (const event of batch.events) {
+          if (event.type === "completion" && event.result.success) {
+            // The decision is written with the result, a moment after this
+            // event, and a success is the run's last word, so waiting costs
+            // nothing a client would see.
+            await completion;
+            const routed = (await getAsyncJob(jobId)).result?.decision?.model;
+            if (routed !== undefined) identity.model = routed;
+          }
           const text = answer.next(event);
           if (text !== undefined) {
             writeSse(res, sseContent(identity, text, { harness_dispatch: { jobId } }));
@@ -413,8 +435,32 @@ async function handleChatCompletions(
       if (!succeeded && !committedFailure && pendingFailure !== undefined) {
         writeSse(res, pendingFailure);
       }
+      // A job that ended with no completion event at all — cancelled, or its
+      // runner crashed — said nothing, and the stop frame below would read as
+      // an empty successful answer. The job record has the verdict: the
+      // non-streaming path answers 500 for the same case.
+      if (!succeeded && !committedFailure && pendingFailure === undefined && !clientGone) {
+        const job = await getAsyncJob(jobId);
+        if (job.result?.result.success !== true) {
+          writeSse(res, {
+            error: {
+              message:
+                job.result?.result.error ??
+                job.status.error ??
+                `job ${jobId} ended without a result (status: ${job.status.status})`,
+              route: job.status.route ?? job.status.service ?? "none",
+            },
+          });
+        }
+      }
+      stopExtra = {
+        harness_dispatch: {
+          jobId,
+          ...(parsed.workingDirWarning !== undefined ? { warning: parsed.workingDirWarning } : {}),
+        },
+      };
     }
-    writeSse(res, sseStop(identity));
+    writeSse(res, { ...sseStop(identity), ...stopExtra });
     res.write("data: [DONE]\n\n");
     res.end();
     return;
@@ -465,9 +511,7 @@ async function handleChatCompletions(
           ...(allFailed
             ? {
                 error: {
-                  message:
-                    `every fanout arm failed — ` +
-                    rows.map((row) => `${row.route}: ${row.error ?? "failed"}`).join("; "),
+                  message: allFailedMessage(rows),
                   type: "upstream_error",
                 },
               }
@@ -683,7 +727,12 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
   const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (isAuthorized(req.headers.authorization, activeToken())) return true;
-    sendJson(res, 401, { error: "unauthorized" });
+    // `error` stays the machine-readable word; `hint` is for the person who
+    // got a bare 401 from curl and does not know where the token lives.
+    sendJson(res, 401, {
+      error: "unauthorized",
+      hint: "send `Authorization: Bearer <token>`; run `harness-dispatch auth show` on this machine to print the token",
+    });
     return false;
   };
 
@@ -811,6 +860,19 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         // Held so the post-request check below can dispose of a server whose
         // session never came into existence.
         let freshServer: McpServer | undefined;
+        // A session id this server does not hold — swept idle, or from before a
+        // restart — is a 404, which the MCP spec says tells the client to start
+        // a new session. The SDK's own answer for it (400 "Server not
+        // initialized") reads as a malformed request, so a client that follows
+        // the spec never re-initialises.
+        if (sessionId && !transports.has(sessionId)) {
+          sendJson(res, 404, {
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found — initialize a new session." },
+            id: null,
+          });
+          return;
+        }
         if (sessionId && transports.has(sessionId)) {
           transport = transports.get(sessionId)!;
           sessionLastSeen.set(sessionId, Date.now());
