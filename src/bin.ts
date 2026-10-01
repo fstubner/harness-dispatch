@@ -7,18 +7,15 @@ import { realpathSync } from "node:fs";
 import { installOutputRedaction } from "./redaction.js";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { resolveConfigPath } from "./config.js";
 import { VERSION } from "./version.js";
-import { startMcpServer } from "./mcp/server.js";
-import { initObservability, shutdownObservability } from "./observability/index.js";
-import { SAFETY_PROFILES, TASK_TYPES, UsageError, enumFlag, parsePositiveInt, wantsJsonOutput } from "./cli/common.js";
-import { cmdBreaker } from "./cli/breaker.js";
-import { cmdConfigure } from "./cli/configure.js";
-import { cmdConnect } from "./cli/connect.js";
-import { cmdDispatch } from "./cli/dispatch.js";
-import { cmdDoctor } from "./cli/doctor.js";
-import { cmdStatus, cmdUsage } from "./cli/report.js";
-import { cmdAuth, cmdServe, serveOpts } from "./cli/serve.js";
+
+// Everything heavier than this is imported by the command that needs it, inside
+// main(). A static import made every invocation load the MCP SDK, hono and the
+// rest of the server (357 files) before parsing a flag, which was most of the
+// wall time of `status`, `usage`, `doctor` and `--version`.
+
+// Set once main() gets past --version/--help, which are answered without it.
+let observability: typeof import("./observability/index.js") | undefined;
 
 function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
   stream.write(
@@ -118,6 +115,7 @@ export async function main(argv: string[]): Promise<number> {
   ]);
   const unknownFlags = Object.keys(values).filter((k) => !knownFlags.has(k));
   if (unknownFlags.length > 0) {
+    const { UsageError } = await import("./cli/common.js");
     throw new UsageError(
       `unknown option${unknownFlags.length > 1 ? "s" : ""}: ` +
         `${unknownFlags.map((f) => `--${f}`).join(", ")}. Run --help for the list.`,
@@ -137,6 +135,9 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  const { SAFETY_PROFILES, TASK_TYPES, UsageError, enumFlag, parsePositiveInt, wantsJsonOutput } =
+    await import("./cli/common.js");
+
   // The same hole for an option that takes a value: parseArgs with strict:false
   // reads `--service` given with no value as boolean `true`, which the
   // `typeof === "string"` checks below drop — so `dispatch "x" --service` ran
@@ -151,7 +152,8 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  await initObservability();
+  observability = await import("./observability/index.js");
+  await observability.initObservability();
 
   const [command, ...rest] = positionals;
   // `--config` with no value: parseArgs yields boolean true, which reaches
@@ -164,9 +166,11 @@ export async function main(argv: string[]): Promise<number> {
   const explicitConfigPath = values.config as string | undefined;
   // Shared with job-runner.ts so the server and the runners it spawns cannot
   // resolve different files — see resolveConfigPath.
+  const { resolveConfigPath } = await import("./config.js");
   const configPath = resolveConfigPath(explicitConfigPath);
 
   if (command === undefined) {
+    const { startMcpServer } = await import("./mcp/server.js");
     const handle = await startMcpServer(configPath === undefined ? {} : { configPath });
     const shutdown = async (): Promise<void> => {
       try {
@@ -184,7 +188,8 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   switch (command) {
-    case "configure":
+    case "configure": {
+      const { cmdConfigure } = await import("./cli/configure.js");
       return cmdConfigure(configPath, {
         print: Boolean(values.print),
         yes: Boolean(values.yes),
@@ -192,7 +197,9 @@ export async function main(argv: string[]): Promise<number> {
         noClients: Boolean(values["no-clients"]),
         clients: typeof values.clients === "string" ? values.clients : undefined,
       });
-    case "connect":
+    }
+    case "connect": {
+      const { cmdConnect } = await import("./cli/connect.js");
       return cmdConnect(configPath, {
         clients: typeof values.clients === "string" ? values.clients : undefined,
         remove: Boolean(values.remove),
@@ -200,35 +207,49 @@ export async function main(argv: string[]): Promise<number> {
         force: Boolean(values.force),
         dev: Boolean(values.dev),
       });
-    case "doctor":
+    }
+    case "doctor": {
+      const { cmdDoctor } = await import("./cli/doctor.js");
       return cmdDoctor(configPath, {
         json: Boolean(values.json),
         live: Boolean(values.live),
         allowPaid: Boolean(values["allow-paid"]),
         pruneState: Boolean(values["prune-state"]),
       });
+    }
     case "status":
     case "dashboard":
-    case "list-services":
+    case "list-services": {
+      const { cmdStatus } = await import("./cli/report.js");
       return cmdStatus(configPath, {
         json: Boolean(values.json) || command === "list-services",
         watch: Boolean(values.watch),
         intervalMs: parsePositiveInt(values.interval, 1000),
       });
-    case "usage":
+    }
+    case "usage": {
+      const { cmdUsage } = await import("./cli/report.js");
       return cmdUsage(configPath, { json: Boolean(values.json) });
-    case "serve":
+    }
+    case "serve": {
+      const { cmdServe, serveOpts } = await import("./cli/serve.js");
       return cmdServe(configPath, serveOpts(values));
-    case "auth":
+    }
+    case "auth": {
+      const { cmdAuth } = await import("./cli/serve.js");
       return cmdAuth(rest[0]);
-    case "breaker":
+    }
+    case "breaker": {
+      const { cmdBreaker } = await import("./cli/breaker.js");
       return cmdBreaker(configPath, rest[0], rest[1]);
+    }
     // `route` kept as an alias for `dispatch`, which matches the MCP tool that
     // does the same thing. Same pattern as status/dashboard/list-services.
     case "dispatch":
     case "route": {
       const safety = enumFlag(values.safety, SAFETY_PROFILES, "--safety");
       const taskType = enumFlag(values["task-type"], TASK_TYPES, "--task-type");
+      const { cmdDispatch } = await import("./cli/dispatch.js");
       return cmdDispatch(rest.join(" ").trim(), configPath, {
         ...(typeof values.service === "string" ? { service: values.service } : {}),
         ...(safety !== undefined ? { safetyProfile: safety } : {}),
@@ -239,11 +260,13 @@ export async function main(argv: string[]): Promise<number> {
     }
     // Supported, not a hidden alias: the plugin launcher and existing client
     // entries run `mcp`, and `connect` entries may too. See docs/interfaces.md.
-    case "mcp":
+    case "mcp": {
       if (values.http !== undefined) {
+        const { cmdServe, serveOpts } = await import("./cli/serve.js");
         return cmdServe(configPath, serveOpts({ port: values.http, host: values.host }));
       }
       return main(configPath !== undefined ? ["--config", configPath] : []);
+    }
     default:
       // Usage goes to STDERR here, not stdout: an unknown command is an
       // error, and a help block on stdout would become the input of any pipe
@@ -301,22 +324,24 @@ if (isThisFile(entrypoint)) {
       // Spans are exported in batches; ending without a shutdown dropped
       // whatever the batch still held, which for a one-shot command is all
       // of them.
-      await shutdownObservability();
+      await observability?.shutdownObservability();
       finish(code);
     })
-    .catch((err: unknown) => {
+    .catch(async (err: unknown) => {
       // A CLI user gets one actionable line, not a stack trace. Every Error is
       // flattened to its message — UsageError and config-loading failures
       // (missing file, bad YAML) are things the user typed and can fix, and
       // the codebase throws user-facing Errors by convention, so there is no
       // reliable way to tell "bug" from "bad input" by class here. Only a
       // non-Error throw (a genuine programming error) keeps its stack.
-      if (err instanceof UsageError || err instanceof Error) {
+      // UsageError extends Error, so one check covers both.
+      if (err instanceof Error) {
         // `--json` is a promise about the SHAPE of this command's output, on
         // the failure path too: otherwise anything parsing the output gets a
         // parse error instead of the reason. The message is the same; only
         // the envelope follows what was asked for. Errors still go to stderr,
         // so a caller reading stdout for results is unaffected either way.
+        const { wantsJsonOutput } = await import("./cli/common.js");
         const wantsJson = wantsJsonOutput();
         process.stderr.write(
           wantsJson
