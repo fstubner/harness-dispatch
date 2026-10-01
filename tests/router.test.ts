@@ -1788,6 +1788,25 @@ describe("Router.route", () => {
     expect(betaD.calls.length).toBe(1);
   });
 
+  it("trips the breaker at once, for its stated time, on an environment fault", async () => {
+    // Codex's Windows sandbox refusing every process: one such run is enough
+    // to know the next would fail too, so it must not take five like an
+    // ordinary failure, and the cooldown is the dispatcher's, not 300 s.
+    const a = makeService({ name: "alpha", tier: 1 });
+    const alphaD = new StubDispatcher("alpha");
+    alphaD.setResult({
+      success: false,
+      environmentFault: true,
+      retryAfter: 1800,
+      error: "the harness could not spawn any child process",
+    } as Partial<DispatchResult>);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    await router.route("hi", [], "/tmp");
+    const status = router.circuitBreakerStatus().alpha!;
+    expect(status.tripped).toBe(true);
+    expect(status.cooldownRemainingSec).toBeGreaterThan(1790);
+  });
+
   it("gives up after maxFallbacks even when a rate-limited candidate remains untried", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const b = makeService({ name: "beta", tier: 1 });

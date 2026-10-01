@@ -227,6 +227,49 @@ pre-1.0, so minor versions can carry behaviour changes.
   about the supervisor pool and shared liveness are fixed. AGENTS.md and
   CLAUDE.md were the same text twice; CLAUDE.md now imports AGENTS.md.
 
+- **A run that goes silent is stopped as hung.** A new per-route
+  `idle_timeout_ms` stops a CLI run that has printed nothing for that long,
+  instead of letting it hold a concurrency slot until the 60-minute job
+  ceiling. Codex and Antigravity ship with 15 minutes; Claude Code and Cursor
+  print only their final answer, so they ship without one.
+
+- **Antigravity shows progress while it runs.** The shipped route now asks
+  `agy` for `stream-json`, so a running job has partial output and tool
+  steps, and a slow job no longer looks the same as a stuck one. It also
+  ships a 25-minute time limit of its own, about twice its longest logged
+  success. An exit-0 run with an empty answer is now a failure, not the raw
+  event stream returned as the answer.
+
+### Fixed
+
+- **A usage limit is waited out until the time the provider stated.** Codex's
+  "try again at Sep 26th, 2026 1:34 PM" and Claude Code's "resets 1:30am
+  (Europe/Dublin)" now set how long the route is skipped (at most 24 hours at a
+  time), instead of the router retrying every five minutes. Claude Code's
+  "session limit" message is now recognised as a usage limit at all.
+
+- **Codex's Windows sandbox refusal is caught when one stray command ran.** A
+  run whose only repository command was refused counted as a success because
+  one earlier command outside the repository had completed. Runs are now
+  judged on how many commands completed against how many were refused, and a
+  refusal skips the route for 30 minutes instead of five, since the refusals
+  come in clusters.
+
+- **A burst of output no longer fails a healthy run.** A harness printing
+  faster than the job runner could save it was killed ("internal queue
+  exceeded 1000 chunks"); it is now slowed down instead.
+
+- **Cursor's "Named models unavailable" error says what to do next:** retry
+  without `hints.model`, or retry on another route.
+
+- **Smaller dispatcher fixes.** An error reported in a JSON body after a banner
+  line, or on stdout while the answer text came from stderr, is no longer
+  missed; an error a run reports and then recovers from no longer fails its
+  answer; the POSIX command-line check measures the longest argument rather
+  than the sum of all of them; `endpoint_native_args` in a route that extends a
+  preset adds to the preset's providers instead of replacing them; and an
+  endpoint stream a caller stops reading is closed at once.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

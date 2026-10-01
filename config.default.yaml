@@ -141,6 +141,14 @@ clis:
     # OpenAI hard-stops at the plan's included usage unless you enabled
     # flexible-credit overage on your account — set true here if you did.
     paid_usage_possible: false
+    # Stop a run that has printed nothing for 15 minutes as hung, instead of
+    # letting it hold a concurrency slot until the 60-minute job ceiling.
+    # Codex streams an event per step, so silence that long is not work: the
+    # longest gap between events in 236 real `codex exec` sessions
+    # (~/.codex/sessions, 2026-07 to 2026-10) was 123 s. Only for a harness
+    # that streams — claude_code_cli and cursor_cli print their answer only at
+    # the end, so an idle limit there would stop every long task.
+    idle_timeout_ms: 900000
     protocol:
       # "exec" is Codex's required subcommand; trailing "-" = read prompt from
       # stdin (stdin: true below).
@@ -325,8 +333,19 @@ clis:
       read_only: read_only
       workspace_edit: full_auto
       full_auto: full_auto
+    # A wall clock of its own: the longest logged successful Antigravity run
+    # took 706 s (19 successes, dispatch log to 2026-10-01), while runs that
+    # hung were cancelled by hand after 31-35 minutes. Its own internal limit
+    # fired only twice. 25 minutes leaves twice the longest success.
+    timeout_ms: 1500000
+    # stream-json (below) prints a step event as each step starts and ends,
+    # so a long silence is a hang, as for codex_cli.
+    idle_timeout_ms: 900000
     protocol:
-      args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--print", "{{prompt}}"]
+      # --output-format stream-json: one JSON event per step, as it happens.
+      # In text mode agy printed nothing until it finished, so a slow job and
+      # a stuck one looked the same and a cancelled one left nothing behind.
+      args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--output-format", "stream-json", "--print", "{{prompt}}"]
       # --print is headless: agy cannot prompt for per-tool permissions, so
       # every profile needs auto-approval or tools are silently auto-denied
       # ("a tool required the read_file permission that headless mode cannot
@@ -341,9 +360,36 @@ clis:
         full_auto: ["--dangerously-skip-permissions"]
       file_list_header: "Files to work with:"
       file_list_bullet: "  "
+      # Event shapes captured from agy 2026-10-01 (`--mode plan --sandbox
+      # --output-format stream-json --print`):
+      #   {"event":"init","conversation_id":...,"init":{"cwd":...,"tools":[...]}}
+      #   {"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE",
+      #     "step_type":"tool","tool_name":"run_command","tool_info":{"name":...,
+      #     "parameters":{"CommandLine":"dir"}}}}
+      #   {"event":"result","result":{"status":"SUCCESS","response":"...",
+      #     "usage":{"input_tokens":17391,"output_tokens":698,...}}}
+      # The answer is result.response. That run's response was empty (its one
+      # tool call was denied), so a non-empty response was not observed; only
+      # SUCCESS was seen as a status, so no error rule is guessed at.
       output:
-        mode: text
-      success_requires_output: false
+        mode: jsonl_stream
+        event_rules:
+          - when: { event: "result" }
+            emit: text
+            text_field: result.response
+          - when: { event: "step_update", "step_update.step_type": "tool", "step_update.state": "ACTIVE" }
+            emit: tool_use
+            name_field: step_update.tool_name
+            input_field: step_update.tool_info.parameters
+          # From the result only: each step_update carries its own usage too,
+          # and counting both would double it.
+          - when: { event: "result" }
+            emit: usage
+            input_token_fields: [result.usage.input_tokens]
+            output_token_fields: [result.usage.output_tokens]
+      # Strict (success_requires_output omitted): in stream-json an exit 0
+      # with an empty response would otherwise return the raw event stream as
+      # the answer. An empty answer is a failure, with the events kept.
 
   # ── More routes from the same harnesses ─────────────────────────────────────
   # A route is (harness, model) — declare as many as you want. `harness:` picks
@@ -498,7 +544,7 @@ endpoints:
 
 # Per-route knobs worth knowing (all optional; every one is in the config
 # reference, docs/configuration.md#config-reference): enabled, weight,
-# timeout_ms, safety_profile, effective_safety, workspace_policy (shared |
+# timeout_ms, idle_timeout_ms, safety_profile, effective_safety, workspace_policy (shared |
 # shared_locked | copy | git_worktree), instructions, thinking_level,
 # escalate_model / escalate_on, resource_weight, allow_paid_usage, billing_kind,
 # paid_usage_possible.

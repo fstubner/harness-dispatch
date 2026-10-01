@@ -73,6 +73,7 @@ const SHARED_FIELDS: Array<{
   // these three were in neither the old hand-written list nor any other test,
   // so nothing proved any shape read them.
   { yaml: "timeout_ms: 900000", field: "timeoutMs", expected: 900000 },
+  { yaml: "idle_timeout_ms: 600000", field: "idleTimeoutMs", expected: 600000 },
   { yaml: "resource_weight: 0.25", field: "resourceWeight", expected: 0.25 },
   { yaml: "billing_confidence: documented", field: "billingConfidence", expected: "documented" },
   { yaml: 'models: ["m-one", "m-two"]', field: "models", expected: ["m-one", "m-two"] },

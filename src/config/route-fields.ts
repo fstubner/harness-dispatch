@@ -63,6 +63,8 @@ export type RouteFieldDefaults = Partial<
     | "effectiveSafety"
     | "models"
     | "modelHint"
+    | "timeoutMs"
+    | "idleTimeoutMs"
   >
 >;
 
@@ -117,7 +119,10 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "escalate_model", field: "escalateModel", parse: str },
   { key: "max_output_tokens", field: "maxOutputTokens", parse: numberOnly, fromDefaults: (d) => d.maxOutputTokens },
   { key: "max_input_tokens", field: "maxInputTokens", parse: numberOnly, fromDefaults: (d) => d.maxInputTokens },
-  { key: "timeout_ms", field: "timeoutMs", parse: numberOnly },
+  // Both fall back to the harness's shipped value: antigravity ships a wall
+  // clock and the streaming harnesses an idle limit (config.default.yaml).
+  { key: "timeout_ms", field: "timeoutMs", parse: numberOnly, fromDefaults: (d) => d.timeoutMs },
+  { key: "idle_timeout_ms", field: "idleTimeoutMs", parse: numberOnly, fromDefaults: (d) => d.idleTimeoutMs },
   { key: "resource_weight", field: "resourceWeight", parse: numberOnly },
   // Safety and isolation — the rows where a silent drop is least tolerable.
   { key: "safety_profile", field: "safetyProfile", parse: normalizeSafetyProfile },

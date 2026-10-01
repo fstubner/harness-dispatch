@@ -230,7 +230,14 @@ describe("Cursor .stream()", () => {
 describe("Antigravity .stream()", () => {
   it("runs agy in print mode and reports its output", async () => {
     mockFound("/usr/local/bin/agy");
-    runMock.mockResolvedValue(ok({ stdout: "antigravity says hi" }));
+    // agy's stream-json, as captured from the real CLI (config.default.yaml).
+    runMock.mockResolvedValue(
+      ok({
+        stdout:
+          '{"event":"init","conversation_id":"c1","init":{"cwd":"/tmp/work","tools":[]}}\n' +
+          '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"antigravity says hi","num_turns":1}}\n',
+      }),
+    );
 
     const d = new GenericCliDispatcher(
       makeSvc({ name: "antigravity_cli", command: "agy", protocol: ANTIGRAVITY_PROTOCOL }),

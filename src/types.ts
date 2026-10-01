@@ -175,6 +175,14 @@ export interface DispatchResult {
    * and three failures, tripping healthy routes.
    */
   inputRejected?: boolean;
+  /**
+   * The route's own ENVIRONMENT could not do the work (Codex's Windows
+   * sandbox refusing to start any process). A failure, but one that repeats
+   * on every attempt for a while, so the breaker trips at once for
+   * `retryAfter` seconds rather than counting it like an ordinary failure.
+   */
+  environmentFault?: boolean;
+  /** Seconds the route should be left alone; the breaker's cooldown when it trips. */
   retryAfter?: number;
   rateLimitHeaders?: Record<string, string>;
   /**
@@ -456,6 +464,14 @@ export interface ServiceConfig {
    * specific route; a per-call `hints.timeoutMs` takes precedence over this.
    */
   timeoutMs?: number;
+  /**
+   * CLI routes only: stop the run once the harness has printed nothing for
+   * this many milliseconds (`idle_timeout_ms`). Only for a harness that
+   * streams as it works (codex, antigravity in stream-json); one that prints
+   * only its final answer would be stopped mid-task. See
+   * StreamSubprocessOpts.idleTimeoutMs.
+   */
+  idleTimeoutMs?: number;
 }
 
 /**

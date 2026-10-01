@@ -93,7 +93,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
 export const KNOWN_ROUTE_KEYS = new Set([
   "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
   "instructions",
-  "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
+  "tier", "weight", "cli_capability", "capabilities", "timeout_ms", "idle_timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
   "escalate_model", "escalate_on", "resource_weight",
   "api_key", "base_url", "protocol", "filter",
@@ -153,6 +153,7 @@ const NUMERIC_ROUTE_KEYS = new Set([
   "max_output_tokens",
   "max_input_tokens",
   "timeout_ms",
+  "idle_timeout_ms",
 ]);
 
 /**
@@ -182,6 +183,7 @@ const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }
   max_output_tokens: { min: 0, exclusive: true },
   max_input_tokens: { min: 0, exclusive: true },
   timeout_ms: { min: 0, exclusive: true },
+  idle_timeout_ms: { min: 0, exclusive: true },
 };
 
 /**

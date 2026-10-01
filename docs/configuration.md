@@ -259,6 +259,33 @@ endpoints:
   hide the client config file.
 - A literal `api_key:` works and is not recommended.
 
+## Time limits
+
+Two per-route limits, both optional, both in milliseconds:
+
+```yaml
+clis:
+  - name: codex_cli
+    harness: codex
+    timeout_ms: 2700000       # wall clock per attempt
+    idle_timeout_ms: 1200000  # stop after this long with no output at all
+```
+
+- `timeout_ms` caps one attempt. Unset, a background job gets what is left of
+  its 60-minute budget (10 minutes for the CLI `dispatch` command and
+  `doctor --live`). `hints.timeoutMs` on a dispatch overrides it.
+- `idle_timeout_ms` (CLI routes only) stops a run that has printed nothing,
+  on either stream, for that long, and reports it as hung. The wall clock
+  alone cannot tell a hung run from a working one, and a hung run holds a
+  concurrency slot until it fires. Set it only on a route whose harness
+  prints as it works: one that prints only its final answer would be stopped
+  partway through every long task.
+- Shipped defaults: `codex_cli` and `antigravity_cli` get a 15-minute idle
+  limit (both stream an event per step); `antigravity_cli` also gets a
+  25-minute wall clock. `claude_code_cli` and `cursor_cli` print their answer
+  only at the end, so they ship neither. A value in your own entry replaces
+  the shipped one.
+
 ## Endpoint Modes
 
 harness-dispatch supports two local/custom endpoint patterns:
@@ -299,6 +326,8 @@ clis:
     weight: 0.75
     cli_capability: 1.0
     timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`). An endpoint route's HTTP request gets the same budget when this is unset: 60 minutes on MCP and HTTP dispatches (shared across fallbacks), 120 s only on the CLI `dispatch` command and `doctor --live`
+
+    timeout_ms: 900000  # optional; see "Time limits" below. An endpoint route's own HTTP request timeout defaults to 120 s when unset
     capabilities:
       execute: 0.8
       plan: 0.7

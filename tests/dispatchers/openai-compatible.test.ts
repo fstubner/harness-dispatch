@@ -1145,3 +1145,27 @@ describe("a response larger than any real answer", () => {
     expect(res.error).toMatch(/exceeded the 10 MB limit/);
   }, 30_000);
 });
+
+describe("a consumer that stops reading an event stream (A1-12)", () => {
+  // `break` in a for-await returns the generator at its `yield`, which ran no
+  // release code: the response body stayed open until the abort timer fired.
+  it("cancels the response body", async () => {
+    let cancelled = false;
+    const frame = new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(frame);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    fetchMock.mockImplementation(
+      async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    );
+    for await (const ev of new OpenAICompatibleDispatcher(baseSvc()).stream("hi", [], "")) {
+      if (ev.type === "stdout") break;
+    }
+    expect(cancelled).toBe(true);
+  });
+});
