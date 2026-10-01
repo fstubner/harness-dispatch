@@ -89,7 +89,7 @@ import { drainDispatcherStream } from "./dispatchers/base.js";
 import type { Span } from "@opentelemetry/api";
 import { withDispatcherSpan, withRouterSpan, withRouterStreamSpan } from "./observability/spans.js";
 import { buildRouteBilling } from "./billing.js";
-import { logDispatch } from "./dispatch-log.js";
+import { logDispatch, type DispatchLogContext } from "./dispatch-log.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy, isLocalRoute, nonLocalIncludedRoutePenalty } from "./route-policy.js";
 import { acquireWorkspaceLock } from "./workspace-lock.js";
@@ -151,6 +151,8 @@ function unknownServiceError(service: string, valid: string[]): string {
 export interface ExplicitDispatchOpts {
   /** Abort an in-flight run; forwarded to the dispatcher and on to the child. */
   signal?: AbortSignal;
+  /** Who asked, and the job it runs under — recorded in the dispatch log. */
+  logContext?: DispatchLogContext;
   safetyProfile?: SafetyProfile;
   workspacePolicy?: ServiceConfig["workspacePolicy"];
   routePolicy?: import("./types.js").RoutePolicy;
@@ -873,6 +875,7 @@ export class Router {
       defaultTimeoutMs?: number;
       signal?: AbortSignal;
       onWorkspace?: (workspace: PreparedWorkspace) => void;
+      logContext?: DispatchLogContext;
     } = {},
   ): AsyncIterable<RouterStreamEvent> {
     return withRouterStreamSpan(
@@ -893,6 +896,7 @@ export class Router {
       signal?: AbortSignal;
       invoke?: DispatcherInvoke;
       onWorkspace?: (workspace: PreparedWorkspace) => void;
+      logContext?: DispatchLogContext;
     },
   ): AsyncGenerator<RouterStreamEvent> {
     const hints = opts.hints ?? {};
@@ -1001,7 +1005,7 @@ export class Router {
         };
         yield { event: { type: "completion", result: finalResult }, decision };
       }
-      this.handleResult(decision.service, finalResult, decision);
+      this.handleResult(decision.service, finalResult, decision, opts.logContext);
 
       if (finalResult.success) return;
       // Rate-limited and transient failures alike: the breaker state was
@@ -1172,7 +1176,7 @@ export class Router {
       };
       yield { event: { type: "completion", result: finalResult }, decision };
     }
-    this.handleResult(service, finalResult, decision);
+    this.handleResult(service, finalResult, decision, opts.logContext);
   }
 
   /**
@@ -1188,7 +1192,12 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
+    opts: {
+      hints?: RouteHints;
+      maxFallbacks?: number;
+      signal?: AbortSignal;
+      logContext?: DispatchLogContext;
+    } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     return withRouterSpan(
       {
@@ -1220,7 +1229,12 @@ export class Router {
     prompt: string,
     files: string[],
     workingDir: string,
-    opts: { hints?: RouteHints; maxFallbacks?: number; signal?: AbortSignal } = {},
+    opts: {
+      hints?: RouteHints;
+      maxFallbacks?: number;
+      signal?: AbortSignal;
+      logContext?: DispatchLogContext;
+    } = {},
   ): Promise<{ result: DispatchResult; decision: RoutingDecision | null }> {
     let result: DispatchResult | null = null;
     let decision: RoutingDecision | null = null;
@@ -1282,8 +1296,9 @@ export class Router {
     service: string,
     result: DispatchResult,
     decision?: RoutingDecision | null,
+    logContext?: DispatchLogContext,
   ): void {
-    logDispatch(service, result, decision);
+    logDispatch(service, result, decision, logContext);
 
     // A rejected INPUT says nothing about the route.
     //

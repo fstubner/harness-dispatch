@@ -84,6 +84,7 @@ export async function runJob(
     const onWorkspace = (ws: PreparedWorkspace): void => {
       workspace = ws;
     };
+    const logContext = { jobId: manifest.jobId, ...(manifest.caller ?? {}) };
     const events = input.service
       ? state.router.streamTo(input.service, input.prompt, files, workingDir, {
           ...(hints.safetyProfile !== undefined
@@ -101,6 +102,7 @@ export async function runJob(
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
           signal: cancelController.signal,
           onWorkspace,
+          logContext,
         })
       : state.router.stream(input.prompt, files, workingDir, {
           hints,
@@ -108,6 +110,7 @@ export async function runJob(
           defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
           signal: cancelController.signal,
           onWorkspace,
+          logContext,
         });
 
     let finalResult: DispatchResult | null = null;

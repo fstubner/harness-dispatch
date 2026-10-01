@@ -459,6 +459,18 @@ export interface ServiceConfig {
   timeoutMs?: number;
 }
 
+/**
+ * Who asked for a dispatch: the MCP client's own name and version (sent by
+ * every client when it connects), and an id for the connection, so one
+ * agent session's dispatches can be told from another's. `client` is "cli"
+ * or "http" for the other two surfaces.
+ */
+export interface DispatchCaller {
+  client?: string;
+  clientVersion?: string;
+  session?: string;
+}
+
 export interface RouterConfig {
   services: Record<string, ServiceConfig>;
   /**

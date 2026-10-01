@@ -18,7 +18,7 @@ import { withFileLock } from "./file-lock.js";
 import { redact } from "./redaction.js";
 import path from "node:path";
 
-import type { DispatchResult, RoutingDecision } from "./types.js";
+import type { DispatchCaller, DispatchResult, RoutingDecision } from "./types.js";
 import { dirFromEnv, stateRoot } from "./state-dir.js";
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
@@ -32,9 +32,23 @@ export function dispatchLogPath(): string {
   return path.join(logDir(), "dispatches.jsonl");
 }
 
+/** Who asked, and the job it ran under. Absent for direct library use. */
+export interface DispatchLogContext extends DispatchCaller {
+  jobId?: string;
+}
+
 export interface DispatchLogEntry {
   ts: string;
   route: string;
+  /**
+   * Which client and connection asked (see DispatchCaller), and the job the
+   * attempt ran under. Without these, the log says how routes performed but
+   * not who used them: every session on the machine writes one shared log.
+   */
+  client?: string;
+  clientVersion?: string;
+  session?: string;
+  jobId?: string;
   success: boolean;
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
@@ -74,10 +88,15 @@ export function buildDispatchLogEntry(
   route: string,
   result: DispatchResult,
   decision?: RoutingDecision | null,
+  context?: DispatchLogContext,
 ): DispatchLogEntry {
   const entry: DispatchLogEntry = {
     ts: new Date().toISOString(),
     route,
+    ...(context?.client !== undefined ? { client: context.client } : {}),
+    ...(context?.clientVersion !== undefined ? { clientVersion: context.clientVersion } : {}),
+    ...(context?.session !== undefined ? { session: context.session } : {}),
+    ...(context?.jobId !== undefined ? { jobId: context.jobId } : {}),
     success: result.success,
   };
   if (result.durationMs !== undefined) entry.durationMs = result.durationMs;
@@ -120,6 +139,7 @@ export function logDispatch(
   route: string,
   result: DispatchResult,
   decision?: RoutingDecision | null,
+  context?: DispatchLogContext,
 ): void {
   try {
     const file = dispatchLogPath();
@@ -144,7 +164,7 @@ export function logDispatch(
       });
     }
     // Sink: this file is read by people and pasted into issues.
-    const line = redact(JSON.stringify(buildDispatchLogEntry(route, result, decision))) + "\n";
+    const line = redact(JSON.stringify(buildDispatchLogEntry(route, result, decision, context))) + "\n";
     appendFileSync(file, line, { encoding: "utf8", mode: 0o600 });
   } catch (err) {
     if (!warnedOnce) {

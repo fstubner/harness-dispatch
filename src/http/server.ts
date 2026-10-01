@@ -27,6 +27,9 @@ import {
   startAsyncJobTracked,
 } from "../jobs.js";
 
+/** Who a REST dispatch is recorded as — see DispatchCaller. */
+const HTTP_CALLER = { client: "http" } as const;
+
 /** How often a streaming response reads its job's event log. */
 const STREAM_POLL_MS = 100;
 import {
@@ -125,6 +128,7 @@ async function runFanoutArms(
           workingDir: parsed.workingDir,
           hints: parsed.hints,
           service: route,
+          caller: HTTP_CALLER,
         },
       );
       // `completion` never rejects and resolves on a terminal state, so the
@@ -291,6 +295,7 @@ async function handleChatCompletions(
               files: parsed.files,
               workingDir: parsed.workingDir,
               hints: parsed.hints,
+              caller: HTTP_CALLER,
             },
           );
     res.writeHead(200, {
@@ -494,6 +499,7 @@ async function handleChatCompletions(
       files: parsed.files,
       workingDir: parsed.workingDir,
       hints: parsed.hints,
+      caller: HTTP_CALLER,
     },
   );
   res.setHeader("x-harness-dispatch-job-id", jobStatus.jobId);

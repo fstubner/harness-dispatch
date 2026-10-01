@@ -90,7 +90,10 @@ unless you opt in:
 Every dispatch also appends one JSONL line to a local
 dispatch log at `~/.harness-dispatch/logs/dispatches.jsonl` (override the
 directory with `HARNESS_DISPATCH_LOG_DIR`) — route, success, duration, token
-counts, and a capped error string, for post-hoc debugging. It's local-only,
+counts, a capped error string, and who asked: the MCP client's name and
+version, a per-connection session id, and the job id (`http` or `cli` for the
+other surfaces). For post-hoc debugging and for seeing which agents use which
+routes. It's local-only,
 size-capped via single-file rotation, and never sent anywhere. Job artifacts
 (prompt, snapshotted files, stdout/stderr, result) live under
 `~/.harness-dispatch/jobs/<jobId>/` and are pruned after 7 days of inactivity by

@@ -8,6 +8,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- **Every dispatch records who asked.** The dispatch log and each job record
+  now carry the MCP client's own name and version (as it introduced itself on
+  connecting), an id for the connection, and the job id; REST and CLI
+  dispatches are recorded as `http` and `cli`. `job_status` lists each job's
+  client and session, so a session whose dispatch reply was lost can find its
+  own job by session id. Before, the log said how routes performed but not
+  which agent or session used them.
+
 - **Routing policy in config.yaml, told to every connecting agent.** A top-level
   `instructions:` block and a per-route `instructions:` (on `clis:`,
   `endpoints:`, `overrides:` or `services:` entries) are appended to the

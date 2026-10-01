@@ -20,7 +20,9 @@ import { redact } from "../redaction.js";
 import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { randomUUID } from "node:crypto";
 import type {
+  DispatchCaller,
   DispatchResult,
   DispatcherEvent,
   RoutePolicy,
@@ -171,6 +173,22 @@ export interface DispatchPollResponse {
 export interface ToolDeps {
   holder: RuntimeHolder;
   reloader?: ConfigHotReloader;
+  /** Who is calling — see DispatchCaller. Set by registerTools for an MCP connection. */
+  caller?: () => DispatchCaller;
+}
+
+/**
+ * The connected client as it introduced itself, plus an id for this
+ * connection. One McpServer serves exactly one connection (a stdio process,
+ * or one HTTP MCP session), so an id minted per server is a session id.
+ */
+function connectionCaller(server: McpServer, session: string): DispatchCaller {
+  const info = server.server.getClientVersion();
+  return {
+    ...(info?.name ? { client: info.name } : {}),
+    ...(info?.version ? { clientVersion: info.version } : {}),
+    session,
+  };
 }
 
 export interface ToolExtra {
@@ -473,6 +491,7 @@ async function startSingle(
       hints,
       ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
       ...(input.service !== undefined ? { service: input.service } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
       ...(onEvent !== undefined ? { onEvent } : {}),
     },
   );
@@ -627,6 +646,7 @@ async function startFanout(
           ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
           hints,
           service: routeName,
+          ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
           ...(onEvent !== undefined ? { onEvent } : {}),
         },
       );
@@ -731,7 +751,10 @@ export async function handleRetryJob(
   args: { jobId: string; service?: string | undefined },
 ) {
   await ensureFreshConfig(deps.reloader);
-  return retryJob(args.jobId, { holder: deps.holder }, args.service !== undefined ? { service: args.service } : {});
+  return retryJob(args.jobId, { holder: deps.holder }, {
+    ...(args.service !== undefined ? { service: args.service } : {}),
+    ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+  });
 }
 
 export async function handleWorkspace(args: {
@@ -857,6 +880,10 @@ async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefin
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
+  if (deps.caller === undefined) {
+    const session = randomUUID();
+    deps = { ...deps, caller: () => connectionCaller(server, session) };
+  }
   server.registerTool(
     "dispatch",
     {

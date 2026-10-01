@@ -407,3 +407,41 @@ describe("MCP server — operator instructions", () => {
     }
   });
 });
+
+describe("MCP server — who dispatched", () => {
+  // Every session on the machine writes one dispatch log and one jobs
+  // directory, so without the client and connection on each record the log
+  // could say how routes performed but not which agent or session used them.
+  it("records the connecting client and its session on the job and the log line", async () => {
+    const { getAsyncJob } = await import("../../src/jobs.js");
+    const { dispatchLogPath } = await import("../../src/dispatch-log.js");
+    const { readFileSync } = await import("node:fs");
+    const { client, close } = await startLinked();
+    try {
+      const resp = await client.callTool({
+        name: "dispatch",
+        arguments: { prompt: "say hi", workingDir: process.cwd(), hints: { taskType: "plan" } },
+      });
+      const content = resp.content as Array<{ type: string; text: string }>;
+      const { jobId } = JSON.parse(content[0]!.text) as { jobId: string };
+      const job = await getAsyncJob(jobId);
+      expect(job.manifest.caller?.client).toBe("test-client");
+      expect(job.manifest.caller?.clientVersion).toBe("test");
+      expect(job.manifest.caller?.session).toMatch(/^[0-9a-f-]{36}$/);
+
+      const line = readFileSync(dispatchLogPath(), "utf8")
+        .split("\n")
+        .filter((l) => l.includes(jobId))
+        .map((l) => JSON.parse(l) as Record<string, unknown>)[0];
+      expect(line, "no dispatch log line for the job").toBeDefined();
+      expect(line).toMatchObject({
+        client: "test-client",
+        clientVersion: "test",
+        session: job.manifest.caller?.session,
+        jobId,
+      });
+    } finally {
+      await close();
+    }
+  });
+});

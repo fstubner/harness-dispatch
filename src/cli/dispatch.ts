@@ -36,10 +36,12 @@ export async function cmdDispatch(
     ? await runtime.router.routeTo(opts.service, prompt, [], process.cwd(), {
         ...(opts.safetyProfile !== undefined ? { safetyProfile: opts.safetyProfile } : {}),
         ...(opts.taskType !== undefined ? { taskType: opts.taskType } : {}),
+        logContext: { client: "cli" },
       })
     : await runtime.router.route(prompt, [], process.cwd(), {
         hints,
         maxFallbacks: opts.noFallback ? 0 : 2,
+        logContext: { client: "cli" },
       });
 
   if (opts.json) {

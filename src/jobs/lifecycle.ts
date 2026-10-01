@@ -10,7 +10,7 @@ import { startAsyncJobTracked } from "./start.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { declaresModel } from "../router.js";
-import type { RouteHints, ServiceConfig } from "../types.js";
+import type { DispatchCaller, RouteHints, ServiceConfig } from "../types.js";
 import {
   applyWorkspace,
   discardWorkspace,
@@ -227,7 +227,7 @@ export interface RetryOutcome {
 export async function retryJob(
   jobId: string,
   deps: JobDeps,
-  opts: { service?: string } = {},
+  opts: { service?: string; caller?: DispatchCaller } = {},
 ): Promise<RetryOutcome> {
   const prior = await getAsyncJob(jobId); // friendly "No such job" for a stranger
   const state = prior.status.status;
@@ -282,6 +282,9 @@ export async function retryJob(
       ? { workspacePolicy: manifest.workspacePolicy }
       : {}),
     ...(service !== undefined ? { service } : {}),
+    // The session that asked for the retry, not the original's: a retry is
+    // often run from a different session than the one that lost the job.
+    ...(opts.caller !== undefined ? { caller: opts.caller } : {}),
   });
 
   return {

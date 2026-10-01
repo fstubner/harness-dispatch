@@ -8,7 +8,14 @@
  * part of the job system that must stay stable.
  */
 
-import type { DispatchResult, DispatcherEvent, RouteHints, RoutingDecision, WorkspacePolicy } from "../types.js";
+import type {
+  DispatchCaller,
+  DispatchResult,
+  DispatcherEvent,
+  RouteHints,
+  RoutingDecision,
+  WorkspacePolicy,
+} from "../types.js";
 import type { RuntimeHolder } from "../mcp/config-hot-reload.js";
 
 export interface JobDeps {
@@ -41,6 +48,8 @@ export interface StartJobInput {
    * one that finally worked cannot be connected to the two that did not.
    */
   retryOf?: string;
+  /** Who asked — see DispatchCaller. Recorded on the manifest and in the dispatch log. */
+  caller?: DispatchCaller;
   /**
    * Live dispatcher-event tap, used by the `dispatch` tool to forward MCP
    * progress notifications during its inline grace window. Never serialized
@@ -126,6 +135,8 @@ export interface JobManifest {
    * it, because a context preamble comes first.
    */
   promptPreview?: string;
+  /** Who asked — see DispatchCaller. */
+  caller?: DispatchCaller;
 }
 
 export interface JobResultPayload {

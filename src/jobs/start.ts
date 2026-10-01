@@ -86,6 +86,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
     promptPreview: promptPreview(input.prompt),
+    ...(input.caller !== undefined ? { caller: input.caller } : {}),
     ...(warning !== undefined ? { warning } : {}),
   };
   await writeJson(path.join(jobDir, "manifest.json"), manifest);

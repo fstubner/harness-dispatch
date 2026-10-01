@@ -132,12 +132,17 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
  */
 export async function jobListingContext(
   jobId: string,
-): Promise<{ workingDir?: string; promptPreview?: string }> {
+): Promise<{ workingDir?: string; promptPreview?: string; client?: string; session?: string }> {
   try {
     const manifest = await readJson<JobManifest>(path.join(jobsRoot(), jobId, "manifest.json"));
+    const caller = manifest.caller;
     return {
       ...(typeof manifest.workingDir === "string" ? { workingDir: manifest.workingDir } : {}),
       ...(typeof manifest.promptPreview === "string" ? { promptPreview: manifest.promptPreview } : {}),
+      // Which client and connection started it: a session that lost its
+      // dispatch reply can match its own session id instead of guessing.
+      ...(typeof caller?.client === "string" ? { client: caller.client } : {}),
+      ...(typeof caller?.session === "string" ? { session: caller.session } : {}),
     };
   } catch {
     return {};
