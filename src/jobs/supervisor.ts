@@ -6,7 +6,6 @@
 
 import { executeJobDir, resolveRunnerPath } from "./run.js";
 import { launchDetached } from "./detach.js";
-import { listAsyncJobs } from "./read.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -19,6 +18,12 @@ import { staleCodeWarning } from "../status.js";
 import {
   cancelRequested,
   claimHolder,
+  clearPending,
+  JOB_ID_RE,
+  mapBounded,
+  markPending,
+  mayHavePendingJobs,
+  pendingIndexDir,
   jobMaxAgeMs,
   jobsRoot,
   ORPHAN_THRESHOLD_MS,
@@ -66,21 +71,23 @@ export function maxConcurrentRuns(config: RouterConfig | undefined): number | nu
 }
 
 /** Job dirs, oldest first by name — jobIds embed Date.now(), so name order is start order. */
-async function readJobStatuses(): Promise<Array<{ jobDir: string; status: JobStatus }>> {
+export async function readJobStatuses(): Promise<Array<{ jobDir: string; status: JobStatus }>> {
   const root = jobsRoot();
   if (!existsSync(root)) return [];
   const entries = await readdir(root, { withFileTypes: true });
-  const out: Array<{ jobDir: string; status: JobStatus }> = [];
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory()) continue;
-    const jobDir = path.join(root, entry.name);
+  const dirs = entries
+    .filter((entry) => entry.isDirectory() && JOB_ID_RE.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => path.join(root, name));
+  const read = await mapBounded(dirs, async (jobDir) => {
     try {
-      out.push({ jobDir, status: await readJson<JobStatus>(path.join(jobDir, "status.json")) });
+      return { jobDir, status: await readJson<JobStatus>(path.join(jobDir, "status.json")) };
     } catch {
-      // Half-written or pruned mid-scan — not a live run either way.
+      return undefined; // Half-written or pruned mid-scan — not a live run either way.
     }
-  }
-  return out;
+  });
+  return read.filter((r): r is { jobDir: string; status: JobStatus } => r !== undefined);
 }
 
 /**
@@ -187,6 +194,7 @@ export async function claimJobDir(jobDir: string, status: JobStatus): Promise<bo
       mode: 0o600,
       flag: "wx",
     });
+    await clearPending(path.basename(jobDir));
     return true;
   } catch {
     const beat = Date.parse(status.updatedAt);
@@ -218,6 +226,7 @@ export async function claimJobDir(jobDir: string, status: JobStatus): Promise<bo
         mode: 0o600,
         flag: "wx",
       });
+      await clearPending(path.basename(jobDir));
       return true;
     } catch {
       return false;
@@ -234,6 +243,7 @@ export async function claimJobDir(jobDir: string, status: JobStatus): Promise<bo
  * order the drainer enforces.
  */
 async function claimNextJob(): Promise<string | undefined> {
+  if (!(await mayHavePendingJobs())) return undefined;
   const statuses = await readJobStatuses();
   for (const { jobDir, status } of statuses) {
     if (status.slotQueued) continue;
@@ -400,10 +410,10 @@ export async function orphanStrandedSlotQueue(): Promise<number> {
   // would then skip it forever. A live supervisor heartbeat means the queue is
   // being worked and nothing is stranded.
   if ((await countLiveSupervisors()) > 0) return 0;
-  const jobs = await listAsyncJobs().catch(() => []);
+  const jobs = await readJobStatuses().catch(() => []);
   let marked = 0;
   for (const listed of jobs) {
-    if (listed.slotQueued !== true) continue;
+    if (listed.status.slotQueued !== true) continue;
     const status = await stillWaiting(listed.jobDir);
     if (status === undefined) continue;
     const { slotQueued: _cleared, ...rest } = status;
@@ -441,6 +451,8 @@ export async function drainSlotQueue(
   const limit = maxConcurrentRuns(config);
   const runnerPath = resolveRunnerPath();
   if (runnerPath === undefined) return;
+  // Nothing waiting and nothing released-but-unclaimed: no scan, no lock.
+  if (!(await mayHavePendingJobs())) return;
 
   // ONE drainer at a time, across processes. The body below is a
   // read-count-release, so two drainers whose reads interleave with each
@@ -471,6 +483,32 @@ export async function drainSlotQueue(
   await Promise.all(slots.map((id) => launchSupervisor(id, runnerPath, configPath)));
 }
 
+/**
+ * Make the pending index match the scan just taken: an entry for every job
+ * that is queued and unclaimed, and none for anything else (claimed,
+ * cancelled, orphaned, finished, pruned). Under the drain lock, so the only
+ * writers it can race are a dispatch adding an entry (harmless) and a claim
+ * removing one (it re-reads before deleting nothing it did not see).
+ */
+async function reconcilePendingIndex(statuses: Array<{ jobDir: string; status: JobStatus }>): Promise<void> {
+  const waiting = new Set<string>();
+  for (const { jobDir, status } of statuses) {
+    if (status.status === "queued" && claimHolder(jobDir) === undefined) waiting.add(status.jobId);
+  }
+  let indexed: string[];
+  try {
+    indexed = await readdir(pendingIndexDir());
+  } catch {
+    indexed = [];
+  }
+  for (const jobId of indexed) {
+    if (!waiting.has(jobId)) await clearPending(jobId);
+  }
+  for (const jobId of waiting) {
+    if (!indexed.includes(jobId)) await markPending(jobId).catch(() => undefined);
+  }
+}
+
 /** How long a drain waits for a concurrent drainer before ceding to it. */
 const DRAIN_LOCK_TIMEOUT_MS = 5_000;
 
@@ -480,6 +518,7 @@ async function drainSlotQueueLocked(
   config: RouterConfig | undefined,
 ): Promise<string[]> {
   const statuses = await readJobStatuses();
+  await reconcilePendingIndex(statuses);
   let active = activeCapacity(statuses, config);
   // Supervisors are sized by how many JOBS there are, not by how much budget
   // they consume: ten endpoint calls are 1.0 of capacity but still ten jobs,
@@ -621,6 +660,65 @@ async function countLiveSupervisors(): Promise<number> {
 }
 
 /**
+ * Where a waiting job stands: its place in the slot queue (1 = next), and the
+ * jobs holding the slots it waits for. Computed on read and never written —
+ * a queued job used to say nothing beyond "queued", so one stuck behind two
+ * silent runs looked exactly like one about to start.
+ */
+export async function queueStanding(
+  jobId: string,
+): Promise<{ queuePosition?: number; waitingOn: string[] }> {
+  const statuses = await readJobStatuses();
+  const waiting = statuses.filter((s) => s.status.slotQueued && s.status.status === "queued");
+  const index = waiting.findIndex((s) => s.status.jobId === jobId);
+  const waitingOn = statuses
+    .filter(({ status }) => {
+      if (status.slotQueued || status.jobId === jobId) return false;
+      if (status.status !== "running" && status.status !== "queued") return false;
+      const beat = Date.parse(status.updatedAt);
+      return !Number.isFinite(beat) || Date.now() - beat <= ORPHAN_THRESHOLD_MS;
+    })
+    .map(({ status }) => status.jobId);
+  return { ...(index >= 0 ? { queuePosition: index + 1 } : {}), waitingOn };
+}
+
+/**
+ * Start a supervisor for a waiting job when nothing else will.
+ *
+ * The queue has no daemon: it moves when something drains it, and drains
+ * happen on a dispatch and in a supervisor's loop. Once every supervisor had
+ * died, a queued job — slot-queued or released — sat until some unrelated
+ * dispatch came along, while its own polls kept saying "wait". A supervisor
+ * started here drains with its own config first, so the cap still decides
+ * what runs; this only supplies the process that applies it.
+ *
+ * Only when no supervisor is alive and no run is in progress: a live run frees
+ * its slot by draining when it ends, and starting supervisors next to it would
+ * just spin up processes that find nothing they may run.
+ *
+ * Not called at server start, which deliberately reports abandoned queues
+ * instead (orphanStrandedSlotQueue): this runs when someone asks about, or is
+ * waiting on, this job. Returns why it could not start one, if it tried and
+ * failed.
+ */
+export async function startSupervisorIfNoneAlive(
+  configPath: string | undefined,
+): Promise<string | undefined> {
+  // In-process mode runs jobs inside the server; there is no pool to start.
+  if (process.env.HARNESS_DISPATCH_INPROC_JOBS === "1") return undefined;
+  const runnerPath = resolveRunnerPath();
+  if (runnerPath === undefined) return undefined;
+  if ((await countLiveSupervisors()) > 0) return undefined;
+  const running = (await readJobStatuses()).some(({ status }) => {
+    if (status.status !== "running") return false;
+    const beat = Date.parse(status.updatedAt);
+    return Number.isFinite(beat) && Date.now() - beat <= ORPHAN_THRESHOLD_MS;
+  });
+  if (running) return undefined;
+  return launchSupervisor(registerSupervisorSlot(), runnerPath, configPath);
+}
+
+/**
  * Exported for the cleanup test, which must exercise the REAL sweep: it pins
  * that a stale heartbeat is removed, and a reimplementation in the test would
  * pin nothing.
@@ -662,7 +760,7 @@ async function launchSupervisor(
   id: string,
   runnerPath: string,
   configPath: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const dir = path.join(jobsRoot(), ".supervisors");
   const logPath = path.join(dir, `spawn-${id}.log`);
   const outcome = await launchDetached({
@@ -674,7 +772,7 @@ async function launchSupervisor(
     },
     logPath,
   });
-  if (outcome.ok) return;
+  if (outcome.ok) return undefined;
   await rm(path.join(dir, `${id}.txt`), { force: true }).catch(() => undefined);
   await writeFile(logPath, `harness-dispatch: could not start a supervisor: ${outcome.error}
 `, {
@@ -682,6 +780,7 @@ async function launchSupervisor(
     flag: "a",
     mode: 0o600,
   }).catch(() => undefined);
+  return outcome.error;
 }
 
 async function spawnDetachedSupervisor(runnerPath: string, configPath: string | undefined): Promise<void> {

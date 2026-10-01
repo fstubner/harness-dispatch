@@ -59,7 +59,8 @@ export interface CancelOutcome {
  * circuit breaker never sees it.
  */
 export async function cancelJob(jobId: string, reason?: string): Promise<CancelOutcome> {
-  const job = await getAsyncJob(jobId); // throws the friendly "No such job" for a stranger
+  // recover: false — a cancel must never start a supervisor.
+  const job = await getAsyncJob(jobId, { recover: false }); // friendly "No such job" for a stranger
   const current = job.status.status;
 
   // There are TWO kinds of orphaned job and they need opposite answers.
@@ -102,8 +103,17 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   // nothing would act on the marker and it would sit at "cancelling" forever.
   if (current === "queued" || current === "orphaned") {
     // Out of the slot queue as well: left marked, a cancelled job was still
-    // counted as waiting for a slot.
-    const { slotQueued: _waiting, ...rest } = job.status;
+    // counted as waiting for a slot. And without the poll guidance and queue
+    // standing `getAsyncJob` adds for a live job: written back, a cancelled
+    // job told its caller to keep checking until it completed.
+    const {
+      slotQueued: _waiting,
+      nextPollSeconds: _poll,
+      instructions: _instructions,
+      queuePosition: _position,
+      waitingOn: _waitingOn,
+      ...rest
+    } = job.status;
     await updateStatus(jobDir, {
       ...rest,
       status: "cancelled",
@@ -152,7 +162,7 @@ export async function resolveJobWorkspace(
   action: "diff" | "apply" | "discard",
   opts: { force?: boolean } = {},
 ): Promise<unknown> {
-  const job = await getAsyncJob(jobId);
+  const job = await getAsyncJob(jobId, { recover: false });
   const run = job.result?.result?.workspace;
   if (!isResolvable(run)) {
     // A separate binding: the type guard narrows `run` to never on this
@@ -229,7 +239,7 @@ export async function retryJob(
   deps: JobDeps,
   opts: { service?: string; caller?: DispatchCaller } = {},
 ): Promise<RetryOutcome> {
-  const prior = await getAsyncJob(jobId); // friendly "No such job" for a stranger
+  const prior = await getAsyncJob(jobId, { recover: false }); // friendly "No such job" for a stranger
   const state = prior.status.status;
   if (state === "running" || state === "queued") {
     throw new Error(

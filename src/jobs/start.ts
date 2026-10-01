@@ -7,6 +7,7 @@ import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../wor
 import { buildContextPreamble } from "./context.js";
 import {
   jobsRoot,
+  markPending,
   newJobId,
   pollInstructions,
   pruneStaleJobs,
@@ -22,6 +23,7 @@ import { resolveRunnerPath, runJob, watchUntilTerminal } from "./run.js";
 import {
   configLoadError,
   drainSlotQueue,
+  startSupervisorIfNoneAlive,
 } from "./supervisor.js";
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
   return (await startAsyncJobTracked(deps, input)).status;
@@ -87,6 +89,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
     promptPreview: promptPreview(input.prompt),
     ...(input.caller !== undefined ? { caller: input.caller } : {}),
+    ...(deps.holder.state.configPath !== undefined ? { configPath: deps.holder.state.configPath } : {}),
     ...(warning !== undefined ? { warning } : {}),
   };
   await writeJson(path.join(jobDir, "manifest.json"), manifest);
@@ -136,12 +139,18 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // fresh dispatch arriving while others wait must not jump the queue, which
   // only one FIFO drainer can guarantee.
   await updateStatus(jobDir, { ...status, slotQueued: true });
+  // After the slot-queued write, so a supervisor that sees the entry never
+  // finds the job in the plain `queued` state it briefly had above — which
+  // reads as already released.
+  await markPending(jobId);
   await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
   const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
   const watch = new AbortController();
+  const configPath = deps.holder.state.configPath;
   const completion = watchUntilTerminal(jobDir, {
     ...(input.onEvent !== undefined ? { onEvent: input.onEvent } : {}),
     signal: watch.signal,
+    onWaiting: () => startSupervisorIfNoneAlive(configPath),
   });
   return { status: settled, completion, stopWatching: () => watch.abort() };
 }

@@ -296,16 +296,20 @@ describe("retrying a derived orphan", () => {
       }),
       "utf8",
     );
-    // Raw status `queued`, heartbeat stale: derived orphan, still claimable.
+    // Raw status `running`, heartbeat stale, claimant dead: derived orphan,
+    // and still reclaimable once that claim is judged stale. (A `queued` job
+    // nobody claimed is no longer a derived orphan at all — it is waiting, and
+    // retry refuses it like any queued job.)
     await fs.writeFile(
       path.join(dir, "status.json"),
       JSON.stringify({
-        jobId, status: "queued", jobDir: dir,
+        jobId, status: "running", jobDir: dir,
         createdAt: new Date(Date.now() - 600_000).toISOString(),
         updatedAt: new Date(Date.now() - 600_000).toISOString(),
       }),
       "utf8",
     );
+    await fs.writeFile(path.join(dir, "claim.json"), JSON.stringify({ pid: 0x7ffffffe, at: "x" }), "utf8");
 
     const { getAsyncJob } = await import("../src/jobs.js");
     expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");

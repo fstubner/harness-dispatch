@@ -26,6 +26,28 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A queued job says where it stands.** `job_status` on a job waiting for a
+  concurrency slot now gives its place in the queue (`queuePosition`), the jobs
+  holding the slots it waits for (`waitingOn`), and says so in its
+  instructions. Before, a job stuck behind two silent runs read exactly like one
+  about to start.
+
+- **A queue left behind by dead supervisors moves again when you ask about it.**
+  If every supervisor had died, a waiting job sat until some unrelated dispatch
+  came along while its polls kept saying "wait". Polling it now starts a
+  supervisor when none is alive and nothing is running; the concurrency cap
+  still decides what runs. A job that was released to run but not yet picked up
+  now reads as `queued` rather than `orphaned`: it was reported finished
+  (`completed: true`) while its own message said it would still start.
+
+- **A cancelled job no longer tells its caller to keep polling** until it
+  completes.
+
+- **Job scans are cheaper.** The slot drain and each supervisor pass no longer
+  read every retained job's status when nothing is waiting, and the scans that
+  do run read 16 files at a time. Measured on 2,000 retained jobs: listing
+  1.1–1.4 s → 0.2 s, an empty drain 1.1–1.6 s → 2 ms.
+
 - **MCP progress notifications now arrive for ordinary dispatches.** They were
   sent only when a job ran inside the server process, which is the mode the test
   suite forces and no real install uses, so a client asking for progress got

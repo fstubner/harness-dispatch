@@ -12,6 +12,7 @@ import {
   boundedError,
   cancelReason,
   cancelRequested,
+  claimHolder,
   JOB_EVENTS_LOG,
   readJson,
   timestamp,
@@ -435,6 +436,9 @@ export function resolveRunnerPath(): string | undefined {
 
 const TERMINAL_WATCH_INTERVAL_MS = 300;
 
+/** How often a watch of a waiting job checks that something will run it. */
+const WAITING_NUDGE_MS = 10_000;
+
 /**
  * Watch a detached job's directory until it reaches a terminal state
  * (result.json present, or a failed/orphaned status — the orphan check
@@ -454,10 +458,22 @@ const TERMINAL_WATCH_INTERVAL_MS = 300;
  */
 export async function watchUntilTerminal(
   jobDir: string,
-  opts: { onEvent?: (event: DispatcherEvent) => void; signal?: AbortSignal } = {},
+  opts: {
+    onEvent?: (event: DispatcherEvent) => void;
+    signal?: AbortSignal;
+    /**
+     * Called, at most every WAITING_NUDGE_MS, while the job is queued and no
+     * supervisor has claimed it. A released job used to read as orphaned
+     * after 90 s, which ended this watch; it now reads as waiting, so a
+     * caller awaiting the whole run (HTTP) needs something to start a
+     * supervisor if every one has died.
+     */
+    onWaiting?: () => Promise<unknown>;
+  } = {},
 ): Promise<void> {
   const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
   const tail = opts.onEvent !== undefined ? partialLogTail(jobDir, opts.onEvent) : undefined;
+  let lastNudge = Date.now();
   while (Date.now() < deadline && opts.signal?.aborted !== true) {
     await tail?.();
     // Waits for a terminal STATUS, deliberately not for result.json: runJob
@@ -479,6 +495,15 @@ export async function watchUntilTerminal(
       ) {
         await tail?.(); // Output written just before the terminal status.
         return;
+      }
+      if (
+        opts.onWaiting !== undefined &&
+        status.status === "queued" &&
+        Date.now() - lastNudge >= WAITING_NUDGE_MS &&
+        claimHolder(jobDir) === undefined
+      ) {
+        lastNudge = Date.now();
+        await opts.onWaiting().catch(() => undefined);
       }
     } catch {
       // Transient read during an atomic rename — retry next tick.

@@ -110,6 +110,12 @@ export interface JobStatus {
    * a job merely waiting its turn as dead. Cleared once its runner is spawned.
    */
   slotQueued?: true;
+  /**
+   * For a waiting job only, computed on read and never written: its place in
+   * the slot queue (1 = next) and the jobs holding the slots it waits for.
+   */
+  queuePosition?: number;
+  waitingOn?: string[];
 }
 
 export interface JobManifest {
@@ -139,6 +145,12 @@ export interface JobManifest {
   promptPreview?: string;
   /** Who asked — see DispatchCaller. */
   caller?: DispatchCaller;
+  /**
+   * The config file the dispatching server ran with, so a supervisor started
+   * later on this job's behalf (see startSupervisorIfNoneAlive) loads the
+   * same routes and limits.
+   */
+  configPath?: string;
 }
 
 export interface JobResultPayload {
