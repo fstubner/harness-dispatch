@@ -12,14 +12,12 @@ this command to ADD what it cannot detect (HTTP endpoints, per-route preferences
 or to explain what it wrote. Re-running `configure --yes` later regenerates a file
 it wrote and nobody has edited, so installing a harness afterwards needs no flags.
 
-**The rule that governs every edit below.** A config that contains a `clis:` or
-`endpoints:` key is AUTHORITATIVE about routes: auto-detection is switched off and
-the file's own list is the whole route table. So adding an `endpoints:` block to a
-file that relied on detection silently removes every CLI harness — `disabled:` and
-`overrides:` then apply to nothing, because they tune detection. Whenever this
-command writes `endpoints:` (or `clis:`), it MUST either add `detect: true` to
-keep the detected harnesses in the mix, or list every CLI route explicitly under
-`clis:`. Never write `endpoints:` alongside `disabled:`/`overrides:` and stop
+**The rule that governs every edit below:** a config that lists `clis:` or
+`endpoints:` is authoritative and turns auto-detection off (full explanation:
+https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
+So whenever this command writes `endpoints:` (or `clis:`), it MUST either add
+`detect: true` to keep the detected harnesses, or list every CLI route explicitly
+under `clis:`. Never write `endpoints:` alongside `disabled:`/`overrides:` and stop
 there. Verify with `harness-dispatch doctor`, which reports both the ignored-key
 warning and any harness installed but missing from the config.
 

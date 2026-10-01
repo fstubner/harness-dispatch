@@ -111,8 +111,9 @@ describe("the docs a user reads must name the tools that actually exist", () => 
    * checked against TOOL_NAMES rather than against a copy of the list.
    */
   const docs = [
+    // CLAUDE.md is not listed: it imports AGENTS.md (`@AGENTS.md`) so the two
+    // cannot disagree; the next test pins that it still does.
     "AGENTS.md",
-    "CLAUDE.md",
     "README.md",
     // Added when the README's reference half moved here: this file now carries
     // the tool reference, so it is the doc most likely to drift, and it was
@@ -127,6 +128,12 @@ describe("the docs a user reads must name the tools that actually exist", () => 
     const text = await fs.readFile(path.join(process.cwd(), rel), "utf8");
     const missing = TOOL_NAMES.filter((name) => !text.includes(name));
     expect(missing, `${rel} does not mention: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("CLAUDE.md imports AGENTS.md instead of repeating it", async () => {
+    // They were the same instructions twice, with small wording differences.
+    const text = await fs.readFile(path.join(process.cwd(), "CLAUDE.md"), "utf8");
+    expect(text).toMatch(/^@AGENTS\.md$/m);
   });
 
   it("ux-walkthrough states the right tool count", async () => {
