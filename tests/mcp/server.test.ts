@@ -10,7 +10,6 @@ import { registerResources } from "../../src/mcp/resources.js";
 import { ConfigHotReloader, RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatcherEvent,
@@ -53,7 +52,7 @@ function makeSvc(name: string, harness: string): ServiceConfig {
     cliCapability: 1.0,
     capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
     escalateOn: [],
-    leaderboardModel: `${name}-model`,
+    model: `${name}-model`,
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
     provider: "local",
@@ -63,15 +62,6 @@ function makeSvc(name: string, harness: string): ServiceConfig {
     paidUsagePossible: false,
     billingConfidence: "documented",
   };
-}
-
-function stubLeaderboard(): LeaderboardCache {
-  const lb = new LeaderboardCache();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (lb as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (lb as any).data = { "a-model": 1400, "b-model": 1300 };
-  return lb;
 }
 
 function buildState(): RuntimeState {
@@ -85,9 +75,8 @@ function buildState(): RuntimeState {
   };
   const config: RouterConfig = { services };
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = stubLeaderboard();
-  const router = new Router(config, quota, dispatchers, leaderboard);
-  return { config, dispatchers, quota, router, leaderboard, mtimeMs: 0 };
+  const router = new Router(config, quota, dispatchers);
+  return { config, dispatchers, quota, router, mtimeMs: 0 };
 }
 
 vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);

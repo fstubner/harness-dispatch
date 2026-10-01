@@ -110,13 +110,11 @@ describe("status payload redaction", () => {
       pickService: () => undefined,
       getBreaker: () => undefined,
     };
-    const leaderboard = { getQualityScore: async () => ({ qualityScore: 0.85 }) };
     const status = await buildStatus(
       config as never,
       {} as never,
       quota as never,
       router as never,
-      leaderboard as never,
     );
     const serialised = JSON.stringify(status);
     expect(serialised, "the credential survived into the status payload").not.toContain(secret);

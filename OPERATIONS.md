@@ -43,11 +43,18 @@ client on this machine points at a path that no longer exists.
 
 **What it is doing and what it costs.** `harness-dispatch status` (route
 readiness, quota, circuit-breaker state) and `harness-dispatch usage`
-(per-route call counts, tokens, billing kind). Both take `--json`.
+(per-route call counts, tokens, billing kind). Both take `--json`. The call
+counts are lifetime totals, dated `since` the day they began where that is
+known; next to them each route shows how it has done over the **last 7 days**
+(`last 7d: 15/75 succeeded (20%), 43 rate-limited`), read from the dispatch log.
+That recent figure is the one to check before delegating: a route can be fine
+for life and failing this week. Counts are attempts, so a fallback is its own.
 
 **What it did.** `~/.harness-dispatch/logs/dispatches.jsonl`, one JSON object
 per dispatch: route, success, duration, tokens, task type, safety profile, the
-routing reason, and the candidates the winning route beat. This is the record
+routing reason, the candidates the winning route beat, and the config file in
+use (`config`), so a run against a throwaway config can be told from real use.
+This is the record
 to read when asking whether routing is choosing well, rather than whether it
 ran.
 
@@ -152,8 +159,12 @@ false`) a zero exit is still a success, and what it streamed is the output.
 
 ## Recovery
 
-**A tripped breaker.** Wait, or restart the server. Deadlines are capped at 24
-hours and a single success closes it. `status` shows the remaining time.
+**A tripped breaker.** Wait for the deadline, or close it now with
+`harness-dispatch breaker reset <route>`. Restarting the server does **not**
+clear it: breaker state is saved per route (`breaker_state/<route>.json` under
+the state directory) precisely so that a restart does not forget a cooldown.
+Deadlines are capped at 24 hours and a single success closes it. `status` shows
+the remaining time.
 
 **An orphaned or failed job.** `retry_job <jobId>` re-runs it from its own
 record — the frozen prompt, files, working directory and hints — optionally on

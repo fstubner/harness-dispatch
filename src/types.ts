@@ -373,7 +373,6 @@ export interface ServiceConfig {
   tier: number;
   weight: number;
   cliCapability: number;
-  leaderboardModel?: string;
   thinkingLevel?: ThinkingLevel;
   escalateModel?: string;
   escalateOn: TaskType[];
@@ -505,14 +504,13 @@ export interface RouterConfig {
    * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.
    */
   telemetry?: { enabled: boolean };
+  /**
+   * Absolute path of the config file this was loaded from; absent when none was
+   * (auto-detect). Only recorded in the dispatch log — see DispatchLogContext.
+   */
+  configPath?: string;
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
-  /**
-   * Arena ELO scoring. OFF by default: routing ranks on the `tier` and
-   * `weight` you set, and the router makes no outbound request. Enable to let
-   * public benchmark scores influence ranking and tier auto-derivation.
-   */
-  leaderboard?: { enabled?: boolean };
   /**
    * Resolved secret -> the `${VAR}` reference it came from, for every
    * `${VAR}` in the config file that resolved to a non-empty value, so
@@ -585,14 +583,13 @@ export interface RoutingDecision {
   service: string;
   tier: number;
   quotaScore: number;
-  qualityScore: number;
   cliCapability: number;
   capabilityScore: number;
   taskType: TaskType;
   model: string | undefined;
   /**
    * Set only when hints.model was provided. true if it matched something
-   * this route statically declares (model/leaderboardModel/escalateModel/
+   * this route statically declares (model/escalateModel/
    * route name) — false if it was passed to the dispatcher "blind" because
    * nothing recognized it, which can still work (CLIs often accept arbitrary
    * --model values) or can fail with the harness's own rejection. hints.model
@@ -609,7 +606,6 @@ export interface RoutingDecision {
    * model was discarded would read the opposite of what happened.
    */
   modelHintDropped?: boolean;
-  elo: number | undefined;
   finalScore: number;
   reason: string;
   /**

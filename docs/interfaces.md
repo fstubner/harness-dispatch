@@ -17,6 +17,7 @@ harness-dispatch connect --remove        # take the entry back out
 harness-dispatch doctor                  # validate install, auth, config, and routes
 harness-dispatch doctor --live           # run one eligible live routed probe
 harness-dispatch doctor --live --allow-paid
+harness-dispatch doctor --prune-state    # also delete saved breaker/usage state for routes this config does not name
 harness-dispatch status                  # readable route readiness
 harness-dispatch status --json           # structured route metadata
 harness-dispatch status --watch          # live status refresh
@@ -24,16 +25,21 @@ harness-dispatch usage                   # per-route call counts, quota, billing
 harness-dispatch usage --json            # structured usage metadata
 harness-dispatch dispatch "<prompt>"     # route one task and print the result
 harness-dispatch dispatch "<prompt>" --service codex_cli --safety read_only --task-type review --no-fallback --json
+harness-dispatch breaker reset <route>   # close a tripped circuit breaker now
 harness-dispatch serve --port 3333       # /mcp and /v1/* over local HTTP
+harness-dispatch mcp                     # stdio MCP, same as no command (what launchers use)
+harness-dispatch mcp --http 3333         # same as serve --port 3333
 harness-dispatch auth show               # print HTTP bearer token
 harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
-Hidden compatibility aliases currently map old alpha commands to the new surface:
-`dashboard` and `list-services` map to `status`, `route <prompt>` is an alias of
-`dispatch`, and `mcp --http <port>` maps to `serve`.
-They are not part of the public vocabulary and may be removed without a major
-version bump.
+`mcp` is supported: it is what the plugin launcher and some client entries run,
+and `mcp --http <port>` is the same as `serve --port <port>`.
+
+Hidden compatibility aliases map old alpha commands to the new surface:
+`dashboard` and `list-services` map to `status`, and `route <prompt>` is an alias
+of `dispatch`. They are not part of the public vocabulary and may be removed
+without a major version bump.
 
 ## MCP Surface
 

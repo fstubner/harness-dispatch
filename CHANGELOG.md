@@ -24,7 +24,102 @@ pre-1.0, so minor versions can carry behaviour changes.
   written once instead of in every client's CLAUDE.md or AGENTS.md. Capped at
   1,000 characters each; secrets the config holds are scrubbed from it.
 
+- **`status` and `usage` show how each route has done in the last 7 days.** Next
+  to the lifetime counts, each route that was tried shows `last 7d: 15/75
+  succeeded (20%), 43 rate-limited`, read from the dispatch log. A route that
+  fails most of the time this week no longer looks healthy because it did well
+  over its lifetime. The lifetime counts are now dated `since` the day they began
+  (counts written before this carry no date, and are not given one).
+
+- **`harness-dispatch breaker reset <route>` closes a tripped circuit breaker.**
+  OPERATIONS.md said a restart clears one; it does not (breaker state is saved
+  per route so a restart cannot forget a cooldown), which left deleting a file by
+  hand as the only way out. The runbook is corrected.
+
+- **Each dispatch-log row records which config file was loaded** (`config`), so
+  a demo run against a throwaway config can be told from real use. `doctor` now
+  lists saved breaker and usage state for routes the config does not name, and
+  `doctor --prune-state` deletes it; nothing is deleted without the flag, because
+  the state directory is shared by every config on the machine.
+
+- **`mcp` is a supported subcommand,** documented and in `--help`: the plugin
+  launcher and existing client entries run it, and `mcp --http <port>` is
+  `serve --port <port>`.
+
+- **Finding a harness on PATH is much faster.** The resolver read
+  every PATH directory on every call, synchronously: 0.58-0.72 s for the four
+  harness names on this machine, repeated on each routing decision, each `status`
+  and each process start that auto-detects. It now reads each directory once and
+  matches names in memory (31 ms for the same four, measured), and remembers the
+  answer for five seconds, so a harness installed while a server runs is still
+  found without a restart. It finds the same files `which` does.
+
+### Removed
+
+- **The Arena-ELO leaderboard is gone.** It was off by default, and every logged
+  routing decision had a quality score of 1, so it never changed a pick. Routing
+  is now documented as what it was in practice: tier, then weight x capability,
+  then fallback. The `leaderboard:` block and the per-route `leaderboard_model:`
+  key still load but are reported as removed and have no effect (a config that
+  set `leaderboard_model` to a nonsense value only to make `tier:` win no longer
+  needs to). `LeaderboardCache` is no longer exported, and the `qualityScore` /
+  `elo` fields are gone from routing results, fanout items, `status` and the
+  dispatch log's `scores`. The shipped `data/coding_benchmarks.json` and <!-- claims-check-ignore -->
+  `scripts/fetch_benchmarks.py` are deleted. <!-- claims-check-ignore -->
+
 ### Fixed
+
+- **`configure --force` no longer writes an API key into the file as plain text.**
+  A key given as the per-route shorthand (`codex_cli_api_key: ${VAR}`) was
+  written back as its resolved value; it is now written back as the `${VAR}`
+  reference, like every other key.
+
+- **`configure` no longer loses routes or settings on a rewrite.** A legacy
+  `services:` entry with no `harness:` (its own command and protocol) is written
+  back as a working generic route instead of one the loader rejects; `clis: []`
+  stays "no routes" instead of turning into a file that detects every installed
+  harness; `escalate_on: []` is kept, and is honoured as "never escalate"
+  instead of becoming `[plan, review]`. A list of mistyped task types in
+  `escalate_on` now warns.
+
+- **Config problems now say what they are.** A bare `-` in `clis:` or
+  `endpoints:` is reported as an empty entry instead of crashing with "Cannot
+  read properties of null"; a `clis:` entry missing only its `harness` no longer
+  claims the `name` is missing too; `version:` and a top-level `protocol:` (both
+  read by nothing) are reported like the other ignored top-level keys; a legacy
+  `services:` endpoint whose `${VAR}` key is unset is skipped instead of shown
+  as ready; `doctor` and `configure` no longer say a legacy config was
+  "auto-detected".
+
+- **`connect` no longer overwrites a client config created while it waited.** If
+  Claude Code or Cursor created its config file between `connect` planning and
+  writing (it asks first), the entry is now merged into that file with a backup
+  instead of replacing it.
+
+- **A flag that needs a value now says so.** `dispatch "…" --service` with no
+  value ran as ordinary routing, and `--clients`, `--host` and `--interval`
+  with no value were ignored; each is now a usage error.
+
+- **Routing state from other processes is read everywhere it matters.** A
+  route named with `service` honoured a stale in-memory breaker (refusing one
+  another process had healed, running one it had tripped); a route skipped as
+  "never succeeded" stayed skipped after another process recorded its first
+  success; and a breaker whose record went unreadable and was then deleted stayed
+  tripped. With an unwritable state directory the breaker never tripped (every
+  failure counted as the first); it now trips on this process's own count. A
+  breaker write error now clears once writes work again, and a record that cannot
+  be removed is reported.
+
+- **A fallback is no longer started with a few milliseconds of budget.** When
+  the first attempt used up nearly all of a dispatch's overall time limit, the
+  fallback was handed what was left (observed: 2 ms), timed out at once, and was
+  charged a breaker failure. Under a second of budget, no fallback is attempted.
+
+- **A fallback no longer says "model hint not sent" when the hint was a route
+  name,** which was never meant to be sent as a model. A damaged per-route entry
+  in `quota_state.json` (for example `"codex": 12`) no longer stops usage counting
+  for every route, and a dispatcher whose stream throws no longer leaves its
+  isolated workspace behind.
 
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
@@ -1407,7 +1502,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   here — `scripts/check-claims.mjs` could not see tool descriptions at all, and
   now does.
 
-- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its
+- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its <!-- claims-check-ignore -->
   bundled fallback when the network fails. It swallowed every exception,
   returned an empty set, wrote it out and exited 0 — turning a transient outage
   into a permanent downgrade of the file that ships in the package.

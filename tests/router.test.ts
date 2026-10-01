@@ -1,7 +1,7 @@
 /**
  * Router unit tests.
  *
- * Mocks the QuotaCache, LeaderboardCache, and Dispatcher
+ * Mocks the QuotaCache and Dispatcher
  * modules — this test suite focuses on router scoring + dispatch logic,
  * not on those dependencies.
  */
@@ -121,34 +121,6 @@ vi.mock("../src/quota.js", () => {
   return { QuotaCache };
 });
 
-vi.mock("../src/leaderboard.js", () => {
-  class LeaderboardCache {
-    private models = new Map<string, { qualityScore: number; elo: number | null }>();
-    private tierOverrides = new Map<string, number>();
-    setModel(model: string, qualityScore: number, elo: number | null = null): void {
-      this.models.set(model, { qualityScore, elo });
-    }
-    setTier(model: string, tier: number): void {
-      this.tierOverrides.set(model, tier);
-    }
-    async getQualityScore(
-      model: string | undefined,
-    ): Promise<{ qualityScore: number; elo: number | null }> {
-      if (!model) return { qualityScore: 1.0, elo: null };
-      return this.models.get(model) ?? { qualityScore: 1.0, elo: null };
-    }
-    async autoTier(
-      model: string | undefined,
-      _thinking: unknown,
-      fallbackTier: number,
-    ): Promise<number> {
-      if (!model) return fallbackTier;
-      return this.tierOverrides.get(model) ?? fallbackTier;
-    }
-  }
-  return { LeaderboardCache };
-});
-
 // ---- Imports come AFTER vi.mock calls ------------------------------------
 
 import { workspaceRunId } from "../src/workspaces.js";
@@ -157,7 +129,6 @@ import { aRunDirName } from "./support/fixtures.js";
 import { nonLocalIncludedRoutePenalty } from "../src/route-policy.js";
 import { buildRouteBilling } from "../src/billing.js";
 import { QuotaCache } from "../src/quota.js";
-import { LeaderboardCache } from "../src/leaderboard.js";
 import type { DispatchResult, RouterConfig, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 
@@ -357,39 +328,19 @@ class StreamStubDispatcher implements Dispatcher {
 
 describe("Router.pickService", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
-  it("prefers the service with higher ELO within the same tier", async () => {
-    const a = makeService({
-      name: "alpha",
-      leaderboardModel: "model-a",
-      tier: 1,
-    });
-    const b = makeService({
-      name: "beta",
-      leaderboardModel: "model-b",
-      tier: 1,
-    });
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-a",
-      0.9,
-      1400,
-    );
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-b",
-      0.8,
-      1300,
-    );
+  it("prefers the service with the higher weight within the same tier", async () => {
+    const a = makeService({ name: "alpha", weight: 0.9, tier: 1 });
+    const b = makeService({ name: "beta", weight: 0.8, tier: 1 });
     const dispatchers: Record<string, Dispatcher> = {
       alpha: new StubDispatcher("alpha"),
       beta: new StubDispatcher("beta"),
     };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, dispatchers);
     const decision = await router.pickService({ hints: { taskType: "execute" } });
     expect(decision).not.toBeNull();
     expect(decision!.service).toBe("alpha");
@@ -417,7 +368,7 @@ describe("Router.pickService", () => {
       };
       failNTimes(quota, "dead", 5);
 
-      const router = new Router(makeConfig([dead, live]), quota, dispatchers, leaderboard);
+      const router = new Router(makeConfig([dead, live]), quota, dispatchers);
       const decision = await router.pickService({ hints: { taskType: "execute" } });
 
       expect(decision?.service, "the dead route was still chosen").toBe("live");
@@ -434,7 +385,7 @@ describe("Router.pickService", () => {
       const dispatchers: Record<string, Dispatcher> = { nearly: new StubDispatcher("nearly") };
       failNTimes(quota, "nearly", 4);
 
-      const router = new Router(makeConfig([nearly]), quota, dispatchers, leaderboard);
+      const router = new Router(makeConfig([nearly]), quota, dispatchers);
       const decision = await router.pickService({ hints: { taskType: "execute" } });
 
       expect(decision?.service).toBe("nearly");
@@ -446,7 +397,7 @@ describe("Router.pickService", () => {
       failNTimes(quota, "flaky", 6);
       quota.recordResult("flaky", { output: "ok", service: "flaky", success: true });
 
-      const router = new Router(makeConfig([flaky]), quota, dispatchers, leaderboard);
+      const router = new Router(makeConfig([flaky]), quota, dispatchers);
       const decision = await router.pickService({ hints: { taskType: "execute" } });
 
       expect(decision?.service, "one success must re-admit it").toBe("flaky");
@@ -460,7 +411,7 @@ describe("Router.pickService", () => {
       const dispatchers: Record<string, Dispatcher> = { dead: new StubDispatcher("dead") };
       failNTimes(quota, "dead", 9);
 
-      const router = new Router(makeConfig([dead]), quota, dispatchers, leaderboard);
+      const router = new Router(makeConfig([dead]), quota, dispatchers);
       const { result } = await router.routeTo("dead", "hi", [], "/tmp");
 
       expect(result.success, "naming the route explicitly did not run it").toBe(true);
@@ -474,7 +425,7 @@ describe("Router.pickService", () => {
       alpha: new StubDispatcher("alpha"),
       beta: new StubDispatcher("beta"),
     };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, dispatchers);
     const decision = await router.pickService({ hints: { service: "beta" } });
     expect(decision?.service).toBe("beta");
     expect(decision?.reason).toBe("forced");
@@ -489,7 +440,7 @@ describe("Router.pickService", () => {
     const second = makeService({ name: "claudeish", tier: 2, model: "claude-model" });
     const failing = new StubDispatcher("codexish", { success: false, error: "boom" });
     const fallback = new StubDispatcher("claudeish");
-    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, claudeish: fallback }, leaderboard);
+    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, claudeish: fallback });
     const { result } = await router.route("go", [], "/tmp", { hints: { model: "gpt-5.6-sol" } });
     expect(result.success).toBe(true);
     expect(failing.calls[0]?.model, "the route that declares it got it").toBe("gpt-5.6-sol");
@@ -504,7 +455,7 @@ describe("Router.pickService", () => {
     const second = makeService({ name: "otherish", tier: 2, model: "other-default", models: ["gpt-5.6-sol"] });
     const failing = new StubDispatcher("codexish", { success: false, error: "boom" });
     const fallback = new StubDispatcher("otherish");
-    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, otherish: fallback }, leaderboard);
+    const router = new Router(makeConfig([first, second]), quota, { codexish: failing, otherish: fallback });
     const { result } = await router.route("go", [], "/tmp", { hints: { model: "gpt-5.6-sol" } });
     expect(result.success).toBe(true);
     expect(fallback.calls[0]?.model, "a route declaring the model lost it").toBe("gpt-5.6-sol");
@@ -524,7 +475,7 @@ describe("Router.pickService", () => {
       fast_local: new StubDispatcher("fast_local"),
       alpha: new StubDispatcher("alpha"),
     };
-    const router = new Router(makeConfig([local, other]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([local, other]), quota, dispatchers);
 
     // The hinted route LOSES — excluded here, as it would be by a tripped
     // breaker or a policy block in the field. Whoever wins must not be handed
@@ -557,7 +508,7 @@ describe("Router.pickService", () => {
     const dispatchers: Record<string, Dispatcher> = {
       worker_route: new StubDispatcher("worker_route"),
     };
-    const router = new Router(makeConfig([worker]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([worker]), quota, dispatchers);
 
     for (const spelling of ["worker_route", "WORKER_ROUTE"]) {
       const decision = await router.pickService({
@@ -582,7 +533,7 @@ describe("Router.pickService", () => {
     // no test can distinguish from its own absence is one someone deletes.
     const a = makeService({ name: "alpha", tier: 1 });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
 
     const { result } = await router.routeTo("alpha", "hi", [], process.cwd(), {
       routePolicy: "blocked",
@@ -601,7 +552,7 @@ describe("Router.pickService", () => {
     // pass, where the endpoint refusal is the one a user meets first.
     const a = makeService({ name: "alpha", tier: 1 });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
 
     const { result } = await router.routeTo("alpha", "hi", [], process.cwd(), {
       routePolicy: "blocked",
@@ -618,7 +569,7 @@ describe("Router.pickService", () => {
     // HTTP filter having caught it first, which for MCP is not true at all.
     const a = makeService({ name: "alpha", tier: 1 });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
 
     let final: DispatchResult | null = null;
     for await (const event of router.streamTo("alpha", "hi", [], process.cwd(), {
@@ -645,7 +596,7 @@ describe("Router.pickService", () => {
       worker_route: new StubDispatcher("worker_route"),
       "gpt-5.6-sol": new StubDispatcher("gpt-5.6-sol"),
     };
-    const router = new Router(makeConfig([worker, collides]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([worker, collides]), quota, dispatchers);
 
     // Forced path: the model names the forced route itself, so it is dropped.
     const forced = await router.pickService({
@@ -691,7 +642,6 @@ describe("Router.pickService", () => {
       makeConfig([worker]),
       quota,
       { worker_route: new StubDispatcher("worker_route") },
-      leaderboard,
     );
 
     const byName = await router.pickService({
@@ -719,7 +669,7 @@ describe("Router.pickService", () => {
       worker_route: new StubDispatcher("worker_route"),
       "gpt-5.6-sol": new StubDispatcher("gpt-5.6-sol"),
     };
-    const router = new Router(makeConfig([worker, collides]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([worker, collides]), quota, dispatchers);
 
     const decision = await router.pickService({
       hints: { service: "worker_route", model: "gpt-5.6-sol" },
@@ -741,7 +691,7 @@ describe("Router.pickService", () => {
       fast_local: new StubDispatcher("fast_local"),
       alpha: new StubDispatcher("alpha"),
     };
-    const router = new Router(makeConfig([local, other]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([local, other]), quota, dispatchers);
     const decision = await router.pickService({ hints: { model: "fast_local" } });
     expect(decision?.service).toBe("fast_local");
   });
@@ -763,7 +713,7 @@ describe("Router.pickService", () => {
       route_cheap: new StubDispatcher("route_cheap"),
       route_deep: new StubDispatcher("route_deep"),
     };
-    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers);
 
     const unhinted = await router.pickService({});
     expect(unhinted?.service, "the tier order this test depends on").toBe("route_cheap");
@@ -787,7 +737,7 @@ describe("Router.pickService", () => {
       route_cheap: new StubDispatcher("route_cheap"),
       route_deep: new StubDispatcher("route_deep"),
     };
-    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([cheap, deep]), quota, dispatchers);
 
     const decision = await router.pickService({
       hints: { model: "route_deep" },
@@ -800,7 +750,7 @@ describe("Router.pickService", () => {
   it("passes a requested model through to a forced service even if it matches nothing configured", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { service: "alpha", model: "some-unrecognized-model" },
     });
@@ -817,7 +767,7 @@ describe("Router.pickService", () => {
   it("passes a requested model through to the best-scored candidate even if it matches nothing configured", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { taskType: "execute", model: "some-unrecognized-model" },
     });
@@ -829,7 +779,7 @@ describe("Router.pickService", () => {
   it("marks modelHintMatched true when the requested model matches the picked route", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { taskType: "execute", model: "alpha-default-model" },
     });
@@ -839,7 +789,7 @@ describe("Router.pickService", () => {
   it("omits modelHintMatched entirely when no model hint was given", async () => {
     const a = makeService({ name: "alpha", tier: 1, model: "alpha-default-model" });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
     const decision = await router.pickService({ hints: { taskType: "execute" } });
     expect(decision?.modelHintMatched).toBeUndefined();
   });
@@ -859,7 +809,7 @@ describe("Router.pickService", () => {
       cloud: new StubDispatcher("cloud"),
       local: new StubDispatcher("local"),
     };
-    const router = new Router(makeConfig([cloud, local]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([cloud, local]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { service: "cloud", routePolicy: "local_only" },
     });
@@ -878,18 +828,16 @@ describe("Router.pickService", () => {
       billingKind: "included_plan_usage",
       paidUsagePossible: false,
       tier: 1,
-      leaderboardModel: "model-a",
     });
     const local = makeService({
       name: "local",
       tier: 1,
-      leaderboardModel: "model-a",
     });
     const dispatchers: Record<string, Dispatcher> = {
       cloud: new StubDispatcher("cloud"),
       local: new StubDispatcher("local"),
     };
-    const router = new Router(makeConfig([cloud, local]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([cloud, local]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { taskType: "plan", routePolicy: "standard" },
     });
@@ -903,7 +851,7 @@ describe("Router.pickService", () => {
       alpha: new StubDispatcher("alpha"),
       beta: new StubDispatcher("beta"),
     };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, dispatchers);
     const alphaBreaker = router.getBreaker("alpha");
     alphaBreaker!.trip();
     const decision = await router.pickService();
@@ -925,7 +873,7 @@ describe("Router.pickService", () => {
       alpha: new StubDispatcher("alpha"),
       beta: new StubDispatcher("beta"),
     };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, dispatchers);
     const decision = await router.pickService({
       hints: { harness: "cursor", safetyProfile: "full_auto" },
     });
@@ -939,7 +887,7 @@ describe("Router.pickService", () => {
       alpha: new StubDispatcher("alpha"),
       beta: new StubDispatcher("beta"),
     };
-    const router = new Router(makeConfig([a, b]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, dispatchers);
     router.getBreaker("alpha")!.trip();
     const decision = await router.pickService();
     expect(decision?.service).toBe("beta");
@@ -967,7 +915,6 @@ describe("Router.pickService", () => {
       makeConfig([nonAntigravity, antigravity]),
       quota,
       dispatchers,
-      leaderboard,
     );
     const withoutBoost = await router.pickService({ hints: { preferLargeContext: false } });
     const withBoost = await router.pickService({ hints: { preferLargeContext: true } });
@@ -1044,7 +991,7 @@ describe("Router.pickService", () => {
       cloud: new StubDispatcher("cloud"),
       ollama: new StubDispatcher("ollama"),
     };
-    const router = new Router(makeConfig([cloud, local]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([cloud, local]), quota, dispatchers);
     const decision = await router.pickService({ hints: { taskType: "local" } });
     expect(decision?.service).toBe("ollama");
   });
@@ -1082,7 +1029,7 @@ describe("Router.pickService", () => {
       frontier: new StubDispatcher("frontier"),
       local_box: new StubDispatcher("local_box"),
     };
-    const router = new Router(makeConfig([frontier, localBox]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([frontier, localBox]), quota, dispatchers);
 
     const local = await router.pickService({ hints: { taskType: "local" } });
     expect(local?.service, "a tier-1 route beat the local box for trivial work").toBe("local_box");
@@ -1127,7 +1074,7 @@ describe("Router.pickService", () => {
       free_cli: new StubDispatcher("free_cli"),
       paid_proxy: new StubDispatcher("paid_proxy"),
     };
-    const router = new Router(makeConfig([freeCli, paidProxy]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([freeCli, paidProxy]), quota, dispatchers);
 
     const decision = await router.pickService({ hints: { taskType: "local" } });
     expect(decision?.service, "a metered loopback proxy was preferred as 'local'").toBe("free_cli");
@@ -1172,7 +1119,7 @@ describe("Router.pickService", () => {
       frontier: new StubDispatcher("frontier"),
       cloud: new StubDispatcher("cloud"),
     };
-    const router = new Router(makeConfig([frontier, cloud]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([frontier, cloud]), quota, dispatchers);
     const decision = await router.pickService({ hints: { taskType: "local" } });
     expect(decision?.service).toBe("frontier");
     expect(decision?.reason).toMatch(/tier 1 best/);
@@ -1186,7 +1133,7 @@ describe("Router.pickService", () => {
       escalateOn: ["plan", "review"],
     });
     const dispatchers: Record<string, Dispatcher> = { alpha: new StubDispatcher("alpha") };
-    const router = new Router(makeConfig([a]), quota, dispatchers, leaderboard);
+    const router = new Router(makeConfig([a]), quota, dispatchers);
     const executeDec = await router.pickService({ hints: { taskType: "execute" } });
     const planDec = await router.pickService({ hints: { taskType: "plan" } });
     expect(executeDec?.model).toBe("default-model");
@@ -1196,11 +1143,9 @@ describe("Router.pickService", () => {
 
 describe("Router.route", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   it("returns the successful result on first attempt", async () => {
@@ -1210,7 +1155,6 @@ describe("Router.route", () => {
       makeConfig([a]),
       quota,
       { alpha: dispatcher },
-      leaderboard,
     );
     const { result, decision } = await router.route("hi", [], "/tmp");
     expect(result.success).toBe(true);
@@ -1245,7 +1189,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: dispatcher },
-      leaderboard,
     );
 
     const p1 = router.route("first", [], "/repo", {
@@ -1290,7 +1233,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: dispatcher },
-      leaderboard,
     );
 
     const p1 = router.route("first", [], "/repo", {
@@ -1335,7 +1277,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: dispatcher },
-      leaderboard,
     );
 
     const { result } = await router.route("edit calc", [], root, {
@@ -1397,7 +1338,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: dispatcher },
-      leaderboard,
     );
 
     const { result } = await router.route("edit calc", [], root, {
@@ -1435,7 +1375,7 @@ describe("Router.route", () => {
     await fs.writeFile(path.join(root, "calc.mjs"), "export const value = 1;\n", "utf8");
     const wsHome = await fs.mkdtemp(path.join(os.tmpdir(), "harness-dispatch-ws-home-"));
     const svc = makeService({ name: "alpha", tier: 1 });
-    const router = new Router(makeConfig([svc]), quota, { alpha: new StubDispatcher("alpha") }, leaderboard);
+    const router = new Router(makeConfig([svc]), quota, { alpha: new StubDispatcher("alpha") });
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
     const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
     process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = "0";
@@ -1474,7 +1414,7 @@ describe("Router.route", () => {
 
     const svc = makeService({ name: "alpha", tier: 1 });
     const dispatcher = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher });
 
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
     const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
@@ -1587,7 +1527,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: new StubDispatcher("alpha") },
-      leaderboard,
     );
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
     const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
@@ -1653,7 +1592,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: new StubDispatcher("alpha") },
-      leaderboard,
     );
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
     const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
@@ -1694,7 +1632,6 @@ describe("Router.route", () => {
       makeConfig([svc]),
       quota,
       { alpha: new StubDispatcher("alpha") },
-      leaderboard,
     );
     const originalDir = process.env.HARNESS_DISPATCH_WORKSPACES_DIR;
     process.env.HARNESS_DISPATCH_WORKSPACES_DIR = wsHome;
@@ -1748,7 +1685,6 @@ describe("Router.route", () => {
       makeConfig([svcProbe]),
       quota,
       { alpha: new StubDispatcher("alpha") },
-      leaderboard,
     );
     const probe = await probeRouter.route("noop", [], root, {
       hints: { safetyProfile: "workspace_edit", workspacePolicy: "git_worktree" },
@@ -1778,7 +1714,7 @@ describe("Router.route", () => {
 
     const svc = makeService({ name: "alpha", tier: 1 });
     const dispatcher = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher });
 
     const originalEnv = process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS;
     process.env.HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS = String(24 * 60 * 60 * 1000);
@@ -1810,18 +1746,8 @@ describe("Router.route", () => {
   });
 
   it("falls back on transient error (non-rate-limited)", async () => {
-    const a = makeService({ name: "alpha", tier: 1, leaderboardModel: "model-a" });
-    const b = makeService({ name: "beta", tier: 1, leaderboardModel: "model-b" });
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-a",
-      0.9,
-      1400,
-    );
-    (leaderboard as unknown as { setModel: (m: string, q: number, e: number) => void }).setModel(
-      "model-b",
-      0.85,
-      1350,
-    );
+    const a = makeService({ name: "alpha", tier: 1, weight: 0.9 });
+    const b = makeService({ name: "beta", tier: 1, weight: 0.85 });
     const alphaD = new StubDispatcher("alpha");
     alphaD.setResult({ success: false, error: "boom" });
     const betaD = new StubDispatcher("beta");
@@ -1829,7 +1755,6 @@ describe("Router.route", () => {
       makeConfig([a, b]),
       quota,
       { alpha: alphaD, beta: betaD },
-      leaderboard,
     );
     const { result, decision } = await router.route("hi", [], "/tmp", {
       hints: { taskType: "execute" },
@@ -1853,7 +1778,6 @@ describe("Router.route", () => {
       makeConfig([a, b]),
       quota,
       { alpha: alphaD, beta: betaD },
-      leaderboard,
     );
     const { result } = await router.route("hi", [], "/tmp");
     // Alpha rate-limits; the router excludes it and falls back to beta,
@@ -1879,7 +1803,6 @@ describe("Router.route", () => {
       makeConfig([a, b, c]),
       quota,
       { alpha: alphaD, beta: betaD, gamma: gammaD },
-      leaderboard,
     );
     // maxFallbacks: 1 -> 2 total attempts; the third candidate is never tried.
     const { result } = await router.route("hi", [], "/tmp", { maxFallbacks: 1 });
@@ -1890,7 +1813,7 @@ describe("Router.route", () => {
   });
 
   it("returns a synthesized failure when no services are available", async () => {
-    const router = new Router(makeConfig([]), quota, {}, leaderboard);
+    const router = new Router(makeConfig([]), quota, {});
     const { result, decision } = await router.route("hi", [], "/tmp");
     expect(result.success).toBe(false);
     expect(result.service).toBe("none");
@@ -1900,7 +1823,7 @@ describe("Router.route", () => {
   it("passes a per-call hints.timeoutMs through to the dispatcher", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.route("hi", [], "/tmp", { hints: { timeoutMs: 1_800_000 } });
     expect(alphaD.calls[0]?.timeoutMs).toBe(1_800_000);
   });
@@ -1908,7 +1831,7 @@ describe("Router.route", () => {
   it("falls back to the service's configured timeoutMs when no hint is given", async () => {
     const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.route("hi", [], "/tmp");
     expect(alphaD.calls[0]?.timeoutMs).toBe(900_000);
   });
@@ -1916,7 +1839,7 @@ describe("Router.route", () => {
   it("prefers a per-call timeoutMs hint over the service's configured default", async () => {
     const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.route("hi", [], "/tmp", { hints: { timeoutMs: 1_800_000 } });
     expect(alphaD.calls[0]?.timeoutMs).toBe(1_800_000);
   });
@@ -1924,7 +1847,7 @@ describe("Router.route", () => {
   it("leaves timeoutMs unset when neither a hint nor config override is given", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.route("hi", [], "/tmp");
     expect(alphaD.calls[0]?.timeoutMs).toBeUndefined();
   });
@@ -1952,18 +1875,16 @@ describe("Router.route", () => {
 // if that ever changes these fail rather than quietly altering live traffic.
 describe("the buffered entry points still call dispatch(), not stream()", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   it("route() reaches a dispatcher that has no stream() at all", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
     // The stub's stream() throws, so reaching it fails the dispatch outright.
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     const { result } = await router.route("hi", [], "/tmp");
     expect(result.success).toBe(true);
     expect(alphaD.calls).toHaveLength(1);
@@ -1972,7 +1893,7 @@ describe("the buffered entry points still call dispatch(), not stream()", () => 
   it("routeTo() does the same", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     const { result } = await router.routeTo("alpha", "hi", [], "/tmp");
     expect(result.success).toBe(true);
     expect(alphaD.calls).toHaveLength(1);
@@ -1981,11 +1902,9 @@ describe("the buffered entry points still call dispatch(), not stream()", () => 
 
 describe("timeout precedence holds on every entry point, not just route()", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   /** Runs one entry point and reports the timeoutMs the dispatcher was handed. */
@@ -2049,7 +1968,7 @@ describe("timeout precedence holds on every entry point, not just route()", () =
     const dispatcher = entry.streaming
       ? new StreamStubDispatcher("alpha")
       : new StubDispatcher("alpha");
-    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher }, leaderboard);
+    const router = new Router(makeConfig([svc]), quota, { alpha: dispatcher });
     const seen = (): number | undefined =>
       dispatcher instanceof StreamStubDispatcher
         ? dispatcher.lastOpts?.timeoutMs
@@ -2087,17 +2006,15 @@ describe("timeout precedence holds on every entry point, not just route()", () =
 
 describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   it("gives the first attempt the full default when nothing has elapsed yet", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StreamStubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
 
     const dateSpy = vi.spyOn(Date, "now").mockReturnValue(0);
     for await (const _ of router.stream("hi", [], "/tmp", { defaultTimeoutMs: 3_600_000 })) {
@@ -2119,11 +2036,10 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
       makeConfig([a, b, c]),
       quota,
       { alpha: alphaD, beta: betaD, gamma: gammaD },
-      leaderboard,
     );
 
     // callStart=0; attempt 0 (alpha) sees the full budget; by the time
-    // attempt 1 (beta) starts, 3,599,900ms have "elapsed" so only 100ms of
+    // attempt 1 (beta) starts, 3,595,000ms have "elapsed" so only 5,000ms of
     // budget remains; by attempt 2 the budget is already spent.
     //
     // The clock is a VARIABLE advanced when each dispatcher runs, not a
@@ -2135,7 +2051,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     const alphaStream = alphaD.stream.bind(alphaD);
     alphaD.stream = (...args: Parameters<typeof alphaStream>) => {
       const it = alphaStream(...args);
-      simulatedNow = 3_599_900; // alpha "takes" almost the whole budget
+      simulatedNow = 3_595_000; // alpha "takes" almost the whole budget
       return it;
     };
     const betaStream = betaD.stream.bind(betaD);
@@ -2154,7 +2070,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     dateSpy.mockRestore();
 
     expect(alphaD.lastOpts?.timeoutMs).toBe(3_600_000);
-    expect(betaD.lastOpts?.timeoutMs).toBe(100);
+    expect(betaD.lastOpts?.timeoutMs).toBe(5_000);
     // gamma is never dispatched — the budget was exhausted before attempt 2 started.
     expect(gammaD.lastOpts).toBeUndefined();
   });
@@ -2164,7 +2080,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     const b = makeService({ name: "beta", tier: 1 });
     const alphaD = new StreamStubDispatcher("alpha", { success: false, error: "boom" });
     const betaD = new StreamStubDispatcher("beta", { success: true });
-    const router = new Router(makeConfig([a, b]), quota, { alpha: alphaD, beta: betaD }, leaderboard);
+    const router = new Router(makeConfig([a, b]), quota, { alpha: alphaD, beta: betaD });
 
     const dateSpy = vi.spyOn(Date, "now").mockReturnValue(3_600_000_000); // way past any default
     for await (const _ of router.stream("hi", [], "/tmp", {
@@ -2183,15 +2099,13 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
 
 describe("Router.routeTo", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   it("returns an error for unknown service", async () => {
-    const router = new Router(makeConfig([]), quota, {}, leaderboard);
+    const router = new Router(makeConfig([]), quota, {});
     const { result, decision } = await router.routeTo("nope", "hi", [], "/tmp");
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Unknown service/);
@@ -2211,7 +2125,7 @@ describe("Router.routeTo", () => {
   // making about this very method.
   for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
     it(`refuses the inherited key '${key}' on routeTo and streamTo`, async () => {
-      const router = new Router(makeConfig([]), quota, {}, leaderboard);
+      const router = new Router(makeConfig([]), quota, {});
 
       const { result } = await router.routeTo(key, "hi", [], "/tmp");
       expect(result.success, `routeTo accepted '${key}' as a route`).toBe(false);
@@ -2232,7 +2146,6 @@ describe("Router.routeTo", () => {
       makeConfig([a]),
       quota,
       { alpha: new StubDispatcher("alpha") },
-      leaderboard,
     );
     const { decision } = await router.routeTo("alpha", "hi", [], "/tmp");
     expect(decision?.reason).toBe("explicit");
@@ -2242,7 +2155,7 @@ describe("Router.routeTo", () => {
   it("passes an explicit opts.timeoutMs through to the dispatcher", async () => {
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.routeTo("alpha", "hi", [], "/tmp", { timeoutMs: 1_200_000 });
     expect(alphaD.calls[0]?.timeoutMs).toBe(1_200_000);
   });
@@ -2250,7 +2163,7 @@ describe("Router.routeTo", () => {
   it("falls back to the service's configured timeoutMs on routeTo when no opt is given", async () => {
     const a = makeService({ name: "alpha", tier: 1, timeoutMs: 900_000 });
     const alphaD = new StubDispatcher("alpha");
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
     await router.routeTo("alpha", "hi", [], "/tmp");
     expect(alphaD.calls[0]?.timeoutMs).toBe(900_000);
   });
@@ -2267,7 +2180,7 @@ it("names the real reason when nothing is eligible, instead of guessing at three
       billingKind: "metered_api",
       paidUsagePossible: true,
     });
-    const router = new Router(makeConfig([paid]), quota, { metered: new StubDispatcher("metered") }, leaderboard);
+    const router = new Router(makeConfig([paid]), quota, { metered: new StubDispatcher("metered") });
     const res = await router.route("hi", [], "/tmp");
 
     expect(res.result.success).toBe(false);
@@ -2285,11 +2198,9 @@ it("names the real reason when nothing is eligible, instead of guessing at three
 
 describe("a rejected input is not charged to the route", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({} as never);
-    leaderboard = new LeaderboardCache();
   });
 
   /**
@@ -2311,7 +2222,7 @@ describe("a rejected input is not charged to the route", () => {
       error: "prompt too long for alpha",
       inputRejected: true,
     });
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
 
     // Well past the breaker's 5-failure threshold, if these counted.
     for (let i = 0; i < 8; i += 1) {
@@ -2327,7 +2238,7 @@ describe("a rejected input is not charged to the route", () => {
     // The negative: suppressing the wrong thing would hide real breakage.
     const a = makeService({ name: "alpha", tier: 1 });
     const alphaD = new StubDispatcher("alpha", { success: false, error: "the CLI crashed" });
-    const router = new Router(makeConfig([a]), quota, { alpha: alphaD }, leaderboard);
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
 
     await router.routeTo("alpha", "hi", [], "/tmp");
 

@@ -7,12 +7,13 @@
  */
 
 import { existsSync, promises as fs } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { userConfigPath } from "./state-dir.js";
 import { registerSecretValue, setActiveSecrets } from "./redaction.js";
 import yaml from "js-yaml";
-import which from "which";
 
 import { inferredPaidUsagePossible } from "./billing.js";
+import { findOnPath } from "./dispatchers/shared/which-available.js";
 import {
   authSourceFrom, billingKindFrom, bool, boolOrUndefined, capsFrom, endpointModeFrom,
   endpointProviderFrom, inferEndpointProvider, int, num, providerFrom, str,
@@ -21,6 +22,7 @@ import {
 import {
   warnDuplicateRouteNames,
   warnMistypedRouteValues,
+  warnRemovedRouteKeys,
   warnUnknownRouteKeys,
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
@@ -38,29 +40,13 @@ import { ENV_VAR_RE, interpolateTree } from "./config/env-interpolation.js";
 export type WhichFn = (cmd: string) => Promise<string | null>;
 
 /**
- * PATH lookups, memoised for the life of the process: each is a real
- * filesystem walk (~2-3s per harness on Windows) and loadConfig() runs on
- * every CLI invocation and every reload.
- *
- * Deliberately NOT persisted across processes: installing a harness should
- * take effect on the next command, not after a cache expiry.
+ * PATH lookups for auto-detection. The one resolver (findOnPath) reads each PATH
+ * directory once per few seconds and matches names in memory, instead of the
+ * ~2-3 s per harness a `which` walk cost on Windows — loadConfig() runs on every
+ * CLI invocation and every reload.
  */
-const whichCache = new Map<string, Promise<string | null>>();
-
-const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
-  const cached = whichCache.get(cmd);
-  if (cached !== undefined) return cached;
-  const lookup = (async (): Promise<string | null> => {
-    try {
-      const r = await which(cmd, { nothrow: true });
-      return r ?? null;
-    } catch {
-      return null;
-    }
-  })();
-  whichCache.set(cmd, lookup);
-  return lookup;
-};
+const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> =>
+  findOnPath(cmd) ?? null;
 import type { RouterConfig, ServiceConfig, TaskType } from "./types.js";
 
 // Built-in harness defaults come from the package's bundled
@@ -158,11 +144,6 @@ function topLevelSettings(
     const days = num((retentionRaw as Record<string, unknown>).jobs_days, Number.NaN);
     if (Number.isFinite(days) && days >= 0) out.retention = { jobsDays: days };
   }
-  const leaderboardRaw = raw.leaderboard;
-  if (leaderboardRaw !== null && typeof leaderboardRaw === "object") {
-    const enabled = (leaderboardRaw as Record<string, unknown>).enabled;
-    if (typeof enabled === "boolean") out.leaderboard = { enabled };
-  }
   const maxRuns = num(raw.max_concurrent_runs, Number.NaN);
   if (Number.isFinite(maxRuns) && maxRuns >= 0) out.maxConcurrentRuns = Math.floor(maxRuns);
   else if (raw.max_concurrent_runs !== undefined) {
@@ -200,6 +181,13 @@ function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
 }
 
 
+/**
+ * `escalate_on` as a list. Absent (or not a list) is the default; a list the
+ * user wrote is honoured as written, INCLUDING `[]` — "never escalate" is a
+ * real setting that falling back to the default would silently reverse. Items
+ * that are not task types are dropped, and warnMistypedRouteValues has already
+ * said so.
+ */
 function escalateOnFrom(raw: unknown): TaskType[] {
   if (!Array.isArray(raw)) return ["plan", "review"];
   const out: TaskType[] = [];
@@ -208,7 +196,7 @@ function escalateOnFrom(raw: unknown): TaskType[] {
       out.push(v);
     }
   }
-  return out.length > 0 ? out : ["plan", "review"];
+  return out;
 }
 
 
@@ -261,6 +249,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     // the legacy shape accepts a wider set of keys than KNOWN_ROUTE_KEYS
     // lists, and reporting those as typos would be worse than silence.
     warnMistypedRouteValues(svc, `services."${name}"`, warnings);
+    warnRemovedRouteKeys(svc, `services."${name}"`, warnings);
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
     // Legacy-format entries inherit the named harness's shipped metadata just
     // as clis: entries do, so `harness: cursor` classifies correctly without
@@ -444,6 +433,22 @@ async function detectServices(
 }
 
 /**
+ * A list item that is a mapping. A bare `-` is YAML `null`, and `- foo` is a
+ * string; reading `.name` off either threw a raw TypeError that `status`
+ * printed as "Cannot read properties of null", naming neither file nor line.
+ */
+function isEntry(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function notAnEntry(block: string, index: number): string {
+  return (
+    `${block}[${index}]: is empty or not a mapping (a bare "-"?) — entry ignored. ` +
+    `Each ${block} item is a mapping with name: and the route's settings.`
+  );
+}
+
+/**
  * Explicit `clis:` entries: arbitrary `name`, required `harness` picking which
  * built-in defaults to start from.
  *
@@ -458,15 +463,20 @@ function addClis(
   apiKeys: ApiKeys,
   warnings: string[],
 ): void {
-  const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
-  warnDuplicateRouteNames(clis.map((e) => str(e.name)), "clis", warnings);
+  const clis = Array.isArray(raw.clis) ? (raw.clis as unknown[]) : [];
+  warnDuplicateRouteNames(clis.map((e) => (isEntry(e) ? str(e.name) : undefined)), "clis", warnings);
   for (const [index, entry] of clis.entries()) {
+    if (!isEntry(entry)) {
+      warnings.push(notAnEntry("clis", index));
+      continue;
+    }
     const name = str(entry.name);
     const harness = str(entry.harness);
     if (!name || !harness) {
-      warnings.push(
-        `clis[${index}]: missing required "name" and/or "harness" — entry ignored.`,
-      );
+      const missing = [!name ? '"name"' : undefined, !harness ? '"harness"' : undefined]
+        .filter((v): v is string => v !== undefined)
+        .join(" and ");
+      warnings.push(`clis[${index}]: missing required ${missing} — entry ignored.`);
       continue;
     }
     warnUnknownRouteKeys(entry, `clis[${index}] "${name}"`, warnings);
@@ -638,6 +648,28 @@ function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string>
       }
     }
   }
+  // The per-route shorthand (`codex_cli_api_key: ${VAR}`), which collectApiKeys
+  // reads. Left out here, `configure --force` found no reference to restore
+  // and wrote the RESOLVED secret into the file as a literal.
+  //
+  // Overrides the `api_keys:` block, as it does when the key is resolved; an
+  // inline `api_key:` on the route's own entry still wins over both.
+  const inline = new Set<string>();
+  for (const key of ["clis", "endpoints"] as const) {
+    const list = parsed[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry !== null && typeof entry === "object") {
+        const e = entry as Record<string, unknown>;
+        if (typeof e.name === "string" && typeof e.api_key === "string" && e.api_key !== "") {
+          inline.add(e.name);
+        }
+      }
+    }
+  }
+  for (const name of Object.values(AUTO_DETECT_NAME)) {
+    if (!inline.has(name)) note(name, parsed[`${name}_api_key`]);
+  }
   return refs;
 }
 
@@ -674,11 +706,13 @@ function addEndpoints(
   apiKeys: ApiKeys,
   warnings: string[] = [],
 ): void {
-  const endpoints = Array.isArray(raw.endpoints)
-    ? (raw.endpoints as Record<string, unknown>[])
-    : [];
-  warnDuplicateRouteNames(endpoints.map((e) => str(e.name)), "endpoints", warnings);
+  const endpoints = Array.isArray(raw.endpoints) ? (raw.endpoints as unknown[]) : [];
+  warnDuplicateRouteNames(endpoints.map((e) => (isEntry(e) ? str(e.name) : undefined)), "endpoints", warnings);
   for (const [index, ep] of endpoints.entries()) {
+    if (!isEntry(ep)) {
+      warnings.push(notAnEntry("endpoints", index));
+      continue;
+    }
     const name = str(ep.name);
     warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);
     const baseUrl = str(ep.base_url);
@@ -828,7 +862,8 @@ export async function loadConfig(
   path?: string,
   opts: LoadConfigOptions = {},
 ): Promise<RouterConfig> {
-  const config = await loadConfigInner(path, opts);
+  const loaded = await loadConfigInner(path, opts);
+  const config = path ? { ...loaded, configPath: resolvePath(path) } : loaded;
   const pathWarnings: string[] = [];
   warnCredentialInUrlPath(config, pathWarnings);
   const withWarnings =
@@ -919,8 +954,14 @@ async function loadConfigInner(
     if (enumWarnings.length > 0) {
       legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
     }
+    // The same per-route mark the modern shapes get, or a legacy endpoint
+    // whose `${VAR}` key is unset reads as ready and fails its first call.
+    markUnsetApiKeys(legacyCfg.services, apiKeyRefs);
     const withRefs = {
       ...legacyCfg,
+      // `services:` is authoritative about routes, like a `clis:` list, so
+      // nothing was detected. Left unset it read as "auto-detected".
+      detectionRan: false,
       ...(envRefs.size > 0 ? { envRefs } : {}),
       ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
       ...(fieldRefs.size > 0 ? { fieldRefs } : {}),

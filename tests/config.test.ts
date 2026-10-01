@@ -42,7 +42,6 @@ services:
     tier: 1
     weight: 1.5
     cli_capability: 1.10
-    leaderboard_model: claude-opus-4-6
     timeout_ms: 1800000
     capabilities:
       execute: 0.9
@@ -61,7 +60,6 @@ services:
     expect(cfg.services.alpha!.tier).toBe(1);
     expect(cfg.services.alpha!.weight).toBeCloseTo(1.5, 10);
     expect(cfg.services.alpha!.cliCapability).toBeCloseTo(1.1, 10);
-    expect(cfg.services.alpha!.leaderboardModel).toBe("claude-opus-4-6");
     expect(cfg.services.alpha!.timeoutMs).toBe(1_800_000);
     expect(cfg.services.alpha!.capabilities.execute).toBeCloseTo(0.9, 10);
     expect(cfg.services.beta!.enabled).toBe(false);
@@ -309,7 +307,6 @@ describe("loadConfig — auto-detect + overrides", () => {
     expect(svc.harness).toBe("claude_code");
     expect(svc.command).toBe("claude");
     expect(svc.cliCapability).toBeCloseTo(1.1, 10);
-    expect(svc.leaderboardModel).toBe("claude-opus-4-6");
     expect(svc.billingKind).toBeUndefined();
   });
 

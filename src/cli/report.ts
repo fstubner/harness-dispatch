@@ -14,7 +14,6 @@ export async function cmdStatus(
       runtime.dispatchers,
       runtime.quota,
       runtime.router,
-      runtime.leaderboard,
     );
     // Watching with --json prints one compact document per line (JSON Lines):
     // pretty-printed documents back to back parse neither as one JSON value
@@ -56,7 +55,6 @@ export async function cmdUsage(
     runtime.dispatchers,
     runtime.quota,
     runtime.router,
-    runtime.leaderboard,
   );
   const usage = buildUsage(status);
   process.stdout.write(

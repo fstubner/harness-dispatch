@@ -17,7 +17,7 @@ import { createAnswerStream } from "./answer-stream.js";
 import { buildStatus, buildUsage } from "../status.js";
 import { VERSION } from "../version.js";
 import type { RouteHints, RouteSkip } from "../types.js";
-import { evaluateRoutePolicy } from "../route-policy.js";
+import { UnknownFanoutTargetError, selectFanoutRoutes } from "../route-policy.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import {
   cancelJob,
@@ -202,42 +202,28 @@ async function handleChatCompletions(
     }
     parsed.hints.safetyProfile = fanoutSafetyProfile;
   }
-  const eligibleRoutes = (requestedRoutes: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
-    const routes: string[] = [];
-    const skippedRoutes: RouteSkip[] = [];
-    for (const route of requestedRoutes) {
-      const svc = state.config.services[route];
-      if (!svc) {
-        // Rejected by name, matching the MCP tool. Skipping it would answer
-        // 200 with fewer arms and an empty skippedRoutes — one input, two
-        // surfaces, two answers.
-        throw new BadRequestError(
-          `Unknown fanout target: ${route}. Valid route ids: ` +
-            `${Object.keys(state.config.services).join(", ")}.`,
-        );
-      }
-      const dispatcher = state.dispatchers[route];
-      const breaker = state.router.getBreaker(route);
-      // routePolicy is the half that decides ELIGIBILITY — local_only,
-      // approval_required and blocked are enforced here, not in routeTo, so
-      // omitting it lets a fanout arm run whatever the policy forbids.
-      const policy = evaluateRoutePolicy(route, svc, {
-        ...(dispatcher !== undefined ? { dispatcher } : {}),
-        circuitBroken: Boolean(breaker?.isTripped),
-        ...(parsed.hints.safetyProfile !== undefined
-          ? { requestedSafetyProfile: parsed.hints.safetyProfile }
-          : {}),
-        ...(parsed.hints.routePolicy !== undefined
-          ? { routePolicy: parsed.hints.routePolicy }
-          : {}),
-        // Same refusal as every other surface: an HTTP endpoint route cannot
-        // carry an `execute` task.
-        ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
+  // The same matching and policy check the MCP surface uses (selectFanoutRoutes),
+  // so a `models` entry that is valid there is valid here. An empty list means
+  // every configured route.
+  const eligibleRoutes = (requested: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
+    try {
+      return selectFanoutRoutes({
+        services: state.config.services,
+        dispatchers: state.dispatchers,
+        breakerTripped: (route) => Boolean(state.router.getBreaker(route)?.isTripped),
+        requested,
+        hints: {
+          ...(parsed.hints.safetyProfile !== undefined ? { safetyProfile: parsed.hints.safetyProfile } : {}),
+          ...(parsed.hints.routePolicy !== undefined ? { routePolicy: parsed.hints.routePolicy } : {}),
+          ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
+        },
       });
-      if (policy.skipped) skippedRoutes.push(policy.skipped);
-      if (!policy.blocked) routes.push(route);
+    } catch (err) {
+      // Rejected by name, before anything runs: skipping an unknown target
+      // would answer 200 with fewer arms and an empty skippedRoutes.
+      if (err instanceof UnknownFanoutTargetError) throw new BadRequestError(err.message);
+      throw err;
     }
-    return { routes, skippedRoutes };
   };
   if (parsed.stream) {
     // Resolve fanout targets BEFORE writing SSE headers: eligibleRoutes throws
@@ -245,21 +231,9 @@ async function handleChatCompletions(
     // handler can only res.end(), leaving the caller an HTTP 200 with a
     // zero-byte body instead of the 400 the non-streaming path returns.
     //
-    // Defaults to every dispatchable route when `models` is omitted, exactly
-    // as the non-streaming branch does; passing parsed.models straight through
-    // would fan out to ZERO routes and report success.
-    const preSelected =
-      parsed.mode === "fanout"
-        ? eligibleRoutes(
-            parsed.models.length > 0
-              ? parsed.models
-              : Object.keys(state.config.services).filter((route) =>
-                  // `Object.hasOwn`, not `in` — same prototype-chain hazard as
-                  // the non-streaming branch below.
-                  Object.hasOwn(state.dispatchers, route),
-                ),
-          )
-        : undefined;
+    // An omitted `models` means every configured route, as in the non-streaming
+    // branch: both go through eligibleRoutes, which owns that default.
+    const preSelected = parsed.mode === "fanout" ? eligibleRoutes(parsed.models) : undefined;
     // Refuse BEFORE writeHead, while a real status code is still available:
     // once the 200 and the SSE headers are out, the only way to report a
     // refusal is an error frame inside a successful stream. The non-streaming
@@ -421,17 +395,7 @@ async function handleChatCompletions(
   }
 
   if (parsed.mode === "fanout") {
-    const routes =
-      parsed.models.length > 0
-        ? parsed.models
-        : Object.keys(state.config.services).filter((route) =>
-            // `Object.hasOwn`, not `in` — the same prototype-chain hazard the
-            // service guards carry. Here the names come from config, so it
-            // takes a route literally named `constructor` in config.yaml,
-            // which would then be treated as having a dispatcher it never got.
-            Object.hasOwn(state.dispatchers, route),
-          );
-    const selected = eligibleRoutes(routes);
+    const selected = eligibleRoutes(parsed.models);
     // An empty candidate set is a REFUSAL, not an empty success: 200 with
     // `"[]"` as the content is vacuously true over zero arms, and CI and cron
     // read 200 as "it worked". Same wording as the MCP path, which refuses the
@@ -729,7 +693,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         const created = Math.floor(Date.now() / 1000);
         sendJson(res, 200, {
@@ -764,7 +727,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         sendJson(res, 200, buildUsage(status));
         return;
@@ -782,7 +744,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             state.dispatchers,
             state.quota,
             state.router,
-            state.leaderboard,
           ),
         );
         return;

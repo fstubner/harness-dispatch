@@ -13,9 +13,9 @@
  * that carries them, not here, so the explanation sits next to the number it
  * explains. There is one so far — see the taskType=local fixture.
  *
- * Formula (originally Python router.py:265-280, kept for provenance):
- *   effective_quality = quality_score * cli_capability * capability[task_type]
- *   score             = effective_quality * quota_score * weight
+ * Formula (originally Python router.py:265-280, kept for provenance; the
+ * quality_score factor it began with is gone along with the leaderboard):
+ *   score = cli_capability * capability[task_type] * quota_score * weight
  *   + 0.3 bonus if prefer_large_context AND harness is "antigravity"/"antigravity_cli"
  *
  * One deliberate divergence: Python's `+0.3 if task_type=="local" AND
@@ -24,7 +24,7 @@
  * tier-1 route — the preference is a cross-tier selection rule now. See the
  * fixture's own comment.
  *
- * Each fixture lists the configured services, the mocks (quota/leaderboard),
+ * Each fixture lists the configured services, the mocks (quota),
  * the routing hints, and the expected winning service + final_score.
  */
 
@@ -101,35 +101,10 @@ vi.mock("../src/quota.js", () => {
   return { QuotaCache };
 });
 
-vi.mock("../src/leaderboard.js", () => {
-  class LeaderboardCache {
-    private models = new Map<string, { qualityScore: number; elo: number | null }>();
-    setModel(model: string, qualityScore: number, elo: number | null = null): void {
-      this.models.set(model, { qualityScore, elo });
-    }
-    async getQualityScore(
-      model: string | undefined,
-    ): Promise<{ qualityScore: number; elo: number | null }> {
-      if (!model) return { qualityScore: 1.0, elo: null };
-      return this.models.get(model) ?? { qualityScore: 1.0, elo: null };
-    }
-    async autoTier(
-      _model: string | undefined,
-      _thinking: unknown,
-      fallbackTier: number,
-    ): Promise<number> {
-      // For parity tests, always honor the service's explicit tier.
-      return fallbackTier;
-    }
-  }
-  return { LeaderboardCache };
-});
-
 // ---- Imports --------------------------------------------------------------
 
 import { Router } from "../src/router.js";
 import { QuotaCache } from "../src/quota.js";
-import { LeaderboardCache } from "../src/leaderboard.js";
 import type { DispatchResult, RouterConfig, RouteHints, ServiceConfig } from "../src/types.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
 
@@ -223,12 +198,6 @@ class Stub implements Dispatcher {
   }
 }
 
-interface ModelEntry {
-  model: string;
-  qualityScore: number;
-  elo: number | null;
-}
-
 interface QuotaEntry {
   service: string;
   score: number;
@@ -238,7 +207,6 @@ interface Fixture {
   name: string;
   services: ServiceConfig[];
   hints?: RouteHints;
-  models: ModelEntry[];
   quotas?: QuotaEntry[];
   brokenServices?: string[]; // names of services to circuit-break before picking
   expected: {
@@ -253,51 +221,42 @@ interface Fixture {
 
 const FIXTURES: Fixture[] = [
   // ------------------------------------------------------------------------
-  // 1. Two claude-family tier-1 services, execute task, different ELOs.
-  //    alpha: 0.9 * 1.10 * 0.95 * 1.0 * 1.0          = 0.9405
-  //    beta:  0.85 * 1.08 * 1.0  * 1.0 * 1.0         = 0.918
-  //    -> alpha wins with 0.9405
+  // 1. Two claude-family tier-1 services, execute task, different weights.
+  //    alpha: 1.10 * 0.95 * 1.0 * 1.2   = 1.254
+  //    beta:  1.08 * 1.0  * 1.0 * 1.0   = 1.08
+  //    -> alpha wins with 1.254
   // ------------------------------------------------------------------------
   {
-    name: "two tier-1, execute task, higher ELO wins",
+    name: "two tier-1, execute task, higher weight x capability wins",
     services: [
       svc({
         name: "alpha",
         tier: 1,
         cliCapability: 1.1,
-        leaderboardModel: "model-a",
+        weight: 1.2,
         capabilities: { execute: 0.95, plan: 1.0, review: 1.0 },
       }),
       svc({
         name: "beta",
         tier: 1,
         cliCapability: 1.08,
-        leaderboardModel: "model-b",
         capabilities: { execute: 1.0, plan: 0.83, review: 0.82 },
       }),
     ],
     hints: { taskType: "execute" },
-    models: [
-      { model: "model-a", qualityScore: 0.9, elo: 1400 },
-      { model: "model-b", qualityScore: 0.85, elo: 1350 },
-    ],
-    expected: { service: "alpha", finalScore: 0.9405, tier: 1 },
+    expected: { service: "alpha", finalScore: 1.254, tier: 1 },
   },
 
   // ------------------------------------------------------------------------
   // 2. Tier-1 service circuit-broken, tier-2 available.
-  //    beta: 0.8 * 1.0 * 1.0 * 1.0 * 1.0 = 0.8
+  //    beta: 1.0 * 1.0 * 1.0 * 0.8 = 0.8
   //    reason contains "fallback"
   // ------------------------------------------------------------------------
   {
     name: "tier-1 broken -> tier-2 fallback",
     services: [
-      svc({ name: "alpha", tier: 1, leaderboardModel: "model-a" }),
-      svc({ name: "beta", tier: 2, leaderboardModel: "model-b" }),
-    ],
-    models: [
-      { model: "model-a", qualityScore: 0.9, elo: 1400 },
-      { model: "model-b", qualityScore: 0.8, elo: 1250 },
+      svc({ name: "alpha", tier: 1 }),
+      svc({ name: "beta", tier: 2, weight: 0.8 }),
     ],
     brokenServices: ["alpha"],
     expected: {
@@ -311,20 +270,16 @@ const FIXTURES: Fixture[] = [
   // ------------------------------------------------------------------------
   // 3. Forced-service hint.
   //    alpha is lower-scoring but forced via hints.service.
-  //    alpha: 0.7 * 1.0 * 1.0 * 1.0 * 1.0 = 0.7 (no task_type -> cap=1.0)
+  //    alpha: 1.0 * 1.0 * 1.0 * 0.7 = 0.7 (no task_type -> cap=1.0)
   //    reason: "forced"
   // ------------------------------------------------------------------------
   {
     name: "forced service bypasses tier selection",
     services: [
-      svc({ name: "alpha", tier: 1, leaderboardModel: "model-a" }),
-      svc({ name: "beta", tier: 1, leaderboardModel: "model-b" }),
+      svc({ name: "alpha", tier: 1, weight: 0.7 }),
+      svc({ name: "beta", tier: 1, weight: 0.95 }),
     ],
     hints: { service: "alpha" },
-    models: [
-      { model: "model-a", qualityScore: 0.7, elo: 1200 },
-      { model: "model-b", qualityScore: 0.95, elo: 1500 },
-    ],
     expected: {
       service: "alpha",
       finalScore: 0.7,
@@ -341,8 +296,8 @@ const FIXTURES: Fixture[] = [
   //    router.py:296-309), so that setup wouldn't actually let antigravity
   //    win. Both services are moved to tier 2 so the +0.3 boost is the
   //    deciding factor.
-  //    non-antigravity: 0.85 * 1.0 * 1.0 * 1.0 * 1.0        = 0.85
-  //    antigravity:     0.7  * 1.0 * 1.0 * 1.0 * 1.0 + 0.3  = 1.0
+  //    non-antigravity: 1.0 * 1.0 * 1.0 * 0.85        = 0.85
+  //    antigravity:     1.0 * 1.0 * 1.0 * 0.7  + 0.3   = 1.0
   //    -> antigravity wins
   // ------------------------------------------------------------------------
   {
@@ -353,30 +308,26 @@ const FIXTURES: Fixture[] = [
       svc({
         name: "non_antigravity",
         tier: 2,
+        weight: 0.85,
         harness: "claude_code",
-        leaderboardModel: "model-cc",
       }),
       svc({
         name: "antigravity_cli",
         tier: 2,
         harness: "antigravity_cli",
-        leaderboardModel: "model-g",
+        weight: 0.7,
         maxInputTokens: 2_000_000,
       }),
     ],
     hints: { preferLargeContext: true },
-    models: [
-      { model: "model-cc", qualityScore: 0.85, elo: 1250 },
-      { model: "model-g", qualityScore: 0.7, elo: 1200 },
-    ],
     expected: { service: "antigravity_cli", finalScore: 1.0, tier: 2 },
   },
 
   // ------------------------------------------------------------------------
   // 5. taskType=local: the local route wins by the cross-tier RULE, not by a
   //    score bonus. Both scores are the plain formula:
-  //      cloud:  0.75 * 1.0 * 1.0 * 1.0 * 1.0 = 0.75  (declared non-local)
-  //      ollama: 0.6  * 1.0 * 1.0 * 1.0 * 1.0 = 0.6   (local, and so preferred)
+  //      cloud:  1.0 * 1.0 * 1.0 * 0.75 = 0.75  (declared non-local)
+  //      ollama: 1.0 * 1.0 * 1.0 * 0.6  = 0.6   (local, and so preferred)
   //    -> ollama wins on 0.6 while cloud sits at 0.75, which is the point.
   // ------------------------------------------------------------------------
   {
@@ -400,9 +351,9 @@ const FIXTURES: Fixture[] = [
       svc({
         name: "cloud",
         tier: 3,
+        weight: 0.75,
         type: "openai_compatible",
         baseUrl: "https://api.cloud.example.com/v1",
-        leaderboardModel: "cloud-model",
         // Spelled out because svc() defaults EVERY fixture to local on all
         // four declared signals. A route named "cloud" that is local by every
         // field it declares makes this fixture assert the opposite of its
@@ -415,16 +366,12 @@ const FIXTURES: Fixture[] = [
       svc({
         name: "ollama",
         tier: 3,
+        weight: 0.6,
         type: "openai_compatible",
         baseUrl: "http://localhost:11434/v1",
-        leaderboardModel: "ollama-model",
       }),
     ],
     hints: { taskType: "local" },
-    models: [
-      { model: "cloud-model", qualityScore: 0.75, elo: 1100 },
-      { model: "ollama-model", qualityScore: 0.6, elo: 1000 },
-    ],
     expected: { service: "ollama", finalScore: 0.6, tier: 3 },
   },
 ];
@@ -434,15 +381,8 @@ const FIXTURES: Fixture[] = [
 function buildContext(fixture: Fixture): {
   router: Router;
   quota: QuotaCache;
-  leaderboard: LeaderboardCache;
 } {
   const quota = new QuotaCache({});
-  const leaderboard = new LeaderboardCache();
-  for (const m of fixture.models) {
-    (leaderboard as unknown as {
-      setModel: (model: string, q: number, elo: number | null) => void;
-    }).setModel(m.model, m.qualityScore, m.elo);
-  }
   for (const q of fixture.quotas ?? []) {
     (quota as unknown as { setScore: (s: string, v: number) => void }).setScore(
       q.service,
@@ -456,12 +396,12 @@ function buildContext(fixture: Fixture): {
     dispatchers[s.name] = new Stub(s.name);
   }
   const config: RouterConfig = { services };
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
   for (const name of fixture.brokenServices ?? []) {
     const b = router.getBreaker(name);
     b!.trip();
   }
-  return { router, quota, leaderboard };
+  return { router, quota };
 }
 
 describe("Scoring regression — the formula does not move without someone saying so", () => {

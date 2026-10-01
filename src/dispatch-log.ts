@@ -13,7 +13,7 @@
  * failure never throws into the dispatch path.
  */
 
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { withFileLock } from "./file-lock.js";
 import { redact } from "./redaction.js";
 import path from "node:path";
@@ -32,9 +32,16 @@ export function dispatchLogPath(): string {
   return path.join(logDir(), "dispatches.jsonl");
 }
 
-/** Who asked, and the job it ran under. Absent for direct library use. */
+/** Who asked, the job it ran under, and which config was loaded. Absent for direct library use. */
 export interface DispatchLogContext extends DispatchCaller {
   jobId?: string;
+  /**
+   * The config file this process was running on (absent when none was loaded).
+   * State lives in one directory whatever `--config` says, so a run against a
+   * throwaway config writes into the same log as real work; this is what lets a
+   * reader tell the two apart.
+   */
+  configPath?: string;
 }
 
 export interface DispatchLogEntry {
@@ -49,7 +56,11 @@ export interface DispatchLogEntry {
   clientVersion?: string;
   session?: string;
   jobId?: string;
+  /** Absolute path of the config file in use; absent when none was loaded. */
+  config?: string;
   success: boolean;
+  /** The prompt was refused before any process started; says nothing about the route. */
+  inputRejected?: true;
   durationMs?: number;
   tokensUsed?: { input: number; output: number };
   rateLimited?: boolean;
@@ -69,7 +80,6 @@ export interface DispatchLogEntry {
    */
   scores?: {
     quota: number;
-    quality: number;
     capability: number;
     final: number;
   };
@@ -97,7 +107,9 @@ export function buildDispatchLogEntry(
     ...(context?.clientVersion !== undefined ? { clientVersion: context.clientVersion } : {}),
     ...(context?.session !== undefined ? { session: context.session } : {}),
     ...(context?.jobId !== undefined ? { jobId: context.jobId } : {}),
+    ...(context?.configPath !== undefined ? { config: context.configPath } : {}),
     success: result.success,
+    ...(result.inputRejected ? { inputRejected: true as const } : {}),
   };
   if (result.durationMs !== undefined) entry.durationMs = result.durationMs;
   if (result.tokensUsed !== undefined) entry.tokensUsed = result.tokensUsed;
@@ -121,7 +133,6 @@ export function buildDispatchLogEntry(
     // cannot be reconstructed later: quota and breaker state have moved on.
     entry.scores = {
       quota: decision.quotaScore,
-      quality: decision.qualityScore,
       capability: decision.capabilityScore,
       final: decision.finalScore,
     };
@@ -174,4 +185,86 @@ export function logDispatch(
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Recent outcomes, for status and usage
+// ---------------------------------------------------------------------------
+
+export const RECENT_DAYS = 7;
+
+/** What the log says one route did over the window. A route's attempts, not dispatches: a fallback writes its own row. */
+export interface RecentOutcome {
+  attempts: number;
+  successes: number;
+  /** Declined for rate limiting. Counted as attempts that did not succeed, and shown apart. */
+  rateLimited: number;
+}
+
+let recentCache: { key: string; days: number; value: Record<string, RecentOutcome> } | undefined;
+
+function readIfPresent(file: string): { text: string; key: string } | undefined {
+  try {
+    const st = statSync(file);
+    return { text: readFileSync(file, "utf8"), key: `${file}:${st.size}:${st.mtimeMs}` };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Per-route outcomes from the dispatch log over the last `days` days.
+ *
+ * Read from the log and not from the usage counters on purpose: the counters
+ * are lifetime, and what a delegator needs before choosing a route is how it
+ * has been doing LATELY. (A route can be 20% successful this week and 80% for
+ * its lifetime.) Rows for prompts refused before running are left out.
+ *
+ * The rotated `.1` file is read only when the live one does not reach back far
+ * enough. Memoised on the files' size and mtime, since `status --watch` and
+ * every `usage` call ask. Never throws: no log is an empty answer.
+ */
+export function recentOutcomes(
+  days: number = RECENT_DAYS,
+  now: number = Date.now(),
+): Record<string, RecentOutcome> {
+  const file = dispatchLogPath();
+  const current = readIfPresent(file);
+  const cutoff = now - days * 24 * 3600 * 1000;
+  const parts: Array<{ text: string; key: string }> = [];
+  if (current) parts.push(current);
+  // The live file begins where rotation last cut it; if its first row is already
+  // inside the window, older rows may sit in the archive.
+  const firstTs = current ? Date.parse(/"ts":"([^"]+)"/.exec(current.text)?.[1] ?? "") : Number.NaN;
+  if (!current || !(firstTs < cutoff)) {
+    const archive = readIfPresent(`${file}.1`);
+    if (archive) parts.unshift(archive);
+  }
+  // Time is part of the key at hour granularity: the window slides.
+  const key = `${days}:${Math.floor(now / 3_600_000)}:${parts.map((p) => p.key).join("|")}`;
+  if (recentCache !== undefined && recentCache.key === key && recentCache.days === days) {
+    return recentCache.value;
+  }
+  const out: Record<string, RecentOutcome> = Object.create(null) as Record<string, RecentOutcome>;
+  for (const { text } of parts) {
+    for (const line of text.split("\n")) {
+      if (line === "") continue;
+      let row: { ts?: unknown; route?: unknown; success?: unknown; rateLimited?: unknown; inputRejected?: unknown };
+      try {
+        row = JSON.parse(line) as typeof row;
+      } catch {
+        continue; // A torn line from a crashed writer.
+      }
+      if (typeof row.ts !== "string" || typeof row.route !== "string") continue;
+      if (row.inputRejected === true) continue;
+      const at = Date.parse(row.ts);
+      if (!Number.isFinite(at) || at < cutoff) continue;
+      const o = (out[row.route] ??= { attempts: 0, successes: 0, rateLimited: 0 });
+      o.attempts += 1;
+      if (row.success === true) o.successes += 1;
+      else if (row.rateLimited === true) o.rateLimited += 1;
+    }
+  }
+  recentCache = { key, days, value: out };
+  return out;
 }

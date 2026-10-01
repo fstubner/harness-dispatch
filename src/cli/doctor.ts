@@ -3,6 +3,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { readHttpToken, tokenPath } from "../auth.js";
+import { BreakerStore } from "../breaker-store.js";
 import { AUTO_DETECT_COMMANDS } from "../config.js";
 import { commandAvailable } from "../dispatchers/shared/which-available.js";
 import { codexLoginState } from "../dispatchers/shared/harness-login.js";
@@ -40,7 +41,7 @@ function stateDirWritable(): { ok: boolean; detail: string } {
 
 export async function cmdDoctor(
   configPath: string | undefined,
-  opts: { json: boolean; live: boolean; allowPaid: boolean },
+  opts: { json: boolean; live: boolean; allowPaid: boolean; pruneState?: boolean },
 ): Promise<number> {
   const runtime = await buildRuntime(configPath);
   const status = await buildStatus(
@@ -48,7 +49,6 @@ export async function cmdDoctor(
     runtime.dispatchers,
     runtime.quota,
     runtime.router,
-    runtime.leaderboard,
   );
   // Must agree with package.json engines (>=22.22.2) and the README:
   // disagreement fails `doctor` on a runtime where dispatch works correctly.
@@ -312,6 +312,36 @@ export async function cmdDoctor(
               )
               .join("; "),
   });
+  // Breaker files and usage counters for routes this config does not name. The
+  // state directory is shared by every config on the machine, so a throwaway
+  // config run against it leaves its routes behind, and a route removed from the
+  // real one does too. Only reported by default: "not in THIS config" is not
+  // "unused", so deleting is a flag, never a side effect of loading.
+  {
+    const named = (n: string): boolean => Object.hasOwn(runtime.config.services, n);
+    const breakers = new BreakerStore();
+    const orphanBreakers = breakers.savedRoutes().filter((n) => !named(n));
+    const orphanUsage = runtime.quota.savedRoutes().filter((n) => !named(n));
+    const orphans = [...new Set([...orphanBreakers, ...orphanUsage])];
+    let removed: string[] = [];
+    if (opts.pruneState === true && orphans.length > 0) {
+      removed = [
+        ...new Set([...breakers.prune(Object.keys(runtime.config.services)), ...runtime.quota.pruneRoutes(Object.keys(runtime.config.services))]),
+      ];
+    }
+    checks.push({
+      name: "saved-routes",
+      ok: true,
+      detail:
+        orphans.length === 0
+          ? "saved breaker and usage state hold only routes this config names"
+          : removed.length > 0
+            ? `removed saved state for ${removed.length} route(s) this config does not name: ${removed.join(", ")}`
+            : `saved state holds ${orphans.length} route(s) this config does not name: ${orphans.join(", ")}. ` +
+              `They may belong to another config (the state directory is shared), so they are ` +
+              `left alone; \`harness-dispatch doctor --prune-state\` deletes them.`,
+    });
+  }
   checks.push({
     name: "billing-policy",
     ok: true,

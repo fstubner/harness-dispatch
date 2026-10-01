@@ -86,6 +86,13 @@ export interface QuotaStateJSON {
    */
   localInputTokens: number;
   localOutputTokens: number;
+  /**
+   * When this route's counters began (ISO time of the first write), when known.
+   * The counters are lifetime totals, so without it a reader cannot tell 40
+   * calls last week from 40 calls over a year. Absent for counters written
+   * before it was recorded.
+   */
+  localSince?: string;
 }
 
 /** Mutable quota snapshot for one service, updated reactively. */
@@ -185,6 +192,8 @@ export class QuotaCache {
    */
   private localInputTokens: Record<string, number>;
   private localOutputTokens: Record<string, number>;
+  /** When each route's counters began; see QuotaStateJSON.localSince. */
+  private localSince: Record<string, string>;
   /**
    * Increments made since the last successful persist.
    *
@@ -223,6 +232,7 @@ export class QuotaCache {
     this.localRateLimitedCounts = loaded.rateLimited;
     this.localInputTokens = loaded.inputTokens;
     this.localOutputTokens = loaded.outputTokens;
+    this.localSince = loaded.since;
   }
 
   // ------------------------------------------------------------------
@@ -331,9 +341,10 @@ export class QuotaCache {
    *
    * Max rather than adopt-disk: this process writes through on every
    * recordResult, so disk is normally current, but the persist path is a
-   * documented read-modify-write race (counters are informational and never
-   * consulted by routing). Taking the larger value means a lost write shows a
-   * stale count rather than losing one this process definitely made.
+   * documented read-modify-write race. Taking the larger value means a lost
+   * write shows a stale count rather than losing one this process definitely
+   * made. (Routing does consult two of these counts, for the never-succeeded
+   * skip — see localCountsFor.)
    *
    * ALL SIX counters, not just the four call counts — leaving the token
    * totals behind leaves the same staleness in place for tokens alone.
@@ -361,6 +372,9 @@ export class QuotaCache {
     for (const [service, count] of Object.entries(disk.outputTokens)) {
       this.localOutputTokens[service] = Math.max(this.localOutputTokens[service] ?? 0, count);
     }
+    for (const [service, since] of Object.entries(disk.since)) {
+      this.localSince[service] = since;
+    }
   }
 
   /**
@@ -368,10 +382,19 @@ export class QuotaCache {
    * `fullStatus` does.
    *
    * Read on the scoring path, once per candidate per dispatch, so it must not
-   * touch the network or the disk. These are the same counters `fullStatus`
-   * reports; this just reads them where waiting is not an option.
+   * touch the network, and touches the disk only in the one case below. These
+   * are the same counters `fullStatus` reports; this just reads them where
+   * waiting is not an option.
    */
   localCountsFor(service: string): { calls: number; successes: number } {
+    // A route this process has only seen fail may have succeeded in another
+    // process since — every dispatch runs in a runner of its own, and the
+    // router in a long-lived supervisor read the counts once, at boot, and
+    // went on skipping a repaired route as never-succeeded. Re-read just for
+    // that case, which is rare and is the one that changes a decision.
+    if ((this.localCounts[service] ?? 0) > 0 && (this.localSuccessCounts[service] ?? 0) === 0) {
+      this.refreshLocalCounts();
+    }
     return {
       calls: this.localCounts[service] ?? 0,
       successes: this.localSuccessCounts[service] ?? 0,
@@ -392,6 +415,7 @@ export class QuotaCache {
         localRateLimitedCount: this.localRateLimitedCounts[service] ?? 0,
         localInputTokens: this.localInputTokens[service] ?? 0,
         localOutputTokens: this.localOutputTokens[service] ?? 0,
+        ...(this.localSince[service] !== undefined ? { localSince: this.localSince[service]! } : {}),
       };
     }
     return out;
@@ -446,8 +470,9 @@ export class QuotaCache {
     rateLimited: Record<string, number>;
     inputTokens: Record<string, number>;
     outputTokens: Record<string, number>;
+    since: Record<string, string>;
   } {
-    const empty = { calls: {}, success: {}, failure: {}, rateLimited: {}, inputTokens: {}, outputTokens: {} };
+    const empty = { calls: {}, success: {}, failure: {}, rateLimited: {}, inputTokens: {}, outputTokens: {}, since: {} };
     if (!existsSync(this.stateFile)) {
       return empty;
     }
@@ -462,6 +487,7 @@ export class QuotaCache {
           local_rate_limited?: number;
           local_input_tokens?: number;
           local_output_tokens?: number;
+          since?: string;
         } | null
       >;
       const calls: Record<string, number> = {};
@@ -470,6 +496,7 @@ export class QuotaCache {
       const rateLimited: Record<string, number> = {};
       const inputTokens: Record<string, number> = {};
       const outputTokens: Record<string, number> = {};
+      const since: Record<string, string> = {};
       for (const [k, v] of Object.entries(data)) {
         if (!v) continue;
         if (typeof v.local_calls === "number") calls[k] = v.local_calls;
@@ -478,8 +505,9 @@ export class QuotaCache {
         if (typeof v.local_rate_limited === "number") rateLimited[k] = v.local_rate_limited;
         if (typeof v.local_input_tokens === "number") inputTokens[k] = v.local_input_tokens;
         if (typeof v.local_output_tokens === "number") outputTokens[k] = v.local_output_tokens;
+        if (typeof v.since === "string") since[k] = v.since;
       }
-      return { calls, success, failure, rateLimited, inputTokens, outputTokens };
+      return { calls, success, failure, rateLimited, inputTokens, outputTokens, since };
     } catch {
       return empty;
     }
@@ -535,7 +563,17 @@ export class QuotaCache {
       withFileLock(this.stateFile, () => {
         const existing = this.readStateFile();
         for (const [service, delta] of Object.entries(pending)) {
-          const bucket = existing[service] ?? {};
+          // A hand-edited or damaged entry that is not an object (`"codex": 12`)
+          // threw on the first assignment below, and every later save with it —
+          // counting stopped for ALL routes. Replaced, since it holds nothing
+          // readable anyway.
+          const entry = existing[service];
+          const fresh = entry === null || typeof entry !== "object" || Array.isArray(entry);
+          const bucket: Record<string, unknown> = fresh ? {} : entry;
+          // Stamped when the counters begin, never backfilled onto counts that
+          // are already there: their start is unknown, and today's date would
+          // be a confident wrong answer.
+          if (fresh) bucket["since"] = new Date().toISOString();
           const add = (key: string, by: number): void => {
             if (by === 0) return;
             bucket[key] = (typeof bucket[key] === "number" ? (bucket[key] as number) : 0) + by;
@@ -590,6 +628,33 @@ export class QuotaCache {
       if (done || Date.now() >= end) return;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
+  }
+
+  /** Routes that have saved counters, configured or not. */
+  savedRoutes(): string[] {
+    return Object.keys(this.readStateFile());
+  }
+
+  /**
+   * Drop the saved counters of every route not in `keep`; returns the names
+   * removed. Counters of a route left out of the config (or of a demo that ran
+   * against a throwaway one) otherwise sit in the file for good. Only ever
+   * called on request — the state directory is shared by every config on the
+   * machine, so "not in THIS config" is not "unused".
+   */
+  pruneRoutes(keep: Iterable<string>): string[] {
+    const wanted = new Set(keep);
+    const removed: string[] = [];
+    withFileLock(this.stateFile, () => {
+      const existing = this.readStateFile();
+      for (const name of Object.keys(existing)) {
+        if (wanted.has(name)) continue;
+        delete existing[name];
+        removed.push(name);
+      }
+      if (removed.length > 0) this.writeStatePayloadAtomicSync(JSON.stringify(existing, null, 2));
+    }, { requireLock: true });
+    return removed;
   }
 
   /**

@@ -21,7 +21,6 @@ async function currentStatus(deps: ResourceDeps) {
     state.dispatchers,
     state.quota,
     state.router,
-    state.leaderboard,
   );
 }
 

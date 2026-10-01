@@ -92,7 +92,7 @@ export async function cmdConfigure(
   for (const [name, svc] of Object.entries(config.services)) {
     process.stdout.write(
       `- ${name}: harness=${svc.harness ?? name} billing=${buildRouteBilling(svc).kind} safety=${effectiveSafetyProfile(svc)} model=${
-        svc.model ?? svc.leaderboardModel ?? "unknown"
+        svc.model ?? "unknown"
       }\n`,
     );
   }

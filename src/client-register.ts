@@ -277,7 +277,7 @@ const MERGE_ATTEMPTS = 3;
 export async function writeJsonAtomic(
   file: string,
   value: unknown,
-  opts: { createMode?: number; basedOn?: string } = {},
+  opts: { createMode?: number; basedOn?: string; mustNotExist?: boolean } = {},
 ): Promise<void> {
   // Through a symlink, to the file it points at. Renaming onto the link path
   // replaced the LINK with a plain file — a dotfile managed by stow or
@@ -328,6 +328,13 @@ export async function writeJsonAtomic(
       throw new ConcurrentChangeError(`${file} changed while it was being updated`);
     }
   }
+  // The missing-file plan was made before a prompt that can sit for minutes;
+  // a client launched in that time has created the file, and renaming over it
+  // would replace what it just wrote with no backup.
+  if (opts.mustNotExist === true && (await stat(file).then(() => true, () => false))) {
+    await rm(tmp, { force: true });
+    throw new ConcurrentChangeError(`${file} was created while it was being planned`);
+  }
   await rename(tmp, file);
 }
 
@@ -362,12 +369,18 @@ export async function writeClientEntry(
   if (plan.state === "missing-file") {
     // Nothing to merge and nothing to back up. 0600 because this file is
     // where the client will later keep its own credentials.
-    await writeJsonAtomic(
-      plan.file,
-      { [plan.serversKey]: { [ENTRY_KEY]: plan.desired } },
-      { createMode: 0o600 },
-    );
-    return { ...base, action: "written" };
+    try {
+      await writeJsonAtomic(
+        plan.file,
+        { [plan.serversKey]: { [ENTRY_KEY]: plan.desired } },
+        { createMode: 0o600, mustNotExist: true },
+      );
+      return { ...base, action: "written" };
+    } catch (err) {
+      if (!(err instanceof ConcurrentChangeError)) throw err;
+      // The client created its file since the plan was made. Merge into what
+      // it wrote, with a backup, exactly as for any file that already exists.
+    }
   }
   // An entry someone edited by hand is not ours to replace unasked;
   // `removeClientEntry` refuses the same thing. `consented` is what the

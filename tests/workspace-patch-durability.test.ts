@@ -48,7 +48,6 @@ async function buildDeps() {
   const { RuntimeHolder } = await import("../src/mcp/config-hot-reload.js");
   const { Router } = await import("../src/router.js");
   const { QuotaCache } = await import("../src/quota.js");
-  const { LeaderboardCache } = await import("../src/leaderboard.js");
 
   const svc = {
     name: "editor", enabled: true, type: "cli" as const, harness: "editor", command: "editor",
@@ -75,10 +74,9 @@ async function buildDeps() {
   const config = { services: { editor: svc } };
   const dispatchers = { editor: dispatcher } as never;
   const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-  const leaderboard = new LeaderboardCache();
-  const router = new Router(config as never, quota, dispatchers, leaderboard);
+  const router = new Router(config as never, quota, dispatchers);
   return {
-    holder: new RuntimeHolder({ config, dispatchers, quota, router, leaderboard, mtimeMs: 0 } as never),
+    holder: new RuntimeHolder({ config, dispatchers, quota, router, mtimeMs: 0 } as never),
   };
 }
 

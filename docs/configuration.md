@@ -192,6 +192,11 @@ edit the written file for those.
 The current command is conservative: it prints detected routes by default and writes
 only when explicitly asked with `--yes`.
 
+Writing the config is also what turns detection off: the detected harnesses become
+`clis:` entries, and a config that lists routes is authoritative, so the PATH lookup
+no longer runs at every start. With no config file, detection runs every time (it is
+fast, but not free); `configure --yes` once removes that.
+
 ## Instructions for connecting agents
 
 Routing policy for this machine — which model tier for which kind of task, which
