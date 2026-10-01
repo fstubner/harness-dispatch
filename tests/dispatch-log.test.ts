@@ -128,6 +128,16 @@ describe("dispatch log", () => {
     expect(buildDispatchLogEntry("only", result(), forced).scores?.final).toBe(1);
   });
 
+  it("writes no scores for a decision that scored nothing", () => {
+    // A run cancelled before routing logs a decision that carries only a
+    // reason; `"scores":{}` would read as a route that scored undefined.
+    const cancelled = { reason: "cancelled" } as unknown as RoutingDecision;
+    const entry = buildDispatchLogEntry("fake", result({ success: false }), cancelled);
+    expect(entry.reason).toBe("cancelled");
+    expect("scores" in entry).toBe(false);
+    expect(JSON.stringify(entry)).not.toContain('"scores"');
+  });
+
   it("records failures with a capped error string and rateLimited flag", () => {
     const entry = buildDispatchLogEntry(
       "sad_route",

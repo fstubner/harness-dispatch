@@ -131,11 +131,20 @@ export function buildDispatchLogEntry(
     // says the picked route beat `runner_up` 0.92 to 0.81, not why, and "why"
     // is what tells a scoring bug from a route that is genuinely better. It
     // cannot be reconstructed later: quota and breaker state have moved on.
-    entry.scores = {
-      quota: decision.quotaScore,
-      capability: decision.capabilityScore,
-      final: decision.finalScore,
-    };
+    //
+    // Not for a decision that scored nothing (a run cancelled before routing
+    // passes one with only a reason): that would log `"scores":{}`.
+    if (
+      decision.quotaScore !== undefined ||
+      decision.capabilityScore !== undefined ||
+      decision.finalScore !== undefined
+    ) {
+      entry.scores = {
+        quota: decision.quotaScore,
+        capability: decision.capabilityScore,
+        final: decision.finalScore,
+      };
+    }
   }
   return entry;
 }
