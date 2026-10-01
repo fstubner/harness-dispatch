@@ -51,6 +51,7 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  --yes                 configure: write config.yaml instead of only previewing it.",
       "                        connect: do not prompt (never replaces an entry you edited).",
       "  --force               configure: overwrite an existing config file.",
+      "                        connect: replace a hand-edited client entry.",
       "  --clients <ids>       connect: comma-separated client ids, instead of prompting.",
       "  --no-clients          configure: skip the offer to register with clients.",
       "  --remove              connect: remove the entry rather than write it.",

@@ -330,7 +330,12 @@ function parseHints(body: ChatRequest): RouteHints {
   // like "" — it is not a model name, and being TRUTHY it would otherwise
   // survive to `--model "   "` on a CLI route and cost a real provider call,
   // a route failure and breaker credit behind an HTTP 200.
-  if (typeof body.model === "string" && body.model.trim() !== "") hints.model = body.model;
+  if (typeof body.model === "string" && body.model.trim() !== "") {
+    // Dropped when blank, but a NUL is not leniency's business: it fails deep
+    // in spawn only after a route has been tried and charged a failure.
+    noNul(body.model, "model");
+    hints.model = body.model;
+  }
   const topSafety = enumField(body.safetyProfile, SAFETY_PROFILES, "safetyProfile");
   if (topSafety !== undefined) hints.safetyProfile = topSafety;
   if (body.hints !== undefined && body.hints !== null) {

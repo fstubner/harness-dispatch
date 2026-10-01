@@ -8,18 +8,14 @@
 # neither ever clobbers the other. The entries below are both the built-in
 # defaults and the worked examples of the pattern. With no config.yaml of
 # your own, the router uses this file directly, filtered by which CLIs are
-# actually installed. To customize, copy this file to config.yaml in your
-# own project and edit — or run `harness-dispatch configure` to generate a
-# starting point instead. Same schema, same parser, no special cases either
-# way. Add a new entry and it's a route.
+# actually installed. Do not copy this whole file: start from the short one
+# `harness-dispatch configure --print` shows and add entries to it. Same
+# schema, same parser, no special cases. Add a new entry and it's a route.
 #
-# A config that lists any `clis:` or `endpoints:` is AUTHORITATIVE: it gets
-# exactly the routes it names, and nothing is auto-detected alongside them.
-# So deleting an entry from your own config.yaml removes that route, full
-# stop — `disabled:` is not needed for it, and has no effect in such a file.
-# `disabled:` applies only to a config that names no routes of its own and is
-# therefore still relying on auto-detection. Add `detect: true` if you want
-# both: your entries AND whatever is installed.
+# Listing any `clis:` or `endpoints:` in your own config.yaml turns
+# auto-detection off — see docs/configuration.md#listing-a-route-turns-detection-off
+# (https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md).
+# Every key is in the reference at the bottom of that page.
 #
 # Route selection scores each entry by task fit:
 #   capabilities[task_type] x cli_capability x quota x weight
@@ -27,8 +23,9 @@
 # to the next candidate if the pick fails.
 # Billing safety: routes that can cost money (metered api_key, unknown billing)
 # stay blocked until you set allow_paid_usage: true on them. Product-login CLIs
-# (Claude Code, Codex, Cursor) run by default — their providers hard-stop at
-# your plan's included usage.
+# (Claude Code, Codex, Cursor) run by default. They draw on your plan's included
+# usage; if paid overage is switched on at the provider (Cursor on-demand,
+# Claude usage credits, Codex flexible credits), that is spent too.
 #
 # ${ENV_VAR} anywhere in a string value is replaced from the environment.
 
@@ -468,10 +465,14 @@ endpoints:
 #   Pick the cheapest model that can do the task; keep the strongest for hard
 #   judgment.
 
-# Per-route knobs worth knowing (all optional, all shown in the entries above
-# or README.md): enabled, weight, timeout_ms, safety_profile, effective_safety,
-# workspace_policy (shared | shared_locked | copy | git_worktree),
-# instructions, thinking_level, escalate_on, allow_paid_usage, billing_kind,
+# Per-route knobs worth knowing (all optional; every one is in the config
+# reference, docs/configuration.md#config-reference): enabled, weight,
+# timeout_ms, safety_profile, effective_safety, workspace_policy (shared |
+# shared_locked | copy | git_worktree), instructions, thinking_level,
+# escalate_model / escalate_on, resource_weight, allow_paid_usage, billing_kind,
 # paid_usage_possible.
 #
-# disabled: [route_name, ...] hides an entry without deleting it.
+# disabled: [route_name, ...] stops an auto-detected harness from being added. It
+# never affects routes you list under clis:/endpoints: (use `enabled: false` on
+# the entry for that), and does nothing at all in a file that lists any routes
+# unless it also says `detect: true`.

@@ -36,7 +36,7 @@ function describeGitSpawnFailure(err: unknown): Error | undefined {
   if (code !== "ENOENT") return undefined;
   return new Error(
     "git is required for isolated workspaces but was not found on PATH. Install git, or " +
-      "use workspace_policy: shared / shared_locked, which need no git. `doctor` reports " +
+      "use workspacePolicy: shared / shared_locked, which need no git. `doctor` reports " +
       "whether git was found.",
   );
 }

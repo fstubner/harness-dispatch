@@ -113,6 +113,8 @@ describe("CLI parser", () => {
     expect(result.stdout).toContain("harness-dispatch status");
     expect(result.stdout).toContain("harness-dispatch serve");
     expect(result.stdout).toContain("harness-dispatch auth show");
+    // --force also gates `connect` replacing an entry you edited; the help named only configure.
+    expect(result.stdout).toMatch(/--force[^\n]*\n\s+connect: replace a hand-edited client entry/);
     expect(result.stdout).not.toContain("list-services");
     expect(result.stdout).not.toContain("dashboard");
   });
@@ -205,6 +207,43 @@ describe("CLI parser", () => {
     expect(result.stdout).toMatch(/NOT FOUND/);
     expect(result.stdout).toMatch(/optional/i);
     expect(result.code, "a machine without git is a supported configuration").toBe(0);
+  });
+
+  it("shows an action-recommended row as warn and ends with a one-line verdict", async () => {
+    // `ok` was the only passing word, so a row that needed doing (git missing,
+    // a client not yet registered) read the same as a healthy one, and there
+    // was no summary line to tell a new user whether they were done.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const whichAvailable = await import("../src/dispatchers/shared/which-available.js");
+    vi.spyOn(whichAvailable, "commandAvailable").mockImplementation((cmd: string) =>
+      cmd === "git" ? false : true,
+    );
+    const config = await writeConfig();
+    const result = await capture(() => main(["doctor", "--config", config]));
+    expect(result.stdout).toMatch(/^warn git: NOT FOUND/m);
+    const lines = result.stdout.trimEnd().split("\n");
+    expect(lines.at(-1)).toMatch(/^OK, with \d+ thing\(s\) worth doing \(.*git/);
+    expect(result.code).toBe(0);
+
+    const json = JSON.parse((await capture(() => main(["doctor", "--config", config, "--json"]))).stdout) as {
+      ok: boolean;
+      verdict: string;
+      checks: Array<{ name: string; warn?: boolean }>;
+    };
+    expect(json.ok).toBe(true);
+    expect(json.verdict).toMatch(/^OK, with/);
+    expect(json.checks.find((c) => c.name === "git")?.warn).toBe(true);
+  });
+
+  it("calls a failing doctor NOT READY and names the failing rows", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-doctor-verdict-"));
+    const empty = path.join(dir, "config.yaml");
+    // No routes of its own and no harness reachable: authoritative and empty.
+    await fs.writeFile(empty, "clis: []\nendpoints: []\ndisabled: [claude_code_cli, codex_cli, cursor_cli, antigravity_cli]\n", "utf8");
+    const result = await capture(() => main(["doctor", "--config", empty]));
+    expect(result.code).toBe(1);
+    expect(result.stdout.trimEnd().split("\n").at(-1)).toMatch(/^NOT READY: \d+ problem\(s\) to fix \(.*routes/);
   });
 
   describe("--config at the boundary (twenty-fifth pass, finding 3)", () => {
@@ -502,6 +541,33 @@ describe("CLI parser", () => {
       await fs.rm(cwd, { recursive: true, force: true });
       await fs.rm(stateParent, { recursive: true, force: true });
     }
+  });
+
+  it("says what it could not write, and how out, when configure cannot create the file", async () => {
+    // A bare `EPERM: operation not permitted, mkdir ...` came out under the
+    // detection summary, with nothing to say which file or what to do.
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-configure-eperm-"));
+    const blocker = path.join(dir, "not-a-folder");
+    await fs.writeFile(blocker, "", "utf8");
+    const target = path.join(blocker, "config.yaml");
+    await expect(
+      capture(() => main(["configure", "--yes", "--no-clients", "--config", target])),
+    ).rejects.toThrow(/configure: could not write .*config\.yaml: .*--config <other-path>/);
+  });
+
+  it("gives the empty-install remedy from `dispatch`, not just the router's sentence", async () => {
+    vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-dispatch-empty-"));
+    const empty = path.join(dir, "config.yaml");
+    await fs.writeFile(
+      empty,
+      "clis: []\nendpoints: []\ndisabled: [claude_code_cli, codex_cli, cursor_cli, antigravity_cli]\n",
+      "utf8",
+    );
+    await expect(capture(() => main(["dispatch", "hi", "--config", empty]))).rejects.toThrow(
+      /no routes are configured\. Install a harness CLI.*doctor/,
+    );
   });
 
   it("still refuses to overwrite an existing ./config.yaml on bare configure --yes", async () => {

@@ -39,7 +39,10 @@ harness-dispatch doctor --json
 
 It covers: the binary, config load, harness detection on PATH, auth, billing
 classification, route readiness, whether `git` is present, and whether any MCP
-client on this machine points at a path that no longer exists.
+client on this machine points at a path that no longer exists. Each row is `ok`,
+`warn` (passes, but wants something done, such as a client that is not registered
+yet) or `fail`; only `fail` makes the exit code non-zero. The last line is a
+one-line verdict, and `--json` carries it as `verdict`.
 
 **What it is doing and what it costs.** `harness-dispatch status` (route
 readiness, quota, circuit-breaker state) and `harness-dispatch usage`
@@ -89,7 +92,7 @@ them.
 | A route's circuit breaker is tripped | `status` / `usage` show `breakerTripped` | Repeated failures on one route; it is being skipped until the deadline expires (max 24h) |
 | `doctor` exits non-zero | Exit code, and the failing check by name | Something in the chain is broken *now* — most often auth, a missing CLI, or a client entry pointing at a deleted path |
 | A route is `paid_blocked` | `status`, and a refused dispatch naming it | The route has no billing backstop and needs an explicit `allow_paid_usage: true` |
-| Jobs reported `orphaned` | `job_status` | The server that owned the run exited before it finished. The run is gone; the artifacts are not |
+| Jobs reported `orphaned` | `job_status` | The process running the job stopped reporting progress and is gone, or a job waiting for a slot lost its server. The run is gone; the artifacts are not |
 | Config warnings | `doctor` (fails), `status` (lists them) | A config entry had no effect — e.g. `services:` written as a list, which silently renames routes to array indices |
 
 If you want any of this to actually page someone, `doctor --json` and
@@ -132,9 +135,9 @@ after a directory rename. `doctor` fails on it now, and
 one.
 
 **A run outlives its server.** Jobs run in a detached process, so a client
-timeout or a server restart does not kill them. If the server dies while a job
-is *running*, the job dies with it and is reported `orphaned` within 90
-seconds. If it dies while a job is waiting for a concurrency slot, that job is
+timeout or a server restart does not kill them. If the process running the job
+itself dies (a crash, a kill, a reboot), the job is reported `orphaned` within
+90 seconds. If the server dies while a job is waiting for a concurrency slot, that job is
 reported `orphaned` at the next server start — deliberately reported rather
 than resumed, because silently running an abandoned job against your repository
 is not a decision a restart should make.

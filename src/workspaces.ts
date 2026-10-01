@@ -1277,14 +1277,14 @@ async function prepareGitWorktreeWorkspace(
     (err: unknown) => {
       if ((err as { code?: unknown } | null)?.code === "ENOENT") {
         throw new Error(
-          "workspace_policy: git_worktree needs git on PATH, and it was not found. Install " +
-            "git, or use workspace_policy: copy, which needs no git. `doctor` reports whether " +
+          "workspacePolicy: git_worktree needs git on PATH, and it was not found. Install " +
+            "git, or use workspacePolicy: copy, which needs no git. `doctor` reports whether " +
             "it found one.",
         );
       }
       throw new Error(
-        `workspace_policy: git_worktree needs ${originalWorkingDir} to be inside a git ` +
-          `repository, and it is not. Use workspace_policy: copy for a directory that is not ` +
+        `workspacePolicy: git_worktree needs ${originalWorkingDir} to be inside a git ` +
+          `repository, and it is not. Use workspacePolicy: copy for a directory that is not ` +
           `version-controlled.`,
       );
     },
@@ -1297,8 +1297,8 @@ async function prepareGitWorktreeWorkspace(
   // `git worktree add` has nothing to branch from in it.
   const baseCommit = await git(["rev-parse", "HEAD"], gitRoot).catch(() => {
     throw new Error(
-      `workspace_policy: git_worktree needs at least one commit to branch a worktree from, ` +
-        `and ${gitRoot} has none yet. Make an initial commit, or use workspace_policy: copy.`,
+      `workspacePolicy: git_worktree needs at least one commit to branch a worktree from, ` +
+        `and ${gitRoot} has none yet. Make an initial commit, or use workspacePolicy: copy.`,
     );
   });
   await git(["worktree", "add", "--detach", worktreeRoot, baseCommit], gitRoot);

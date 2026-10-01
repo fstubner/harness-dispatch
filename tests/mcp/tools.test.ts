@@ -861,7 +861,7 @@ describe("MCP tools — dispatch", () => {
 
     const started = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir },
+      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const startData = started.data as {
@@ -1044,6 +1044,24 @@ describe("MCP tools — dispatch", () => {
     expect(existsSync(runningJobDir)).toBe(true);
   });
 
+  it("warns when hints.taskType is omitted, as it does for workingDir", async () => {
+    // The tool text says routing quality degrades without it; before, the reply
+    // looked identical to a correct call.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
+    );
+    const without = await invokeTool("dispatch", { prompt: "hi", workingDir: workDir }, { holder });
+    expect((without.data as { warning?: string }).warning).toMatch(/hints\.taskType was not provided/);
+
+    const withIt = await invokeTool(
+      "dispatch",
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
+      { holder },
+    );
+    expect((withIt.data as { warning?: string }).warning).toBeUndefined();
+  });
+
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
     const holder = buildHolder(
       { a: makeService("a", { model: "a-model" }) },
@@ -1056,7 +1074,7 @@ describe("MCP tools — dispatch", () => {
 
     const withWorkingDir = await invokeTool(
       "dispatch",
-      { prompt: "hi", workingDir: workDir },
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const withData = withWorkingDir.data as { warning?: string };
@@ -1288,6 +1306,19 @@ describe("MCP tools — usage listModels", () => {
     expect(data.liveModels.error).toContain("unknown route");
   });
 
+  it("does not read prototype keys as routes, and answers an empty listModels", async () => {
+    const holder = buildHolder({}, {});
+    for (const id of ["constructor", "toString", "__proto__"]) {
+      const r = await invokeTool("usage", { listModels: id }, { holder });
+      const data = r.data as { liveModels: { error?: string } };
+      expect(data.liveModels.error, id).toContain("unknown route");
+    }
+    // "" used to be falsy and silently skipped: no liveModels member at all.
+    const r = await invokeTool("usage", { listModels: "" }, { holder });
+    const data = r.data as { liveModels?: { error?: string } };
+    expect(data.liveModels?.error).toContain("unknown route");
+  });
+
   it("appends /v1 before /models for a baseUrl that doesn't already end in /v1, matching the dispatcher", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 }),
@@ -1310,6 +1341,52 @@ describe("MCP tools — usage listModels", () => {
       expect.anything(),
     );
     fetchSpy.mockRestore();
+  });
+});
+
+describe("every tool emits an MCP span", () => {
+  // spans.ts says it covers MCP tool invocations; only `dispatch` and
+  // `job_status` did, so the other four were invisible to a trace.
+  it("names the tool on a span for all six", async () => {
+    const seen: string[] = [];
+    const span = {
+      setAttributes: (a: Record<string, unknown>) => {
+        if (typeof a["tool.name"] === "string") seen.push(a["tool.name"]);
+      },
+      setAttribute: () => undefined,
+      setStatus: () => undefined,
+      recordException: () => undefined,
+      end: () => undefined,
+      isRecording: () => true,
+    };
+    const tracer = {
+      startActiveSpan: (_name: string, fn: (s: unknown) => unknown) => fn(span),
+    };
+    const { trace } = await import("@opentelemetry/api");
+    const spy = vi.spyOn(trace, "getTracer").mockReturnValue(tracer as never);
+    try {
+      const holder = buildHolder(
+        { a: makeService("a") },
+        { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+      );
+      const id = "job-1700000000001-aaaaaaaa";
+      const calls: Array<[string, Record<string, unknown>]> = [
+        ["dispatch", { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } }],
+        ["job_status", {}],
+        ["usage", {}],
+        ["cancel_job", { jobId: id }],
+        ["retry_job", { jobId: id }],
+        ["workspace", { jobId: id, action: "diff" }],
+      ];
+      for (const [name, args] of calls) {
+        // cancel_job, retry_job and workspace refuse an unknown job; the span
+        // is what is under test, not the refusal.
+        await invokeTool(name, args, { holder }).catch(() => undefined);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect([...new Set(seen)].sort()).toEqual([...TOOL_NAMES].sort());
   });
 });
 

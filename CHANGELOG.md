@@ -166,6 +166,67 @@ pre-1.0, so minor versions can carry behaviour changes.
   file in its run directory, and retention counts from the later of that and the
   directory's own time.
 
+- **`doctor` has a warn level and a verdict.** A row that passes but wants
+  something done (a client not yet registered, `git` missing, a route that has
+  never succeeded) now reads `warn` instead of `ok`, exit code unchanged, and the
+  output ends with one line: `OK`, `OK, with N thing(s) worth doing`, or
+  `NOT READY`. `--json` carries it as `verdict`.
+
+- **A config reference.** docs/configuration.md lists every key the parser
+  recognises with its type, default and meaning, including `escalate_model`,
+  `escalate_on` and `resource_weight`, which were documented nowhere.
+  `scripts/check-claims.mjs` fails when a recognised key is missing from it.
+
+- **A dispatch without `hints.taskType` now says so.** The reply carries a
+  `warning`, as it already did for a missing `workingDir`.
+
+- **MCP tools carry annotations.** `job_status` and `usage` are marked
+  read-only, `cancel_job` and `workspace` destructive, so a client can approve
+  polling without asking each time.
+
+### Fixed
+
+- **A streamed request that failed no longer ends as an empty success.** A
+  cancelled or crashed single-route stream, and a streamed fanout whose every
+  arm failed, ended with `finish_reason: "stop"` and `[DONE]`; they now end with
+  an `error` frame, as the non-streaming reply answers 500 or 502. A streamed
+  reply also names the routed model (it said `harness-dispatch`), carries the
+  `workingDir` warning, and a NUL byte in the top-level `model` is a 400 instead
+  of a failed route with breaker credit. An MCP session id the HTTP server does
+  not hold now answers 404, so clients re-initialise, instead of 400.
+
+- **The 15 decoy fields are out of the published `dispatch` schema.**
+  `tools/list` shrank from 19,728 to 15,271 characters and the server
+  instructions from 2,084 to 1,645, measured with a real stdio client. The
+  refusals are unchanged: each misplaced or snake_case key (`safety_profile`,
+  a top-level `taskType`, `model`, `escalate`, and the rest) is still rejected
+  by name, now by the near-miss guard instead of by `z.never()` fields.
+  `hints.model`'s description dropped from 1,777 to 864 characters, the
+  `service` example uses a real route id (`codex_cli`), and the instructions no
+  longer repeat what the schema says.
+
+- **Errors that told an MCP caller to use `workspace_policy` now say
+  `workspacePolicy`**, the spelling the tool accepts.
+
+- **Raw or dead-end errors.** `configure` names the file it could not write and
+  how to get out; `dispatch` with no routes gives the same remedy `usage` does;
+  two runtime errors that pointed at docs/ (not shipped in the npm package) now
+  link the page on GitHub; the HTTP 401 body points at `auth show`, and so does
+  the `serve` banner.
+
+- **`usage` with `listModels` read prototype keys as routes** (`constructor`)
+  and ignored an empty string; both are now answered as an unknown route. Every
+  tool now emits a trace span, not only `dispatch` and `job_status`.
+
+- **Documentation corrected.** The README's Cursor override would have removed
+  every other harness (it is now an `overrides:` entry); the shipped config no
+  longer says providers hard-stop at your plan's included usage, or that
+  `disabled:` hides an entry of your own; OPERATIONS.md no longer says a running
+  job dies with the server; the endpoint timeout, the streamed job-id header,
+  the `--force` help, the skill's `service` rule and ARCHITECTURE.md's claims
+  about the supervisor pool and shared liveness are fixed. AGENTS.md and
+  CLAUDE.md were the same text twice; CLAUDE.md now imports AGENTS.md.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

@@ -203,7 +203,7 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       throw new Error(
         `workspace lock timed out after ${Math.round(timeoutMs / 1000)}s waiting for ` +
           `pid ${record?.pid ?? "unknown"} to release ${key}. Another dispatch is still ` +
-          `using this workspace; use workspace_policy: copy to run them concurrently.`,
+          `using this workspace; use workspacePolicy: copy to run them concurrently.`,
       );
     }
     await new Promise((r) => setTimeout(r, RETRY_MS));
