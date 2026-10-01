@@ -970,7 +970,9 @@ async function loadConfigInner(
       }
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
-      if (e.code === "ENOENT") {
+      if (e.code === "ENOENT" || e.code === "ENOTDIR") {
+        // ENOTDIR: a part of the path is a file, so the config is not there either
+        // (POSIX says so where Windows says ENOENT).
         if (opts.allowMissing === true) {
           // `configure` names an OUTPUT path, so a file that is not there yet
           // is its normal first run; fall through to auto-detect.
