@@ -26,6 +26,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **MCP progress notifications now arrive for ordinary dispatches.** They were
+  sent only when a job ran inside the server process, which is the mode the test
+  suite forces and no real install uses, so a client asking for progress got
+  none. While `dispatch` waits out its grace window it now forwards the run's
+  output as it is written. The dispatch call also stops watching the job once
+  that window ends; it used to keep reading the job's status file every 300 ms
+  for up to 70 minutes with nothing waiting on it.
+
 - **Background jobs now survive the session that started them on Windows, even
   behind a launcher shim.** A launcher that kills its descendants when it exits
   (the nvx shim does) took every job's supervisor and agent CLI with it when the

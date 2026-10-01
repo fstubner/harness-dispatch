@@ -2,7 +2,8 @@
 
 import { existsSync } from "node:fs";
 import { redact } from "../redaction.js";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, open, readFile, writeFile, type FileHandle } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -440,10 +441,25 @@ const TERMINAL_WATCH_INTERVAL_MS = 300;
  * doubles as the exit path if the runner dies). Timer is unref'd: an
  * exiting server abandons the watch, which is exactly the point of
  * detached execution.
+ *
+ * `onEvent` gets the run's output as it lands in stdout.partial.log. The run
+ * lives in another process, so the in-process event tap never fires for it —
+ * progress notifications on the default path were documented, tested (in the
+ * in-process mode the suite forces) and never sent. The partial log is the one
+ * record of output every route writes, and it is already redacted.
+ *
+ * `signal` ends the watch early. The MCP dispatch path stops listening once its
+ * grace window is over; before, this loop went on reading status.json every
+ * 300 ms for up to 70 minutes per dispatch with nobody awaiting it.
  */
-export async function watchUntilTerminal(jobDir: string): Promise<void> {
+export async function watchUntilTerminal(
+  jobDir: string,
+  opts: { onEvent?: (event: DispatcherEvent) => void; signal?: AbortSignal } = {},
+): Promise<void> {
   const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
-  while (Date.now() < deadline) {
+  const tail = opts.onEvent !== undefined ? partialLogTail(jobDir, opts.onEvent) : undefined;
+  while (Date.now() < deadline && opts.signal?.aborted !== true) {
+    await tail?.();
     // Waits for a terminal STATUS, deliberately not for result.json: runJob
     // writes result.json and then updates the status, so returning on
     // result.json alone resolves in the window between the two and a caller
@@ -461,6 +477,7 @@ export async function watchUntilTerminal(jobDir: string): Promise<void> {
         status.status === "orphaned" ||
         status.status === "cancelled"
       ) {
+        await tail?.(); // Output written just before the terminal status.
         return;
       }
     } catch {
@@ -468,4 +485,40 @@ export async function watchUntilTerminal(jobDir: string): Promise<void> {
     }
     await delay(TERMINAL_WATCH_INTERVAL_MS, undefined, { ref: false });
   }
+}
+
+/**
+ * A reader that hands each call's new bytes of stdout.partial.log to `onEvent`
+ * as one stdout event. Decoded across reads, so a multi-byte character split
+ * between two appends is not mangled.
+ */
+function partialLogTail(
+  jobDir: string,
+  onEvent: (event: DispatcherEvent) => void,
+): () => Promise<void> {
+  const file = path.join(jobDir, "output", "stdout.partial.log");
+  const decoder = new StringDecoder("utf8");
+  let offset = 0;
+  return async () => {
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(file, "r");
+      const { size } = await handle.stat();
+      if (size <= offset) return;
+      const buf = Buffer.alloc(size - offset);
+      const { bytesRead } = await handle.read(buf, 0, buf.length, offset);
+      offset += bytesRead;
+      const chunk = decoder.write(buf.subarray(0, bytesRead));
+      if (chunk === "") return;
+      try {
+        onEvent({ type: "stdout", chunk });
+      } catch {
+        // Progress forwarding is best-effort; the watch must go on.
+      }
+    } catch {
+      // Not written yet: the next tick reads it.
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  };
 }

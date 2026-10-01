@@ -481,7 +481,7 @@ async function startSingle(
   const counter = { value: 0 };
   const onEvent = makeProgressTap(extra, live, counter, input.service);
 
-  const { status, completion } = await startAsyncJobTracked(
+  const { status, completion, stopWatching } = await startAsyncJobTracked(
     { holder: deps.holder },
     {
       prompt: input.prompt,
@@ -499,6 +499,8 @@ async function startSingle(
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(completion, graceMs);
   live.value = false;
+  // Nobody awaits the rest: the caller polls job_status from here on.
+  stopWatching();
 
   const job = await getAsyncJob(status.jobId);
   if (jobCompleted(job)) {
@@ -657,6 +659,7 @@ async function startFanout(
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(Promise.all(started.map((s) => s.job.completion)).then(() => undefined), graceMs);
   live.value = false;
+  for (const s of started) s.job.stopWatching();
 
   let warning: string | undefined;
   const results = await Promise.all(

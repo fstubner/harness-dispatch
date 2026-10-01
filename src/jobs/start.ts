@@ -121,7 +121,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     // preamble — so the in-process run must dispatch the same frozen prompt,
     // not input.prompt, which would silently drop contextJobs.
     const completion = runJob(deps, jobDir, manifest, { ...input, files, prompt: effectivePrompt });
-    return { status, completion };
+    return { status, completion, stopWatching: () => undefined };
   }
 
   // Concurrency gate. Every dispatch spawns its own detached runner, so an
@@ -138,7 +138,12 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   await updateStatus(jobDir, { ...status, slotQueued: true });
   await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
   const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
-  return { status: settled, completion: watchUntilTerminal(jobDir) };
+  const watch = new AbortController();
+  const completion = watchUntilTerminal(jobDir, {
+    ...(input.onEvent !== undefined ? { onEvent: input.onEvent } : {}),
+    signal: watch.signal,
+  });
+  return { status: settled, completion, stopWatching: () => watch.abort() };
 }
 
 /** The first line or so of a prompt, on one line. */

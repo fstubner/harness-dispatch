@@ -54,7 +54,9 @@ export interface StartJobInput {
    * Live dispatcher-event tap, used by the `dispatch` tool to forward MCP
    * progress notifications during its inline grace window. Never serialized
    * (the manifest lists its fields explicitly), never awaited, and a throw
-   * here must not fail the job.
+   * here must not fail the job. In-process it sees every dispatcher event; for
+   * a detached job it sees the run's output as stdout events, tailed from the
+   * job's partial log until `stopWatching`.
    */
   onEvent?: (event: DispatcherEvent) => void;
 }
@@ -155,4 +157,11 @@ export interface StartedJob {
    * used by unit tests with injected fakes) it is the runJob promise itself.
    */
   completion: Promise<void>;
+  /**
+   * Stop watching the job's directory, resolving `completion` early. For a
+   * caller that waited only a grace window and will not await the rest; the
+   * run itself is unaffected. A no-op for an in-process job, whose
+   * `completion` is the run.
+   */
+  stopWatching: () => void;
 }
