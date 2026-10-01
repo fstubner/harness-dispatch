@@ -10,8 +10,13 @@
 ```bash
 npm install -g harness-dispatch
 harness-dispatch configure --yes
+harness-dispatch connect
 harness-dispatch doctor
 ```
+
+`connect` is the step that makes your agent see the tools: it registers the server
+with Claude Code and/or Cursor. Restart the client afterwards. `doctor` ends with a
+one-line verdict, and a `warn` row names what is still worth doing.
 
 Before running that: [what it does on your machine](#what-it-does-on-your-machine).
 
@@ -40,6 +45,7 @@ state.
 | [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md) | Adding a harness, endpoint modes, what `configure` writes |
 | [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) | The six tools, the REST endpoints, chaining delegated work |
 | [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | The status model, quota, and what leaves your machine |
+| [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md) | Failure modes, recovery, and what to run when something is wrong |
 | [CHANGELOG](CHANGELOG.md) | What changed, and what each fix missed |
 
 ## What it looks like
@@ -48,13 +54,14 @@ Your agent calls one tool:
 
 ```json
 {
-  "prompt": "Port the retry logic in src/net/ to the new backoff helper, then run the tests.",
+  "prompt": "Rename the retry helper in src/net/ to withBackoff.",
   "workingDir": "/path/to/project",
   "hints": { "taskType": "execute" }
 }
 ```
 
-Quick tasks come straight back:
+A task that finishes within the wait (25 seconds by default, `graceSeconds`) comes
+straight back:
 
 ```json
 {
@@ -63,13 +70,14 @@ Quick tasks come straight back:
   "success": true,
   "route": "codex_cli",
   "model": "gpt-5.6-terra",
-  "output": "Ported 4 call sites to withBackoff(); 118 tests pass.",
-  "durationMs": 47210,
+  "output": "Renamed it and updated 4 call sites.",
+  "durationMs": 18240,
   "routing": { "tier": 1, "taskType": "execute", "reason": "tier 1 best (3 available)" }
 }
 ```
 
-Slow ones hand back a `jobId` after 25 seconds instead, and keep running:
+Real agent work usually runs longer than that, so the reply you will see most is a
+`jobId`, with the job still running:
 
 ```json
 { "mode": "single", "completed": false, "jobId": "job-1786977316001-b49d1232" }
@@ -77,7 +85,9 @@ Slow ones hand back a `jobId` after 25 seconds instead, and keep running:
 
 Carry on working, then call `job_status` with that id for a live output tail or the
 finished result. The run lives in a detached process, so **nothing is lost to a client
-timeout — or to the server itself restarting mid-run.**
+timeout — or to the server itself restarting mid-run** (see
+[Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md#failure-modes)
+for the cases where a job is reported `orphaned` instead).
 
 ## What it does on your machine
 
@@ -135,8 +145,8 @@ use), and `connect --remove` undoes it.
 regenerated, so installing a harness later is just `configure --yes` again. A
 file you have changed is refused without `--force` — and because such a file
 lists its own routes, even `--force` regenerates it from the file rather than
-from a fresh detection. It says so when that happens; add `detect: true` to the
-file to merge newly installed harnesses in.
+from a fresh detection. It says so when that happens; the rule behind it is
+[listing a route turns detection off](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
 
 **What `doctor` checks.** The whole chain: binary, config load, harness
 detection, auth and billing classification, route readiness, whether
@@ -147,6 +157,10 @@ this tool has verified, so their login state is not checked. `--live` goes
 further and routes one tiny real prompt through an eligible route, so you see a
 completion before wiring anything into your agent — that one spends quota, and
 it never touches paid or unknown-billing routes unless you pass `--allow-paid`.
+
+Each row is `ok`, `warn` (passes, exit 0, but wants something done: a client not yet
+registered, `git` missing, a route that has never succeeded) or `fail` (exit 1). The
+last line is the verdict.
 
 Your Claude Code / Codex / Cursor subscriptions run by default with no opt-in;
 `configure` tells you if anything is blocked and why.
@@ -181,9 +195,9 @@ A project's checked-in `CLAUDE.md` is for the codebase: how it builds, how it is
 tested, its conventions. Personal-but-project-specific notes go in
 `CLAUDE.local.md`, which is gitignored by convention.
 
-If a team does want a shared mention, keep it to one conditional sentence with
-no route ids, so it costs nothing to anyone who has not installed this. The
-[CLAUDE.md](CLAUDE.md) in this repository is written that way on purpose.
+If a team does want a shared mention, keep it short and free of route ids, so it
+costs nothing to anyone who has not installed this. The [AGENTS.md](AGENTS.md) in
+this repository (which its `CLAUDE.md` imports) is written that way on purpose.
 
 Nothing here writes to a project file. `configure` and `connect` touch only
 user-level client configs, and they show you the change before making it.
@@ -258,15 +272,18 @@ to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml` �
 your value replaces the shipped default:
 
 ```yaml
-clis:
-  - name: cursor_cli
-    harness: cursor
-    command: cursor-agent
+overrides:
+  cursor_cli:
     effective_safety:
       read_only: read_only
       workspace_edit: workspace_edit   # you are accepting shell access here
       full_auto: full_auto
 ```
+
+Use `overrides:`, not a `clis:` entry: a config that lists any `clis:` entry is
+authoritative and drops every harness it does not name, so a lone `cursor_cli` entry
+would remove Claude Code, Codex and Antigravity from your routes. See
+[listing a route turns detection off](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
 
 That is a deliberate local decision, not a bug workaround: the shipped default
 is conservative because the tool cannot verify what a given `cursor-agent`

@@ -131,6 +131,9 @@ const USER_FACING = new Set([
   // phantom `hints.` key in one and this checker returned exit 0.
   "src/mcp/resources.ts",
   "src/mcp/server.ts",
+  // The refusals for misplaced keys, which used to be z.never() fields in
+  // tool-schemas.ts: same text, same readers.
+  "src/mcp/near-miss-guard.ts",
   // Every refusal message a caller reads, and the rendered status body.
   "src/route-policy.ts",
   "src/status.ts",
@@ -294,6 +297,31 @@ for (const file of trackedFiles()) {
   });
 }
 
+// Rule 3: every key the config parser recognises is in the config reference. A
+// reference that silently lacks a key is how `escalate_model` and
+// `resource_weight` went undocumented while the validator accepted them.
+{
+  const distValidation = path.join(repoRoot, "dist", "config", "validation.js");
+  if (!existsSync(distValidation)) {
+    process.stderr.write("claims: dist/config/validation.js is missing — run `npm run build` first.\n");
+    process.exit(2);
+  }
+  const validation = await import(`file://${distValidation.replace(/\\/g, "/")}`);
+  const reference = readFileSync(path.join(repoRoot, "docs", "configuration.md"), "utf8");
+  const referenceStart = reference.indexOf("## Config reference");
+  const table = referenceStart >= 0 ? reference.slice(referenceStart) : "";
+  for (const [label, keys] of [
+    ["top-level", validation.KNOWN_TOP_LEVEL_KEYS],
+    ["route", validation.KNOWN_ROUTE_KEYS],
+  ]) {
+    for (const key of keys) {
+      if (!table.includes(`\`${key}\``)) {
+        record("docs/configuration.md", 1, `the config reference does not list the ${label} key ${key}`);
+      }
+    }
+  }
+}
+
 if (findings.length > 0) {
   process.stderr.write(`claims: ${findings.length} prose claim(s) name something that is not there\n\n`);
   for (const f of findings) {
@@ -306,4 +334,4 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write("claims: every path and hint key named in prose exists\n");
+process.stdout.write("claims: every path and hint key named in prose exists, and every config key is in the reference\n");
