@@ -46,7 +46,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   launcher and existing client entries run it, and `mcp --http <port>` is
   `serve --port <port>`.
 
-- **Finding a harness on PATH is about twenty times faster.** The resolver read
+- **Finding a harness on PATH is much faster.** The resolver read
   every PATH directory on every call, synchronously: 0.58-0.72 s for the four
   harness names on this machine, repeated on each routing decision, each `status`
   and each process start that auto-detects. It now reads each directory once and
