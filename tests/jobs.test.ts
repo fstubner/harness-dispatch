@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAsyncJob, listAsyncJobs, startAsyncJobTracked, type JobDeps } from "../src/jobs.js";
 import type { RuntimeHolder } from "../src/mcp/config-hot-reload.js";
+import { clearActiveSecrets, setActiveSecrets } from "../src/redaction.js";
+import type { RouterConfig } from "../src/types.js";
 
 let tmpDir: string;
 
@@ -301,5 +303,50 @@ describe("a job whose heartbeat is old but whose process is alive", () => {
     const jobDir = path.join(tmpDir, jobId);
     const status = JSON.parse(await fs.readFile(path.join(jobDir, "status.json"), "utf8"));
     expect(await claimJobDir(jobDir, status)).toBe(false);
+  });
+});
+
+describe("the partial log is redacted across chunk boundaries", () => {
+  afterEach(() => {
+    clearActiveSecrets();
+  });
+
+  it("never holds a key that arrived split across two stdout chunks", async () => {
+    // audit5 F8 (and audit4 A1-10): each chunk was scrubbed on its own, so a
+    // key split across two reads landed whole in stdout.partial.log while the
+    // result, stdout.log and the tool response were all scrubbed.
+    const key = "sk-SECRETKEY-0123456789";
+    setActiveSecrets({
+      services: { keyed: { apiKey: key } },
+    } as unknown as RouterConfig);
+    const chunks = ["auth error: rejected key sk-SECRET", "KEY-0123456789 end\n", "done\n"];
+    const holder = {
+      state: {
+        router: {
+          stream: async function* () {
+            for (const chunk of chunks) yield { event: { type: "stdout", chunk } };
+            yield {
+              event: {
+                type: "completion",
+                result: { output: "done", service: "keyed", success: true },
+              },
+            };
+          },
+        },
+      },
+    } as unknown as RuntimeHolder;
+
+    const { status, completion } = await startAsyncJobTracked(
+      { holder },
+      { prompt: "hello", workingDir: tmpDir },
+    );
+    await completion;
+
+    const partial = await fs.readFile(
+      path.join(status.jobDir, "output", "stdout.partial.log"),
+      "utf8",
+    );
+    expect(partial).not.toContain(key);
+    expect(partial).toBe("auth error: rejected key <redacted> end\ndone\n");
   });
 });

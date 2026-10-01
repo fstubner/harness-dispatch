@@ -582,6 +582,12 @@ pre-1.0, so minor versions can carry behaviour changes.
   the file name back rather than the key, and an unreadable or empty file is an
   error naming the route. The setup command and plugin docs now recommend it.
 
+- **A key split across two output chunks no longer lands in the partial log.**
+  `stdout.partial.log` was scrubbed chunk by chunk, so a key whose halves
+  arrived in two reads was written whole, while the result and the final logs
+  were scrubbed. The partial log now holds back a short tail until the next
+  chunk can complete any key that starts in it.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security

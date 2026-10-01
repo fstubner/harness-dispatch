@@ -1,7 +1,7 @@
 /** Running one job: the work a runner process actually does. */
 
 import { existsSync } from "node:fs";
-import { redact } from "../redaction.js";
+import { createStreamRedactor, redact } from "../redaction.js";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -135,6 +135,8 @@ export async function runJob(
     // finished run with no result.json, so the job never reaches a terminal
     // state and the caller polls a corpse.
     let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
+    // A key split across two chunks would survive per-chunk redaction.
+    const partialRedactor = createStreamRedactor();
     for (;;) {
       pending ??= iterator.next() as Promise<
         IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
@@ -173,7 +175,8 @@ export async function runJob(
       }
       if (event.type === "stdout" || event.type === "stderr") {
         try {
-          await appendFile(partialPath, redact(event.chunk), { encoding: "utf8", mode: 0o600 });
+          const text = partialRedactor.push(event.chunk);
+          if (text !== "") await appendFile(partialPath, text, { encoding: "utf8", mode: 0o600 });
         } catch {
           // Progress mirroring is best-effort; the final result still lands.
         }
@@ -196,6 +199,10 @@ export async function runJob(
           // Best-effort, like the partial log; result.json still lands.
         }
       }
+    }
+    const tail = partialRedactor.flush();
+    if (tail !== "") {
+      await appendFile(partialPath, tail, { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
     }
     if (cancelled) {
       // Terminal, and deliberately NOT routed through the router's
