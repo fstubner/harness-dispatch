@@ -104,7 +104,10 @@ export const publicHintsSchema = z
         "Maximum permission the routed harness may use: 'read_only' (inspect only — use " +
           "for review/plan), 'workspace_edit' (default; may edit files in workingDir), " +
           "'full_auto' (unrestricted shell — only when explicitly needed). Routes that " +
-          "cannot honor the requested profile are skipped.",
+          "cannot honor the requested profile are skipped. Each harness enforces the " +
+          "profile itself, with different strength (an OS sandbox for Codex, in-process " +
+          "permission rules for Claude Code and Cursor); it is a limit passed to the " +
+          "harness, not a sandbox harness-dispatch imposes.",
       ),
     workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
     routePolicy: routePolicySchema
