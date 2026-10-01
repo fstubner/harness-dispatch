@@ -222,6 +222,33 @@ endpoints:
   afterwards, not ones already open.
 - A secret the config holds (an API key, say) is scrubbed from this text.
 
+## API keys
+
+A route's key can be written three ways. Prefer the first:
+
+```yaml
+endpoints:
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    model: openai/gpt-oss-120b
+    api_key_file: ~/.harness-dispatch/keys/groq   # read once at load
+    # api_key: ${GROQ_API_KEY}                     # or from the environment
+```
+
+- `api_key_file:` reads the key from a file when the config loads. A relative
+  path is relative to the config file, and `~/` is your home directory. The key
+  never enters any process environment, so no other delegate can inherit it;
+  the route's own harness still receives it, as with `api_key:`. Keep the file
+  readable only by you (`chmod 600` on macOS and Linux). A missing or empty file
+  is an error naming the route. `configure` writes `api_key_file:` back, never
+  the key.
+- `api_key: ${VAR}` reads an environment variable. That variable is inherited
+  by every process you start, and an MCP client's `env` block that sets it is
+  plaintext JSON in your home directory, readable by any delegate that can read
+  files there. harness-dispatch blanks it in the agents it starts, but it cannot
+  hide the client config file.
+- A literal `api_key:` works and is not recommended.
+
 ## Endpoint Modes
 
 harness-dispatch supports two local/custom endpoint patterns:

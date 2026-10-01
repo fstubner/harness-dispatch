@@ -15,9 +15,9 @@
  *   2. ~/.harness-dispatch/config.yaml — conventional user config location.
  *   3. none — the server auto-detects installed CLIs with built-in defaults.
  *
- * API keys for endpoint routes (GROQ_API_KEY, GEMINI_API_KEY, ...) are read
- * from the inherited environment by config.yaml's ${VAR} interpolation; the
- * launcher does not handle them.
+ * API keys for endpoint routes are read by the server itself, from files named
+ * by `api_key_file:` or from the inherited environment through config.yaml's
+ * ${VAR} interpolation; the launcher does not handle them.
  */
 
 import { spawn } from "node:child_process";

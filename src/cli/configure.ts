@@ -43,6 +43,7 @@ export async function cmdConfigure(
         svc.apiKey !== undefined &&
         svc.apiKey !== "" &&
         config.fieldRefs?.get(svc.name)?.apiKey === undefined &&
+        config.fieldRefs?.get(svc.name)?.apiKeyFile === undefined &&
         config.apiKeyRefs?.get(svc.name) === undefined,
     );
     // The note has to name everything it redacted: a base_url can carry a

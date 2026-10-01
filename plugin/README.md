@@ -63,7 +63,10 @@ Point `HARNESS_DISPATCH_CONFIG` at a project config to use one. The user file mo
 does not forward that variable, so a client started through the plugin reads the
 default location.
 
-Endpoint API keys (`GROQ_API_KEY`, `GEMINI_API_KEY`, …) are read from the
-inherited environment by `config.yaml`'s `${VAR}` interpolation. CLI-based
-routes (Claude Code, Codex, Cursor, Antigravity) use product logins and need
-no keys.
+Endpoint API keys are best kept in files the server reads at load time
+(`api_key_file: ~/.harness-dispatch/keys/groq`), so they never enter any
+process environment. `${VAR}` references (`api_key: ${GROQ_API_KEY}`) also
+work, read from the inherited environment; do not put keys in an MCP client's
+`env` block, which is plaintext JSON that any delegate able to read your home
+directory can read. CLI-based routes (Claude Code, Codex, Cursor, Antigravity)
+use product logins and need no keys.

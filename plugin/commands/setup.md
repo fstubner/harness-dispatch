@@ -51,13 +51,18 @@ warning and any harness installed but missing from the config.
      `endpoints:`. Detection stays off; `disabled:`/`overrides:` do nothing here,
      so drop them and edit the entries directly.
 
-   API keys MUST be written as `${ENV_VAR}` references — never literal
-   secrets. Keep the file commented so it's self-explanatory.
+   API keys MUST NOT be written into config.yaml as literal secrets. Use
+   `api_key_file: ~/.harness-dispatch/keys/<route>` (one key per file, read
+   at load, never in any process environment) — or, if the user prefers, an
+   `${ENV_VAR}` reference. Never put keys in an MCP client config's `env`
+   block: it is plaintext JSON that a delegate can read. Keep the file
+   commented so it's self-explanatory.
 
-4. **Report what's needed from the user.** List the exact env vars they must
-   set (e.g. `setx GROQ_API_KEY ...` on Windows, shell profile export
-   elsewhere), where to get each key, and that the host app (Claude Code /
+4. **Report what's needed from the user.** List the exact key files they must
+   create (and, on macOS/Linux, `chmod 600`), or the env vars if they chose
+   those, where to get each key, and that the host app (Claude Code /
    Claude Desktop / Codex) must be restarted to pick up env and MCP changes.
+   Do not ask them to paste a key into the chat.
 
 5. **Verify.** Run `harness-dispatch doctor` and read two lines in particular:
    `config-warnings` (a key that had no effect — the authoritative-config

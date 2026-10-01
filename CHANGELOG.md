@@ -573,6 +573,15 @@ pre-1.0, so minor versions can carry behaviour changes.
   starts that way cannot start another: the dispatch is refused with an
   explanation and does not count against the route.
 
+- **`api_key_file:` keeps a route's key out of every process environment.**
+  The documented ways to hand the server a key were an environment variable,
+  which every process you start inherits, or an MCP client's `env` block, which
+  is plaintext JSON in your home directory that any delegate able to read files
+  there can read. `api_key_file: ~/.harness-dispatch/keys/groq` reads the key
+  when the config loads; it is redacted like any other key, `configure` writes
+  the file name back rather than the key, and an unreadable or empty file is an
+  error naming the route. The setup command and plugin docs now recommend it.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security
