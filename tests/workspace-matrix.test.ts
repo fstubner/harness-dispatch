@@ -643,6 +643,9 @@ describe("a workspace root that is a symlink", () => {
       files: [],
     });
     const wsRoot = workspaceRootFor(project);
+    // Finished first: a run still in progress keeps a heartbeat and is never
+    // reclaimed, however old its directory looks (see workspace-audit5.test.ts).
+    await first.finish({ output: "", service: "r", success: true });
 
     // One aged directory we DID name, and one aged directory we did not —
     // the shape an attacker or an unrelated tool would leave in a world-

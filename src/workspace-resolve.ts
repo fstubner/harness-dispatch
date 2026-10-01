@@ -568,8 +568,15 @@ export async function workspaceDiff(
   }
 
   const patch = await buildWorkspacePatch(run);
-  await mkdir(path.dirname(patchPath), { recursive: true });
-  await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  // An EMPTY live patch is not a reason to erase a saved one. After a copy job
+  // has been applied the project matches the workspace, so the live diff is
+  // empty — and writing that over the saved patch left nothing for the later
+  // "workspace gone" path to recover, which then raised a false "report this"
+  // data-loss alarm for work that had landed correctly.
+  if (patch.length > 0 || ((await cachedPatch(jobDir)) ?? "").length === 0) {
+    await mkdir(path.dirname(patchPath), { recursive: true });
+    await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  }
   return fromPatchText(jobId, run, patchPath, patch, false);
 }
 
@@ -702,6 +709,48 @@ function alreadyApplied(jobId: string, patchPath: string, changedCount: number):
   };
 }
 
+/** Where `git apply` runs for this job, and the `--directory` that goes with it. */
+async function applyLocation(
+  run: WorkspaceRun,
+  target: string,
+): Promise<{ applyCwd: string; directoryArgs: string[] }> {
+  const root = await repoRoot(target);
+  const applyPrefix =
+    root !== undefined && run.policy !== "git_worktree"
+      ? path.relative(root, target).split(path.sep).join("/")
+      : "";
+  return {
+    applyCwd: root ?? target,
+    directoryArgs: applyPrefix !== "" ? [`--directory=${applyPrefix}`] : [],
+  };
+}
+
+/**
+ * Is this patch already in the project? True when it applies cleanly BACKWARDS,
+ * i.e. the project holds its result.
+ *
+ * For a patch recovered after the workspace is gone, which cannot be compared
+ * file by file: without this, re-applying work that had landed (and was
+ * committed) was refused as "changed since the dispatch started" and pointed at
+ * `force`, which then changed nothing.
+ */
+async function patchAlreadyInProject(
+  run: WorkspaceRun,
+  target: string,
+  patchPath: string,
+): Promise<boolean> {
+  const { applyCwd, directoryArgs } = await applyLocation(run, target);
+  try {
+    const out = await gitBoth(
+      ["apply", "--reverse", "--check", ...directoryArgs, "--whitespace=nowarn", patchPath],
+      applyCwd,
+    );
+    return !/^Skipped patch /m.test(out);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Apply the agent's work into the real project.
  *
@@ -717,6 +766,14 @@ export async function applyWorkspace(
   opts: { force?: boolean } = {},
 ): Promise<ApplyResult> {
   const diff = await workspaceDiff(jobId, jobDir, run);
+  if (
+    diff.fromCache === true &&
+    diff.bytes > 0 &&
+    (run.changedFiles?.length ?? 0) > 0 &&
+    (await patchAlreadyInProject(run, run.originalWorkingDir, diff.patchPath))
+  ) {
+    return alreadyApplied(jobId, diff.patchPath, run.changedFiles?.length ?? 0);
+  }
   if (diff.bytes === 0) {
     // An empty patch is only honest when nothing changed. changedFiles is
     // computed separately, by comparing fingerprints, so the two disagreeing
@@ -869,13 +926,7 @@ export async function applyWorkspace(
   // Running from the subdirectory instead does not work: `git apply` inside a
   // repo ignores paths that resolve outside the current directory, so it
   // matches nothing, prints `Skipped patch`, and exits 0.
-  const root = await repoRoot(target);
-  const applyCwd = root ?? target;
-  const applyPrefix =
-    root !== undefined && run.policy !== "git_worktree"
-      ? path.relative(root, target).split(path.sep).join("/")
-      : "";
-  const directoryArgs = applyPrefix !== "" ? [`--directory=${applyPrefix}`] : [];
+  const { applyCwd, directoryArgs } = await applyLocation(run, target);
   const beforeAttempt = await dirtyPaths(target);
   let applyError: string | undefined;
   for (const args of [

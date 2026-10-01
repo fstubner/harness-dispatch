@@ -26,6 +26,51 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Isolated workspaces (`copy`, `git_worktree`) prepare much faster on big
+  projects.** Files are now copied and hashed sixteen at a time instead of one
+  at a time, the starting hash is taken from the source while it is copied, and
+  finishing a run re-reads only files whose size or timestamps changed. On a
+  12,000-file project (Windows, NTFS, a busy machine) a `copy` run's setup took
+  287 s and 293 s before and 63 s and 7.5 s after, and its wrap-up 33 s and
+  6.5 s before and 0.7 s and 0.5 s after (two back-to-back before/after pairs).
+  A `git_worktree` run's setup took 277 s and 223 s before and 79 s and 62 s
+  after. What counts as a change is unchanged by this.
+
+- **`status`, `usage`, `doctor` and `--version` start faster.** The command line
+  no longer loads the whole MCP server (and its libraries) before it reads a
+  flag; each command loads only what it uses. Alternating before and after,
+  median of 15 runs: `--version` 842 ms to 145 ms, `status` 842 ms to 353 ms.
+
+- **A successful job no longer keeps a second copy of its output.** The raw
+  progress log (`stdout.partial.log`) is removed once the full answer is saved,
+  which was most of the state directory's size. Failed jobs, and successes with
+  no output, keep it.
+
+- **A git worktree run now reports edits to tracked files in `bin/`, `dist/`,
+  `build/`, `target/` and the other skipped directory names.** The patch already
+  carried them; the list of changed files did not, so the two disagreed.
+  Directories the agent creates itself (an install, a build) are still left
+  out.
+
+- **`git_worktree` from a directory that exists only as uncommitted files** now
+  says so, and removes the worktree it had just registered, instead of failing
+  with a bare `ENOENT` and leaving the registration behind.
+
+- **Diffing a `copy` job after applying it no longer erases its saved patch,
+  and re-applying work that already landed says "Already applied".** Both
+  previously ended in a false "changed since the dispatch started" or "please
+  report this" refusal once the workspace was gone.
+
+- **A sibling package's file in a monorepo is no longer reported as an escape
+  from `git_worktree` isolation.** The worktree holds the whole repository, so
+  only paths outside it now trigger the warning.
+
+- **A long-running isolated job's workspace is no longer deleted by another
+  dispatch in the same project** when the job outlasts
+  `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS`. A live run now keeps a heartbeat
+  file in its run directory, and retention counts from the later of that and the
+  directory's own time.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to
