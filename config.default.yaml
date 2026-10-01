@@ -151,10 +151,15 @@ clis:
       stdin: true
       working_dir: { flag: "--cd", extra_args_when_set: ["--skip-git-repo-check"] }
       model: { flag: "--model" }
+      # full_auto was `--full-auto`, which `codex exec --help` (0.146) no longer
+      # lists; it was still accepted and meant the workspace-write sandbox. It
+      # is spelled out here so a removal cannot change what runs. Codex's
+      # full_auto therefore still runs shell inside its sandbox — the safe
+      # direction; `danger-full-access` would be the unsandboxed reading.
       safety:
         read_only: ["--sandbox", "read-only"]
         workspace_edit: ["--sandbox", "workspace-write"]
-        full_auto: ["--full-auto"]
+        full_auto: ["--sandbox", "workspace-write"]
       api_key_env_var: OPENAI_API_KEY
       file_list_header: "Files to work with:"
       file_list_bullet: "  "
