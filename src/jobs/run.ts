@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { redact } from "../redaction.js";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -260,6 +260,13 @@ export async function runJob(
       redact(result.output || result.error || ""),
       { encoding: "utf8", mode: 0o600 },
     );
+    // A successful job's whole answer is now in result.json and stdout.log, so
+    // the raw progress stream is a second copy of it: 78% of a measured state
+    // directory. Kept for a failure (and for a success with no output of its
+    // own), where it is the only trail of what the agent did.
+    if (result.success && result.output !== "") {
+      await rm(partialPath, { force: true }).catch(() => undefined);
+    }
     await updateStatus(jobDir, {
       jobId: manifest.jobId,
       status: result.success ? "completed" : "failed",
