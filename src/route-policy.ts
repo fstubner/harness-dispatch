@@ -310,3 +310,88 @@ function skip(route: string, code: RouteSkip["code"], message: string): RoutePol
     skipped: { route, code, message },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Fanout targets
+// ---------------------------------------------------------------------------
+
+/** A requested fanout target that names no configured route or model. */
+export class UnknownFanoutTargetError extends Error {}
+
+/**
+ * Does `want` name this route: its id, its `model`, or its `escalate_model`?
+ *
+ * The one rule for what a fanout `models` entry means, shared by the MCP and
+ * HTTP surfaces. They each matched on their own and disagreed — MCP accepted
+ * model names, HTTP only route ids — so the same request was valid on one and
+ * a 400 on the other.
+ */
+export function routeMatchesTarget(
+  name: string,
+  svc: Pick<ServiceConfig, "model" | "escalateModel">,
+  want: string,
+): boolean {
+  const w = want.toLowerCase();
+  return [name, svc.model, svc.escalateModel].some(
+    (v) => typeof v === "string" && v !== "" && v.toLowerCase() === w,
+  );
+}
+
+/**
+ * Which routes a fanout runs on, and which it declined.
+ *
+ * `requested` empty means every configured route. Otherwise each entry must
+ * match something (a name matching nothing would be silently dropped, and two of
+ * them would answer `completed: true` with no results), and the arms are the
+ * routes matching ANY entry, once each, in config order. Each arm then passes
+ * route policy exactly as a single dispatch does; a refusal is reported in
+ * `skippedRoutes` rather than dropped.
+ */
+export function selectFanoutRoutes(opts: {
+  services: Readonly<Record<string, ServiceConfig>>;
+  dispatchers: Readonly<Record<string, Dispatcher>>;
+  breakerTripped: (route: string) => boolean;
+  requested: readonly string[];
+  hints: { safetyProfile?: SafetyProfile; routePolicy?: RoutePolicy; taskType?: TaskType };
+}): { routes: string[]; skippedRoutes: RouteSkip[] } {
+  const entries = Object.entries(opts.services);
+  const unmatched = opts.requested.filter(
+    (want) => !entries.some(([name, svc]) => routeMatchesTarget(name, svc, want)),
+  );
+  if (unmatched.length > 0) {
+    throw new UnknownFanoutTargetError(
+      `Unknown fanout target(s): ${unmatched.join(", ")}. ` +
+        `Valid route ids: ${entries.map(([name]) => name).join(", ")}. ` +
+        `models: accepts route ids or model names.`,
+    );
+  }
+  const routes: string[] = [];
+  const skippedRoutes: RouteSkip[] = [];
+  for (const [name, svc] of entries) {
+    if (
+      opts.requested.length > 0 &&
+      !opts.requested.some((want) => routeMatchesTarget(name, svc, want))
+    ) {
+      continue;
+    }
+    // `Object.hasOwn`, not a plain lookup: a route literally named
+    // `constructor` would otherwise be handed the inherited function.
+    const dispatcher = Object.hasOwn(opts.dispatchers, name) ? opts.dispatchers[name] : undefined;
+    // routePolicy is the half that decides ELIGIBILITY — local_only,
+    // approval_required and blocked are enforced here, not in routeTo, so
+    // omitting it lets a fanout arm run whatever the policy forbids.
+    const policy = evaluateRoutePolicy(name, svc, {
+      ...(dispatcher !== undefined ? { dispatcher } : {}),
+      circuitBroken: opts.breakerTripped(name),
+      ...(opts.hints.safetyProfile !== undefined
+        ? { requestedSafetyProfile: opts.hints.safetyProfile }
+        : {}),
+      ...(opts.hints.routePolicy !== undefined ? { routePolicy: opts.hints.routePolicy } : {}),
+      // So an `execute` task is refused for an HTTP endpoint route here too.
+      ...(opts.hints.taskType !== undefined ? { taskType: opts.hints.taskType } : {}),
+    });
+    if (policy.skipped) skippedRoutes.push(policy.skipped);
+    if (!policy.blocked) routes.push(name);
+  }
+  return { routes, skippedRoutes };
+}

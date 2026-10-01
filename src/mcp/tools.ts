@@ -36,7 +36,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
-import { evaluateRoutePolicy } from "../route-policy.js";
+import { selectFanoutRoutes } from "../route-policy.js";
 import {
   cancelJob,
   getAsyncJob,
@@ -510,18 +510,6 @@ async function startSingle(
   return pending;
 }
 
-function matchesRequestedModel(
-  routeName: string,
-  svc: { model?: string; escalateModel?: string },
-  requested: Set<string>,
-): boolean {
-  if (requested.size === 0) return true;
-  const lower = new Set([...requested].map((s) => s.toLowerCase()));
-  return [routeName, svc.model, svc.escalateModel]
-    .filter((v): v is string => typeof v === "string" && v.length > 0)
-    .some((v) => lower.has(v.toLowerCase()));
-}
-
 async function startFanout(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
@@ -552,47 +540,25 @@ async function startFanout(
   // arm otherwise.
   delete hints.model;
   const taskType: TaskType = hints.taskType ?? "plan";
-  const requested = new Set(input.models ?? []);
   const counter = { value: 0 };
-  const skippedRoutes: RouteSkip[] = [];
 
-  // Every requested name must match SOMETHING, or it is silently dropped:
-  // one bad name out of two fans out to a single arm with no skippedRoutes
-  // entry and no error, and two bad names return
-  // `{ completed: true, results: [] }` — success-shaped, because `completed`
-  // is `every()` over an empty array. Single mode rejects an unknown
-  // `service` by name; fanout is not looser about the same mistake.
-  const matchedRequests = new Set<string>();
-  for (const [routeName, svc] of Object.entries(state.config.services)) {
-    for (const want of requested) {
-      if (matchesRequestedModel(routeName, svc, new Set([want]))) matchedRequests.add(want);
-    }
-  }
-  const unmatched = [...requested].filter((r) => !matchedRequests.has(r));
-  if (unmatched.length > 0) {
-    throw new Error(
-      `Unknown fanout target(s): ${unmatched.join(", ")}. ` +
-        `Valid route ids: ${Object.keys(state.config.services).join(", ")}. ` +
-        `models: accepts route ids or model names.`,
-    );
-  }
-
-  const candidates: string[] = [];
-  for (const [routeName, svc] of Object.entries(state.config.services)) {
-    if (!matchesRequestedModel(routeName, svc, requested)) continue;
-    const breaker = state.router.getBreaker(routeName);
-    const dispatcher = state.dispatchers[routeName];
-    const policy = evaluateRoutePolicy(routeName, svc, {
-      ...(dispatcher !== undefined ? { dispatcher } : {}),
-      circuitBroken: Boolean(breaker?.isTripped),
-      ...(hints.safetyProfile !== undefined ? { requestedSafetyProfile: hints.safetyProfile } : {}),
+  // Targets are matched and policy-checked by the one helper the HTTP surface
+  // uses too (see selectFanoutRoutes): an unknown name is refused by name, and a
+  // refusal must not be success-shaped — one bad name out of two used to fan out
+  // to a single arm, and two bad names answered `{ completed: true, results: [] }`.
+  const selected = selectFanoutRoutes({
+    services: state.config.services,
+    dispatchers: state.dispatchers,
+    breakerTripped: (route) => Boolean(state.router.getBreaker(route)?.isTripped),
+    requested: input.models ?? [],
+    hints: {
+      ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
       ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
       taskType,
-    });
-    if (policy.skipped) skippedRoutes.push(policy.skipped);
-    if (policy.blocked) continue;
-    candidates.push(routeName);
-  }
+    },
+  });
+  const candidates = selected.routes;
+  const skippedRoutes: RouteSkip[] = selected.skippedRoutes;
 
   // Nothing can run. Same rule as the two refusals above — a refusal must not
   // be success-shaped — and `completed` is `every()` over an empty array, so

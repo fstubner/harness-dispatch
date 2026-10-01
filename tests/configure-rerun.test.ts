@@ -9,13 +9,14 @@ import { isUneditedGenerated, stampGenerated } from "../src/configure-yaml.js";
 // exists ... --force" — and, had the first run found anything, loading that
 // file would have made it authoritative and hidden the new harness anyway.
 //
-// `which` is mocked against a mutable set so "a harness appeared" is one
-// line, and modules are reset between runs because config.ts caches lookups
-// for the life of the process — exactly what a second CLI invocation is not.
+// PATH lookup is mocked against a mutable set so "a harness appeared" is one
+// line, and modules are reset between runs because the real resolver memoises
+// lookups for a few seconds — exactly what a second CLI invocation does not.
 
 const installed = vi.hoisted(() => new Set<string>());
-vi.mock("which", () => ({
-  default: async (cmd: string) => (installed.has(cmd) ? `/fake/bin/${cmd}` : null),
+vi.mock("../src/dispatchers/shared/which-available.js", () => ({
+  findOnPath: (cmd: string) => (installed.has(cmd) ? `/fake/bin/${cmd}` : undefined),
+  commandAvailable: (cmd: string) => installed.has(cmd),
 }));
 
 let dir: string;

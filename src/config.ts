@@ -11,9 +11,9 @@ import { resolve as resolvePath } from "node:path";
 import { userConfigPath } from "./state-dir.js";
 import { registerSecretValue, setActiveSecrets } from "./redaction.js";
 import yaml from "js-yaml";
-import which from "which";
 
 import { inferredPaidUsagePossible } from "./billing.js";
+import { findOnPath } from "./dispatchers/shared/which-available.js";
 import {
   authSourceFrom, billingKindFrom, bool, boolOrUndefined, capsFrom, endpointModeFrom,
   endpointProviderFrom, inferEndpointProvider, int, num, providerFrom, str,
@@ -40,29 +40,13 @@ import { ENV_VAR_RE, interpolateTree } from "./config/env-interpolation.js";
 export type WhichFn = (cmd: string) => Promise<string | null>;
 
 /**
- * PATH lookups, memoised for the life of the process: each is a real
- * filesystem walk (~2-3s per harness on Windows) and loadConfig() runs on
- * every CLI invocation and every reload.
- *
- * Deliberately NOT persisted across processes: installing a harness should
- * take effect on the next command, not after a cache expiry.
+ * PATH lookups for auto-detection. The one resolver (findOnPath) reads each PATH
+ * directory once per few seconds and matches names in memory, instead of the
+ * ~2-3 s per harness a `which` walk cost on Windows — loadConfig() runs on every
+ * CLI invocation and every reload.
  */
-const whichCache = new Map<string, Promise<string | null>>();
-
-const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> => {
-  const cached = whichCache.get(cmd);
-  if (cached !== undefined) return cached;
-  const lookup = (async (): Promise<string | null> => {
-    try {
-      const r = await which(cmd, { nothrow: true });
-      return r ?? null;
-    } catch {
-      return null;
-    }
-  })();
-  whichCache.set(cmd, lookup);
-  return lookup;
-};
+const defaultWhich: WhichFn = async (cmd: string): Promise<string | null> =>
+  findOnPath(cmd) ?? null;
 import type { RouterConfig, ServiceConfig, TaskType } from "./types.js";
 
 // Built-in harness defaults come from the package's bundled

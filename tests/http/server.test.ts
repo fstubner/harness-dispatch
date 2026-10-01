@@ -1337,3 +1337,44 @@ describe("failures and bad types are not 200s", () => {
     expect(JSON.stringify(body)).toMatch(/workingDir must be a string/);
   });
 });
+
+describe("fanout targets match the way the MCP tool matches them", () => {
+  /**
+   * MCP accepted a route id OR a model name in `models`; HTTP accepted only a
+   * route id and answered 400 "Unknown fanout target" for a name MCP ran. Both
+   * now go through selectFanoutRoutes (src/route-policy.ts).
+   */
+  async function fanout(models: string[]): Promise<{ status: number; body: string }> {
+    const fake = await startFakeOpenAi();
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt: "hi",
+          workingDir: process.cwd(),
+          mode: "fanout",
+          models,
+        }),
+      });
+      return { status: res.status, body: await res.text() };
+    } finally {
+      await handle.close();
+      await fake.close();
+    }
+  }
+
+  it("accepts a model name, as MCP does", async () => {
+    const res = await fanout(["local-test"]);
+    expect(res.status, res.body).toBe(200);
+  }, 30_000);
+
+  it("still rejects a name that matches no route or model, naming the valid ids", async () => {
+    const res = await fanout(["no-such-thing"]);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatch(/Unknown fanout target\(s\): no-such-thing/);
+    expect(res.body).toMatch(/Valid route ids: local/);
+  });
+});
