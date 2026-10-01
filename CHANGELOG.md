@@ -505,6 +505,20 @@ pre-1.0, so minor versions can carry behaviour changes.
   model says so in words rather than printing an empty value, and the value is
   delimited because the reason that follows it is parenthesised.
 
+### Security
+
+- **A delegate in a `git_worktree` can no longer make harness-dispatch run a
+  command.** The worktree's `.git` is a file the agent can rewrite. An agent
+  that only wrote files replaced it with a repository whose config set
+  `core.fsmonitor`, and harness-dispatch's own `git add` / `git diff` at job
+  end ran that command as you, outside any harness sandbox; an embedded
+  repository in a subdirectory reached the same place through its fsmonitor
+  and clean filters. Post-run git now runs against the worktree's registration
+  in your repository, never discovers one from the worktree, overrides
+  `core.fsmonitor` and `core.hooksPath`, and does not look inside embedded
+  repositories. A worktree whose `.git` no longer points at its own
+  registration is refused with an explanation instead of diffed.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security
