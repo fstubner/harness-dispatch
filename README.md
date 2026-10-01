@@ -118,8 +118,10 @@ that does not exist.
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
 tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
-— unless a `config.yaml` already exists in the current directory or
-`HARNESS_DISPATCH_CONFIG` is set, in which case that file is the target.
+— unless `--config` names a file or `HARNESS_DISPATCH_CONFIG` is set, in which
+case that file is the target. A `config.yaml` in the current directory is never
+picked up on its own: a repository can carry one, and the config decides what
+commands run, so a project config is opted into with `--config ./config.yaml`.
 
 Without `--yes` it previews and writes nothing.
 

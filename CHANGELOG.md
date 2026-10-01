@@ -519,6 +519,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   repositories. A worktree whose `.git` no longer points at its own
   registration is refused with an explanation instead of diffed.
 
+- **A `config.yaml` in the current directory is no longer loaded on its own.**
+  It ranked above your own config, and the config decides which commands
+  routes run, which credentials go where, and the "Operator instructions" every
+  connecting agent is told to follow — so any cloned repository carrying a
+  `config.yaml` became the operator for CLI commands run inside it and for an
+  MCP server started there without `--config` (measured: a repo's route ran its
+  own command under a `read_only` dispatch). **If you relied on it**, pass
+  `--config ./config.yaml` or set `HARNESS_DISPATCH_CONFIG`; `configure` now
+  writes to the state directory unless one of those names a file.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security

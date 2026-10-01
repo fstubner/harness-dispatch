@@ -50,6 +50,8 @@ function resolveConfigArgs() {
   if (fromEnv) return ["--config", fromEnv];
   // The conventional location is different: its ABSENCE is the normal case
   // for someone who never wrote a config, so falling through is right here.
+  // The server then auto-detects; it never reads a config.yaml from the
+  // directory the client launched it in, which is often a cloned repository.
   const userConfig = path.join(homedir(), ".harness-dispatch", "config.yaml");
   if (existsSync(userConfig)) return ["--config", userConfig];
   return [];

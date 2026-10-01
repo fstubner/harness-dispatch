@@ -9,8 +9,8 @@
  *
  * Usage: node dist/job-runner.js <jobDir>
  * Config: HARNESS_DISPATCH_CONFIG (set by the spawning server so the run
- * bootstraps against the same config file), else ./config.yaml if present,
- * else auto-detect. Shared with bin.ts through resolveConfigPath(), so the two
+ * bootstraps against the same config file), else the state directory's
+ * config.yaml if present, else auto-detect. Shared with bin.ts through resolveConfigPath(), so the two
  * cannot drift apart.
  */
 

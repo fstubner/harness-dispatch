@@ -227,7 +227,7 @@ describe("resolveConfigPath — one resolution, shared by the server and its run
     );
   });
 
-  it("falls back to the state directory's config.yaml when the current directory has none", async () => {
+  it("uses the state directory's config.yaml, never the current directory's", async () => {
     // `configure` writes there now (userConfigPath), so a config written from
     // one directory is found by a command run from any other. Before this the
     // lookup stopped at ./config.yaml, and a user who ran configure in ~ and
@@ -242,9 +242,13 @@ describe("resolveConfigPath — one resolution, shared by the server and its run
     process.env["HARNESS_DISPATCH_STATE_DIR"] = state;
     try {
       expect(resolveConfigPath()).toBe(userFile);
-      // And the current directory still wins when it has one.
+      // A config.yaml in the current directory is NOT the operator's: any
+      // cloned repository can carry one, and it used to win here — defining
+      // routes that run its own commands and instructions every connecting
+      // agent is told to follow (audit5 F2). `--config` opts one in.
       await fs.writeFile(path.join(cwd, "config.yaml"), "clis: []\n", "utf8");
-      expect(resolveConfigPath()).toBe("config.yaml");
+      expect(resolveConfigPath()).toBe(userFile);
+      expect(resolveConfigPath("config.yaml")).toBe("config.yaml");
     } finally {
       process.chdir(savedCwd);
       if (savedState === undefined) delete process.env["HARNESS_DISPATCH_STATE_DIR"];
@@ -256,7 +260,7 @@ describe("resolveConfigPath — one resolution, shared by the server and its run
 
   it("ignores an empty variable rather than resolving to an empty path", () => {
     process.env[VAR] = "";
-    // Falls through to ./config.yaml-or-nothing; either is fine, an empty
+    // Falls through to the user config-or-nothing; either is fine, an empty
     // string is not.
     expect(resolveConfigPath()).not.toBe("");
   });

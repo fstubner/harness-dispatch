@@ -54,9 +54,11 @@ this order:
 > one actually launched.
 
 Config resolution, in order: the `--config` flag, else the
-`HARNESS_DISPATCH_CONFIG` env var, else `./config.yaml` in the directory the
-server was launched from, else `~/.harness-dispatch/config.yaml`, else the
-server's built-in CLI auto-detection. The user file moves with
+`HARNESS_DISPATCH_CONFIG` env var, else `~/.harness-dispatch/config.yaml`, else
+the server's built-in CLI auto-detection. A `config.yaml` in the directory the
+server was launched from is not read: a cloned repository can carry one, and
+the config decides which commands run and what every connecting agent is told.
+Point `HARNESS_DISPATCH_CONFIG` at a project config to use one. The user file moves with
 `HARNESS_DISPATCH_STATE_DIR` when that is set; note that this plugin's launcher
 does not forward that variable, so a client started through the plugin reads the
 default location.

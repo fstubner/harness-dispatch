@@ -755,10 +755,18 @@ export interface LoadConfigOptions {
 
 /**
  * The config file a process should load: an explicit `--config`, else
- * `HARNESS_DISPATCH_CONFIG`, else `./config.yaml` if it exists, else the
- * state directory's `config.yaml` (where `configure` writes) if it exists,
- * else nothing (auto-detect). The current directory stays ahead of the user
- * file so a per-project config still wins when one is present.
+ * `HARNESS_DISPATCH_CONFIG`, else the state directory's `config.yaml` (where
+ * `configure` writes) if it exists, else nothing (auto-detect).
+ *
+ * NOT the current directory's `config.yaml`. The config is the operator's: it
+ * defines commands to run, credential references, billing labels and the
+ * "Operator instructions" every connecting agent is told to follow. A
+ * `config.yaml` is among the most common filenames in any repository, so
+ * picking one up from the cwd made a cloned repo the operator for every CLI
+ * command run inside it and for any MCP server started there without
+ * `--config` — measured: a repo's file added a route that ran its own command
+ * under a `read_only` dispatch (audit5 F2). A project config is opted into
+ * with `--config ./config.yaml` or `HARNESS_DISPATCH_CONFIG`.
  *
  * ONE function, shared by bin.ts and job-runner.ts: two copies disagreeing
  * about the environment variable would leave a server and the runner it
@@ -771,7 +779,6 @@ export function resolveConfigPath(explicit?: string): string | undefined {
   if (explicit !== undefined) return explicit;
   const fromEnv = process.env["HARNESS_DISPATCH_CONFIG"];
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
-  if (existsSync("config.yaml")) return "config.yaml";
   const user = userConfigPath();
   return existsSync(user) ? user : undefined;
 }
