@@ -239,15 +239,34 @@ describe("a CLI route with no flags for the requested profile", () => {
 
   it("a pin still applies where the flags DO back it", () => {
     // The guard must not fire on the case the pin legitimately covers: a
-    // harness whose capability varies by mode, with a flag for the mode asked
-    // for. Pinning workspace_edit down to read_only is honoured.
+    // harness whose capability varies by mode, with flags for the mode the
+    // pin lands on. Pinning workspace_edit down to read_only is honoured.
     const svc = {
       ...base,
       effectiveSafety: { workspace_edit: "read_only" },
-      protocol: { args: ["{{safety}}"], safety: { workspace_edit: ["--sandbox"] } },
+      protocol: {
+        args: ["{{safety}}"],
+        safety: { read_only: ["--plan"], workspace_edit: ["--sandbox"] },
+      },
     } as never;
     expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("read_only");
     expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(true);
+  });
+
+  it("a pin is checked against the flags of the profile it pins TO", () => {
+    // The router launches the harness with the EFFECTIVE profile's flags.
+    // This fixture used to be the one above, and was reported read_only with
+    // no read_only flags — so the harness launched with no safety argument at
+    // all (audit4 A3-1: argv `["hello"]`).
+    for (const effectiveSafety of [{ workspace_edit: "read_only" }, "read_only"]) {
+      const svc = {
+        ...base,
+        effectiveSafety,
+        protocol: { args: ["{{safety}}"], safety: { workspace_edit: ["--sandbox"] } },
+      } as never;
+      expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("full_auto");
+      expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(false);
+    }
   });
 });
 

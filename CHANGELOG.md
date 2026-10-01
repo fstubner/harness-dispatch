@@ -529,6 +529,14 @@ pre-1.0, so minor versions can carry behaviour changes.
   `--config ./config.yaml` or set `HARNESS_DISPATCH_CONFIG`; `configure` now
   writes to the state directory unless one of those names a file.
 
+- **A route whose `effective_safety` pins a profile it has no flags for is
+  skipped instead of launched unrestricted.** The flag check looked at the
+  requested profile, but the harness is launched with the flags of the profile
+  the pin turns it into. A route pinning `read_only` with flags only for
+  `workspace_edit` reported `read_only` for a `workspace_edit` request and ran
+  with no safety argument at all. Such a route now reports `full_auto`, so a
+  stricter request refuses it. No shipped route was affected.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security
