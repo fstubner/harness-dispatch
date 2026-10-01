@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,7 @@ describe("install-codex.mjs — --config handling", () => {
 });
 
 describe("launch-mcp.mjs — an explicit config that is missing must be reported", () => {
-  it.skipIf(!existsSync(path.join(repoRoot, "dist", "bin.js")))(
+  it(
     "passes HARNESS_DISPATCH_CONFIG through so the server can reject it by name",
     async () => {
     // The launcher used to gate this on existsSync and fall through to

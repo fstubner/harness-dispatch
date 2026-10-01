@@ -17,7 +17,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { promises as fs, existsSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -64,7 +64,7 @@ describe("BreakerStore.update — same route, many writers", () => {
     expect(store.loadAll()["flaky"]?.blockedUntilMs).not.toBeNull();
   });
 
-  it.skipIf(!existsSync(DIST_STORE))(
+  it(
     "loses none of 8 failures raised by 8 separate PROCESSES",
     () => {
       // The real shape: separate processes, one route. An in-process test

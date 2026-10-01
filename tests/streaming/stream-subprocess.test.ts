@@ -353,7 +353,7 @@ describe("a child that exits without reading its stdin", () => {
     return stdout.trim();
   }
 
-  it.skipIf(!existsSync(DIST))("streamSubprocess ends normally instead of crashing", async () => {
+  it("streamSubprocess ends normally instead of crashing", async () => {
     const out = await survives(
       "stream-subprocess.js",
       `for await (const ev of m.streamSubprocess(process.execPath, quit, { stdin: big })) {

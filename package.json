@@ -44,7 +44,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "check": "npm run typecheck && npm run typecheck:tests && npm test && node scripts/check-claims.mjs",
     "dev": "tsx src/bin.ts",
     "smoke": "node scripts/smoke.mjs",

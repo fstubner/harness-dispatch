@@ -116,7 +116,7 @@ describe("acquireWorkspaceLock — same process", () => {
 });
 
 describe("acquireWorkspaceLock — across processes", () => {
-  it.skipIf(!existsSync(DIST))(
+  it(
     "blocks a second PROCESS while the first holds it",
     async () => {
       // The case the old in-process Map could never handle.
@@ -140,7 +140,7 @@ describe("acquireWorkspaceLock — across processes", () => {
     30_000,
   );
 
-  it.skipIf(!existsSync(DIST))(
+  it(
     "lets a second PROCESS in once the first releases",
     async () => {
       const release = await acquireWorkspaceLock(workDir);
