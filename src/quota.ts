@@ -331,9 +331,10 @@ export class QuotaCache {
    *
    * Max rather than adopt-disk: this process writes through on every
    * recordResult, so disk is normally current, but the persist path is a
-   * documented read-modify-write race (counters are informational and never
-   * consulted by routing). Taking the larger value means a lost write shows a
-   * stale count rather than losing one this process definitely made.
+   * documented read-modify-write race. Taking the larger value means a lost
+   * write shows a stale count rather than losing one this process definitely
+   * made. (Routing does consult two of these counts, for the never-succeeded
+   * skip — see localCountsFor.)
    *
    * ALL SIX counters, not just the four call counts — leaving the token
    * totals behind leaves the same staleness in place for tokens alone.
@@ -368,10 +369,19 @@ export class QuotaCache {
    * `fullStatus` does.
    *
    * Read on the scoring path, once per candidate per dispatch, so it must not
-   * touch the network or the disk. These are the same counters `fullStatus`
-   * reports; this just reads them where waiting is not an option.
+   * touch the network, and touches the disk only in the one case below. These
+   * are the same counters `fullStatus` reports; this just reads them where
+   * waiting is not an option.
    */
   localCountsFor(service: string): { calls: number; successes: number } {
+    // A route this process has only seen fail may have succeeded in another
+    // process since — every dispatch runs in a runner of its own, and the
+    // router in a long-lived supervisor read the counts once, at boot, and
+    // went on skipping a repaired route as never-succeeded. Re-read just for
+    // that case, which is rare and is the one that changes a decision.
+    if ((this.localCounts[service] ?? 0) > 0 && (this.localSuccessCounts[service] ?? 0) === 0) {
+      this.refreshLocalCounts();
+    }
     return {
       calls: this.localCounts[service] ?? 0,
       successes: this.localSuccessCounts[service] ?? 0,
@@ -535,7 +545,13 @@ export class QuotaCache {
       withFileLock(this.stateFile, () => {
         const existing = this.readStateFile();
         for (const [service, delta] of Object.entries(pending)) {
-          const bucket = existing[service] ?? {};
+          // A hand-edited or damaged entry that is not an object (`"codex": 12`)
+          // threw on the first assignment below, and every later save with it —
+          // counting stopped for ALL routes. Replaced, since it holds nothing
+          // readable anyway.
+          const entry = existing[service];
+          const bucket: Record<string, unknown> =
+            entry !== null && typeof entry === "object" && !Array.isArray(entry) ? entry : {};
           const add = (key: string, by: number): void => {
             if (by === 0) return;
             bucket[key] = (typeof bucket[key] === "number" ? (bucket[key] as number) : 0) + by;

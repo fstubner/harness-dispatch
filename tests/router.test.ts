@@ -2039,7 +2039,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     );
 
     // callStart=0; attempt 0 (alpha) sees the full budget; by the time
-    // attempt 1 (beta) starts, 3,599,900ms have "elapsed" so only 100ms of
+    // attempt 1 (beta) starts, 3,595,000ms have "elapsed" so only 5,000ms of
     // budget remains; by attempt 2 the budget is already spent.
     //
     // The clock is a VARIABLE advanced when each dispatcher runs, not a
@@ -2051,7 +2051,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     const alphaStream = alphaD.stream.bind(alphaD);
     alphaD.stream = (...args: Parameters<typeof alphaStream>) => {
       const it = alphaStream(...args);
-      simulatedNow = 3_599_900; // alpha "takes" almost the whole budget
+      simulatedNow = 3_595_000; // alpha "takes" almost the whole budget
       return it;
     };
     const betaStream = betaD.stream.bind(betaD);
@@ -2070,7 +2070,7 @@ describe("Router.stream — defaultTimeoutMs is a whole-call budget", () => {
     dateSpy.mockRestore();
 
     expect(alphaD.lastOpts?.timeoutMs).toBe(3_600_000);
-    expect(betaD.lastOpts?.timeoutMs).toBe(100);
+    expect(betaD.lastOpts?.timeoutMs).toBe(5_000);
     // gamma is never dispatched — the budget was exhausted before attempt 2 started.
     expect(gammaD.lastOpts).toBeUndefined();
   });

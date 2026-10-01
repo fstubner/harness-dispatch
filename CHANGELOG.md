@@ -70,6 +70,27 @@ pre-1.0, so minor versions can carry behaviour changes.
   value ran as ordinary routing, and `--clients`, `--host` and `--interval`
   with no value were ignored; each is now a usage error.
 
+- **Routing state from other processes is read everywhere it matters.** A
+  route named with `service` honoured a stale in-memory breaker (refusing one
+  another process had healed, running one it had tripped); a route skipped as
+  "never succeeded" stayed skipped after another process recorded its first
+  success; and a breaker whose record went unreadable and was then deleted stayed
+  tripped. With an unwritable state directory the breaker never tripped (every
+  failure counted as the first); it now trips on this process's own count. A
+  breaker write error now clears once writes work again, and a record that cannot
+  be removed is reported.
+
+- **A fallback is no longer started with a few milliseconds of budget.** When
+  the first attempt used up nearly all of a dispatch's overall time limit, the
+  fallback was handed what was left (observed: 2 ms), timed out at once, and was
+  charged a breaker failure. Under a second of budget, no fallback is attempted.
+
+- **A fallback no longer says "model hint not sent" when the hint was a route
+  name,** which was never meant to be sent as a model. A damaged per-route entry
+  in `quota_state.json` (for example `"codex": 12`) no longer stops usage counting
+  for every route, and a dispatcher whose stream throws no longer leaves its
+  isolated workspace behind.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

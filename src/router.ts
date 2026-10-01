@@ -125,6 +125,11 @@ export const SCORING = {
   mediumContextThreshold: 1_000_000,
   /** Extra attempts after the first, when a dispatch fails. */
   defaultMaxFallbacks: 2,
+  /**
+   * Least of a whole-call budget worth starting a FALLBACK attempt with. Below
+   * it the attempt cannot get going, so it is not made.
+   */
+  minFallbackBudgetMs: 1_000,
 } as const;
 
 
@@ -322,6 +327,63 @@ function finishOnce(workspace: PreparedWorkspace): PreparedWorkspace {
   return { ...workspace, finish: (result) => (done ??= workspace.finish(result)) };
 }
 
+/**
+ * Relay a dispatcher's events, finishing the workspace on the completion event.
+ *
+ * A stream that THROWS, or ends without a completion, also finishes it — with a
+ * synthetic failure, so an isolated workspace is recorded or reclaimed rather
+ * than left behind for retention to find. `finish` is once-only, so this never
+ * races the stream's own completion or a cancelled job's `onWorkspace` finish.
+ */
+async function* relayAndFinish<T>(
+  workspace: PreparedWorkspace,
+  serviceName: string,
+  makeStream: (effectiveWorkingDir: string, effectiveFiles: string[]) => AsyncIterable<T>,
+): AsyncGenerator<T> {
+  let completed = false;
+  try {
+    for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
+        event.type === "completion"
+      ) {
+        const completion = event as DispatcherEvent;
+        if (completion.type === "completion") {
+          completed = true;
+          yield {
+            ...completion,
+            result: await workspace.finish(completion.result),
+          } as T;
+          continue;
+        }
+      }
+      yield event;
+    }
+  } catch (err) {
+    await workspace
+      .finish({
+        output: "",
+        service: serviceName,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      .catch(() => undefined);
+    throw err;
+  }
+  if (!completed) {
+    await workspace
+      .finish({
+        output: "",
+        service: serviceName,
+        success: false,
+        error: "Dispatcher stream ended without a completion event",
+      })
+      .catch(() => undefined);
+  }
+}
+
 async function* streamWithWorkspacePolicy<T>(
   svc: ServiceConfig,
   serviceName: string,
@@ -345,24 +407,7 @@ async function* streamWithWorkspacePolicy<T>(
         }),
       );
       onWorkspace?.(workspace);
-      for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
-        if (
-          typeof event === "object" &&
-          event !== null &&
-          "type" in event &&
-          event.type === "completion"
-        ) {
-          const completion = event as DispatcherEvent;
-          if (completion.type === "completion") {
-            yield {
-              ...completion,
-              result: await workspace.finish(completion.result),
-            } as T;
-            continue;
-          }
-        }
-        yield event;
-      }
+      yield* relayAndFinish(workspace, serviceName, makeStream);
     } finally {
       release();
     }
@@ -385,24 +430,7 @@ async function* streamWithWorkspacePolicy<T>(
     release?.();
   }
   onWorkspace?.(workspace);
-  for await (const event of makeStream(workspace.effectiveWorkingDir, workspace.files)) {
-    if (
-      typeof event === "object" &&
-      event !== null &&
-      "type" in event &&
-      event.type === "completion"
-    ) {
-      const completion = event as DispatcherEvent;
-      if (completion.type === "completion") {
-        yield {
-          ...completion,
-          result: await workspace.finish(completion.result),
-        } as T;
-        continue;
-      }
-    }
-    yield event;
-  }
+  yield* relayAndFinish(workspace, serviceName, makeStream);
 }
 
 // ---------------------------------------------------------------------------
@@ -919,7 +947,7 @@ export class Router {
         // Code — so the fallback failed too and charged a breaker failure to
         // a healthy route. A fallback runs its own model unless it declares
         // the one asked for.
-        if (decision.modelHintMatched === false) {
+        if (decision.modelHintMatched === false && decision.modelHintDropped !== true) {
           decision.model = resolveModel(this.config.services[decision.service]!, decision.taskType);
           decision.reason += " (model hint not sent: this route does not declare it)";
         }
@@ -940,10 +968,13 @@ export class Router {
       let effectiveTimeoutMs = hints.timeoutMs ?? svc.timeoutMs;
       if (effectiveTimeoutMs === undefined && opts.defaultTimeoutMs !== undefined) {
         const remaining = opts.defaultTimeoutMs - (Date.now() - callStart);
-        if (remaining <= 0 && attempt > 0) {
-          // Whole-call budget already spent on earlier attempts — the
-          // previous attempt's completion event was already yielded, so
+        if (remaining < SCORING.minFallbackBudgetMs && attempt > 0) {
+          // Whole-call budget already (all but) spent on earlier attempts —
+          // the previous attempt's completion event was already yielded, so
           // stop retrying instead of starting another full-length attempt.
+          // Not just `<= 0`: a fallback handed a few milliseconds times out
+          // before it can start, and that timeout is charged to a healthy
+          // route as a breaker failure.
           return;
         }
         effectiveTimeoutMs = Math.max(remaining, 1);
@@ -1016,6 +1047,10 @@ export class Router {
     opts: ExplicitDispatchOpts & { invoke?: DispatcherInvoke },
   ): AsyncGenerator<RouterStreamEvent> {
     const invoke = opts.invoke ?? STREAMING_INVOKE;
+    // Other processes' trips and recoveries, as pickService reads them. Without
+    // this a long-lived router refused a route another process had healed, and
+    // ran one it had tripped.
+    this.refreshBreakersFromStore();
     // `Object.hasOwn`, not `in`: an inherited key resolves to a real function
     // on the next line's lookup, so `dispatcher === undefined` would not catch
     // it either.
@@ -1354,7 +1389,7 @@ export class Router {
     mutate: (current: CircuitBreakerSnapshot | undefined) => CircuitBreakerSnapshot,
   ): CircuitBreakerSnapshot {
     try {
-      return this.breakerStore.update(service, mutate);
+      return this.breakerStore.update(service, mutate, () => this.breakers.get(service)?.snapshot());
     } catch {
       // Fall back to this process's own view rather than losing the result.
       return mutate(this.breakers.get(service)?.snapshot());
@@ -1383,7 +1418,9 @@ export class Router {
       if (Object.hasOwn(persisted, name) || unreadable.has(name)) continue;
       this.breakers.get(name)?.restore({ failures: 0, blockedUntilMs: null, lastFailureAtMs: null });
     }
-    this.persistedBreakers = new Set(Object.keys(persisted));
+    // Unreadable records included: one that is later deleted is a healed route
+    // exactly like any other, and a name dropped here was never re-closed.
+    this.persistedBreakers = new Set([...Object.keys(persisted), ...unreadable]);
   }
 }
 
