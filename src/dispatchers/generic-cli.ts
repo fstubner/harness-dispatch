@@ -549,7 +549,8 @@ class JsonlAccumulator {
     }
     this.sawAnyJson = true;
     this.eventCount += 1;
-    const eventType = getPath(event, "type");
+    // `type` (Codex) or `event` (Antigravity's stream-json).
+    const eventType = getPath(event, "type") ?? getPath(event, "event");
     if (typeof eventType === "string") this.lastEventType = eventType;
 
     for (const rule of this.rules) {
@@ -707,6 +708,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
   private readonly endpointMode: ServiceConfig["endpointMode"];
   private readonly endpointProvider: ServiceConfig["endpointProvider"];
   private readonly siblingApiKeyEnvVars: ReadonlySet<string>;
+  private readonly idleTimeoutMs: number | undefined;
 
   /**
    * @param siblingApiKeyEnvVars every api-key env var ANY route might use, so
@@ -725,6 +727,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     this.configuredModel = svc?.model;
     this.endpointMode = svc?.endpointMode;
     this.endpointProvider = svc?.endpointProvider;
+    this.idleTimeoutMs = svc?.idleTimeoutMs;
   }
 
   isAvailable(): boolean {
@@ -914,6 +917,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const subOpts: Parameters<typeof streamSubprocess>[2] = { timeoutMs };
+    if (this.idleTimeoutMs !== undefined) subOpts.idleTimeoutMs = this.idleTimeoutMs;
     if (effectiveWorkingDir) subOpts.cwd = effectiveWorkingDir;
     if (protocol.stdin) subOpts.stdin = fullPrompt;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
@@ -926,6 +930,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let exitCode = -1;
     let durationMs = 0;
     let timedOut = false;
+    let idleTimedOut = false;
     let truncated = false;
 
     const eventDriven = protocol.output.mode === "jsonl_stream" && protocol.output.eventRules;
@@ -948,6 +953,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
           exitCode = evt.exitCode;
           durationMs = evt.durationMs;
           timedOut = evt.timedOut;
+          idleTimedOut = evt.idleTimedOut;
           truncated = evt.truncated;
           continue;
         }
@@ -997,6 +1003,27 @@ export class GenericCliDispatcher extends BaseDispatcher {
           service: this.id,
           success: false,
           error: `Timed out after ${timeoutMs}ms`,
+          durationMs,
+        },
+      };
+      return;
+    }
+
+    // Silent for idle_timeout_ms: stopped as hung rather than left to hold a
+    // concurrency slot until the wall clock. What it printed is kept.
+    if (idleTimedOut) {
+      const minutes = Math.round((this.idleTimeoutMs ?? 0) / 60_000);
+      yield {
+        type: "completion",
+        result: {
+          output: stdout,
+          service: this.id,
+          success: false,
+          error:
+            `Stopped: ${this.id} printed nothing for ${minutes} minute${minutes === 1 ? "" : "s"} ` +
+            `(idle_timeout_ms ${this.idleTimeoutMs}), so it was treated as hung. Its output up to ` +
+            `then is kept. Retry, send the task to a different route, or raise idle_timeout_ms ` +
+            `for this route if its tasks really do run that long without printing.`,
           durationMs,
         },
       };

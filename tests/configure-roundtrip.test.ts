@@ -176,6 +176,23 @@ describe("configure round-trip", () => {
     expect(printed.stdout).toContain("harness: codex");
     expect(printed.stdout).not.toMatch(/^\s+protocol:/m);
   });
+
+  it("writes time limits back only where the user wrote them, not the shipped defaults", async () => {
+    // antigravity ships timeout_ms and idle_timeout_ms; written back, they
+    // would be frozen into the user's file and stop tracking the preset.
+    const src = path.join(dir, "in5.yaml");
+    await fs.writeFile(
+      src,
+      "clis:\n  - name: antigravity_cli\n    harness: antigravity_cli\n" +
+        "  - name: codex_cli\n    harness: codex\n    idle_timeout_ms: 1200000\n",
+      "utf8",
+    );
+    const printed = await capture(() => main(["configure", "--print", "--config", src]));
+    expect(printed.stdout).toContain("harness: antigravity_cli");
+    expect(printed.stdout).not.toContain("timeout_ms: 1500000");
+    expect(printed.stdout).not.toContain("idle_timeout_ms: 900000");
+    expect(printed.stdout).toContain("idle_timeout_ms: 1200000");
+  });
 });
 
 describe("detect: survives a regenerate", () => {

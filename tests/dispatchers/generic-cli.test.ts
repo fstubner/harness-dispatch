@@ -1406,3 +1406,61 @@ describe("a delegate's own test output must not block its route", () => {
     expect(detectRateLimit(text).rateLimited).toBe(true);
   });
 });
+
+describe("how a CLI route fails (audit 5, order B)", () => {
+  const jsonlProtocol: CliProtocolConfig = {
+    args: ["{{prompt}}"],
+    successRequiresOutput: false,
+    output: {
+      mode: "jsonl_stream",
+      eventRules: [
+        { when: { type: "item.completed", "item.type": "agent_message" }, emit: "text", textField: "item.text" },
+        { when: { type: "error" }, emit: "error", messageField: "message" },
+        { when: { type: "turn.failed" }, emit: "error", messageField: "error.message" },
+      ],
+    },
+  };
+
+  /** A scripted stream whose end event can say the run went idle. */
+  function scripted(
+    chunks: Array<{ stream: "stdout" | "stderr"; chunk: string }>,
+    end: Record<string, unknown> = {},
+  ): void {
+    streamSubprocessMock.mockImplementation(async function* () {
+      for (const c of chunks) yield c;
+      yield {
+        kind: "end",
+        exitCode: 0,
+        timedOut: false,
+        idleTimedOut: false,
+        durationMs: 5,
+        totalStdoutBytes: 0,
+        totalStderrBytes: 0,
+        truncated: false,
+        ...end,
+      };
+    });
+  }
+
+  it("passes the route's idle_timeout_ms to the subprocess", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "x" }));
+    const d = new GenericCliDispatcher(
+      svc({ args: ["{{prompt}}"], output: { mode: "text" } }, { idleTimeoutMs: 900_000 }),
+    );
+    await d.dispatch("go", [], "/tmp");
+    const opts = streamSubprocessMock.mock.lastCall?.[2] as { idleTimeoutMs?: number };
+    expect(opts.idleTimeoutMs).toBe(900_000);
+  });
+
+  it("reports an idle stop as a hang with a next step, keeping what was printed", async () => {
+    mockFound();
+    scripted([{ stream: "stdout", chunk: '{"type":"turn.started"}\n' }], { exitCode: 1, idleTimedOut: true });
+    const d = new GenericCliDispatcher(svc(jsonlProtocol, { idleTimeoutMs: 900_000 }));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/printed nothing for 15 minutes \(idle_timeout_ms 900000\)/);
+    expect(res.error).toMatch(/raise idle_timeout_ms/);
+    expect(res.output).toContain("turn.started");
+  });
+});

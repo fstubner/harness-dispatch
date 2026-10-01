@@ -59,6 +59,10 @@ export interface CliDefaults {
   models?: string[];
   /** Where this harness's real model catalog lives — see ServiceConfig.modelHint. */
   modelHint?: string;
+  /** Shipped wall-clock limit per attempt — see ServiceConfig.timeoutMs. */
+  timeoutMs?: number;
+  /** Shipped no-output limit — see ServiceConfig.idleTimeoutMs. */
+  idleTimeoutMs?: number;
   /** Default dispatch protocol for this harness — see the shipped config.default.yaml. */
   protocol?: CliProtocolConfig;
 }

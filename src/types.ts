@@ -457,6 +457,14 @@ export interface ServiceConfig {
    * specific route; a per-call `hints.timeoutMs` takes precedence over this.
    */
   timeoutMs?: number;
+  /**
+   * CLI routes only: stop the run once the harness has printed nothing for
+   * this many milliseconds (`idle_timeout_ms`). Only for a harness that
+   * streams as it works (codex, antigravity in stream-json); one that prints
+   * only its final answer would be stopped mid-task. See
+   * StreamSubprocessOpts.idleTimeoutMs.
+   */
+  idleTimeoutMs?: number;
 }
 
 /**

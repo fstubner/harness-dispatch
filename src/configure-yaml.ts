@@ -54,7 +54,9 @@ function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<str
       "capabilities",
       Object.keys(svc.capabilities).length > 0 ? svc.capabilities : undefined,
     ),
-    timeout_ms: svc.timeoutMs,
+    // Both now have harness defaults (config.default.yaml), so only the user's own.
+    timeout_ms: own("timeout_ms", svc.timeoutMs),
+    idle_timeout_ms: own("idle_timeout_ms", svc.idleTimeoutMs),
     max_output_tokens: own("max_output_tokens", svc.maxOutputTokens),
     max_input_tokens: own("max_input_tokens", svc.maxInputTokens),
     allow_paid_usage: svc.allowPaidUsage ? true : undefined,

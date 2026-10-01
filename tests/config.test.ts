@@ -1131,6 +1131,25 @@ clis:
     expect(svc.protocol?.safety?.workspace_edit).toEqual(["--sandbox", "workspace-write"]);
   });
 
+  it("a codex route inherits the shipped idle limit, and its own idle_timeout_ms replaces it", async () => {
+    const yamlText = `
+clis:
+  - name: codex_default
+    harness: codex
+  - name: codex_patient
+    harness: codex
+    idle_timeout_ms: 1800000
+  - name: claude_default
+    harness: claude_code
+`;
+    const p = await writeTmpYaml("clis-idle-timeout.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.codex_default!.idleTimeoutMs).toBe(900_000);
+    expect(cfg.services.codex_patient!.idleTimeoutMs).toBe(1_800_000);
+    // Claude Code prints its answer only at the end: no idle limit shipped.
+    expect(cfg.services.claude_default!.idleTimeoutMs).toBeUndefined();
+  });
+
   it("skips protocol.extends with an unrecognized preset name, with a warning", async () => {
     const yamlText = `
 clis:

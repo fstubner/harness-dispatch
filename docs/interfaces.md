@@ -67,6 +67,9 @@ genuinely hung process (stuck waiting on input, a stalled network call), not to 
 normal work — raise it per call with `hints.timeoutMs` (milliseconds), or set a
 permanent per-route default with `timeout_ms:` in that service's config entry.
 Precedence is `hints.timeoutMs` > the service's `timeout_ms` > the 60-minute default.
+Antigravity ships its own 25-minute `timeout_ms`, and Codex and Antigravity stop a run
+that has printed nothing for 15 minutes (`idle_timeout_ms`); see
+[configuration](configuration.md#time-limits).
 
 Starting a task:
 
