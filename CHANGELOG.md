@@ -24,6 +24,19 @@ pre-1.0, so minor versions can carry behaviour changes.
   written once instead of in every client's CLAUDE.md or AGENTS.md. Capped at
   1,000 characters each; secrets the config holds are scrubbed from it.
 
+### Removed
+
+- **The Arena-ELO leaderboard is gone.** It was off by default, and every logged
+  routing decision had a quality score of 1, so it never changed a pick. Routing
+  is now documented as what it was in practice: tier, then weight x capability,
+  then fallback. The `leaderboard:` block and the per-route `leaderboard_model:`
+  key still load but are reported as removed and have no effect (a config that
+  set `leaderboard_model` to a nonsense value only to make `tier:` win no longer
+  needs to). `LeaderboardCache` is no longer exported, and the `qualityScore` /
+  `elo` fields are gone from routing results, fanout items, `status` and the
+  dispatch log's `scores`. The shipped `data/coding_benchmarks.json` and
+  `scripts/fetch_benchmarks.py` are deleted.
+
 ### Fixed
 
 - **The server instructions and the delegating-work skill now ask for a model on

@@ -188,20 +188,18 @@ describe("cancelJob — end to end against a real run", () => {
     const svc = {
       name: "stuck", enabled: true, type: "cli" as const, harness: "stuck", command: "stuck",
       tier: 1, weight: 1, cliCapability: 1, capabilities: { execute: 1, plan: 1, review: 1 },
-      escalateOn: [], leaderboardModel: "stuck-model", maxOutputTokens: 1000, maxInputTokens: 1000,
+      escalateOn: [], maxOutputTokens: 1000, maxInputTokens: 1000,
       provider: "local" as const, surface: "local_endpoint" as const, authSource: "local_network" as const,
       billingKind: "local_compute" as const, paidUsagePossible: false, billingConfidence: "documented" as const,
     };
     const { Router } = await import("../src/router.js");
     const { QuotaCache } = await import("../src/quota.js");
-    const { LeaderboardCache } = await import("../src/leaderboard.js");
     const config = { services: { stuck: svc } };
     const dispatchers = { stuck: stuckDispatcher } as never;
     const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-    const leaderboard = new LeaderboardCache();
-    const router = new Router(config as never, quota, dispatchers, leaderboard);
+    const router = new Router(config as never, quota, dispatchers);
     const holder = new RuntimeHolder({
-      config, dispatchers, quota, router, leaderboard, mtimeMs: 0,
+      config, dispatchers, quota, router, mtimeMs: 0,
     } as never);
 
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "hr-cancel-work-"));
@@ -435,14 +433,12 @@ describe("a cancelled isolated run keeps its work reachable", () => {
     };
     const { Router } = await import("../src/router.js");
     const { QuotaCache } = await import("../src/quota.js");
-    const { LeaderboardCache } = await import("../src/leaderboard.js");
     const config = { services: { editor: svc } };
     const dispatchers = { editor: editsThenHangs } as never;
     const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-    const leaderboard = new LeaderboardCache();
-    const router = new Router(config as never, quota, dispatchers, leaderboard);
+    const router = new Router(config as never, quota, dispatchers);
     const holder = new RuntimeHolder({
-      config, dispatchers, quota, router, leaderboard, mtimeMs: 0,
+      config, dispatchers, quota, router, mtimeMs: 0,
     } as never);
 
     const workDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "hr-cancel-ws-")));

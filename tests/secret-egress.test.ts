@@ -89,7 +89,6 @@ const routerStub = {
   pickService: () => undefined,
   getBreaker: () => undefined,
 };
-const leaderboardStub = { getQualityScore: async () => ({ qualityScore: 0.85 }) };
 
 const status = (config: RouterConfig): Promise<unknown> =>
   buildStatus(
@@ -97,7 +96,6 @@ const status = (config: RouterConfig): Promise<unknown> =>
     {} as never,
     quotaStub as never,
     routerStub as never,
-    leaderboardStub as never,
   );
 
 /**

@@ -666,7 +666,6 @@ describe("usage tells the truth about its own durability", () => {
       {} as never,
       quota as never,
       router as never,
-      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
     );
     const serialised = JSON.stringify(status);
     expect(serialised).toContain("not reaching disk");
@@ -682,7 +681,6 @@ describe("usage tells the truth about its own durability", () => {
         localCountsPersistError: () => undefined } as never,
       { circuitBreakerStatus: () => ({}), breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
         pickService: () => undefined, getBreaker: () => undefined } as never,
-      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
     );
     expect(JSON.stringify(status)).not.toContain("not reaching disk");
   });

@@ -19,7 +19,6 @@ import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatcherEvent,
@@ -78,7 +77,7 @@ function makeService(name: string, over: Partial<ServiceConfig> = {}): ServiceCo
     cliCapability: 1.0,
     capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
     escalateOn: [],
-    leaderboardModel: `${name}-model`,
+    model: `${name}-model`,
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
     provider: "local",
@@ -97,23 +96,12 @@ function buildHolder(
 ): RuntimeHolder {
   const config: RouterConfig = { services };
   const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-  const leaderboard = new LeaderboardCache();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (leaderboard as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (leaderboard as any).data = {
-    "a-model": 1500,
-    "b-model": 1400,
-    "c-model": 1300,
-    "preferred-model": 1600,
-  };
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
   const state: RuntimeState = {
     config,
     dispatchers,
     quota,
     router,
-    leaderboard,
     mtimeMs: 0,
   };
   return new RuntimeHolder(state);
@@ -147,8 +135,8 @@ describe("MCP tools — dispatch", () => {
   it("routes successfully in default single mode", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
@@ -175,8 +163,8 @@ describe("MCP tools — dispatch", () => {
   it("boosts a preferred model without exposing service or harness hints", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "preferred-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "preferred-model" }),
       },
       {
         a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
@@ -197,7 +185,7 @@ describe("MCP tools — dispatch", () => {
 
   it("surfaces modelHintMatched: false when the requested model matches no configured route", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
     );
 
@@ -422,9 +410,9 @@ describe("MCP tools — dispatch", () => {
           authSource: "api_key",
           billingKind: "metered_api",
           paidUsagePossible: true,
-          leaderboardModel: "preferred-model",
+          model: "preferred-model",
         }),
-        local: makeService("local", { leaderboardModel: "a-model" }),
+        local: makeService("local", { model: "a-model" }),
       },
       {
         paid: new FakeDispatcher("paid", { output: "paid", service: "paid", success: true }),
@@ -449,9 +437,9 @@ describe("MCP tools — dispatch", () => {
           authSource: "api_key",
           billingKind: "included_plan_usage",
           paidUsagePossible: false,
-          leaderboardModel: "preferred-model",
+          model: "preferred-model",
         }),
-        local: makeService("local", { leaderboardModel: "a-model" }),
+        local: makeService("local", { model: "a-model" }),
       },
       {
         cloud: new FakeDispatcher("cloud", { output: "cloud", service: "cloud", success: true }),
@@ -781,8 +769,8 @@ describe("MCP tools — dispatch", () => {
   it("filters fanout by model labels", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a"),
@@ -799,8 +787,8 @@ describe("MCP tools — dispatch", () => {
   it("ignores hints.model entirely in fanout mode — only top-level models: narrows candidates", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a"),
@@ -821,7 +809,7 @@ describe("MCP tools — dispatch", () => {
 
   it("returns a full inline result with its jobId when the run beats the grace window", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "fast A", service: "a", success: true }) },
     );
 
@@ -866,7 +854,7 @@ describe("MCP tools — dispatch", () => {
     };
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
+        a: makeService("a", { model: "a-model" }),
       },
       { a: slow },
     );
@@ -931,7 +919,7 @@ describe("MCP tools — dispatch", () => {
   it("gives every dispatch a 60-minute background timeout by default, not the dispatcher's short one", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: dispatcher },
     );
 
@@ -947,7 +935,7 @@ describe("MCP tools — dispatch", () => {
   it("lets hints.timeoutMs override the 60-minute background default", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: dispatcher },
     );
 
@@ -973,7 +961,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(staleJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1007,7 +995,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(oldJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1041,7 +1029,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(runningJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1058,7 +1046,7 @@ describe("MCP tools — dispatch", () => {
 
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
     );
 
@@ -1079,7 +1067,7 @@ describe("MCP tools — dispatch", () => {
     const holder = buildHolder(
       {
         a: makeService("a", {
-          leaderboardModel: "a-model",
+          model: "a-model",
           capabilities: { execute: 1.0, plan: 0.4, review: 1.0 },
         }),
       },
@@ -1112,7 +1100,7 @@ describe("MCP tools — dispatch", () => {
   it("bounds a huge dispatcher error in the inline result but keeps the full text in stderr.log", async () => {
     const hugeError = "X".repeat(200_000);
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       {
         a: new FakeDispatcher("a", {
           output: "",
@@ -1149,7 +1137,7 @@ describe("MCP tools — dispatch", () => {
 describe("MCP tools — job_status", () => {
   it("lists known background dispatches when jobId is omitted", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
     );
 

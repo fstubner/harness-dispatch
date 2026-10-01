@@ -57,7 +57,6 @@ import { stringArrayFrom } from "./protocol.js";
 export type RouteFieldDefaults = Partial<
   Pick<
     ServiceConfig,
-    | "leaderboardModel"
     | "thinkingLevel"
     | "maxOutputTokens"
     | "maxInputTokens"
@@ -114,7 +113,6 @@ export function effectiveSafetyFrom(
  * existing in one shape's list and not the others.
  */
 const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
-  { key: "leaderboard_model", field: "leaderboardModel", parse: str, fromDefaults: (d) => d.leaderboardModel },
   { key: "thinking_level", field: "thinkingLevel", parse: thinkingFrom, fromDefaults: (d) => d.thinkingLevel },
   { key: "escalate_model", field: "escalateModel", parse: str },
   { key: "max_output_tokens", field: "maxOutputTokens", parse: numberOnly, fromDefaults: (d) => d.maxOutputTokens },

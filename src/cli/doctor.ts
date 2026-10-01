@@ -48,7 +48,6 @@ export async function cmdDoctor(
     runtime.dispatchers,
     runtime.quota,
     runtime.router,
-    runtime.leaderboard,
   );
   // Must agree with package.json engines (>=22.22.2) and the README:
   // disagreement fails `doctor` on a runtime where dispatch works correctly.

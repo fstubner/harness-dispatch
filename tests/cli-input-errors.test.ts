@@ -169,7 +169,6 @@ describe("per-route unknown keys — the root cause, not another instance", () =
         "    model: gpt-5.6-terra",
         "    cli_capability: 1.0",
         "    thinking_level: high",
-        "    leaderboard_model: gpt-5",
         "    max_input_tokens: 400000",
         "    max_output_tokens: 128000",
         "    safety_profile: read_only",

@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Dispatcher } from "./dispatchers/base.js";
-import type { LeaderboardCache } from "./leaderboard.js";
 import type { QuotaCache } from "./quota.js";
 import type { Router } from "./router.js";
 import type {
@@ -206,7 +205,6 @@ export interface RouteStatus {
   modelHint?: string;
   /** Operator instructions for this route (`instructions:` in config). */
   instructions?: string;
-  leaderboardModel?: string;
   tier: number;
   weight: number;
   cliCapability: number;
@@ -240,10 +238,6 @@ export interface RouteStatus {
      * meaning what it always meant.
      */
     stateUnreadable?: true;
-  };
-  quality?: {
-    score: number;
-    elo?: number;
   };
   lastError?: string;
   workspacePolicy?: NonNullable<ServiceConfig["workspacePolicy"]>;
@@ -289,7 +283,6 @@ export async function buildStatus(
   dispatchers: Record<string, Dispatcher>,
   quota: QuotaCache,
   router: Router,
-  leaderboard: LeaderboardCache,
 ): Promise<HarnessDispatchStatus> {
   const quotaStatus = await quota.fullStatus();
   const breakers = router.circuitBreakerStatus();
@@ -303,10 +296,6 @@ export async function buildStatus(
     const available = dispatcher?.isAvailable() ?? false;
     const q = quotaStatus[id];
     const quotaScore = q?.score ?? (await quota.getQuotaScore(id));
-    const quality = await leaderboard.getQualityScore(
-      svc.leaderboardModel,
-      svc.thinkingLevel,
-    );
 
     const effectiveSafety = effectiveSafetyProfile(svc);
     const route: RouteStatus = {
@@ -365,7 +354,6 @@ export async function buildStatus(
     if (svc.models !== undefined) route.models = svc.models;
     if (svc.modelHint !== undefined) route.modelHint = svc.modelHint;
     if (svc.instructions !== undefined) route.instructions = svc.instructions;
-    if (svc.leaderboardModel !== undefined) route.leaderboardModel = svc.leaderboardModel;
     if (svc.maxInputTokens !== undefined) route.maxInputTokens = svc.maxInputTokens;
     if (svc.maxOutputTokens !== undefined) route.maxOutputTokens = svc.maxOutputTokens;
     if (q?.remaining !== undefined) route.quota.remaining = q.remaining;
@@ -379,10 +367,6 @@ export async function buildStatus(
     if (q?.localInputTokens !== undefined) route.quota.localInputTokens = q.localInputTokens;
     if (q?.localOutputTokens !== undefined) route.quota.localOutputTokens = q.localOutputTokens;
     if (q?.source !== undefined) route.quota.source = q.source;
-    route.quality = {
-      score: Math.round(quality.qualityScore * 1000) / 1000,
-    };
-    if (quality.elo !== null) route.quality.elo = Math.round(quality.elo);
     routes.push(route);
   }
 
@@ -639,11 +623,7 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   lines.push("harness-dispatch status", "");
   for (const route of status.routes) {
     const mark = routeMark(route);
-    // `leaderboard_model` is a SCORING key, not what gets dispatched. Showing
-    // it bare as `model=` makes status and usage disagree, so it is marked
-    // when it is the scoring key standing in.
-    const model =
-      route.model ?? (route.leaderboardModel ? `${route.leaderboardModel} (scoring key; no model set)` : "not set");
+    const model = route.model ?? "not set";
     lines.push(`${mark} ${route.id} / ${route.harness}`);
     lines.push(
       `  billing=${route.billing.kind} provider=${route.billing.provider} auth=${route.billing.authSource}`,

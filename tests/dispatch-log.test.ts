@@ -101,7 +101,6 @@ describe("dispatch log", () => {
       tier: 1,
       reason: "tier 1 best (3 available)",
       quotaScore: 0.9,
-      qualityScore: 0.82,
       capabilityScore: 0.75,
       finalScore: 0.92,
     } as unknown as RoutingDecision;
@@ -109,7 +108,6 @@ describe("dispatch log", () => {
     const entry = buildDispatchLogEntry("picked", result(), decision);
     expect(entry.scores).toEqual({
       quota: 0.9,
-      quality: 0.82,
       capability: 0.75,
       final: 0.92,
     });
@@ -124,7 +122,6 @@ describe("dispatch log", () => {
       tier: 1,
       reason: "explicit",
       quotaScore: 1,
-      qualityScore: 0.5,
       capabilityScore: 1,
       finalScore: 1,
     } as unknown as RoutingDecision;

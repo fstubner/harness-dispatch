@@ -46,7 +46,6 @@ function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<str
     tier: own("tier", svc.tier),
     weight: own("weight", svc.weight),
     cli_capability: own("cli_capability", svc.cliCapability),
-    leaderboard_model: own("leaderboard_model", svc.leaderboardModel),
     thinking_level: own("thinking_level", svc.thinkingLevel),
     escalate_model: svc.escalateModel,
     escalate_on: own("escalate_on", svc.escalateOn.length > 0 ? svc.escalateOn : undefined),
@@ -253,9 +252,6 @@ function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<st
   }
   if (config.telemetry?.enabled !== undefined) {
     out.telemetry = { enabled: config.telemetry.enabled };
-  }
-  if (config.leaderboard?.enabled !== undefined) {
-    out.leaderboard = { enabled: config.leaderboard.enabled };
   }
   return out;
 }

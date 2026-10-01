@@ -364,7 +364,6 @@ describe("the listing and the router agree about a dead route", () => {
         pickService: () => undefined,
         getBreaker: () => undefined,
       } as never,
-      { getQualityScore: async () => ({ qualityScore: 0.5 }) } as never,
     );
 
     expect(status.routes[0]?.skipped?.code).toBe("never_succeeded");

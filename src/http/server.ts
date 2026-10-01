@@ -729,7 +729,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         const created = Math.floor(Date.now() / 1000);
         sendJson(res, 200, {
@@ -764,7 +763,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         sendJson(res, 200, buildUsage(status));
         return;
@@ -782,7 +780,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             state.dispatchers,
             state.quota,
             state.router,
-            state.leaderboard,
           ),
         );
         return;

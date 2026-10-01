@@ -87,11 +87,9 @@ export interface RouteResponse {
   routing?: {
     tier: number;
     quotaScore: number;
-    qualityScore: number;
     cliCapability: number;
     capabilityScore: number;
     taskType: TaskType;
-    elo?: number;
     finalScore: number;
     reason: string;
     /**
@@ -132,8 +130,6 @@ export interface FanoutItem {
   error?: string;
   durationMs?: number;
   capabilityScore: number;
-  qualityScore: number;
-  elo?: number;
   workspace?: WorkspaceRun;
   /** Tail of live output for a not-yet-completed item. */
   partialOutput?: string;
@@ -335,14 +331,12 @@ function routeResponse(
     response.routing = {
       tier: decision.tier,
       quotaScore: decision.quotaScore,
-      qualityScore: decision.qualityScore,
       cliCapability: decision.cliCapability,
       capabilityScore: decision.capabilityScore,
       taskType: decision.taskType,
       finalScore: decision.finalScore,
       reason: decision.reason,
     };
-    if (decision.elo !== undefined) response.routing.elo = decision.elo;
     if (decision.modelHintMatched !== undefined) {
       response.routing.modelHintMatched = decision.modelHintMatched;
     }
@@ -518,12 +512,12 @@ async function startSingle(
 
 function matchesRequestedModel(
   routeName: string,
-  svc: { model?: string; leaderboardModel?: string },
+  svc: { model?: string; escalateModel?: string },
   requested: Set<string>,
 ): boolean {
   if (requested.size === 0) return true;
   const lower = new Set([...requested].map((s) => s.toLowerCase()));
-  return [routeName, svc.model, svc.leaderboardModel]
+  return [routeName, svc.model, svc.escalateModel]
     .filter((v): v is string => typeof v === "string" && v.length > 0)
     .some((v) => lower.has(v.toLowerCase()));
 }
@@ -629,10 +623,6 @@ async function startFanout(
     candidates.map(async (routeName) => {
       const svc = state.config.services[routeName]!;
       const cap = svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0;
-      const quality = await state.leaderboard.getQualityScore(
-        svc.leaderboardModel,
-        svc.thinkingLevel,
-      );
       const onEvent = makeProgressTap(extra, live, counter, routeName);
       const job = await startAsyncJobTracked(
         { holder: deps.holder },
@@ -650,7 +640,7 @@ async function startFanout(
           ...(onEvent !== undefined ? { onEvent } : {}),
         },
       );
-      return { routeName, cap, quality, job };
+      return { routeName, cap, job };
     }),
   );
 
@@ -660,7 +650,7 @@ async function startFanout(
 
   let warning: string | undefined;
   const results = await Promise.all(
-    started.map(async ({ routeName, cap, quality, job }): Promise<FanoutItem> => {
+    started.map(async ({ routeName, cap, job }): Promise<FanoutItem> => {
       const current = await getAsyncJob(job.status.jobId);
       if (current.status.warning !== undefined) warning = current.status.warning;
       const item: FanoutItem = {
@@ -668,9 +658,7 @@ async function startFanout(
         jobId: job.status.jobId,
         completed: jobCompleted(current),
         capabilityScore: cap,
-        qualityScore: quality.qualityScore,
       };
-      if (quality.elo !== null) item.elo = quality.elo;
       if (item.completed) {
         const response = jobRouteResponse(current);
         item.success = response.success;
@@ -869,7 +857,6 @@ async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefin
     state.dispatchers,
     state.quota,
     state.router,
-    state.leaderboard,
   );
   const usage = buildUsage(status);
   if (args.listModels) {

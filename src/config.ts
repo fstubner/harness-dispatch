@@ -21,6 +21,7 @@ import {
 import {
   warnDuplicateRouteNames,
   warnMistypedRouteValues,
+  warnRemovedRouteKeys,
   warnUnknownRouteKeys,
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
@@ -158,11 +159,6 @@ function topLevelSettings(
     const days = num((retentionRaw as Record<string, unknown>).jobs_days, Number.NaN);
     if (Number.isFinite(days) && days >= 0) out.retention = { jobsDays: days };
   }
-  const leaderboardRaw = raw.leaderboard;
-  if (leaderboardRaw !== null && typeof leaderboardRaw === "object") {
-    const enabled = (leaderboardRaw as Record<string, unknown>).enabled;
-    if (typeof enabled === "boolean") out.leaderboard = { enabled };
-  }
   const maxRuns = num(raw.max_concurrent_runs, Number.NaN);
   if (Number.isFinite(maxRuns) && maxRuns >= 0) out.maxConcurrentRuns = Math.floor(maxRuns);
   else if (raw.max_concurrent_runs !== undefined) {
@@ -261,6 +257,7 @@ function buildLegacyConfig(raw: Record<string, unknown>): RouterConfig {
     // the legacy shape accepts a wider set of keys than KNOWN_ROUTE_KEYS
     // lists, and reporting those as typos would be worse than silence.
     warnMistypedRouteValues(svc, `services."${name}"`, warnings);
+    warnRemovedRouteKeys(svc, `services."${name}"`, warnings);
     const type = (str(svc.type) ?? "cli") as ServiceConfig["type"];
     // Legacy-format entries inherit the named harness's shipped metadata just
     // as clis: entries do, so `harness: cursor` classifies correctly without

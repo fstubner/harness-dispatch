@@ -22,7 +22,9 @@
 # both: your entries AND whatever is installed.
 #
 # Route selection scores each entry by task fit:
-#   capabilities[task_type] x leaderboard ELO x cli_capability x quota x weight
+#   capabilities[task_type] x cli_capability x quota x weight
+# Routing is: tier first (lowest number wins), then that score, then fallback
+# to the next candidate if the pick fails.
 # Billing safety: routes that can cost money (metered api_key, unknown billing)
 # stay blocked until you set allow_paid_usage: true on them. Product-login CLIs
 # (Claude Code, Codex, Cursor) run by default — their providers hard-stop at
@@ -42,7 +44,6 @@ clis:
       https://platform.claude.com/docs/en/docs/about-claude/models/overview
       (e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may
       lag behind what's newly listed there.
-    leaderboard_model: claude-opus-4-6
     cli_capability: 1.1
     tier: 1
     capabilities: { execute: 0.95, plan: 1.0, review: 1.0 }
@@ -118,7 +119,6 @@ clis:
       https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol,
       gpt-5.6-terra) — the installed codex CLI may lag behind what's newly
       listed there.
-    leaderboard_model: gpt-5.4
     cli_capability: 1.08
     tier: 1
     capabilities: { execute: 1.0, plan: 0.83, review: 0.82 }
@@ -195,7 +195,6 @@ clis:
       Wide multi-vendor catalog. Current model ids and pricing:
       https://cursor.com/docs/models — or run `cursor-agent --list-models`
       for what's actually available on this install.
-    leaderboard_model: claude-sonnet-4-6
     cli_capability: 1.05
     tier: 1
     capabilities: { execute: 1.0, plan: 0.82, review: 0.9 }
@@ -288,7 +287,6 @@ clis:
       Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's
       portion: https://ai.google.dev/gemini-api/docs/models; check the agy
       CLI's own docs for the rest.
-    leaderboard_model: gemini-3.1-pro-preview # closest benchmarked model, for scoring
     cli_capability: 1.0
     tier: 1
     capabilities: { execute: 0.87, plan: 0.97, review: 0.95 }

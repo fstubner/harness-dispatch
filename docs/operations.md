@@ -116,19 +116,28 @@ with a per-job wrapper.
 Prompts and outputs flow only to the harnesses/endpoints you configured. **The
 router makes no other network call by default.**
 
-Routes rank on the `tier` and `weight` you set. Optionally, public Arena ELO
-benchmark data can inform ranking and derive tiers automatically:
+### How a route is chosen
 
-```yaml
-leaderboard:
-  enabled: true    # default false
-```
+Routing is: **tier, then weight x capability, then fallback.**
 
-Turning it on adds one GET to `api.wulong.dev` per process, refreshed daily.
-It sends nothing about you or your prompts. It is off by default because a
-benchmark maintained elsewhere should not quietly reorder the subscriptions
-you are paying for, and because a routing tool should not need the network to
-decide which of your local CLIs to run.
+1. Routes are grouped by `tier` (lowest number first). The lowest tier with an
+   eligible route wins; a higher tier is used only when no lower-tier route is
+   eligible (disabled, unavailable, circuit-broken, blocked by billing or route
+   policy, or already tried for this request).
+2. Within that tier, the route with the highest `cli_capability x
+   capabilities[task_type] x quota x weight` wins. Nothing else enters the score
+   but a few explicit adjustments: a cost penalty under the `standard` route
+   policy, a bonus when `hints.model` names the route or its model, and a bonus
+   for declared large context under `preferLargeContext`.
+3. If the pick fails, the router excludes it and tries the next best, up to
+   `maxFallbacks` more times.
+
+So `tier:` and `weight:` in your config are the whole ordering. There is no
+benchmark or leaderboard input: an earlier version could fetch public Arena ELO
+scores to re-rank routes and derive tiers, but it was off by default and never
+changed a logged decision, so it was removed. A `leaderboard:` block or a
+`leaderboard_model:` key in an old config still loads and is reported as removed,
+with no effect.
 
 ## Environment variables
 

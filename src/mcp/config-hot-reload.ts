@@ -18,7 +18,6 @@ import { loadConfig } from "../config.js";
 // From the module that DEFINES it, not the barrel that re-exports it:
 // importing it from ../jobs.js closes a cycle (jobs -> this file -> jobs).
 import { setJobRetentionDays } from "../jobs/store.js";
-import { LeaderboardCache } from "../leaderboard.js";
 import { QuotaCache } from "../quota.js";
 import { Router } from "../router.js";
 import type { RouterConfig } from "../types.js";
@@ -29,7 +28,6 @@ export interface RuntimeState {
   dispatchers: DispatcherMap;
   quota: QuotaCache;
   router: Router;
-  leaderboard: LeaderboardCache;
   mtimeMs: number;
   /**
    * Where this runtime's config came from (undefined = auto-detect). Jobs
@@ -67,7 +65,6 @@ async function statMtime(path: string | undefined): Promise<number> {
  */
 export async function bootstrapRuntime(opts: {
   configPath?: string;
-  leaderboard?: LeaderboardCache;
 }): Promise<RuntimeState> {
   // The mtime BEFORE the read. Taken after it, an edit landing in between was
   // recorded as already loaded, so the old content ran under the new mtime
@@ -80,15 +77,12 @@ export async function bootstrapRuntime(opts: {
   setJobRetentionDays(config.retention?.jobsDays);
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard =
-    opts.leaderboard ?? new LeaderboardCache(undefined, { enabled: config.leaderboard?.enabled === true });
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
   return {
     config,
     dispatchers,
     quota,
     router,
-    leaderboard,
     mtimeMs,
     ...(opts.configPath !== undefined ? { configPath: opts.configPath } : {}),
   };
@@ -155,9 +149,7 @@ export class ConfigHotReloader {
 
       let next: RuntimeState;
       try {
-        const bootOpts: { configPath?: string; leaderboard?: LeaderboardCache } = {
-          leaderboard: this.holder.state.leaderboard,
-        };
+        const bootOpts: { configPath?: string } = {};
         if (this.configPath !== undefined) bootOpts.configPath = this.configPath;
         next = await bootstrapRuntime(bootOpts);
       } catch (err) {

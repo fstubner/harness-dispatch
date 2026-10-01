@@ -1,7 +1,6 @@
 /** Shared pieces of the CLI: the runtime every command builds, flag parsing, and the error type the entrypoint turns into one line. */
 
 import { loadConfig } from "../config.js";
-import { LeaderboardCache } from "../leaderboard.js";
 import { buildDispatchers } from "../mcp/dispatcher-factory.js";
 import { QuotaCache } from "../quota.js";
 import { initObservability } from "../observability/index.js";
@@ -12,7 +11,6 @@ interface Runtime {
   config: RouterConfig;
   dispatchers: Awaited<ReturnType<typeof buildDispatchers>>;
   quota: QuotaCache;
-  leaderboard: LeaderboardCache;
   router: Router;
 }
 
@@ -24,11 +22,8 @@ export async function buildRuntime(configPath: string | undefined): Promise<Runt
   if (config.telemetry?.enabled) await initObservability({ enabled: true });
   const dispatchers = await buildDispatchers(config);
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = new LeaderboardCache(undefined, {
-    enabled: config.leaderboard?.enabled === true,
-  });
-  const router = new Router(config, quota, dispatchers, leaderboard);
-  return { config, dispatchers, quota, leaderboard, router };
+  const router = new Router(config, quota, dispatchers);
+  return { config, dispatchers, quota, router };
 }
 
 /**

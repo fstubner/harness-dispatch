@@ -69,7 +69,6 @@ export interface DispatchLogEntry {
    */
   scores?: {
     quota: number;
-    quality: number;
     capability: number;
     final: number;
   };
@@ -121,7 +120,6 @@ export function buildDispatchLogEntry(
     // cannot be reconstructed later: quota and breaker state have moved on.
     entry.scores = {
       quota: decision.quotaScore,
-      quality: decision.qualityScore,
       capability: decision.capabilityScore,
       final: decision.finalScore,
     };

@@ -59,11 +59,10 @@ async function buildDeps() {
   const { RuntimeHolder } = await import("../src/mcp/config-hot-reload.js");
   const { Router } = await import("../src/router.js");
   const { QuotaCache } = await import("../src/quota.js");
-  const { LeaderboardCache } = await import("../src/leaderboard.js");
   const svc = (name: string) => ({
     name, enabled: true, type: "cli" as const, harness: name, command: name,
     tier: 1, weight: 1, cliCapability: 1, capabilities: { execute: 1, plan: 1, review: 1 },
-    escalateOn: [], leaderboardModel: `${name}-m`, maxOutputTokens: 1000, maxInputTokens: 1000,
+    escalateOn: [], model: `${name}-m`, maxOutputTokens: 1000, maxInputTokens: 1000,
     provider: "local" as const, surface: "local_endpoint" as const,
     authSource: "local_network" as const, billingKind: "local_compute" as const,
     paidUsagePossible: false, billingConfidence: "documented" as const,
@@ -80,10 +79,9 @@ async function buildDeps() {
   const config = { services: { alpha: svc("alpha"), beta: svc("beta") } };
   const dispatchers = { alpha: makeDispatcher("alpha"), beta: makeDispatcher("beta") } as never;
   const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-  const leaderboard = new LeaderboardCache();
-  const router = new Router(config as never, quota, dispatchers, leaderboard);
+  const router = new Router(config as never, quota, dispatchers);
   return {
-    holder: new RuntimeHolder({ config, dispatchers, quota, router, leaderboard, mtimeMs: 0 } as never),
+    holder: new RuntimeHolder({ config, dispatchers, quota, router, mtimeMs: 0 } as never),
   };
 }
 
