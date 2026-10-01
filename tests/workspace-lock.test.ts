@@ -16,6 +16,7 @@ import {
   readdirSync,
   writeFileSync,
   mkdirSync,
+  symlinkSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,6 +78,25 @@ describe("acquireWorkspaceLock — same process", () => {
     a();
     b();
     expect(true).toBe(true);
+  });
+
+  it("treats a symlink or junction to a directory as the same directory", async () => {
+    // `junction` is a Windows-only type that needs no privilege; POSIX ignores it.
+    const alias = path.join(dir, "alias");
+    symlinkSync(workDir, alias, "junction");
+    const held = await acquireWorkspaceLock(workDir);
+    // Keyed on the spelling of the path, this took a second lock at once and
+    // two agents edited one tree.
+    let aliasHeld = false;
+    const viaAlias = acquireWorkspaceLock(alias).then((release) => {
+      aliasHeld = true;
+      return release;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(aliasHeld).toBe(false);
+    held();
+    (await viaAlias)();
+    expect(aliasHeld).toBe(true);
   });
 
   it("removes its lock file on release, leaving nothing behind", async () => {
