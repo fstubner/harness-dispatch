@@ -26,6 +26,30 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Background jobs now survive the session that started them on Windows, even
+  behind a launcher shim.** A launcher that kills its descendants when it exits
+  (the nvx shim does) took every job's supervisor and agent CLI with it when the
+  session ended, because Node's detached spawn does not leave a Windows job
+  object; the job stayed `queued` or `running` forever. Supervisors are now
+  started through WMI (`Win32_Process.Create`), which creates them outside the
+  caller's job, falling back to the old spawn if WMI is unavailable. Starting a
+  supervisor this way takes about a second longer. POSIX is unchanged.
+  `doctor` now proves it: its `job-runner` check starts a probe through the same
+  launch path, under the same `node` a client runs, and checks it outlives its
+  parent, instead of only checking that the runner file exists.
+
+- **A supervisor that cannot be started no longer crashes the server.** A failed
+  spawn was an unhandled error event. It is now written to the supervisor's
+  spawn log, its slot is given back, and the next drain retries. A drain also
+  now starts a supervisor for a released job nobody has claimed, instead of
+  waiting for some other job to be released.
+
+- **A supervisor whose jobs directory is deleted lets its running jobs finish**
+  rather than exiting and, on Windows, killing their agent CLIs mid-edit.
+
+- **Supervisor spawn logs are pruned after the job retention window.** Logs that
+  recorded a crash were kept forever.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

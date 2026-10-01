@@ -1,6 +1,7 @@
 /** `doctor`: check the install, config and every route. */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { readHttpToken, tokenPath } from "../auth.js";
 import { AUTO_DETECT_COMMANDS } from "../config.js";
@@ -8,6 +9,7 @@ import { commandAvailable } from "../dispatchers/shared/which-available.js";
 import { codexLoginState } from "../dispatchers/shared/harness-login.js";
 import { clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
 import { resolveRunnerPath } from "../jobs.js";
+import { probeDetachedSurvival } from "../jobs/detach.js";
 import { NEVER_SUCCEEDED_MIN_CALLS } from "../route-policy.js";
 import { buildStatus } from "../status.js";
 import { stateRoot } from "../state-dir.js";
@@ -35,6 +37,33 @@ function stateDirWritable(): { ok: boolean; detail: string } {
         `Breaker cooldowns and usage counters will not persist, and jobs may be ` +
         `reported as orphaned after they have actually succeeded.`,
     };
+  }
+}
+
+async function jobRunnerCheck(): Promise<{ ok: boolean; detail: string }> {
+  if (process.env.HARNESS_DISPATCH_INPROC_JOBS === "1") {
+    return {
+      ok: true,
+      detail:
+        "HARNESS_DISPATCH_INPROC_JOBS=1: jobs run inside the server process, so there is " +
+        "no concurrency cap and a run dies with the server",
+    };
+  }
+  const runnerPath = resolveRunnerPath();
+  if (runnerPath === undefined) {
+    return {
+      ok: false,
+      detail:
+        "dist/job-runner.js not found — jobs will run IN-PROCESS, which " +
+        "removes the max_concurrent_runs cap and does not survive a server " +
+        "restart. Run `npm run build`, or reinstall the package.",
+    };
+  }
+  const probeDir = mkdtempSync(path.join(os.tmpdir(), "hd-detach-probe-"));
+  try {
+    return await probeDetachedSurvival(runnerPath, probeDir);
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -214,7 +243,7 @@ export async function cmdDoctor(
       ...stateDirWritable(),
     },
     {
-      // Whether dispatches will actually be detached.
+      // Whether dispatches will actually be detached AND outlive the session.
       //
       // `resolveRunnerPath()` returning undefined is not an error — it is the
       // signal to run the job IN-PROCESS, which is right for an unbuilt
@@ -222,14 +251,14 @@ export async function cmdDoctor(
       // the supervisor pool, so in-process mode silently removes the bound
       // that exists to prevent an OOM. Dispatch says so once on stderr, which
       // is not somewhere "am I actually capped?" can be answered from.
+      //
+      // A runner that exists proves nothing about survival: this check used to
+      // say "jobs run detached" from the file alone, on a machine where every
+      // background run died with its session because the launcher killed its
+      // descendants. So it starts a probe through the real launch path and
+      // checks the probe outlives its parent.
       name: "job-runner",
-      ok: resolveRunnerPath() !== undefined,
-      detail:
-        resolveRunnerPath() !== undefined
-          ? "found; jobs run detached and the concurrency cap applies"
-          : "dist/job-runner.js not found — jobs will run IN-PROCESS, which " +
-            "removes the max_concurrent_runs cap and does not survive a server " +
-            "restart. Run `npm run build`, or reinstall the package.",
+      ...(await jobRunnerCheck()),
     },
     {
       name: "http-auth",

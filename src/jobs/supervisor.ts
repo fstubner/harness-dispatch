@@ -4,11 +4,11 @@
  * runner process per job costs ~76 MB of wrapper.
  */
 
-import { spawn } from "node:child_process";
 import { executeJobDir, resolveRunnerPath } from "./run.js";
+import { launchDetached } from "./detach.js";
 import { listAsyncJobs } from "./read.js";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "../config.js";
@@ -19,6 +19,7 @@ import { staleCodeWarning } from "../status.js";
 import {
   cancelRequested,
   claimHolder,
+  jobMaxAgeMs,
   jobsRoot,
   ORPHAN_THRESHOLD_MS,
   pollInstructions,
@@ -291,8 +292,13 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
       const limit = maxConcurrentRuns(deps.holder.state.config);
 
       // A supervisor outlives individual jobs, so a deleted jobs root would
-      // otherwise leave it polling a path that no longer exists.
-      if (!existsSync(jobsRoot())) return;
+      // otherwise leave it polling a path that no longer exists. Claim nothing
+      // more, but let runs already going finish: returning here exits the
+      // process, which on Windows kills their agent CLIs mid-edit.
+      if (!existsSync(jobsRoot())) {
+        await Promise.allSettled(inflight);
+        return;
+      }
 
       // A supervisor outlives the server that started it, and keeps claiming
       // while work keeps arriving — so after an upgrade, jobs a NEW server
@@ -339,7 +345,7 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
           // The runner path is the installed one, so this starts the new
           // build. If there is no work it finds none and exits when idle.
           const runnerPath = resolveRunnerPath();
-          if (runnerPath !== undefined) spawnDetachedSupervisor(runnerPath, deps.holder.state.configPath);
+          if (runnerPath !== undefined) await spawnDetachedSupervisor(runnerPath, deps.holder.state.configPath);
           return;
         }
         if (Date.now() - idleSince > SUPERVISOR_IDLE_EXIT_MS) return;
@@ -452,22 +458,27 @@ export async function drainSlotQueue(
     // blocking a dispatch for.
     return;
   }
+  let slots: string[];
   try {
-    await drainSlotQueueLocked(limit, runnerPath, configPath, config);
+    slots = await drainSlotQueueLocked(limit, config);
   } finally {
     releaseDrainLock();
   }
+  // Launched OUTSIDE the lock: on Windows a launch goes through PowerShell and
+  // WMI and takes over a second, and every other dispatch waits on this lock.
+  // The slots themselves were registered inside it, which is what the count
+  // depends on.
+  await Promise.all(slots.map((id) => launchSupervisor(id, runnerPath, configPath)));
 }
 
 /** How long a drain waits for a concurrent drainer before ceding to it. */
 const DRAIN_LOCK_TIMEOUT_MS = 5_000;
 
+/** Release what fits, and return the supervisor slots registered to run it. */
 async function drainSlotQueueLocked(
   limit: number | null,
-  runnerPath: string,
-  configPath: string | undefined,
   config: RouterConfig | undefined,
-): Promise<void> {
+): Promise<string[]> {
   const statuses = await readJobStatuses();
   let active = activeCapacity(statuses, config);
   // Supervisors are sized by how many JOBS there are, not by how much budget
@@ -495,9 +506,7 @@ async function drainSlotQueueLocked(
     // jobs at once (ceil(4/4) = 1 at the default) across SUPERVISOR_POOL_SIZE
     // of them, so the drainer would release up to forty jobs that only four
     // processes can run. A released job loses its slotQueued exemption and has
-    // no heartbeat until a supervisor claims it, so after 90 s it reads as
-    // `orphaned — Nothing will advance it now`, which is false and invites a
-    // retry that runs the same task twice. Held here, the excess stays
+    // no heartbeat until a supervisor claims it. Held here, the excess stays
     // slotQueued — reported as waiting — until supervisors free up.
     if (limit !== null && activeJobs >= SUPERVISOR_POOL_SIZE * jobsPerSupervisor(limit)) break;
     const now = await stillWaiting(jobDir);
@@ -512,41 +521,52 @@ async function drainSlotQueueLocked(
     activeJobs += 1;
     released += 1;
   }
-  if (released === 0) return;
+  // Released work nobody has claimed needs a supervisor even when this call
+  // released nothing: a launch that failed, or a supervisor killed between
+  // release and claim, otherwise left the job waiting for the next release —
+  // which, with nothing else queued, never came.
+  const unclaimed = statuses.filter(
+    ({ jobDir, status }) =>
+      status.status === "queued" && !status.slotQueued && claimHolder(jobDir) === undefined,
+  ).length;
+  if (released === 0 && unclaimed === 0) return [];
 
   // Size the pool against ALL outstanding work, not just the jobs released on
   // this call: dispatches arrive one at a time, so `released` is usually 1 and
   // sizing on it would give a single supervisor for twelve jobs. The cap comes
   // from the pool size, never from how the work happened to arrive.
-  const outstanding = activeJobs;
+  const outstanding = Math.max(activeJobs, unclaimed);
   const wanted =
     limit === null
       ? Math.min(SUPERVISOR_POOL_SIZE, outstanding)
       : Math.min(SUPERVISOR_POOL_SIZE, Math.ceil(outstanding / jobsPerSupervisor(limit)));
   const running = await countLiveSupervisors();
-  for (let i = running; i < wanted; i += 1) {
-    spawnDetachedSupervisor(runnerPath, configPath);
-  }
+  const slots: string[] = [];
+  for (let i = running; i < wanted; i += 1) slots.push(registerSupervisorSlot());
+  return slots;
 }
 
 /**
- * Delete a spawn log that recorded nothing.
+ * Delete a spawn log once it has nothing left to explain.
  *
- * Non-empty logs are kept — see the sweep below — because a supervisor that
- * died is the one that left a stale heartbeat, and its bootstrap output is the
- * only explanation of why. An EMPTY log explains nothing and is what a clean
- * exit leaves behind; they would otherwise accumulate indefinitely in a
- * directory the sweep reads on every drain.
+ * An EMPTY log explains nothing and is what a clean exit leaves behind; it
+ * goes once past the staleness threshold, so a live supervisor that has not
+ * yet written anything keeps its log.
  *
- * Only past the staleness threshold, so a live supervisor that has not yet
- * written anything keeps its log.
+ * A non-empty one is kept, because a supervisor that died is the one that left
+ * a stale heartbeat, and its bootstrap output is the only explanation of why —
+ * but only for as long as the jobs it could explain are kept. Past the job
+ * retention window there is no job left to explain, and without an age limit
+ * these accumulated forever in a directory every drain reads.
  */
-async function dropEmptySpawnLog(dir: string, entry: string): Promise<void> {
+async function pruneSpawnLog(dir: string, entry: string): Promise<void> {
   if (!entry.startsWith("spawn-") || !entry.endsWith(".log")) return;
   try {
     const info = await stat(path.join(dir, entry));
-    if (info.size > 0) return;
-    if (Date.now() - info.mtimeMs <= ORPHAN_THRESHOLD_MS) return;
+    const age = Date.now() - info.mtimeMs;
+    if (age <= ORPHAN_THRESHOLD_MS) return;
+    const retention = jobMaxAgeMs();
+    if (info.size > 0 && (retention === 0 || age <= retention)) return;
     await rm(path.join(dir, entry), { force: true });
   } catch {
     // Vanished mid-sweep, or another drain got there first. Either way it is
@@ -576,7 +596,7 @@ async function countLiveSupervisors(): Promise<number> {
     // same one that left a stale heartbeat. Treating every file as a heartbeat
     // would delete the diagnostic for the failure being cleaned up after.
     if (!entry.endsWith(".txt")) {
-      await dropEmptySpawnLog(dir, entry);
+      await pruneSpawnLog(dir, entry);
       continue;
     }
     try {
@@ -608,40 +628,64 @@ async function countLiveSupervisors(): Promise<number> {
 export const countLiveSupervisorsForTest = countLiveSupervisors;
 
 /**
- * Start one detached supervisor; it finds its own work.
+ * Register a supervisor slot: the heartbeat file the new process will adopt.
  *
- * Output goes to a log beside the heartbeats: a supervisor that dies during
- * bootstrap (bad config, missing module) is otherwise completely silent, and
- * the only symptom is jobs that never start.
+ * HERE, synchronously and under the drain lock, before anything is spawned.
+ * Booting a Node process takes a few hundred ms (and starting it through WMI on
+ * Windows over a second), so if the supervisor wrote its own first heartbeat a
+ * burst of dispatches would all count zero live supervisors and each spawn
+ * another — 12 concurrent jobs becoming 12 supervisors at 748 MB. The parent
+ * claiming the slot synchronously is what makes the cap real.
  */
-function spawnDetachedSupervisor(runnerPath: string, configPath: string | undefined): void {
+function registerSupervisorSlot(): string {
   const dir = path.join(jobsRoot(), ".supervisors");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
-
-  // Register the slot HERE, before spawning, and hand the id to the child.
-  // Booting a Node process takes a few hundred ms, so if the supervisor wrote
-  // its own first heartbeat a burst of dispatches would all count zero live
-  // supervisors and each spawn another — 12 concurrent jobs becoming 12
-  // supervisors at 748 MB. The parent claiming the slot synchronously is what
-  // makes the cap real.
   writeFileSync(path.join(dir, `${id}.txt`), timestamp(), { encoding: "utf8", mode: 0o600 });
+  return id;
+}
 
-  const logFd = openSync(path.join(dir, `spawn-${id}.log`), "a");
-  try {
-    const child = spawn(process.execPath, [runnerPath, "--supervisor", id], {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-      windowsHide: true,
-      env: {
-        ...process.env,
-        ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
-      },
-    });
-    child.unref();
-  } finally {
-    closeSync(logFd);
-  }
+/**
+ * Start the supervisor for a registered slot; it finds its own work.
+ *
+ * Through `launchDetached`, so it survives the session that started it even
+ * behind a launcher that kills its descendants (see detach.ts). Output goes to
+ * a log beside the heartbeats: a supervisor that dies during bootstrap (bad
+ * config, missing module) is otherwise completely silent, and the only symptom
+ * is jobs that never start.
+ *
+ * Never throws. A launch that fails gives the slot back — its heartbeat would
+ * otherwise count a supervisor that does not exist for 90 s — and says why in
+ * the log, which the next drain's top-up then retries.
+ */
+async function launchSupervisor(
+  id: string,
+  runnerPath: string,
+  configPath: string | undefined,
+): Promise<void> {
+  const dir = path.join(jobsRoot(), ".supervisors");
+  const logPath = path.join(dir, `spawn-${id}.log`);
+  const outcome = await launchDetached({
+    execPath: process.execPath,
+    args: [runnerPath, "--supervisor", id],
+    env: {
+      ...process.env,
+      ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
+    },
+    logPath,
+  });
+  if (outcome.ok) return;
+  await rm(path.join(dir, `${id}.txt`), { force: true }).catch(() => undefined);
+  await writeFile(logPath, `harness-dispatch: could not start a supervisor: ${outcome.error}
+`, {
+    encoding: "utf8",
+    flag: "a",
+    mode: 0o600,
+  }).catch(() => undefined);
+}
+
+async function spawnDetachedSupervisor(runnerPath: string, configPath: string | undefined): Promise<void> {
+  await launchSupervisor(registerSupervisorSlot(), runnerPath, configPath);
 }
 
 /**
