@@ -132,6 +132,18 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  // The same hole for an option that takes a value: parseArgs with strict:false
+  // reads `--service` given with no value as boolean `true`, which the
+  // `typeof === "string"` checks below drop — so `dispatch "x" --service` ran
+  // as ordinary routing, and `--clients` / `--host` / `--interval` were ignored
+  // with exit 0. `--config` has its own message further down.
+  for (const flag of ["interval", "port", "host", "http", "service", "safety", "task-type", "clients"]) {
+    const v = values[flag];
+    if (v !== undefined && (typeof v !== "string" || v === "")) {
+      throw new UsageError(`--${flag} needs a value, e.g. --${flag} <value>`);
+    }
+  }
+
   await initObservability();
 
   const [command, ...rest] = positionals;

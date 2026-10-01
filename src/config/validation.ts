@@ -143,6 +143,8 @@ export function warnUnknownRouteKeys(
   warnMistypedRouteValues(entry, label, warnings);
 }
 
+const ESCALATE_ON_VALUES: readonly string[] = ["execute", "plan", "review", "local"];
+
 /** Recognised keys whose value must be a number, and what they mean if lost. */
 const NUMERIC_ROUTE_KEYS = new Set([
   "tier",
@@ -257,6 +259,30 @@ export function warnMistypedRouteValues(
     if (value === null || value === undefined) continue;
     if (key === "instructions") {
       warnInstructions(value, label, warnings);
+      continue;
+    }
+    if (key === "escalate_on") {
+      // A list of task types. Anything else is dropped by the parser; `[]` is
+      // honoured ("never escalate"), so a typo here is not the same as `[]`
+      // and must say what happened instead of quietly meaning something else.
+      if (!Array.isArray(value)) {
+        warnings.push(
+          `${label}: escalate_on is ${describeValue(value)}, which is not a list — IGNORED, ` +
+            `and the default (plan, review) applies instead.`,
+        );
+      } else {
+        const bad = value.filter((v) => !ESCALATE_ON_VALUES.includes(v as string));
+        if (bad.length > 0) {
+          warnings.push(
+            `${label}: escalate_on has ${bad.map(describeValue).join(", ")}, which ` +
+              `${bad.length === 1 ? "is not a task type" : "are not task types"} ` +
+              `(${ESCALATE_ON_VALUES.join(", ")}) — IGNORED. ` +
+              (bad.length === value.length
+                ? `Nothing valid is left, so this route never escalates to its escalate_model.`
+                : `The valid ones still apply.`),
+          );
+        }
+      }
       continue;
     }
     if (key === "capabilities" && typeof value === "object" && !Array.isArray(value)) {

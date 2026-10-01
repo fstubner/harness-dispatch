@@ -39,6 +39,37 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`configure --force` no longer writes an API key into the file as plain text.**
+  A key given as the per-route shorthand (`codex_cli_api_key: ${VAR}`) was
+  written back as its resolved value; it is now written back as the `${VAR}`
+  reference, like every other key.
+
+- **`configure` no longer loses routes or settings on a rewrite.** A legacy
+  `services:` entry with no `harness:` (its own command and protocol) is written
+  back as a working generic route instead of one the loader rejects; `clis: []`
+  stays "no routes" instead of turning into a file that detects every installed
+  harness; `escalate_on: []` is kept, and is honoured as "never escalate"
+  instead of becoming `[plan, review]`. A list of mistyped task types in
+  `escalate_on` now warns.
+
+- **Config problems now say what they are.** A bare `-` in `clis:` or
+  `endpoints:` is reported as an empty entry instead of crashing with "Cannot
+  read properties of null"; a `clis:` entry missing only its `harness` no longer
+  claims the `name` is missing too; `version:` and a top-level `protocol:` (both
+  read by nothing) are reported like the other ignored top-level keys; a legacy
+  `services:` endpoint whose `${VAR}` key is unset is skipped instead of shown
+  as ready; `doctor` and `configure` no longer say a legacy config was
+  "auto-detected".
+
+- **`connect` no longer overwrites a client config created while it waited.** If
+  Claude Code or Cursor created its config file between `connect` planning and
+  writing (it asks first), the entry is now merged into that file with a backup
+  instead of replacing it.
+
+- **A flag that needs a value now says so.** `dispatch "…" --service` with no
+  value ran as ordinary routing, and `--clients`, `--host` and `--interval`
+  with no value were ignored; each is now a usage error.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

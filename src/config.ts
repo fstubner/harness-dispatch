@@ -196,6 +196,13 @@ function billingFields(raw: Record<string, unknown>): Partial<ServiceConfig> {
 }
 
 
+/**
+ * `escalate_on` as a list. Absent (or not a list) is the default; a list the
+ * user wrote is honoured as written, INCLUDING `[]` — "never escalate" is a
+ * real setting that falling back to the default would silently reverse. Items
+ * that are not task types are dropped, and warnMistypedRouteValues has already
+ * said so.
+ */
 function escalateOnFrom(raw: unknown): TaskType[] {
   if (!Array.isArray(raw)) return ["plan", "review"];
   const out: TaskType[] = [];
@@ -204,7 +211,7 @@ function escalateOnFrom(raw: unknown): TaskType[] {
       out.push(v);
     }
   }
-  return out.length > 0 ? out : ["plan", "review"];
+  return out;
 }
 
 
@@ -441,6 +448,22 @@ async function detectServices(
 }
 
 /**
+ * A list item that is a mapping. A bare `-` is YAML `null`, and `- foo` is a
+ * string; reading `.name` off either threw a raw TypeError that `status`
+ * printed as "Cannot read properties of null", naming neither file nor line.
+ */
+function isEntry(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function notAnEntry(block: string, index: number): string {
+  return (
+    `${block}[${index}]: is empty or not a mapping (a bare "-"?) — entry ignored. ` +
+    `Each ${block} item is a mapping with name: and the route's settings.`
+  );
+}
+
+/**
  * Explicit `clis:` entries: arbitrary `name`, required `harness` picking which
  * built-in defaults to start from.
  *
@@ -455,15 +478,20 @@ function addClis(
   apiKeys: ApiKeys,
   warnings: string[],
 ): void {
-  const clis = Array.isArray(raw.clis) ? (raw.clis as Record<string, unknown>[]) : [];
-  warnDuplicateRouteNames(clis.map((e) => str(e.name)), "clis", warnings);
+  const clis = Array.isArray(raw.clis) ? (raw.clis as unknown[]) : [];
+  warnDuplicateRouteNames(clis.map((e) => (isEntry(e) ? str(e.name) : undefined)), "clis", warnings);
   for (const [index, entry] of clis.entries()) {
+    if (!isEntry(entry)) {
+      warnings.push(notAnEntry("clis", index));
+      continue;
+    }
     const name = str(entry.name);
     const harness = str(entry.harness);
     if (!name || !harness) {
-      warnings.push(
-        `clis[${index}]: missing required "name" and/or "harness" — entry ignored.`,
-      );
+      const missing = [!name ? '"name"' : undefined, !harness ? '"harness"' : undefined]
+        .filter((v): v is string => v !== undefined)
+        .join(" and ");
+      warnings.push(`clis[${index}]: missing required ${missing} — entry ignored.`);
       continue;
     }
     warnUnknownRouteKeys(entry, `clis[${index}] "${name}"`, warnings);
@@ -635,6 +663,28 @@ function collectApiKeyRefs(parsed: Record<string, unknown>): Map<string, string>
       }
     }
   }
+  // The per-route shorthand (`codex_cli_api_key: ${VAR}`), which collectApiKeys
+  // reads. Left out here, `configure --force` found no reference to restore
+  // and wrote the RESOLVED secret into the file as a literal.
+  //
+  // Overrides the `api_keys:` block, as it does when the key is resolved; an
+  // inline `api_key:` on the route's own entry still wins over both.
+  const inline = new Set<string>();
+  for (const key of ["clis", "endpoints"] as const) {
+    const list = parsed[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry !== null && typeof entry === "object") {
+        const e = entry as Record<string, unknown>;
+        if (typeof e.name === "string" && typeof e.api_key === "string" && e.api_key !== "") {
+          inline.add(e.name);
+        }
+      }
+    }
+  }
+  for (const name of Object.values(AUTO_DETECT_NAME)) {
+    if (!inline.has(name)) note(name, parsed[`${name}_api_key`]);
+  }
   return refs;
 }
 
@@ -671,11 +721,13 @@ function addEndpoints(
   apiKeys: ApiKeys,
   warnings: string[] = [],
 ): void {
-  const endpoints = Array.isArray(raw.endpoints)
-    ? (raw.endpoints as Record<string, unknown>[])
-    : [];
-  warnDuplicateRouteNames(endpoints.map((e) => str(e.name)), "endpoints", warnings);
+  const endpoints = Array.isArray(raw.endpoints) ? (raw.endpoints as unknown[]) : [];
+  warnDuplicateRouteNames(endpoints.map((e) => (isEntry(e) ? str(e.name) : undefined)), "endpoints", warnings);
   for (const [index, ep] of endpoints.entries()) {
+    if (!isEntry(ep)) {
+      warnings.push(notAnEntry("endpoints", index));
+      continue;
+    }
     const name = str(ep.name);
     warnUnknownRouteKeys(ep, `endpoints[${index}] "${name ?? "?"}"`, warnings);
     const baseUrl = str(ep.base_url);
@@ -916,8 +968,14 @@ async function loadConfigInner(
     if (enumWarnings.length > 0) {
       legacyCfg.configWarnings = [...(legacyCfg.configWarnings ?? []), ...enumWarnings];
     }
+    // The same per-route mark the modern shapes get, or a legacy endpoint
+    // whose `${VAR}` key is unset reads as ready and fails its first call.
+    markUnsetApiKeys(legacyCfg.services, apiKeyRefs);
     const withRefs = {
       ...legacyCfg,
+      // `services:` is authoritative about routes, like a `clis:` list, so
+      // nothing was detected. Left unset it read as "auto-detected".
+      detectionRan: false,
       ...(envRefs.size > 0 ? { envRefs } : {}),
       ...(apiKeyRefs.size > 0 ? { apiKeyRefs } : {}),
       ...(fieldRefs.size > 0 ? { fieldRefs } : {}),
