@@ -276,6 +276,18 @@ build will do. On macOS and Linux the better route is `--sandbox enabled`,
 which constrains shell for real — untested here, so it is not shipped on by
 default.
 
+`antigravity_cli` declares the same floor, for the same reason: in headless
+mode every profile has to auto-approve tool requests, and its edit mode does
+that with nothing restricting the terminal. It serves `read_only` (`--mode plan
+--sandbox`) and `full_auto`, and the same override applies.
+
+Each profile is enforced by the harness itself, and the strength differs: Codex
+runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
+permission rules, and Antigravity's `full_auto` approves everything. A Claude
+Code delegate at `read_only` or `workspace_edit` gets only the file tools
+(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
+Claude Code login, user settings, hooks and `CLAUDE.md` files.
+
 ## CLI
 
 ```bash

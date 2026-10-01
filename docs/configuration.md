@@ -87,7 +87,7 @@ The full token reference:
 | --- | --- |
 | `{{prompt}}` | the prompt text (one token) — omitted entirely if `stdin: true` |
 | `{{model}}` | `[model.flag, value]` if a model is set, else nothing |
-| `{{safety}}` | `safety[requested profile]` — zero or more tokens |
+| `{{safety}}` | `safety[profile]` for the effective profile — the requested one, or the floor `effective_safety` sets — zero or more tokens |
 | `{{working_dir}}` | `[working_dir.flag, dir, ...working_dir.extra_args_when_set]` if set, else nothing |
 | `{{file_dirs}}` | `[file_dirs.flag, dir]` repeated once per included file's directory |
 | `{{native_args}}` | `endpoint_native_args[endpoint_provider]`, only under `endpoint_mode: harness_native_endpoint` |

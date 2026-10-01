@@ -537,6 +537,21 @@ pre-1.0, so minor versions can carry behaviour changes.
   with no safety argument at all. Such a route now reports `full_auto`, so a
   stricter request refuses it. No shipped route was affected.
 
+- **Claude Code delegates at `read_only` and `workspace_edit` get only the file
+  tools, and no MCP servers.** The shipped flags were `--allowedTools`, which
+  only adds approvals on top of your own settings, so Bash stayed available
+  wherever your allow rules permitted it, and every MCP server you had
+  registered (harness-dispatch included) loaded into the delegate. The profiles
+  now pass `--tools` (Read, Grep, Glob, plus Edit and Write for
+  `workspace_edit`) and `--strict-mcp-config`. `full_auto` is unchanged.
+
+- **`antigravity_cli` no longer serves `workspace_edit`.** Its edit-mode flags
+  auto-approve every tool request with nothing restricting the terminal, so
+  "edit files, no arbitrary shell" was not what it ran. It now declares a
+  `full_auto` floor for `workspace_edit`, as `cursor_cli` does, and is skipped
+  for that profile unless you override the floor; `read_only` and `full_auto`
+  are unchanged.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security
