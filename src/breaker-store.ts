@@ -220,6 +220,29 @@ export class BreakerStore {
     return out;
   }
 
+  /** Every route with a record on disk, readable or not (as of a fresh read). */
+  savedRoutes(): string[] {
+    return [...new Set([...Object.keys(this.loadAll()), ...this.unreadable])].filter(
+      (name) => name !== LEGACY_BLOB_ROUTE,
+    );
+  }
+
+  /** Delete the record of every route not in `keep`; returns the names removed. */
+  prune(keep: Iterable<string>): string[] {
+    const wanted = new Set(keep);
+    const removed: string[] = [];
+    for (const name of this.savedRoutes()) {
+      if (wanted.has(name)) continue;
+      try {
+        rmSync(path.join(this.stateDir, fileNameFor(name)), { force: true });
+        removed.push(name);
+      } catch {
+        // Left in place; reported by the next savedRoutes().
+      }
+    }
+    return removed;
+  }
+
   /** Routes whose record was present but unparseable at the last loadAll(). */
   unreadableRoutes(): string[] {
     return this.unreadable.slice();

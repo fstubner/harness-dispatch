@@ -504,6 +504,11 @@ export interface RouterConfig {
    * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.
    */
   telemetry?: { enabled: boolean };
+  /**
+   * Absolute path of the config file this was loaded from; absent when none was
+   * (auto-detect). Only recorded in the dispatch log — see DispatchLogContext.
+   */
+  configPath?: string;
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
   /**

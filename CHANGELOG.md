@@ -24,6 +24,28 @@ pre-1.0, so minor versions can carry behaviour changes.
   written once instead of in every client's CLAUDE.md or AGENTS.md. Capped at
   1,000 characters each; secrets the config holds are scrubbed from it.
 
+- **`status` and `usage` show how each route has done in the last 7 days.** Next
+  to the lifetime counts, each route that was tried shows `last 7d: 15/75
+  succeeded (20%), 43 rate-limited`, read from the dispatch log. A route that
+  fails most of the time this week no longer looks healthy because it did well
+  over its lifetime. The lifetime counts are now dated `since` the day they began
+  (counts written before this carry no date, and are not given one).
+
+- **`harness-dispatch breaker reset <route>` closes a tripped circuit breaker.**
+  OPERATIONS.md said a restart clears one; it does not (breaker state is saved
+  per route so a restart cannot forget a cooldown), which left deleting a file by
+  hand as the only way out. The runbook is corrected.
+
+- **Each dispatch-log row records which config file was loaded** (`config`), so
+  a demo run against a throwaway config can be told from real use. `doctor` now
+  lists saved breaker and usage state for routes the config does not name, and
+  `doctor --prune-state` deletes it; nothing is deleted without the flag, because
+  the state directory is shared by every config on the machine.
+
+- **`mcp` is a supported subcommand,** documented and in `--help`: the plugin
+  launcher and existing client entries run it, and `mcp --http <port>` is
+  `serve --port <port>`.
+
 ### Removed
 
 - **The Arena-ELO leaderboard is gone.** It was off by default, and every logged

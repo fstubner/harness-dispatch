@@ -12,6 +12,7 @@ import { VERSION } from "./version.js";
 import { startMcpServer } from "./mcp/server.js";
 import { initObservability, shutdownObservability } from "./observability/index.js";
 import { SAFETY_PROFILES, TASK_TYPES, UsageError, enumFlag, parsePositiveInt, wantsJsonOutput } from "./cli/common.js";
+import { cmdBreaker } from "./cli/breaker.js";
 import { cmdConfigure } from "./cli/configure.js";
 import { cmdConnect } from "./cli/connect.js";
 import { cmdDispatch } from "./cli/dispatch.js";
@@ -32,10 +33,13 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  harness-dispatch doctor [--json]         Check install, config, auth, and routes.",
       "  harness-dispatch doctor --live           Run one routed probe when billing policy allows it.",
       "  harness-dispatch doctor --live --allow-paid  Run a live probe through paid/unknown routes.",
+      "  harness-dispatch doctor --prune-state    Also delete saved breaker/usage state for routes this config does not name.",
       "  harness-dispatch status [--json]         Show route, quota, and breaker state.",
       "  harness-dispatch status --watch          Re-render status every --interval ms.",
       "  harness-dispatch usage [--json]          Show per-route call counts, quota, and billing kind.",
+      "  harness-dispatch breaker reset <route>   Close a route's circuit breaker now (it persists across restarts).",
       "  harness-dispatch serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
+      "  harness-dispatch mcp [--http <port>]     The same as no command (stdio MCP); with --http, as serve.",
       '  harness-dispatch dispatch "<prompt>"     Route one task and print the result.',
       "  harness-dispatch auth show               Print the HTTP bearer token.",
       "  harness-dispatch auth rotate             Rotate the HTTP bearer token.",
@@ -79,6 +83,7 @@ export async function main(argv: string[]): Promise<number> {
       json: { type: "boolean" },
       live: { type: "boolean" },
       "allow-paid": { type: "boolean" },
+      "prune-state": { type: "boolean" },
       watch: { type: "boolean" },
       interval: { type: "string" },
       port: { type: "string" },
@@ -106,7 +111,7 @@ export async function main(argv: string[]): Promise<number> {
   // automation as a user, and a wrong exit code is the one thing automation
   // cannot recover from.
   const knownFlags = new Set([
-    "help", "version", "config", "json", "live", "allow-paid", "watch", "interval",
+    "help", "version", "config", "json", "live", "allow-paid", "prune-state", "watch", "interval",
     "port", "host", "print", "yes", "force", "http",
     "service", "safety", "task-type", "no-fallback",
     "clients", "no-clients", "remove", "dev",
@@ -198,6 +203,7 @@ export async function main(argv: string[]): Promise<number> {
         json: Boolean(values.json),
         live: Boolean(values.live),
         allowPaid: Boolean(values["allow-paid"]),
+        pruneState: Boolean(values["prune-state"]),
       });
     case "status":
     case "dashboard":
@@ -213,6 +219,8 @@ export async function main(argv: string[]): Promise<number> {
       return cmdServe(configPath, serveOpts(values));
     case "auth":
       return cmdAuth(rest[0]);
+    case "breaker":
+      return cmdBreaker(configPath, rest[0], rest[1]);
     // `route` kept as an alias for `dispatch`, which matches the MCP tool that
     // does the same thing. Same pattern as status/dashboard/list-services.
     case "dispatch":
@@ -227,6 +235,8 @@ export async function main(argv: string[]): Promise<number> {
         json: Boolean(values.json),
       });
     }
+    // Supported, not a hidden alias: the plugin launcher and existing client
+    // entries run `mcp`, and `connect` entries may too. See docs/interfaces.md.
     case "mcp":
       if (values.http !== undefined) {
         return cmdServe(configPath, serveOpts({ port: values.http, host: values.host }));

@@ -1302,7 +1302,14 @@ export class Router {
     decision?: RoutingDecision | null,
     logContext?: DispatchLogContext,
   ): void {
-    logDispatch(service, result, decision, logContext);
+    logDispatch(
+      service,
+      result,
+      decision,
+      this.config.configPath !== undefined
+        ? { ...logContext, configPath: this.config.configPath }
+        : logContext,
+    );
 
     // A rejected INPUT says nothing about the route.
     //

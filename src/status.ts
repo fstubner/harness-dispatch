@@ -15,6 +15,7 @@ import type {
 import { buildRouteBilling } from "./billing.js";
 import { effectiveSafetyProfile, requestedSafetyProfile } from "./safety.js";
 import { evaluateRoutePolicy } from "./route-policy.js";
+import { RECENT_DAYS, recentOutcomes } from "./dispatch-log.js";
 import { workspacePolicyFor } from "./workspaces.js";
 
 // ---------------------------------------------------------------------------
@@ -225,8 +226,18 @@ export interface RouteStatus {
     localRateLimitedCount?: number;
     localInputTokens?: number;
     localOutputTokens?: number;
+    /** When the counters above began, when known; they are lifetime totals. */
+    localSince?: string;
     source?: string;
   };
+  /**
+   * How the route has done over the last RECENT_DAYS days, from the dispatch
+   * log, when it was tried at all. Unlike the lifetime counters above, this is
+   * what a route is doing NOW: one that succeeds a fifth of the time this week
+   * looks fine at 80% for life. Attempts, not dispatches — a fallback is its
+   * own attempt.
+   */
+  recent?: RecentSummary;
   breaker: {
     tripped: boolean;
     failures: number;
@@ -247,6 +258,16 @@ export interface RouteStatus {
     baseUrl?: string;
     wireProtocol?: NonNullable<ServiceConfig["wireProtocol"]>;
   };
+}
+
+export interface RecentSummary {
+  days: number;
+  attempts: number;
+  successes: number;
+  /** Declined for rate limiting; counted among the attempts that did not succeed. */
+  rateLimited: number;
+  /** successes / attempts, rounded to a whole percent. */
+  successRatePercent: number;
 }
 
 export interface HarnessDispatchStatus {
@@ -290,6 +311,7 @@ export async function buildStatus(
   const breakerUnreadable = new Set(router.breakerStateUnreadable());
   const routes: RouteStatus[] = [];
   const skippedRoutes: RouteSkip[] = [];
+  const recent = recentOutcomes();
 
   for (const [id, svc] of Object.entries(config.services)) {
     const dispatcher = dispatchers[id];
@@ -367,6 +389,17 @@ export async function buildStatus(
     if (q?.localInputTokens !== undefined) route.quota.localInputTokens = q.localInputTokens;
     if (q?.localOutputTokens !== undefined) route.quota.localOutputTokens = q.localOutputTokens;
     if (q?.source !== undefined) route.quota.source = q.source;
+    if (q?.localSince !== undefined) route.quota.localSince = q.localSince;
+    const r = recent[id];
+    if (r !== undefined && r.attempts > 0) {
+      route.recent = {
+        days: RECENT_DAYS,
+        attempts: r.attempts,
+        successes: r.successes,
+        rateLimited: r.rateLimited,
+        successRatePercent: Math.round((r.successes / r.attempts) * 100),
+      };
+    }
     routes.push(route);
   }
 
@@ -449,6 +482,10 @@ export interface RouteUsage {
   billingKind: RouteBilling["kind"];
   paidUsagePossible: boolean;
   callCount: number;
+  /** When the counts below began, when known; they are lifetime totals. */
+  countersSince?: string;
+  /** The route's recent record from the dispatch log; see RouteStatus.recent. */
+  recent?: RecentSummary;
   successCount: number;
   failureCount: number;
   /** Calls declined for rate limiting — busy, not broken. Kept out of failureCount. */
@@ -520,6 +557,8 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
         breakerFailures: route.breaker.failures,
       };
       if (route.skipped !== undefined) usage.skipped = route.skipped;
+      if (route.quota.localSince !== undefined) usage.countersSince = route.quota.localSince;
+      if (route.recent !== undefined) usage.recent = route.recent;
       if (route.model !== undefined) usage.model = route.model;
       if (route.models !== undefined) usage.models = route.models;
       const hint = modelDiscoveryHint(route);
@@ -595,9 +634,11 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
       `${mark} ${route.id}${route.model ? ` (${route.model})` : ""} — calls=${route.callCount} ` +
         `success=${route.successCount} failed=${route.failureCount}` +
         (route.rateLimitedCount ? ` rate_limited=${route.rateLimitedCount}` : "") +
+        (route.countersSince ? ` since=${route.countersSince.slice(0, 10)}` : "") +
         ` quota=${quota} ` +
         `billing=${route.billingKind} breaker=${route.breakerTripped ? "open" : "closed"}`,
     );
+    if (route.recent) lines.push(`  ${renderRecent(route.recent)}`);
     // Omitted when both are zero: a harness that reports nothing would
     // otherwise print "tokens: in=0 out=0" and read as "nothing was spent",
     // which is a different claim.
@@ -609,6 +650,13 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
     if (route.instructions) lines.push(`  instructions: ${route.instructions}`);
   }
   return lines.join("\n");
+}
+
+function renderRecent(r: RecentSummary): string {
+  return (
+    `last ${r.days}d: ${r.successes}/${r.attempts} succeeded (${r.successRatePercent}%)` +
+    (r.rateLimited > 0 ? `, ${r.rateLimited} rate-limited` : "")
+  );
 }
 
 function fmtTokens(n: number | undefined): string {
@@ -651,8 +699,10 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
         // route is unreliable.
         (route.quota.localRateLimitedCount
           ? ` rate_limited=${route.quota.localRateLimitedCount}`
-          : ""),
+          : "") +
+        (route.quota.localSince ? ` (since ${route.quota.localSince.slice(0, 10)})` : ""),
     );
+    if (route.recent) lines.push(`  ${renderRecent(route.recent)}`);
     lines.push(
       `  context=${fmtTokens(route.maxInputTokens)} output=${fmtTokens(route.maxOutputTokens)}`,
     );

@@ -7,6 +7,7 @@
  */
 
 import { existsSync, promises as fs } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { userConfigPath } from "./state-dir.js";
 import { registerSecretValue, setActiveSecrets } from "./redaction.js";
 import yaml from "js-yaml";
@@ -877,7 +878,8 @@ export async function loadConfig(
   path?: string,
   opts: LoadConfigOptions = {},
 ): Promise<RouterConfig> {
-  const config = await loadConfigInner(path, opts);
+  const loaded = await loadConfigInner(path, opts);
+  const config = path ? { ...loaded, configPath: resolvePath(path) } : loaded;
   const pathWarnings: string[] = [];
   warnCredentialInUrlPath(config, pathWarnings);
   const withWarnings =
