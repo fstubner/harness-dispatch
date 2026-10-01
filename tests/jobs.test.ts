@@ -328,7 +328,10 @@ describe("the partial log is redacted across chunk boundaries", () => {
             yield {
               event: {
                 type: "completion",
-                result: { output: "done", service: "keyed", success: true },
+                // A failure, as an auth error is: a successful job's partial
+                // log is deleted once result.json holds the answer, and a
+                // failed one keeps it, which is the copy this test reads.
+                result: { output: "", service: "keyed", success: false, error: "auth error" },
               },
             };
           },
