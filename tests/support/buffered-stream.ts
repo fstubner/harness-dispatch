@@ -87,6 +87,7 @@ export function streamFromBuffered(run: unknown) {
         kind: "end",
         exitCode: res.exitCode,
         timedOut: res.timedOut,
+        idleTimedOut: false,
         durationMs: res.durationMs,
         totalStdoutBytes: Buffer.byteLength(res.stdout, "utf8"),
         totalStderrBytes: Buffer.byteLength(res.stderr, "utf8"),

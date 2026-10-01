@@ -1,15 +1,16 @@
 /**
  * Streaming subprocess runner.
  *
- * Spawns a child with a timeout, an output cap and tree-kill, and emits its
- * stdout and stderr chunks as the child writes them via an `AsyncIterable`.
- * A bounded internal queue protects against runaway processes flooding memory
- * (exceeding the bound kills the child).
+ * Spawns a child with a timeout, an optional idle (no-output) timeout, an
+ * output cap and tree-kill, and emits its stdout and stderr chunks as the
+ * child writes them via an `AsyncIterable`.
  *
- * There is NO backpressure: nothing pauses the child's stdout, so a slow
- * consumer does not slow the producer — the queue grows instead, and past
- * `maxBufferedChunks` the child is killed and the iterator REJECTS, which in
- * the job runner marks a healthy run failed and discards its result.
+ * Backpressure: once `maxBufferedChunks` chunks are waiting for the consumer,
+ * the child's pipes are paused, and they resume when the consumer has taken
+ * half of them. A burst therefore slows the child (its writes block on a full
+ * pipe) instead of growing memory. This used to kill the child and reject the
+ * iterator instead, which failed a healthy run that merely printed 60,000
+ * lines faster than the job runner wrote them to disk.
  *
  * The iterator yields `{ stream, chunk }` tuples until the child exits,
  * whereupon it yields a single terminal `{ kind: "end", exitCode, timedOut,
@@ -34,6 +35,8 @@ export interface SubprocessEnd {
   kind: "end";
   exitCode: number;
   timedOut: boolean;
+  /** Stopped because it wrote nothing for `idleTimeoutMs`. Never set together with `timedOut`. */
+  idleTimedOut: boolean;
   durationMs: number;
   totalStdoutBytes: number;
   totalStderrBytes: number;
@@ -58,10 +61,22 @@ export interface StreamSubprocessOpts {
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Stop the child once it has written nothing, on either stream, for this
+   * long. Unset means no idle limit, only the wall clock.
+   *
+   * The wall clock alone cannot tell a hung child from a working one: a run
+   * that went silent held its concurrency slot until the 60-minute job
+   * ceiling, and the job's heartbeat (written by the runner, not the child)
+   * kept saying it was alive. Only meaningful for a harness that prints as it
+   * works; one that prints only its final answer is silent by design.
+   */
+  idleTimeoutMs?: number;
   maxOutputBytes?: number;
   /**
-   * Maximum number of chunks to buffer internally before the child is
-   * considered runaway and killed. Defaults to 1000.
+   * Chunks that may wait for the consumer before the child's pipes are
+   * paused. Defaults to 1000. See the header: this is backpressure, not a
+   * kill.
    */
   maxBufferedChunks?: number;
   /**
@@ -115,8 +130,11 @@ export function streamSubprocess(
   let stderrBytes = 0;
   let truncated = false;
   let timedOut = false;
+  let idleTimedOut = false;
   let settled = false;
   let exited = false;
+  /** The child's pipes are paused because the consumer is behind. */
+  let paused = false;
 
   function push(evt: SubprocessStreamEvent): void {
     if (done) return;
@@ -125,14 +143,22 @@ export function streamSubprocess(
       waiter.resolve({ value: evt, done: false });
     } else {
       queue.push(evt);
-      if (queue.length > maxBufferedChunks) {
-        errored = new Error(
-          `stream-subprocess: internal queue exceeded ${maxBufferedChunks} chunks — consumer not draining`,
-        );
-        truncated = true;
-        terminateChild("SIGTERM");
+      if (queue.length >= maxBufferedChunks && !paused) {
+        paused = true;
+        child?.stdout?.pause();
+        child?.stderr?.pause();
       }
     }
+  }
+
+  /** Resume the pipes once the consumer has taken half of what was waiting. */
+  function maybeResume(): void {
+    if (!paused || queue.length > maxBufferedChunks / 2) return;
+    paused = false;
+    child?.stdout?.resume();
+    child?.stderr?.resume();
+    // Time spent paused was the consumer's, not the child's silence.
+    idleTimer?.refresh();
   }
 
   // One decoder per stream, held across chunks.
@@ -218,6 +244,25 @@ export function streamSubprocess(
   }, timeoutMs);
   timer.unref();
 
+  // Re-armed by every chunk (refresh() restarts the countdown), so it fires
+  // only after `idleTimeoutMs` with nothing on either stream. Armed from the
+  // start: a child that never prints at all is the case it exists for.
+  const idleTimeoutMs = opts.idleTimeoutMs;
+  const idleTimer =
+    idleTimeoutMs !== undefined && idleTimeoutMs > 0
+      ? setTimeout(function onIdle() {
+          if (settled || exited) return;
+          // Paused by backpressure: the silence is ours, not the child's.
+          if (paused) {
+            idleTimer?.refresh();
+            return;
+          }
+          idleTimedOut = true;
+          terminateChild("SIGTERM");
+        }, idleTimeoutMs)
+      : undefined;
+  idleTimer?.unref();
+
   if (opts.signal) {
     if (opts.signal.aborted) terminateChild("SIGTERM");
     else opts.signal.addEventListener("abort", () => terminateChild("SIGTERM"), { once: true });
@@ -225,6 +270,7 @@ export function streamSubprocess(
 
   child.stdout?.on("data", (buf: Buffer) => {
     if (truncated) return;
+    idleTimer?.refresh();
     if (stdoutBytes + buf.length > maxOutputBytes) {
       const remaining = Math.max(0, maxOutputBytes - stdoutBytes);
       if (remaining > 0) {
@@ -241,6 +287,7 @@ export function streamSubprocess(
 
   child.stderr?.on("data", (buf: Buffer) => {
     if (truncated) return;
+    idleTimer?.refresh();
     if (stderrBytes + buf.length > maxOutputBytes) {
       const remaining = Math.max(0, maxOutputBytes - stderrBytes);
       if (remaining > 0) {
@@ -259,6 +306,7 @@ export function streamSubprocess(
     if (settled) return;
     settled = true;
     clearTimeout(timer);
+    clearTimeout(idleTimer);
     errored = err;
     finish();
   });
@@ -270,24 +318,35 @@ export function streamSubprocess(
   // as timed out. So once the child has exited, give its last output a moment
   // to arrive, then close the pipes from this side; `close` follows with the
   // child's own exit code.
+  //
+  // Not while paused by backpressure: the output still sitting in the pipe is
+  // the child's real output, waiting only for the consumer, and destroying
+  // the pipe would drop it. Checked again after another drain window.
   child.on("exit", () => {
     exited = true;
-    setTimeout(() => {
+    const closePipes = (): void => {
       if (settled) return;
+      if (paused) {
+        setTimeout(closePipes, exitDrainMs).unref();
+        return;
+      }
       child?.stdout?.destroy();
       child?.stderr?.destroy();
-    }, exitDrainMs).unref();
+    };
+    setTimeout(closePipes, exitDrainMs).unref();
   });
 
   child.on("close", (code, signal) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
+    clearTimeout(idleTimer);
     const exitCode = code ?? (signal ? 128 : -1);
     push({
       kind: "end",
       exitCode,
       timedOut,
+      idleTimedOut,
       durationMs: Date.now() - start,
       totalStdoutBytes: stdoutBytes,
       totalStderrBytes: stderrBytes,
@@ -304,6 +363,7 @@ export function streamSubprocess(
   function nextEvent(): Promise<IteratorResult<SubprocessStreamEvent>> {
     if (queue.length > 0) {
       const evt = queue.shift()!;
+      maybeResume();
       return Promise.resolve({ value: evt, done: false });
     }
     if (done) {
