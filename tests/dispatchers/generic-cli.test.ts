@@ -1512,4 +1512,22 @@ describe("how a CLI route fails (audit 5, order B)", () => {
     expect(res.retryAfter).toBe(30 * 60);
     expect(res.rateLimited).toBeUndefined();
   });
+
+  it("tells the agent what to do when the account cannot use the model it named", async () => {
+    // Verbatim from two real cursor_cli jobs on 2026-10-01.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stderr:
+          "ActionRequiredError: Named models unavailable Free plans can only use Auto. Switch to Auto or upgrade plans to continue.",
+        exitCode: 1,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
+    const res = await d.dispatch("go", [], "/tmp", { modelOverride: "claude-sonnet-5-thinking-high" });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("Named models unavailable");
+    expect(res.error).toMatch(/Retry without hints\.model/);
+    expect(res.error).toMatch(/retry_job with service set to another route/);
+  });
 });

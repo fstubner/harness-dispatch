@@ -454,6 +454,24 @@ function commandLineLength(command: string, args: string[]): number {
   return cmdWrapperOverhead() + parts.join(" ").length;
 }
 
+/**
+ * A harness refusing the MODEL it was asked for says what is wrong and not
+ * what to do: "ActionRequiredError: Named models unavailable Free plans can
+ * only use Auto" (Cursor; two real jobs on 2026-10-01). The agent that
+ * chose the model needs the way out, so it is appended.
+ */
+const MODEL_REFUSAL_RE = /named models unavailable/i;
+
+function withNextStep(detail: string): string {
+  if (!MODEL_REFUSAL_RE.test(detail)) return detail;
+  return (
+    `${detail}\n\nNext step: this account cannot use the model that was asked for. Retry ` +
+    `without hints.model so the route runs its own default (Cursor's is auto), or use ` +
+    `retry_job with service set to another route. The route's model_hint, shown by the ` +
+    `usage tool, says where its usable models are listed.`
+  );
+}
+
 /** Walk a nested object by dotted path, e.g. "message.content". */
 function getPath(value: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, key) => {
@@ -1201,12 +1219,13 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // envFailure leads: it explains WHY whatever else is here is untrustworthy,
     // and the delegate's own last message ("Unable to read file.") is a symptom
     // that reads like a normal answer on its own.
-    const errorDetail =
+    const errorDetail = withNextStep(
       envFailure ??
-      structuredError ??
-      parsedErrorDetail ??
-      streamedNothing ??
-      (rawErrorFallback || `Exit code ${exitCode}`);
+        structuredError ??
+        parsedErrorDetail ??
+        streamedNothing ??
+        (rawErrorFallback || `Exit code ${exitCode}`),
+    );
     // Scan BOTH streams, not just whichever one errorDetail resolved to: a 429
     // on the stream that lost the errorDetail race would otherwise go
     // undetected — for jsonl_stream, a rate limit on stderr while stdout
