@@ -35,6 +35,11 @@ const SERVER_INSTRUCTIONS =
   "(the caller's project root — it is NOT inferred) and hints.taskType " +
   "(execute | plan | review | local) on every " +
   "call; omitting either degrades routing or runs the task in the wrong directory. " +
+  "Also set hints.model on every dispatch, chosen for the task — a cheap model for " +
+  "mechanical work, the strongest only for hard judgment — rather than leaving each " +
+  "route on its default. A model name belongs to one harness: name that route with " +
+  "`service` as well, because without it the first route picked is sent the name " +
+  "as-is even when it does not declare it. " +
   "Check the `usage` tool before passing an unfamiliar model or route name — " +
   "semantics differ per field: hints.model is forwarded to the picked harness as-is " +
   "UNLESS it names a configured route, in which case it steers routing only and the " +
