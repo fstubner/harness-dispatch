@@ -681,6 +681,12 @@ pre-1.0, so minor versions can carry behaviour changes.
   named route cannot run, routing falls back as before — `service` is still how
   you force one route with no fallback.
 
+- **`shared_locked` held on one spelling of a path, not the directory.** The
+  lock was keyed on the path as written, so a symlink, junction or
+  differently-cased spelling of the same project took a second lock and two
+  agents edited one tree. The key is now the real path, case-folded on
+  Windows and macOS.
+
 ### Changed
 
 - **A route that has failed every call it has ever been given is no longer
@@ -705,6 +711,26 @@ pre-1.0, so minor versions can carry behaviour changes.
   answer the question a routing tool exists to answer. A route that declares no
   model says so in words rather than printing an empty value, and the value is
   delimited because the reason that follows it is parenthesised.
+
+- **The install is smaller: tracing uses only the trace packages.**
+  `@opentelemetry/sdk-node` brought the gRPC, Prometheus, Zipkin, metrics and
+  logs exporters along, none of which harness-dispatch loads. A fresh install
+  of the packed tarball goes from 188 packages and 64.2 MB to 133 packages and
+  46.6 MB, and the `@grpc/grpc-js` advisory path is gone. Tracing is unchanged:
+  still off unless you opt in, `env,host` resource detectors (no command line),
+  http and fs instrumentation, spans flushed on exit.
+
+- **The tests and release path check more.** CI installs the packed tarball
+  into a scratch prefix and runs it (`--version`, `doctor`, an MCP handshake)
+  on Linux, macOS and Windows; the publish job ships that verified file, needs
+  a changelog section and a tag on `main`, and opens a draft GitHub release. A
+  weekly job installs without the lockfile, runs the checks and audits what
+  ships. `npm run lint` (promise misuse only) is part of `npm run check`.
+  `npm run build` builds beside `dist/` and swaps it in, so a running server
+  never loses its files; every way of running the tests builds first if
+  `dist/` is missing or stale instead of silently skipping the tests that need
+  it. `@types/node` is pinned to the supported floor (22), and `fast-uri` and
+  `ip-address` are bumped so `npm audit` is clean.
 
 ## [0.11.0] — 2026-09-11
 

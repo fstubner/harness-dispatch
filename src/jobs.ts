@@ -9,7 +9,6 @@ export { executeJobDir, resolveRunnerPath, runJob } from "./jobs/run.js";
 export {
   activeCapacity,
   claimJobDir,
-  countLiveSupervisorsForTest,
   drainSlotQueue,
   orphanStrandedSlotQueue,
   resourceWeightFor,

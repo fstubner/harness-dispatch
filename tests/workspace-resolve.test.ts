@@ -33,6 +33,11 @@ import {
 import { eolDigest } from "../src/workspaces.js";
 import type { WorkspaceRun } from "../src/types.js";
 
+// Real git and real detached processes: individual tests take 10 to 40 s under
+// load, so the 15 s global timeout turned a busy machine into a failing suite.
+// Raised for this file only; the rest of the suite keeps the tight limit.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+
 const execFile = promisify(execFileCb);
 const git = (args: string[], cwd: string) => execFile("git", args, { cwd, windowsHide: true });
 

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, linkSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { linkSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -32,7 +32,7 @@ async function expectHelpVia(link: string): Promise<void> {
 }
 
 describe("the built command runs when invoked through a link (as npm installs it)", () => {
-  it.skipIf(!existsSync(bin))("hardlink named without .js, beside its imports", async () => {
+  it("hardlink named without .js, beside its imports", async () => {
     // Must live in dist/ itself: a hardlink is the file, so its relative
     // imports resolve from wherever the link sits.
     const link = path.join(dist, `harness-dispatch-entrypoint-${process.pid}`);
@@ -41,7 +41,7 @@ describe("the built command runs when invoked through a link (as npm installs it
     await expectHelpVia(link);
   });
 
-  it.skipIf(!existsSync(bin) || process.platform === "win32")(
+  it.skipIf(process.platform === "win32")(
     "symlink from another directory, the npm bin shape",
     async () => {
       const dir = mkdtempSync(path.join(tmpdir(), "hd-entrypoint-"));
@@ -61,7 +61,7 @@ describe("--json is a promise about the shape of the output, including on failur
    * across three releases because it reads as cosmetic. It is not: the whole
    * point of the flag is that a program, not a person, is reading.
    */
-  it.skipIf(!existsSync(bin))("reports a bad --config as JSON when --json is given", async () => {
+  it("reports a bad --config as JSON when --json is given", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "hd-json-err-"));
     cleanup.push(dir);
     // A directory, which is a real mistake people make and cannot be a config.
@@ -74,7 +74,7 @@ describe("--json is a promise about the shape of the output, including on failur
     expect(parsed.error).toContain("is a directory");
   });
 
-  it.skipIf(!existsSync(bin))("still reports it as a plain line without --json", async () => {
+  it("still reports it as a plain line without --json", async () => {
     // The default must not become JSON for a person reading a terminal.
     const dir = mkdtempSync(path.join(tmpdir(), "hd-txt-err-"));
     cleanup.push(dir);
@@ -99,7 +99,7 @@ describe("--json is a promise about the shape of the output, including on failur
   ];
 
   for (const [label, args, expected] of BYPASSED) {
-    it.skipIf(!existsSync(bin))(`${label} reports as JSON`, async () => {
+    it(`${label} reports as JSON`, async () => {
       const err = await run(process.execPath, [bin, ...args]).catch(
         (e: { stderr?: string; stdout?: string }) => e,
       );
@@ -111,7 +111,7 @@ describe("--json is a promise about the shape of the output, including on failur
     });
   }
 
-  it.skipIf(!existsSync(bin))("still prints the usage block for a human", async () => {
+  it("still prints the usage block for a human", async () => {
     // Losing the help for an unknown command would be a worse product than
     // the bug being fixed; it moves to stderr, it does not disappear.
     const err = await run(process.execPath, [bin, "frobnicate"]).catch(
@@ -125,7 +125,7 @@ describe("--json is a promise about the shape of the output, including on failur
 describe("status --json --watch", () => {
   // It printed pretty-printed documents back to back, which parse neither as
   // one JSON value nor line by line. Found in an audit.
-  it.skipIf(!existsSync(bin))("prints one JSON document per line", async () => {
+  it("prints one JSON document per line", async () => {
     const { spawn } = await import("node:child_process");
     const { writeFileSync } = await import("node:fs");
     const dir = mkdtempSync(path.join(tmpdir(), "hd-watch-"));
@@ -157,7 +157,7 @@ describe("telemetry and the prompt", () => {
   // SDK's default process detector exports argv as `process.command_args`
   // on every span. Measured: a canary prompt reached the collector. Found in
   // an audit.
-  it.skipIf(!existsSync(bin))("exports spans without the prompt in them", async () => {
+  it("exports spans without the prompt in them", async () => {
     const { spawn } = await import("node:child_process");
     const { writeFileSync } = await import("node:fs");
     const { createServer } = await import("node:http");

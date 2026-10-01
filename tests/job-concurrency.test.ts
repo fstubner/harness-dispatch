@@ -14,7 +14,6 @@
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,12 +21,10 @@ import { getAsyncJob, startAsyncJobTracked, type JobDeps } from "../src/jobs.js"
 import { loadConfig } from "../src/config.js";
 import type { RuntimeHolder } from "../src/mcp/config-hot-reload.js";
 
-const RUNNER = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "dist",
-  "job-runner.js",
-);
+// Real git and real detached processes: individual tests take 10 to 40 s under
+// load, so the 15 s global timeout turned a busy machine into a failing suite.
+// Raised for this file only; the rest of the suite keeps the tight limit.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 let tmpDir: string;
 let jobsDir: string;
@@ -149,7 +146,7 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 3 });
 }, 60_000);
 
-describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
+describe("detached run concurrency bound", () => {
   it("holds a dispatch past the limit in slotQueued instead of spawning a runner", async () => {
     configPath = await writeConfig(1, 3_000);
     const d = await deps();
@@ -290,7 +287,7 @@ describe.skipIf(!existsSync(RUNNER))("detached run concurrency bound", () => {
   }, 60_000);
 });
 
-describe.skipIf(!existsSync(RUNNER))("a supervisor picks up config edits before claiming work", () => {
+describe("a supervisor picks up config edits before claiming work", () => {
   it("stops running a route that has been removed from the config", async () => {
     // A pooled supervisor OUTLIVES the server that spawned it, by design. It
     // also outlived the server's CONFIG: restart with a route removed,
@@ -337,19 +334,6 @@ describe.skipIf(!existsSync(RUNNER))("a supervisor picks up config edits before 
   }, 90_000);
 });
 
-describe("concurrency bound — runner not built", () => {
-  it("is skipped when dist/job-runner.js is absent, and says so", () => {
-    // Guard against the F20 failure mode: a suite that silently reports green
-    // because the artifact it needs was never built. If this ever runs
-    // without dist/, the skip above hid the real tests — make that visible
-    // rather than counting it as a pass.
-    expect(
-      existsSync(RUNNER) ||
-        "dist/job-runner.js missing — concurrency tests did NOT run; `npm run build` first",
-    ).toBe(true);
-  });
-});
-
 describe("dead supervisor heartbeats are cleaned up", () => {
   /**
    * A supervisor that exits cleanly deletes its own heartbeat; one that is
@@ -365,7 +349,7 @@ describe("dead supervisor heartbeats are cleaned up", () => {
    * failure it was cleaning up after.
    */
   it("removes a stale heartbeat but keeps the crash log beside it", async () => {
-    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const { countLiveSupervisorsForTest } = await import("../src/jobs/supervisor.js");
     const dir = path.join(jobsDir, ".supervisors");
     await fs.mkdir(dir, { recursive: true });
 
@@ -394,7 +378,7 @@ describe("dead supervisor heartbeats are cleaned up", () => {
    * the same permanent per-dispatch cost the heartbeat cleanup above removed.
    */
   it("drops an empty spawn log once it is stale, and keeps a fresh one", async () => {
-    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const { countLiveSupervisorsForTest } = await import("../src/jobs/supervisor.js");
     const dir = path.join(jobsDir, ".supervisors");
     await fs.mkdir(dir, { recursive: true });
 

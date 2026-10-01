@@ -1,6 +1,8 @@
 # Node / TypeScript
 node_modules/
 dist/
+/dist.tmp/
+/dist.old/
 build/
 *.tgz
 *.tsbuildinfo

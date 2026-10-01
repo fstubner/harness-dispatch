@@ -29,15 +29,22 @@
  * It is also not the only way to publish: `npm publish` run by hand bypasses
  * the workflow entirely, as 0.4.0 was.
  *
- * Usage: node scripts/check-acceptance.mjs [version]
+ * Two cheap checks beside the record: CHANGELOG.md must have a `## [<version>]`
+ * heading (a release with no notes is how a tag gets cut from a half-finished
+ * tree), and with `--require-on-main` the checked-out commit must be reachable
+ * from origin/main (a tag pushed from a side branch is not a release).
+ *
+ * Usage: node scripts/check-acceptance.mjs [version] [--require-on-main]
  *   version defaults to the one in package.json.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+// CHECK_ACCEPTANCE_ROOT is for the test, which runs this against a scratch tree.
+const repoRoot = process.env.CHECK_ACCEPTANCE_ROOT ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function fail(message) {
   process.stderr.write(`acceptance gate: ${message}\n`);
@@ -45,7 +52,8 @@ function fail(message) {
 }
 
 const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
-const version = process.argv[2] ?? pkg.version;
+const args = process.argv.slice(2);
+const version = args.find((a) => !a.startsWith("--")) ?? pkg.version;
 const recordPath = path.join(repoRoot, "acceptance", `${version}.md`);
 
 let body;
@@ -93,6 +101,24 @@ if (!field("reviewer")) {
     `acceptance/${version}.md has no reviewer line. Say who or what ran the pass and ` +
       `whether it was independent of the build.`,
   );
+}
+
+let changelog = "";
+try {
+  changelog = readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf8");
+} catch {
+  // reported just below
+}
+if (!changelog.split(/\r?\n/).some((line) => line.startsWith(`## [${version}]`))) {
+  fail(`CHANGELOG.md has no "## [${version}]" heading. Write the release notes first.`);
+}
+
+if (args.includes("--require-on-main")) {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", "HEAD", "origin/main"], { cwd: repoRoot, stdio: "ignore" });
+  } catch {
+    fail("this commit is not on origin/main. Tag a commit that has been merged to main.");
+  }
 }
 
 process.stdout.write(`acceptance gate: ${version} reviewed — ${verdict}\n`);

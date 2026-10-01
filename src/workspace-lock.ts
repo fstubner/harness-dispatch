@@ -26,7 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -55,7 +55,19 @@ const inProcessLocks = new Map<string, Promise<void>>();
 
 function lockKey(workingDir: string): string {
   const resolved = path.resolve(workingDir || process.cwd());
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  // The real path, so a symlink, junction or `/var` -> `/private/var` spelling
+  // of one project cannot take a second lock on it. A directory that does not
+  // exist yet keeps its resolved spelling.
+  let real = resolved;
+  try {
+    real = realpathSync.native(resolved);
+  } catch {
+    // ENOENT and the like: nothing to canonicalise.
+  }
+  // Windows and macOS file systems are case-insensitive by default, so two
+  // casings are one directory. Folding on a case-sensitive macOS volume only
+  // makes two sibling directories share a lock, which is harmless.
+  return process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real;
 }
 
 function lockFileFor(key: string): string {

@@ -200,6 +200,10 @@ from `HARNESS_DISPATCH_HTTP_TOKEN` instead of the token file, rotate refuses —
 rotating the file would change nothing — so change or unset the variable and
 restart `serve`.
 
+**File permissions on Windows.** The token file and the state directories are written owner-only
+(0600/0700) on Linux and macOS; on Windows those modes are no-ops, so they are
+protected by your user profile's default permissions, not by a mode.
+
 **A client entry pointing at a path that no longer exists.**
 `harness-dispatch connect` rewrites it; `connect --remove` takes it out. Both
 back the file up next to itself first and merge rather than replace. `connect`

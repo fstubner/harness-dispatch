@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    globalSetup: ["tests/global-setup.ts"],
     setupFiles: ["tests/setup-env.ts"],
     environment: "node",
     // Test FILES run one at a time.
@@ -18,8 +19,10 @@ export default defineConfig({
     // reproduced on demand — the suite had simply not yet grown past the
     // threshold.
     //
-    // The cost is wall-clock: about 2 minutes serial against roughly 45
-    // seconds parallel. That is the right trade. A suite that fails four
+    // The cost is wall-clock: 472 s for the whole suite (1,450 tests in 89
+    // files), measured 2026-10-01 on a shared Windows 11 machine. The figure
+    // grows with the suite, so re-measure rather than trust it. Serial is
+    // still the right trade. A suite that fails four
     // random tests per run teaches people to re-run until green, which is how
     // a real regression gets waved through as "just the flaky one".
     fileParallelism: false,

@@ -1,0 +1,41 @@
+name: Weekly fresh install
+
+# What a user installing today gets, not what the lockfile pins.
+#
+# package-lock.json and the `overrides` in package.json protect CI and
+# development only: someone running `npx harness-dispatch` or `npm i -g`
+# resolves the newest in-range version of every dependency on the day they
+# install, which no other workflow ever tests. This ignores the lockfile,
+# resolves everything fresh, runs the whole check, and audits what ships.
+#
+# Red here means "an upstream release broke us" or "a dependency of ours has an
+# advisory" — found on a Monday by this job rather than by a user.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh:
+    name: Fresh unlocked install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No dependency cache: the point is to resolve from the registry.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install without the lockfile
+        run: npm install --no-package-lock
+
+      - name: Typecheck, lint and test
+        run: npm run check
+
+      - name: Audit what ships
+        run: npm audit --omit=dev
