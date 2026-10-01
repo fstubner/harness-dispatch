@@ -229,13 +229,32 @@ export async function pruneStaleJobs(): Promise<void> {
       try {
         const status = JSON.parse(
           await readFile(path.join(jobDir, "status.json"), "utf8"),
-        ) as { status?: string; updatedAt?: string };
+        ) as JobStatus;
         const beat = Date.parse(status.updatedAt ?? "");
         if (
           (status.status === "running" || status.status === "queued") &&
           Number.isFinite(beat) &&
           now - beat <= ORPHAN_THRESHOLD_MS
         ) {
+          continue;
+        }
+        // Still in the slot queue: a request nobody has acted on, not a
+        // finished record. Deleting it made a waiting job vanish into "No such
+        // job"; running it after this long would start a task nobody is
+        // watching. It is reported instead, like a queue a dead server left
+        // behind, and ages out from here.
+        if (status.slotQueued === true && status.status === "queued") {
+          const { slotQueued: _cleared, ...rest } = status;
+          await updateStatus(jobDir, {
+            ...rest,
+            status: "orphaned",
+            updatedAt: timestamp(),
+            success: false,
+            error:
+              "This job waited for a concurrency slot for longer than the job retention " +
+              "window and never started. It is NOT run now: a task queued that long ago " +
+              "should not start with nobody watching. Use retry_job to run it.",
+          });
           continue;
         }
       } catch {

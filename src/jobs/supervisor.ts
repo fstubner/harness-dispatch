@@ -252,6 +252,8 @@ async function claimNextJob(): Promise<string | undefined> {
     // A job a newer build wrote may mean something this code does not know.
     if (newerFormatError(status, status.jobId) !== undefined) continue;
     // Claiming a cancelled job would start work someone already asked to stop.
+    // Checked before the claim, so a cancel landing between the two still
+    // gets claimed; runJob's first cancel poll (1 s) then stops it.
     if (cancelRequested(jobDir)) continue;
     if (!(await claimJobDir(jobDir, status))) continue;
     return jobDir;

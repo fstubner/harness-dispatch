@@ -51,6 +51,13 @@ export interface StartJobInput {
   /** Who asked — see DispatchCaller. Recorded on the manifest and in the dispatch log. */
   caller?: DispatchCaller;
   /**
+   * The job list's preview of the task, when `prompt` does not start with it:
+   * a retry passes the frozen prompt.md, which opens with any context
+   * preamble, and previewing that showed every chained retry as "## Context
+   * from earlier work".
+   */
+  promptPreview?: string;
+  /**
    * Live dispatcher-event tap, used by the `dispatch` tool to forward MCP
    * progress notifications during its inline grace window. Never serialized
    * (the manifest lists its fields explicitly), never awaited, and a throw

@@ -140,6 +140,16 @@ describe("retryJob", () => {
     expect(manifest.retryOf).toBe("job-1700000000001-aaaaaaaa");
   });
 
+  it("lists the retry by the task, not by the context preamble its prompt opens with", async () => {
+    await plantFinished("job-1700000000002-aaaaaaaa", { promptPreview: "fix the parser" });
+    const out = await retryJob("job-1700000000002-aaaaaaaa", await buildDeps());
+    await settle(out.jobId);
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(jobsDir, out.jobId, "manifest.json"), "utf8"),
+    ) as { promptPreview: string };
+    expect(manifest.promptPreview).toBe("fix the parser");
+  });
+
   it("retargets to another route, which is the usual reason to retry", async () => {
     await plantFinished("job-1700000000002-bbbbbbbb");
     const out = await retryJob("job-1700000000002-bbbbbbbb", await buildDeps(), { service: "beta" });

@@ -100,8 +100,12 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   await requestCancel(jobDir, reason);
 
   // A job still waiting for a slot has no runner to notice the marker, so stop
-  // it here; claimNextJob also refuses a marked job, closing the window where
-  // a supervisor picks it up between these two steps. `orphaned` joins
+  // it here. claimNextJob also refuses a marked job, which NARROWS the window
+  // where a supervisor picks it up between these two steps but does not close
+  // it: a supervisor that checked for the marker just before it was written
+  // still claims, and its run writes `running` over the `cancelled` below.
+  // That run sees the marker on its first cancel poll and stops, so the agent
+  // runs for about a second at most. `orphaned` joins
   // `queued` because an orphaned job has no live runner by definition, so
   // nothing would act on the marker and it would sit at "cancelling" forever.
   if (current === "queued" || current === "orphaned") {
@@ -212,7 +216,7 @@ export async function resolveJobWorkspace(
   // work. Keyed on the job directory, so it never contends with a dispatch.
   let release: () => void;
   try {
-    release = await acquireWorkspaceLock(jobDir, JOB_ACTION_LOCK_TIMEOUT_MS);
+    release = await acquireJobActionLock(jobDir, JOB_ACTION_LOCK_TIMEOUT_MS);
   } catch {
     throw new Error(
       `Another workspace action on ${jobId} is still running after ` +
@@ -228,6 +232,30 @@ export async function resolveJobWorkspace(
   } finally {
     release();
   }
+}
+
+/**
+ * The per-job action lock, with a deadline that holds inside one process too.
+ *
+ * acquireWorkspaceLock's timeout bounds only the wait on ANOTHER process: a
+ * second action in the same server queues behind the first on a promise chain
+ * with no deadline, so the "still running after 120s" error never fired there
+ * and the caller waited as long as the first action took. On timeout the
+ * acquisition still pending is released the moment it lands.
+ *
+ * Exported for tests: the in-process wait cannot be shortened from outside.
+ */
+export async function acquireJobActionLock(jobDir: string, timeoutMs: number): Promise<() => void> {
+  const acquiring = acquireWorkspaceLock(jobDir, timeoutMs);
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<"expired">((resolve) => {
+    timer = setTimeout(() => resolve("expired"), timeoutMs);
+    timer.unref?.();
+  });
+  const winner = await Promise.race([acquiring, expired]).finally(() => clearTimeout(timer));
+  if (winner !== "expired") return winner;
+  acquiring.then((release) => release(), () => undefined);
+  throw new Error(`job action lock on ${jobDir} not acquired within ${timeoutMs} ms`);
 }
 
 export interface RetryOutcome {
@@ -311,6 +339,7 @@ export async function retryJob(
     files: manifest.files.map((f) => f.originalPath),
     workingDir: manifest.workingDir,
     retryOf: jobId,
+    ...(manifest.promptPreview !== undefined ? { promptPreview: manifest.promptPreview } : {}),
     ...(hints !== undefined ? { hints } : {}),
     ...(manifest.workspacePolicy !== undefined
       ? { workspacePolicy: manifest.workspacePolicy }

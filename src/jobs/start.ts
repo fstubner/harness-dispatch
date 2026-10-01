@@ -89,7 +89,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
-    promptPreview: promptPreview(input.prompt),
+    promptPreview: input.promptPreview ?? promptPreview(input.prompt),
     ...(input.caller !== undefined ? { caller: input.caller } : {}),
     ...(deps.holder.state.configPath !== undefined ? { configPath: deps.holder.state.configPath } : {}),
     ...(warning !== undefined ? { warning } : {}),

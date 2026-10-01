@@ -526,6 +526,71 @@ describe("MCP tools — dispatch", () => {
     expect(data.results.map((item) => item.output).sort()).toEqual(["A", "B"]);
   });
 
+  it("keeps the arms that started when another arm fails to start", async () => {
+    // Promise.all over the arms: one rejecting after the others had written
+    // their jobs and started threw away the whole response, so nothing told
+    // the caller those runs existed.
+    const holder = buildHolder(
+      { a: makeService("a"), b: makeService("b") },
+      {
+        a: new FakeDispatcher("a", { output: "A", service: "a", success: true }),
+        b: new FakeDispatcher("b", { output: "B", service: "b", success: true }),
+      },
+    );
+    const leaderboard = holder.state.leaderboard;
+    const real = leaderboard.getQualityScore.bind(leaderboard);
+    leaderboard.getQualityScore = async (model, level) => {
+      if (model === "b-model") throw new Error("disk full");
+      return real(model, level);
+    };
+
+    const r = await invokeTool(
+      "dispatch",
+      { mode: "fanout", prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
+      { holder },
+    );
+    const data = r.data as { results: Array<{ route: string; jobId?: string; success?: boolean; error?: string }> };
+    const a = data.results.find((item) => item.route === "a")!;
+    const b = data.results.find((item) => item.route === "b")!;
+    expect(a.jobId, "the started arm's jobId was lost").toBeDefined();
+    expect(a.success).toBe(true);
+    expect(b.success).toBe(false);
+    expect(b.error).toMatch(/could not be started: disk full/);
+  });
+
+  it("reports every arm's warning, not whichever was read last", async () => {
+    // A single `warning` variable, overwritten per arm. Arm a hits a write
+    // failure after its result is saved, so its warning says more than b's.
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+    class BreaksResultMd extends FakeDispatcher {
+      override async *stream(): AsyncIterable<DispatcherEvent> {
+        for (const name of readdirSync(jobsDir)) {
+          const manifest = path.join(jobsDir, name, "manifest.json");
+          if (!existsSync(manifest)) continue;
+          if (JSON.parse(readFileSync(manifest, "utf8")).service !== "a") continue;
+          mkdirSync(path.join(jobsDir, name, "output", "result.md"), { recursive: true });
+        }
+        yield { type: "completion", result: { output: "A", service: "a", success: true } };
+      }
+    }
+    const holder = buildHolder(
+      { a: makeService("a"), b: makeService("b") },
+      {
+        a: new BreaksResultMd("a"),
+        b: new FakeDispatcher("b", { output: "B", service: "b", success: true }),
+      },
+    );
+    for (let i = 0; i < 3; i += 1) {
+      const r = await invokeTool(
+        "dispatch",
+        { mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
+        { holder },
+      );
+      const data = r.data as { warning?: string };
+      expect(data.warning, "arm a's warning was dropped").toMatch(/result was saved/);
+    }
+  });
+
   it("rejects an unknown forced service at the boundary, without creating a job", async () => {
     // Fanout rejects unknown `models` by name; single mode let the same
     // mistake through, burned a job directory, and returned a success-shaped

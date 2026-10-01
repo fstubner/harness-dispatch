@@ -26,6 +26,20 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A fanout keeps the arms that started when another arm fails to start.** One
+  arm failing after others had begun threw away the whole response, including
+  the job ids of the runs already going. The failed arm now appears in
+  `results` with its error. A fanout also reports every arm's warning rather
+  than whichever was read last.
+
+- **Smaller job fixes.** A job still waiting for a slot after the job retention
+  window is reported `orphaned` (use `retry_job`) instead of being deleted out
+  from under its caller. A retry of a job that had `contextJobs` is listed by its
+  task rather than by the context preamble. A second workspace action on the
+  same job in the same server now gives up after 120 s like one from another
+  process, instead of waiting indefinitely. Job records carry a format version,
+  and a build too old for a record says to upgrade rather than misreading it.
+
 - **Cancelling an orphaned job now stops the agent it left running.** A running
   job records the processes it starts in its status; when its supervisor dies,
   `job_status` names them and `cancel_job` (or `retry_job`, which cancels
