@@ -241,7 +241,10 @@ describe("every egress sink still redacts", () => {
     { file: "src/jobs/run.ts", needle: "redact(result.output)", proven: false },
     { file: "src/jobs/run.ts", needle: "redact(result.error ?? \"\")", proven: false },
     { file: "src/jobs/run.ts", needle: "redact(message)", proven: false },
-    { file: "src/jobs/run.ts", needle: "redact(event.chunk)", proven: false },
+    // stdout.partial.log, through a redactor that holds back a tail so a key
+    // split across two chunks is still caught — proven by tests/jobs.test.ts
+    // ("the partial log is redacted across chunk boundaries").
+    { file: "src/jobs/run.ts", needle: "partialRedactor.push(event.chunk)", proven: true },
     // result.md — the file the CALLER reads. Missing from the first version of
     // this list, and removing its redact left the file 20/20 green, which is
     // the gap the list exists to close.
@@ -274,7 +277,7 @@ describe("every egress sink still redacts", () => {
     // Kept honest against the sabotage matrix rather than against intent: if a
     // guard gains a reachable secret input, write the behavioural case and
     // flip it to proven, rather than leaving this list flattering.
-    expect(SINK_SITES.filter((s) => s.proven)).toHaveLength(4);
+    expect(SINK_SITES.filter((s) => s.proven)).toHaveLength(5);
     // Pinned so ADDING a sink without deciding proven-vs-guard is a failing
     // test rather than a silent gap.
     expect(SINK_SITES).toHaveLength(16);
