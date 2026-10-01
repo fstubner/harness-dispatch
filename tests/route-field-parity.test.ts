@@ -69,6 +69,7 @@ const SHARED_FIELDS: Array<{
   { yaml: "allow_paid_usage: true", field: "allowPaidUsage", expected: true },
   { yaml: "provider: openai", field: "provider", expected: "openai" },
   { yaml: 'model_hint: "hint text"', field: "modelHint", expected: "hint text" },
+  { yaml: 'instructions: "route policy"', field: "instructions", expected: "route policy" },
   // Added when this file started deriving its list from the resolver's table:
   // these three were in neither the old hand-written list nor any other test,
   // so nothing proved any shape read them.

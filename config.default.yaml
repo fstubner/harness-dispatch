@@ -460,10 +460,20 @@ endpoints:
 # retention:
 #   jobs_days: 7        # 0 = keep forever (same convention as max_concurrent_runs: 0)
 
+# Instructions every connecting agent is told, after the server's own — this
+# machine's routing policy, written once instead of in each client's CLAUDE.md
+# or AGENTS.md. A route can carry its own `instructions:` too (on its clis:,
+# endpoints: or overrides: entry); those are listed by route id and returned by
+# the `usage` tool. 1,000 characters each; read when a session connects. See
+# docs/configuration.md#instructions-for-connecting-agents.
+# instructions: |
+#   Pick the cheapest model that can do the task; keep the strongest for hard
+#   judgment.
+
 # Per-route knobs worth knowing (all optional, all shown in the entries above
 # or README.md): enabled, weight, timeout_ms, safety_profile, effective_safety,
 # workspace_policy (shared | shared_locked | copy | git_worktree),
-# thinking_level, escalate_on, allow_paid_usage, billing_kind,
+# instructions, thinking_level, escalate_on, allow_paid_usage, billing_kind,
 # paid_usage_possible.
 #
 # disabled: [route_name, ...] hides an entry without deleting it.

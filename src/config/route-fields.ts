@@ -45,6 +45,7 @@ import {
   thinkingFrom,
   workspacePolicyFrom,
 } from "./coercions.js";
+import { instructionsFrom } from "./instructions.js";
 import { stringArrayFrom } from "./protocol.js";
 
 /**
@@ -132,6 +133,8 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "billing_notes", field: "billingNotes", parse: str },
   { key: "models", field: "models", parse: stringArrayFrom, fromDefaults: (d) => d.models },
   { key: "model_hint", field: "modelHint", parse: str, fromDefaults: (d) => d.modelHint },
+  // Operator policy for this route, delivered to connecting agents.
+  { key: "instructions", field: "instructions", parse: instructionsFrom },
 ];
 
 /** The YAML keys this table owns — used by tests to prove both shapes are wired to it. */

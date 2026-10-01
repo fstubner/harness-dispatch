@@ -12,6 +12,7 @@
  * shape, where the copies drift.
  */
 
+import { warnInstructions } from "./instructions.js";
 
 /**
  * Warn on any unrecognised value for an enum that FAILS OPEN.
@@ -78,6 +79,8 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   "retention",
   "leaderboard",
   "max_concurrent_runs",
+  // Operator instructions for connecting agents — see config/instructions.ts.
+  "instructions",
   "default_safety_profile",
   "workspace_policy",
   "protocol",
@@ -96,6 +99,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
  */
 export const KNOWN_ROUTE_KEYS = new Set([
   "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
+  "instructions",
   "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
   "leaderboard_model", "escalate_model", "escalate_on", "resource_weight",
@@ -233,6 +237,10 @@ export function warnMistypedRouteValues(
 ): void {
   for (const [key, value] of Object.entries(entry)) {
     if (value === null || value === undefined) continue;
+    if (key === "instructions") {
+      warnInstructions(value, label, warnings);
+      continue;
+    }
     if (key === "capabilities" && typeof value === "object" && !Array.isArray(value)) {
       // Nested, so the per-key checks below never saw these. They are
       // multiplied straight into the route's score: `review: .inf` made a

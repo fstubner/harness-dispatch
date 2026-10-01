@@ -67,6 +67,8 @@ function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<str
     models: own("models", svc.models && svc.models.length > 0 ? svc.models : undefined),
     model_hint: own("model_hint", svc.modelHint),
     // No default exists, so the loaded value is always the user's own.
+    instructions: svc.instructions,
+    // No default exists, so the loaded value is always the user's own.
     resource_weight: svc.resourceWeight,
     // Inferred on load when absent, so written only when the user wrote it:
     // `unknown` is how a route is marked untrusted, and dropping it on a
@@ -244,6 +246,7 @@ function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<st
   if (detectionRuns && config.disabled && config.disabled.length > 0) {
     out.disabled = [...config.disabled];
   }
+  if (config.instructions !== undefined) out.instructions = config.instructions;
   if (config.maxConcurrentRuns !== undefined) out.max_concurrent_runs = config.maxConcurrentRuns;
   if (config.retention?.jobsDays !== undefined) {
     out.retention = { jobs_days: config.retention.jobsDays };

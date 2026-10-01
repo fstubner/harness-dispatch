@@ -25,6 +25,7 @@ import {
   warnUnknownSafetyEnums,
   warnUnknownTopLevelKeys,
 } from "./config/validation.js";
+import { instructionsFrom, warnInstructions } from "./config/instructions.js";
 import { protocolFrom } from "./config/protocol.js";
 import { CLI_DEFAULTS, PROTOCOL_PRESETS, type CliDefaults } from "./harness-presets.js";
 import {
@@ -144,6 +145,9 @@ function topLevelSettings(
   policyWarnings: string[] = [],
 ): Partial<RouterConfig> {
   const out: Partial<RouterConfig> = {};
+  warnInstructions(raw.instructions, "instructions", policyWarnings);
+  const instructions = instructionsFrom(raw.instructions);
+  if (instructions !== undefined) out.instructions = instructions;
   const telemetryRaw = raw.telemetry;
   if (telemetryRaw !== null && typeof telemetryRaw === "object") {
     const enabled = (telemetryRaw as Record<string, unknown>).enabled;
