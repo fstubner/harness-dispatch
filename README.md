@@ -300,6 +300,7 @@ are in [Status and observability](https://github.com/fstubner/harness-dispatch/b
 ```bash
 npm ci
 npm run typecheck
+npm run lint
 npm test
 npm run build
 npm run smoke
