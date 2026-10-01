@@ -45,7 +45,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "node scripts/build.mjs",
-    "check": "npm run typecheck && npm run typecheck:tests && npm test && node scripts/check-claims.mjs",
+    "check": "npm run typecheck && npm run typecheck:tests && npm run lint && npm test && node scripts/check-claims.mjs",
     "dev": "tsx src/bin.ts",
     "smoke": "node scripts/smoke.mjs",
     "smoke:agents": "node scripts/smoke-agents.mjs",
@@ -55,6 +55,7 @@
     "test:parity": "vitest run tests/scoring-parity.test.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint src tests",
     "prepublishOnly": "npm run build",
     "prepack": "npm run build",
     "test:unit": "vitest run",
@@ -81,8 +82,10 @@
     "@types/node": "^22.20.4",
     "@types/which": "^3.0.4",
     "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.11.0",
     "tsx": "^4.23.1",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^4.1.10"
   },
   "overrides": {

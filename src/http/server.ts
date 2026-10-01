@@ -693,6 +693,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   // loopback check blesses the address, so nothing else catches it.
   const urlBase = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`;
 
+  // The whole body is in a try/catch that answers the request, so a rejection
+  // never escapes this handler.
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
   const http: NodeHttpServer = createServer(async (req, res) => {
     // Shared with handleChatCompletions, read by the catch below.
     const sse: SseState = { started: false };

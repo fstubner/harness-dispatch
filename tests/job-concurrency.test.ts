@@ -349,7 +349,7 @@ describe("dead supervisor heartbeats are cleaned up", () => {
    * failure it was cleaning up after.
    */
   it("removes a stale heartbeat but keeps the crash log beside it", async () => {
-    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const { countLiveSupervisorsForTest } = await import("../src/jobs/supervisor.js");
     const dir = path.join(jobsDir, ".supervisors");
     await fs.mkdir(dir, { recursive: true });
 
@@ -378,7 +378,7 @@ describe("dead supervisor heartbeats are cleaned up", () => {
    * the same permanent per-dispatch cost the heartbeat cleanup above removed.
    */
   it("drops an empty spawn log once it is stale, and keeps a fresh one", async () => {
-    const { countLiveSupervisorsForTest } = await import("../src/jobs.js");
+    const { countLiveSupervisorsForTest } = await import("../src/jobs/supervisor.js");
     const dir = path.join(jobsDir, ".supervisors");
     await fs.mkdir(dir, { recursive: true });
 
