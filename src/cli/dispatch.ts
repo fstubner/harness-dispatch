@@ -27,6 +27,15 @@ export async function cmdDispatch(
     );
   }
   const runtime = await buildRuntime(configPath);
+  // Same remedy `usage` and `status` give. The router's own sentence for this
+  // ("no routes are configured") says what happened and stops there.
+  if (Object.keys(runtime.config.services).length === 0) {
+    throw new Error(
+      "dispatch: no routes are configured. Install a harness CLI (claude, codex, cursor-agent, agy) " +
+        "and it is picked up automatically, or add an `endpoints:` entry to config.yaml — those need " +
+        "no CLI. `harness-dispatch doctor` says which of the two applies here.",
+    );
+  }
   const hints: RouteHints = { taskType: opts.taskType ?? "execute" };
   if (opts.safetyProfile !== undefined) hints.safetyProfile = opts.safetyProfile;
 

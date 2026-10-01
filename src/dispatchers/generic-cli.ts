@@ -795,7 +795,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
           success: false,
           error:
             `Route '${this.id}' is missing 'command' and/or 'protocol' — both are ` +
-            "required for harness: generic. See docs/configuration.md#adding-a-harness.",
+            "required for harness: generic. See https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#adding-a-harness.",
         },
       };
       return;

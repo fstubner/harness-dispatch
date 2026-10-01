@@ -488,7 +488,7 @@ function addClis(
       if (entry.protocol === undefined || entry.protocol === null) {
         warnings.push(
           `clis[${index}] "${name}": harness: generic requires a "protocol" block — entry ignored. ` +
-            "See docs/configuration.md#adding-a-harness.",
+            "See https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#adding-a-harness.",
         );
         continue;
       }

@@ -71,7 +71,10 @@ export async function cmdDoctor(
           (command) => commandAvailable(command) && !configuredCommands.has(command),
         )
       : [];
-  const checks: Array<{ name: string; ok: boolean; detail: string }> = [
+  // `warn` is for a row that passes (exit 0) but wants something done: the next
+  // step of setup, or an optional piece that is missing. Without it the one
+  // thing a new user must do (`connect`) looked identical to a healthy row.
+  const checks: Array<{ name: string; ok: boolean; warn?: boolean; detail: string }> = [
     {
       name: "node",
       ok: nodeOk,
@@ -115,6 +118,7 @@ export async function cmdDoctor(
         return {
           name: "mcp-clients",
           ok: true,
+          warn: true,
           detail:
             present.length > 0
               ? `${present.join(", ")} installed but harness-dispatch is not registered with it — ` +
@@ -156,6 +160,7 @@ export async function cmdDoctor(
     {
       name: "git",
       ok: true,
+      warn: !commandAvailable("git"),
       detail: commandAvailable("git")
         ? "available — workspace diff/apply and git_worktree isolation can run"
         : "NOT FOUND — optional. Dispatch still works, but the `workspace` tool " +
@@ -282,6 +287,7 @@ export async function cmdDoctor(
   checks.push({
     name: "route-health",
     ok: true,
+    warn: deadRoutes.length > 0,
     detail:
       deadRoutes.length === 0
         ? "no ready route has failed every call it has been given"
@@ -378,14 +384,24 @@ export async function cmdDoctor(
     });
   }
 
-  const payload = { ok: checks.every((check) => check.ok), checks, status, liveProbe };
+  const failed = checks.filter((check) => !check.ok);
+  const warned = checks.filter((check) => check.ok && check.warn === true);
+  const verdict =
+    failed.length > 0
+      ? `NOT READY: ${failed.length} problem(s) to fix (${failed.map((c) => c.name).join(", ")})`
+      : warned.length > 0
+        ? `OK, with ${warned.length} thing(s) worth doing (${warned.map((c) => c.name).join(", ")})`
+        : "OK";
+  const payload = { ok: failed.length === 0, verdict, checks, status, liveProbe };
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
     process.stdout.write("harness-dispatch doctor\n\n");
     for (const check of checks) {
-      process.stdout.write(`${check.ok ? "ok" : "fail"} ${check.name}: ${check.detail}\n`);
+      const level = !check.ok ? "fail" : check.warn === true ? "warn" : "ok";
+      process.stdout.write(`${level} ${check.name}: ${check.detail}\n`);
     }
+    process.stdout.write(`\n${verdict}\n`);
   }
   return payload.ok ? 0 : 1;
 }
