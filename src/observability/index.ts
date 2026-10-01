@@ -70,10 +70,17 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
 
   // Lazily import so consumers who never call initObservability don't pay the
   // load cost or pick up auto-instrumentations they didn't ask for.
-  const { NodeSDK } = await import("@opentelemetry/sdk-node");
-  const { OTLPTraceExporter } = await import(
-    "@opentelemetry/exporter-trace-otlp-http"
-  );
+  //
+  // Trace-only packages, not `@opentelemetry/sdk-node`: that meta-SDK ships the
+  // gRPC/protobuf/Prometheus/Zipkin exporters and the metrics and logs SDKs,
+  // none of which this code path loads — about half of what every install
+  // downloaded, for a feature that is off by default.
+  const [{ NodeTracerProvider, BatchSpanProcessor }, { OTLPTraceExporter }, resources] =
+    await Promise.all([
+      import("@opentelemetry/sdk-trace-node"),
+      import("@opentelemetry/exporter-trace-otlp-http"),
+      import("@opentelemetry/resources"),
+    ]);
 
   const otlpEndpoint =
     opts.otlpUrl ??
@@ -101,41 +108,62 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
 
   const serviceName = opts.serviceName ?? SERVICE_NAME_DEFAULT;
 
-  // NodeSDK's `resource` type changed shape across 0.50.x → 0.52.x. Pass
-  // attributes via env var to stay version-agnostic — that's the supported
-  // compat path.
-  const existingRes = process.env["OTEL_RESOURCE_ATTRIBUTES"] ?? "";
-  const resourceParts = [
-    `service.name=${serviceName}`,
-    `service.version=${SERVICE_VERSION}`,
-  ];
-  process.env["OTEL_RESOURCE_ATTRIBUTES"] = existingRes
-    ? `${existingRes},${resourceParts.join(",")}`
-    : resourceParts.join(",");
-
-  // The SDK's default resource detectors include the process detector, whose
+  // The default resource detectors include the process detector, whose
   // `process.command_args` is the full argv — and for `harness-dispatch
   // dispatch "<prompt>"` the prompt IS an argv element, so every span carried
   // it to the collector. Measured: a canary prompt appeared in the export.
   // The same defaults minus that one; an explicit setting is the user's.
-  if (!process.env["OTEL_NODE_RESOURCE_DETECTORS"]) {
-    process.env["OTEL_NODE_RESOURCE_DETECTORS"] = "env,host";
-  }
-
-  const sdk = new NodeSDK({
-    traceExporter: exporter,
-    instrumentations: instrumentations as never,
-  });
+  const detectors = resourceDetectors(resources);
 
   try {
-    sdk.start();
-    sdkRef = { shutdown: () => sdk.shutdown() };
+    const { registerInstrumentations } = await import("@opentelemetry/instrumentation");
+    registerInstrumentations({ instrumentations: instrumentations as never });
+    const resource = resources
+      .defaultResource()
+      .merge(resources.detectResources({ detectors }))
+      .merge(
+        resources.resourceFromAttributes({
+          "service.name": serviceName,
+          "service.version": SERVICE_VERSION,
+        }),
+      );
+    const provider = new NodeTracerProvider({
+      resource,
+      spanProcessors: [new BatchSpanProcessor(exporter)],
+    });
+    // Also installs the async-local-storage context manager and the W3C
+    // propagators, which is what makes spans nest.
+    provider.register();
+    sdkRef = { shutdown: () => provider.shutdown() };
     initialized = true;
     return true;
   } catch {
     // SDK failed to start — don't crash the host.
     return false;
   }
+}
+
+/**
+ * The resource detectors to run: `env,host` unless `OTEL_NODE_RESOURCE_DETECTORS`
+ * names others (comma-separated `env`, `host`, `os`, `process`,
+ * `serviceinstance`; `all`; `none`). Empty counts as unset.
+ */
+function resourceDetectors(r: typeof import("@opentelemetry/resources")) {
+  const known = {
+    env: r.envDetector,
+    host: r.hostDetector,
+    os: r.osDetector,
+    process: r.processDetector,
+    serviceinstance: r.serviceInstanceIdDetector,
+  };
+  const names = (process.env["OTEL_NODE_RESOURCE_DETECTORS"] ?? "")
+    .split(",")
+    .map((n) => n.trim().toLowerCase())
+    .filter(Boolean);
+  if (names.length === 0) return [known.env, known.host];
+  if (names.includes("all")) return Object.values(known);
+  if (names.includes("none")) return [];
+  return names.flatMap((n) => known[n as keyof typeof known] ?? []);
 }
 
 /** Shut down the observability SDK (drains pending spans). Idempotent. */
