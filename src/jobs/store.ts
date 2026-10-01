@@ -96,7 +96,15 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
       "This job stopped reporting progress and the process running it is gone — " +
       "either the run crashed or whatever was supervising it died. Nothing will " +
       "advance it now. Its partial output is on disk; `retry_job` re-runs the same " +
-      "task, or re-dispatch it.",
+      "task, or re-dispatch it." +
+      // Its agent CLI can outlive the supervisor, still editing the working
+      // directory; this is the one place a caller learns that, and how to
+      // stop it.
+      (status.children !== undefined && status.children.length > 0
+        ? ` Processes it started may still be running (${status.children
+            .map((c) => `pid ${c.pid} ${c.command}`)
+            .join(", ")}); \`cancel_job\` stops them, and \`retry_job\` does before re-running.`
+        : ""),
   };
 }
 

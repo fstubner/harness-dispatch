@@ -18,7 +18,10 @@ import {
   workspaceDiff,
 } from "../workspace-resolve.js";
 import { acquireWorkspaceLock } from "../workspace-lock.js";
+import { killJobChildren } from "./children.js";
+import { logCancelledRun } from "./run.js";
 import {
+  clearPending,
   requestCancel,
   jobsRoot,
   readJson,
@@ -114,13 +117,31 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
       waitingOn: _waitingOn,
       ...rest
     } = job.status;
+    // An orphan's supervisor is gone, but the agent CLI it started may not be
+    // (POSIX spawns it in its own process group; on Windows a descendant can
+    // escape a tree kill). Its pids were recorded while it ran.
+    const killed = current === "orphaned" ? await killJobChildren(rawStatus?.children) : [];
+    const { children: _children, ...record } = rest;
+    const error = reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it started.";
     await updateStatus(jobDir, {
-      ...rest,
+      ...record,
       status: "cancelled",
       updatedAt: timestamp(),
       success: false,
-      error: reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it started.",
+      error,
     });
+    await clearPending(jobId);
+    // A run that had started and lost its supervisor is a dispatch attempt the
+    // router never logged; one that never started is not an attempt at all.
+    if (rawStatus?.status === "running") {
+      logCancelledRun(
+        rawStatus.route ?? rawStatus.service ?? job.manifest.service ?? "none",
+        error,
+        undefined,
+        null,
+        { jobId, ...(job.manifest.caller ?? {}) },
+      );
+    }
     // Deliberately NOT draining the slot queue: drainSlotQueue can SPAWN
     // supervisor processes, and a cancel must not start any. Every dispatch
     // and every runner exit already drains.
@@ -131,8 +152,11 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
       message:
         current === "orphaned"
           ? `Job ${jobId} was orphaned — the process running it is gone — and is now ` +
-            `marked cancelled, so no supervisor can reclaim it. Any partial output it ` +
-            `wrote is still available from job_status.`
+            `marked cancelled, so no supervisor can reclaim it. ` +
+            (killed.length > 0
+              ? `Stopped process(es) it had started that were still running: ${killed.join(", ")}. `
+              : "") +
+            `Any partial output it wrote is still available from job_status.`
           : `Job ${jobId} was waiting for a slot and has been cancelled; it never started.`,
     };
   }

@@ -116,6 +116,21 @@ export interface JobStatus {
    */
   queuePosition?: number;
   waitingOn?: string[];
+  /**
+   * Processes the run started that were alive at its last status write,
+   * written only while it runs (see children.ts). What lets `cancel_job` stop
+   * an orphaned job's agent CLI, whose supervisor is no longer there to.
+   */
+  children?: JobChild[];
+}
+
+/** A process a job started. */
+export interface JobChild {
+  pid: number;
+  /** Executable base name, for the message a person reads. */
+  command: string;
+  /** When it was spawned; checked before killing, so a reused pid is spared. */
+  startedAt: string;
 }
 
 export interface JobManifest {

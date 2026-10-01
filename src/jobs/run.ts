@@ -21,8 +21,10 @@ import {
   writeJson,
 } from "./store.js";
 import { isResolvable, persistWorkspacePatch } from "../workspace-resolve.js";
+import { trackChildren } from "./children.js";
+import { logDispatch, type DispatchLogContext } from "../dispatch-log.js";
 import type { PreparedWorkspace } from "../workspaces.js";
-import type { JobDeps, JobManifest, JobResultPayload, JobStatus, StartJobInput } from "./types.js";
+import type { JobChild, JobDeps, JobManifest, JobResultPayload, JobStatus, StartJobInput } from "./types.js";
 export async function runJob(
   deps: JobDeps,
   jobDir: string,
@@ -30,6 +32,8 @@ export async function runJob(
   input: StartJobInput,
 ): Promise<void> {
   const started = Date.now();
+  /** The processes this run started that are still alive — see children.ts. */
+  let children: JobChild[] = [];
   const runningStatus = (): JobStatus => ({
     jobId: manifest.jobId,
     status: "running",
@@ -38,6 +42,7 @@ export async function runJob(
     jobDir,
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
+    ...(children.length > 0 ? { children } : {}),
   });
   await updateStatus(jobDir, runningStatus());
 
@@ -55,275 +60,325 @@ export async function runJob(
   /** Set once result.json holds the run's outcome — see the catch below. */
   let saved: DispatchResult | undefined;
   let pendingBeat: Promise<unknown> = Promise.resolve();
+  // Chained, so a beat never lands after a later one and puts back a child
+  // list that has since changed.
+  const beat = (): void => {
+    pendingBeat = pendingBeat
+      .then(() => (finished ? undefined : updateStatus(jobDir, runningStatus())))
+      .catch(() => undefined);
+  };
   const heartbeat = setInterval(() => {
     if (finished) return;
-    pendingBeat = updateStatus(jobDir, runningStatus()).catch(() => undefined);
+    beat();
   }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
 
-  try {
-    const state = deps.holder.state;
-    const files = input.files ?? [];
-    // Reuse the value already resolved (and recorded) at job creation, not a
-    // fresh process.cwd() snapshot — the two must stay in sync with the
-    // warning captured in manifest.warning.
-    const workingDir = manifest.workingDir;
-    const hints: RouteHints = { ...(input.hints ?? {}) };
-    if (input.workspacePolicy !== undefined) hints.workspacePolicy = input.workspacePolicy;
+  await trackChildren(
+    (alive) => {
+      children = alive;
+      // Written at once rather than at the next 15 s beat: a supervisor can
+      // die in between, and then the pid is exactly what nobody has.
+      if (!finished) beat();
+    },
+    async () => {
+    try {
+      const state = deps.holder.state;
+      const files = input.files ?? [];
+      // Reuse the value already resolved (and recorded) at job creation, not a
+      // fresh process.cwd() snapshot — the two must stay in sync with the
+      // warning captured in manifest.warning.
+      const workingDir = manifest.workingDir;
+      const hints: RouteHints = { ...(input.hints ?? {}) };
+      if (input.workspacePolicy !== undefined) hints.workspacePolicy = input.workspacePolicy;
 
-    // Stream the dispatch so agents polling action=get can watch progress in
-    // stdout.partial.log instead of waiting blind for the final result.
-    const partialPath = path.join(jobDir, "output", "stdout.partial.log");
-    const eventsPath = path.join(jobDir, "output", JOB_EVENTS_LOG);
-    // Cancellation travels DOWN to the child process, not up through the
-    // iterator. Returning from an async generator that is suspended at an
-    // `await` does not take effect until that await settles — which for an
-    // agent CLI gone quiet is never — so the only thing that reliably stops a
-    // silent run is aborting the subprocess (or fetch) directly.
-    const cancelController = new AbortController();
-    // The latest attempt's workspace, so a cancellation can still record it.
-    let workspace: PreparedWorkspace | undefined;
-    const onWorkspace = (ws: PreparedWorkspace): void => {
-      workspace = ws;
-    };
-    const logContext = { jobId: manifest.jobId, ...(manifest.caller ?? {}) };
-    const events = input.service
-      ? state.router.streamTo(input.service, input.prompt, files, workingDir, {
-          ...(hints.safetyProfile !== undefined
-            ? { safetyProfile: hints.safetyProfile }
-            : {}),
-          ...(hints.workspacePolicy !== undefined
-            ? { workspacePolicy: hints.workspacePolicy }
-            : {}),
-          ...(hints.routePolicy !== undefined
-            ? { routePolicy: hints.routePolicy }
-            : {}),
-          ...(hints.model !== undefined ? { model: hints.model } : {}),
-          ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
-          ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
-          defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
-          signal: cancelController.signal,
-          onWorkspace,
-          logContext,
-        })
-      : state.router.stream(input.prompt, files, workingDir, {
-          hints,
-          maxFallbacks: 2,
-          defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
-          signal: cancelController.signal,
-          onWorkspace,
-          logContext,
-        });
-
-    let finalResult: DispatchResult | null = null;
-    let finalDecision: RoutingDecision | null = null;
-    let cancelled = false;
-
-    // Driven through an explicit iterator rather than `for await`, so a
-    // cancellation can interrupt a stream that is producing NOTHING. A
-    // for-await body only runs when an event arrives, and the case that most
-    // needs cancelling is the agent that has gone quiet for twenty minutes.
-    // Racing next() against a poll lets us stop either way, and calling
-    // return() on the iterator is what tears the child process down —
-    // stream-subprocess's return() runs killTree, which on POSIX now signals
-    // the whole process group.
-    const iterator = events[Symbol.asyncIterator]();
-    const CANCEL_POLL_MS = 1_000;
-    // The in-flight next() is held ACROSS polls rather than re-issued.
-    // Racing a fresh iterator.next() each time round drops events: when the
-    // poll wins, the previous next() is still pending, and calling next()
-    // again queues a second pull whose result is the one we read — the first
-    // event resolves into nothing. Losing a `completion` that way leaves a
-    // finished run with no result.json, so the job never reaches a terminal
-    // state and the caller polls a corpse.
-    let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
-    for (;;) {
-      pending ??= iterator.next() as Promise<
-        IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
-      >;
-      const winner = await Promise.race([
-        pending.then((r) => ({ kind: "event" as const, r })),
-        delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
-      ]);
-      if (winner.kind === "poll") {
-        if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
-        cancelled = true;
-        cancelController.abort();
-        // Not awaited: the generator is parked on an await that only settles
-        // once the abort above kills the child, so awaiting return() here
-        // would deadlock on the very thing it is trying to stop.
-        void iterator.return?.().catch(() => undefined);
-        break;
-      }
-      pending = undefined;
-      const next = winner.r;
-      if (next.done) break;
-      if (cancelRequested(jobDir)) {
-        cancelled = true;
-        cancelController.abort();
-        void iterator.return?.().catch(() => undefined);
-        break;
-      }
-      const { event, decision } = next.value;
-      if (decision) finalDecision = decision;
-      if (input.onEvent) {
-        try {
-          input.onEvent(event);
-        } catch {
-          // Progress forwarding is best-effort; the job itself must not fail.
-        }
-      }
-      if (event.type === "stdout" || event.type === "stderr") {
-        try {
-          await appendFile(partialPath, redact(event.chunk), { encoding: "utf8", mode: 0o600 });
-        } catch {
-          // Progress mirroring is best-effort; the final result still lands.
-        }
-      } else if (event.type === "completion") {
-        // Fallback chains yield one completion per attempt; last one wins.
-        finalResult = event.result;
-      }
-      // The events a caller streaming this job needs, in order: answer text
-      // as it arrives, and each attempt's completion. A streaming HTTP request
-      // follows this file instead of the router, which is what gives it a job
-      // record — before, it was the one dispatch path with none, so a dropped
-      // connection or a restart lost work that had finished.
-      if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
-        try {
-          await appendFile(eventsPath, `${redact(JSON.stringify(event))}\n`, {
-            encoding: "utf8",
-            mode: 0o600,
+      // Stream the dispatch so agents polling action=get can watch progress in
+      // stdout.partial.log instead of waiting blind for the final result.
+      const partialPath = path.join(jobDir, "output", "stdout.partial.log");
+      const eventsPath = path.join(jobDir, "output", JOB_EVENTS_LOG);
+      // Cancellation travels DOWN to the child process, not up through the
+      // iterator. Returning from an async generator that is suspended at an
+      // `await` does not take effect until that await settles — which for an
+      // agent CLI gone quiet is never — so the only thing that reliably stops a
+      // silent run is aborting the subprocess (or fetch) directly.
+      const cancelController = new AbortController();
+      // The latest attempt's workspace, so a cancellation can still record it.
+      let workspace: PreparedWorkspace | undefined;
+      const onWorkspace = (ws: PreparedWorkspace): void => {
+        workspace = ws;
+      };
+      const logContext = { jobId: manifest.jobId, ...(manifest.caller ?? {}) };
+      const events = input.service
+        ? state.router.streamTo(input.service, input.prompt, files, workingDir, {
+            ...(hints.safetyProfile !== undefined
+              ? { safetyProfile: hints.safetyProfile }
+              : {}),
+            ...(hints.workspacePolicy !== undefined
+              ? { workspacePolicy: hints.workspacePolicy }
+              : {}),
+            ...(hints.routePolicy !== undefined
+              ? { routePolicy: hints.routePolicy }
+              : {}),
+            ...(hints.model !== undefined ? { model: hints.model } : {}),
+            ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
+            ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
+            defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
+            signal: cancelController.signal,
+            onWorkspace,
+            logContext,
+          })
+        : state.router.stream(input.prompt, files, workingDir, {
+            hints,
+            maxFallbacks: 2,
+            defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,
+            signal: cancelController.signal,
+            onWorkspace,
+            logContext,
           });
-        } catch {
-          // Best-effort, like the partial log; result.json still lands.
+
+      let finalResult: DispatchResult | null = null;
+      let finalDecision: RoutingDecision | null = null;
+      let cancelled = false;
+
+      // Driven through an explicit iterator rather than `for await`, so a
+      // cancellation can interrupt a stream that is producing NOTHING. A
+      // for-await body only runs when an event arrives, and the case that most
+      // needs cancelling is the agent that has gone quiet for twenty minutes.
+      // Racing next() against a poll lets us stop either way, and calling
+      // return() on the iterator is what tears the child process down —
+      // stream-subprocess's return() runs killTree, which on POSIX now signals
+      // the whole process group.
+      const iterator = events[Symbol.asyncIterator]();
+      const CANCEL_POLL_MS = 1_000;
+      // The in-flight next() is held ACROSS polls rather than re-issued.
+      // Racing a fresh iterator.next() each time round drops events: when the
+      // poll wins, the previous next() is still pending, and calling next()
+      // again queues a second pull whose result is the one we read — the first
+      // event resolves into nothing. Losing a `completion` that way leaves a
+      // finished run with no result.json, so the job never reaches a terminal
+      // state and the caller polls a corpse.
+      let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
+      for (;;) {
+        pending ??= iterator.next() as Promise<
+          IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
+        >;
+        const winner = await Promise.race([
+          pending.then((r) => ({ kind: "event" as const, r })),
+          delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
+        ]);
+        if (winner.kind === "poll") {
+          if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
+          cancelled = true;
+          cancelController.abort();
+          // Not awaited: the generator is parked on an await that only settles
+          // once the abort above kills the child, so awaiting return() here
+          // would deadlock on the very thing it is trying to stop.
+          void iterator.return?.().catch(() => undefined);
+          break;
+        }
+        pending = undefined;
+        const next = winner.r;
+        if (next.done) break;
+        if (cancelRequested(jobDir)) {
+          cancelled = true;
+          cancelController.abort();
+          void iterator.return?.().catch(() => undefined);
+          break;
+        }
+        const { event, decision } = next.value;
+        if (decision) finalDecision = decision;
+        if (input.onEvent) {
+          try {
+            input.onEvent(event);
+          } catch {
+            // Progress forwarding is best-effort; the job itself must not fail.
+          }
+        }
+        if (event.type === "stdout" || event.type === "stderr") {
+          try {
+            await appendFile(partialPath, redact(event.chunk), { encoding: "utf8", mode: 0o600 });
+          } catch {
+            // Progress mirroring is best-effort; the final result still lands.
+          }
+        } else if (event.type === "completion") {
+          // Fallback chains yield one completion per attempt; last one wins.
+          finalResult = event.result;
+        }
+        // The events a caller streaming this job needs, in order: answer text
+        // as it arrives, and each attempt's completion. A streaming HTTP request
+        // follows this file instead of the router, which is what gives it a job
+        // record — before, it was the one dispatch path with none, so a dropped
+        // connection or a restart lost work that had finished.
+        if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
+          try {
+            await appendFile(eventsPath, `${redact(JSON.stringify(event))}\n`, {
+              encoding: "utf8",
+              mode: 0o600,
+            });
+          } catch {
+            // Best-effort, like the partial log; result.json still lands.
+          }
         }
       }
-    }
-    if (cancelled) {
-      // Terminal, and deliberately NOT routed through the router's
-      // result/failure path: the router never sees a failure, so a
-      // cancellation cannot charge the route's breaker or failure count for
-      // the caller changing their mind.
+      if (cancelled) {
+        // Terminal, and deliberately NOT routed through the router's
+        // result/failure path: the router never sees a failure, so a
+        // cancellation cannot charge the route's breaker or failure count for
+        // the caller changing their mind.
+        finished = true;
+        await pendingBeat;
+        const reason = await cancelReason(jobDir);
+        const cancelError =
+          reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it finished.";
+        await recordCancelledWorkspace(jobDir, manifest.jobId, workspace, pending, {
+          output: "",
+          service: finalDecision?.service ?? input.service ?? "none",
+          success: false,
+          error: cancelError,
+        }, finalDecision);
+        await updateStatus(jobDir, {
+          jobId: manifest.jobId,
+          status: "cancelled",
+          createdAt: manifest.createdAt,
+          updatedAt: timestamp(),
+          jobDir,
+          ...(input.service !== undefined ? { service: input.service } : {}),
+          success: false,
+          error: cancelError,
+          ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
+          durationMs: Date.now() - started,
+        });
+        logCancelledRun(
+          finalDecision?.service ?? input.service ?? "none",
+          cancelError,
+          Date.now() - started,
+          finalDecision,
+          logContext,
+        );
+        return;
+      }
+
+      const result: DispatchResult = finalResult ?? {
+        output: "",
+        service: input.service ?? "none",
+        success: false,
+        error: "Router stream ended without a completion event",
+      };
+
       finished = true;
       await pendingBeat;
-      const reason = await cancelReason(jobDir);
-      const cancelError =
-        reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it finished.";
-      await recordCancelledWorkspace(jobDir, manifest.jobId, workspace, pending, {
-        output: "",
-        service: finalDecision?.service ?? input.service ?? "none",
-        success: false,
-        error: cancelError,
-      }, finalDecision);
+
+      // Save the patch now, while the workspace still exists: an isolated
+      // workspace lives under the OS temp directory, which Linux clears on
+      // reboot and WSL clears when its VM idles out, so building it lazily on
+      // `diff`/`apply` can find nothing left. Best effort — never fails the job.
+      if (isResolvable(result.workspace)) {
+        await persistWorkspacePatch(jobDir, result.workspace);
+      }
+
+      const payload: JobResultPayload = {
+        jobId: manifest.jobId,
+        result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
+        decision: finalDecision,
+      };
+      await writeFile(path.join(jobDir, "output", "stdout.log"), redact(result.output), { encoding: "utf8", mode: 0o600 });
+      await writeFile(path.join(jobDir, "output", "stderr.log"), redact(result.error ?? ""), { encoding: "utf8", mode: 0o600 });
+      await writeJson(path.join(jobDir, "output", "result.json"), payload);
+      saved = result;
+      await writeFile(
+        path.join(jobDir, "output", "result.md"),
+        redact(result.output || result.error || ""),
+        { encoding: "utf8", mode: 0o600 },
+      );
       await updateStatus(jobDir, {
         jobId: manifest.jobId,
-        status: "cancelled",
+        status: result.success ? "completed" : "failed",
         createdAt: manifest.createdAt,
         updatedAt: timestamp(),
         jobDir,
         ...(input.service !== undefined ? { service: input.service } : {}),
-        success: false,
-        error: cancelError,
+        route: result.service,
+        success: result.success,
+        ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}),
         ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
         durationMs: Date.now() - started,
       });
-      return;
+    } catch (err) {
+      finished = true;
+      await pendingBeat;
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        // Redacted like the success path above — both branches write the same
+        // log and must scrub it the same way.
+        await writeFile(path.join(jobDir, "output", "stderr.log"), redact(message), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        // The run's outcome is already in result.json when a LATER write
+        // fails (result.md, the status update itself). Recording that as a
+        // failed job contradicted the saved result, and a caller told "failed"
+        // retries work that had succeeded. The outcome stands; the write
+        // failure is reported beside it.
+        const warning =
+          saved !== undefined
+            ? `The result was saved, but writing the job's other files failed: ${message}`
+            : undefined;
+        const warnings = [manifest.warning, warning].filter((w): w is string => w !== undefined);
+        await updateStatus(jobDir, {
+          jobId: manifest.jobId,
+          status: saved === undefined ? "failed" : saved.success ? "completed" : "failed",
+          createdAt: manifest.createdAt,
+          updatedAt: timestamp(),
+          jobDir,
+          ...(input.service !== undefined ? { service: input.service } : {}),
+          ...(saved !== undefined ? { route: saved.service } : {}),
+          success: saved?.success ?? false,
+          ...(saved === undefined
+            ? { error: boundedError(message)! }
+            : saved.error !== undefined
+              ? { error: boundedError(saved.error)! }
+              : {}),
+          ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
+          durationMs: Date.now() - started,
+        });
+      } catch {
+        // The job directory can be GONE by the time a failure is recorded —
+        // retention pruning, or a caller that tore down its state mid-run.
+        // There is nowhere to write and no reader left to care; throwing here
+        // would reject `completion`, which is documented to never reject.
+      }
+    } finally {
+      clearInterval(heartbeat);
     }
-
-    const result: DispatchResult = finalResult ?? {
-      output: "",
-      service: input.service ?? "none",
-      success: false,
-      error: "Router stream ended without a completion event",
-    };
-
-    finished = true;
-    await pendingBeat;
-
-    // Save the patch now, while the workspace still exists: an isolated
-    // workspace lives under the OS temp directory, which Linux clears on
-    // reboot and WSL clears when its VM idles out, so building it lazily on
-    // `diff`/`apply` can find nothing left. Best effort — never fails the job.
-    if (isResolvable(result.workspace)) {
-      await persistWorkspacePatch(jobDir, result.workspace);
-    }
-
-    const payload: JobResultPayload = {
-      jobId: manifest.jobId,
-      result: { ...result, ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}) },
-      decision: finalDecision,
-    };
-    await writeFile(path.join(jobDir, "output", "stdout.log"), redact(result.output), { encoding: "utf8", mode: 0o600 });
-    await writeFile(path.join(jobDir, "output", "stderr.log"), redact(result.error ?? ""), { encoding: "utf8", mode: 0o600 });
-    await writeJson(path.join(jobDir, "output", "result.json"), payload);
-    saved = result;
-    await writeFile(
-      path.join(jobDir, "output", "result.md"),
-      redact(result.output || result.error || ""),
-      { encoding: "utf8", mode: 0o600 },
-    );
-    await updateStatus(jobDir, {
-      jobId: manifest.jobId,
-      status: result.success ? "completed" : "failed",
-      createdAt: manifest.createdAt,
-      updatedAt: timestamp(),
-      jobDir,
-      ...(input.service !== undefined ? { service: input.service } : {}),
-      route: result.service,
-      success: result.success,
-      ...(result.error !== undefined ? { error: boundedError(result.error)! } : {}),
-      ...(manifest.warning !== undefined ? { warning: manifest.warning } : {}),
-      durationMs: Date.now() - started,
-    });
-  } catch (err) {
-    finished = true;
-    await pendingBeat;
-    const message = err instanceof Error ? err.message : String(err);
-    try {
-      // Redacted like the success path above — both branches write the same
-      // log and must scrub it the same way.
-      await writeFile(path.join(jobDir, "output", "stderr.log"), redact(message), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      // The run's outcome is already in result.json when a LATER write
-      // fails (result.md, the status update itself). Recording that as a
-      // failed job contradicted the saved result, and a caller told "failed"
-      // retries work that had succeeded. The outcome stands; the write
-      // failure is reported beside it.
-      const warning =
-        saved !== undefined
-          ? `The result was saved, but writing the job's other files failed: ${message}`
-          : undefined;
-      const warnings = [manifest.warning, warning].filter((w): w is string => w !== undefined);
-      await updateStatus(jobDir, {
-        jobId: manifest.jobId,
-        status: saved === undefined ? "failed" : saved.success ? "completed" : "failed",
-        createdAt: manifest.createdAt,
-        updatedAt: timestamp(),
-        jobDir,
-        ...(input.service !== undefined ? { service: input.service } : {}),
-        ...(saved !== undefined ? { route: saved.service } : {}),
-        success: saved?.success ?? false,
-        ...(saved === undefined
-          ? { error: boundedError(message)! }
-          : saved.error !== undefined
-            ? { error: boundedError(saved.error)! }
-            : {}),
-        ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
-        durationMs: Date.now() - started,
-      });
-    } catch {
-      // The job directory can be GONE by the time a failure is recorded —
-      // retention pruning, or a caller that tore down its state mid-run.
-      // There is nowhere to write and no reader left to care; throwing here
-      // would reject `completion`, which is documented to never reject.
-    }
-  } finally {
-    clearInterval(heartbeat);
-  }
+    },
+  );
 }
 
+
+/**
+ * One dispatch-log line for a run that was cancelled.
+ *
+ * A cancel bypasses the router on purpose, so the breaker is never charged for
+ * a caller changing their mind — and that also kept it out of the log, which
+ * the router writes. The runs cancelled for hanging (31-35 minutes of silence,
+ * in the real log) were exactly the ones no latency or success figure could
+ * see. `reason: "cancelled"` marks them; the breaker still never sees them.
+ */
+export function logCancelledRun(
+  route: string,
+  error: string,
+  durationMs: number | undefined,
+  decision: RoutingDecision | null,
+  context: DispatchLogContext,
+): void {
+  logDispatch(
+    route,
+    { output: "", service: route, success: false, error, ...(durationMs !== undefined ? { durationMs } : {}) },
+    // The log takes its `reason` from the decision. A run cancelled before
+    // the router decided anything has none, so this one carries only that.
+    { ...(decision ?? {}), reason: "cancelled" } as RoutingDecision,
+    context,
+  );
+}
 
 /** How often a live background run bumps its status file's updatedAt. */
 const HEARTBEAT_INTERVAL_MS = 15_000;

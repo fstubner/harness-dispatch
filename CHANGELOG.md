@@ -26,6 +26,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Cancelling an orphaned job now stops the agent it left running.** A running
+  job records the processes it starts in its status; when its supervisor dies,
+  `job_status` names them and `cancel_job` (or `retry_job`, which cancels
+  first) kills them, after checking each is still the same process and not a
+  reused pid. Before, nothing knew their pids and the cancel killed nothing.
+
+- **Cancelled runs appear in the dispatch log**, with `reason: "cancelled"`, the
+  job id and who asked. A cancel bypasses the router so the route is not
+  charged a failure, and that had kept it out of the log as well.
+
 - **A queued job says where it stands.** `job_status` on a job waiting for a
   concurrency slot now gives its place in the queue (`queuePosition`), the jobs
   holding the slots it waits for (`waitingOn`), and says so in its
