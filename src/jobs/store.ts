@@ -343,10 +343,29 @@ export async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(filePath, "utf8")) as T;
 }
 
+/**
+ * The on-disk shape of status.json and manifest.json, written into both as
+ * `v`. Compatibility was by tolerant parsing alone, so a file written by a
+ * newer build was read by an older one as if it meant the same thing. Bump it
+ * when a field changes meaning, not when one is added; a missing `v` is 1.
+ */
+export const JOB_FORMAT_VERSION = 1;
+
+/** Why this build must not act on a job record, or undefined if it may. */
+export function newerFormatError(record: { v?: unknown }, jobId: string): string | undefined {
+  const v = record.v;
+  if (typeof v !== "number" || v <= JOB_FORMAT_VERSION) return undefined;
+  return (
+    `Job ${jobId} was written by a newer harness-dispatch (job format v${v}; this build ` +
+    `understands v${JOB_FORMAT_VERSION}). Upgrade harness-dispatch to read or run it.`
+  );
+}
+
 export async function updateStatus(jobDir: string, status: JobStatus): Promise<void> {
   try {
     await writeJson(path.join(jobDir, "status.json"), {
       ...status,
+      v: JOB_FORMAT_VERSION,
       updatedAt: timestamp(),
     });
   } catch (err) {

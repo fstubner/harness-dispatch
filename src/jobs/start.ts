@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { buildContextPreamble } from "./context.js";
 import {
+  JOB_FORMAT_VERSION,
   jobsRoot,
   markPending,
   newJobId,
@@ -78,6 +79,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   const createdAt = timestamp();
   const warning = workingDirWarning(resolvedWorkingDir);
   const manifest: JobManifest = {
+    v: JOB_FORMAT_VERSION,
     jobId,
     createdAt,
     workingDir: resolvedWorkingDir.workingDir,

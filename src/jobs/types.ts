@@ -62,6 +62,8 @@ export interface StartJobInput {
 }
 
 export interface JobStatus {
+  /** On-disk format — see JOB_FORMAT_VERSION. */
+  v?: number;
   jobId: string;
   /**
    * "orphaned" is USUALLY computed on read rather than written: a status file
@@ -134,6 +136,8 @@ export interface JobChild {
 }
 
 export interface JobManifest {
+  /** On-disk format — see JOB_FORMAT_VERSION. */
+  v?: number;
   jobId: string;
   createdAt: string;
   workingDir: string;

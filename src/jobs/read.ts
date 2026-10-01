@@ -17,6 +17,7 @@ import {
   JOB_ID_RE,
   jobsRoot,
   mapBounded,
+  newerFormatError,
   pollInstructions,
   readJson,
   SUGGESTED_POLL_SECONDS,
@@ -61,7 +62,10 @@ export async function getAsyncJob(
   let result: JobResultPayload | undefined;
   try {
     manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
-    status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
+    status = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+    const newer = newerFormatError(manifest, jobId) ?? newerFormatError(status, jobId);
+    if (newer !== undefined) throw new Error(newer);
+    status = withOrphanCheck(status);
     const resultPath = path.join(jobDir, "output", "result.json");
     result = existsSync(resultPath) ? await readJson<JobResultPayload>(resultPath) : undefined;
   } catch (err) {

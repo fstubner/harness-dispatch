@@ -23,6 +23,7 @@ import {
   mapBounded,
   markPending,
   mayHavePendingJobs,
+  newerFormatError,
   pendingIndexDir,
   jobMaxAgeMs,
   jobsRoot,
@@ -248,6 +249,8 @@ async function claimNextJob(): Promise<string | undefined> {
   for (const { jobDir, status } of statuses) {
     if (status.slotQueued) continue;
     if (status.status !== "queued") continue;
+    // A job a newer build wrote may mean something this code does not know.
+    if (newerFormatError(status, status.jobId) !== undefined) continue;
     // Claiming a cancelled job would start work someone already asked to stop.
     if (cancelRequested(jobDir)) continue;
     if (!(await claimJobDir(jobDir, status))) continue;
@@ -398,6 +401,9 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
  */
 async function stillWaiting(jobDir: string): Promise<JobStatus | undefined> {
   const now = await readJson<JobStatus>(path.join(jobDir, "status.json")).catch(() => undefined);
+  // Not released or written back by this build if a newer one wrote it:
+  // rewriting it would stamp it with this build's older format.
+  if (now !== undefined && newerFormatError(now, now.jobId) !== undefined) return undefined;
   return now?.slotQueued === true && now.status === "queued" ? now : undefined;
 }
 
