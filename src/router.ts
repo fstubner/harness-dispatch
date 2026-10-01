@@ -1331,7 +1331,8 @@ export class Router {
       if (current) shared.restore(current);
       if (result.success) {
         shared.recordSuccess();
-      } else if (result.rateLimited) {
+      } else if (result.rateLimited || result.environmentFault) {
+        // Both say the next attempt would fail the same way, and for how long.
         shared.trip(result.retryAfter);
       } else {
         shared.recordFailure(result.retryAfter);

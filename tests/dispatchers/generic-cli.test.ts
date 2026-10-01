@@ -1463,4 +1463,53 @@ describe("how a CLI route fails (audit 5, order B)", () => {
     expect(res.error).toMatch(/raise idle_timeout_ms/);
     expect(res.output).toContain("turn.started");
   });
+
+  // The real job this was found on (job-1790462230645-0e28313c, abridged):
+  // one command outside the repository completed, the sandbox refused the
+  // only repository command, and the run was recorded as a success.
+  const okCommand =
+    '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"pwsh -Command \\"Get-Content -Raw SKILL.md\\"",' +
+    '"aggregated_output":"---\\nname: engineering-assessment","exit_code":0,"status":"completed"}}';
+  const refusedCommand =
+    '{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"pwsh -Command \\"git show 1ccb427\\"",' +
+    '"aggregated_output":"execution error: Io(Custom { kind: Other, error: \\"windows sandbox: runner failed during SpawnChild: ' +
+    'CreateProcessAsUserW failed: 5 (Access is denied.)\\" })","exit_code":-1,"status":"failed"}}';
+  const refusalLog = [
+    "2026-09-26T22:43:27.772511Z ERROR codex_core::exec: exec error: windows sandbox: runner failed during SpawnChild: CreateProcessAsUserW failed: 5 (Access is denied.) | cwd=H:\\repo",
+    '2026-09-26T22:43:27.773551Z ERROR codex_core::tools::router: error=execution error: Io(Custom { kind: Other, error: "windows sandbox: runner failed during SpawnChild: CreateProcessAsUserW failed: 5 (Access is denied.)',
+  ].join("\n");
+  const answer =
+    '{"type":"item.completed","item":{"id":"item_5","type":"agent_message","text":"I could not complete the audit."}}';
+
+  it("fails a run whose one completed command does not outweigh the refusals", () => {
+    expect(detectHarnessEnvironmentFailure([okCommand, refusedCommand, answer].join("\n"), refusalLog)).toMatch(
+      /could not spawn any child process/,
+    );
+  });
+
+  it("still passes a run that completed many commands around an intermittent refusal", () => {
+    // The shape of the six healthy runs: dozens completed, a few refused, and
+    // the last command refused (which a "completions after the last refusal"
+    // rule would have failed).
+    const stream = [
+      ...Array.from({ length: 22 }, () => okCommand),
+      ...Array.from({ length: 9 }, () => refusedCommand),
+      answer,
+    ];
+    expect(detectHarnessEnvironmentFailure(stream.join("\n"), refusalLog)).toBeUndefined();
+  });
+
+  it("trips the route for half an hour, not as an ordinary failure", async () => {
+    mockFound();
+    scripted([
+      { stream: "stdout", chunk: [okCommand, refusedCommand, answer].join("\n") + "\n" },
+      { stream: "stderr", chunk: refusalLog },
+    ]);
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.environmentFault).toBe(true);
+    expect(res.retryAfter).toBe(30 * 60);
+    expect(res.rateLimited).toBeUndefined();
+  });
 });

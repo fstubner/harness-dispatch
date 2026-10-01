@@ -164,14 +164,25 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   // occurrences on stdout followed by a wall of stderr noise would otherwise
   // fall off the end of a single joined tail.
   const lines = streams.flatMap((s) => rateLimitScanTail(s).split(/\r?\n/));
-  const diagnostics = lines.filter((line) => /CreateProcessAsUserW failed:\s*\d+/i.test(line));
-  // "Could not spawn ANY child" is disproved by one that ran. Codex's sandbox
-  // refuses spawns intermittently, and logs each refusal on TWO lines, so a
-  // single refusal met the threshold: all six of one day's real Codex runs
-  // were failed this way, each after 22 to 45 commands that completed and an
-  // answer citing the files they read. The harness's own event stream says
-  // which commands completed, so ask it.
-  if (diagnostics.length >= 2 && !streams.some(reportsACompletedCommand)) {
+  const diagnostics = lines.filter((line) => SANDBOX_REFUSAL_RE.test(line));
+  // Codex's sandbox refuses spawns INTERMITTENTLY, and logs each refusal on
+  // two lines, so the diagnostic count alone failed healthy runs: all six of
+  // one day's real Codex runs, each after 22 to 45 commands that completed
+  // and an answer citing the files they read. The harness's own event stream
+  // says which commands completed and which were refused, so ask it.
+  //
+  // Weighed, not "any completed command": that rule let ONE exit-0 command —
+  // reading a skill file outside the repository, before the sandbox refused
+  // the only repository command — mark a run that read nothing a success.
+  // Nor "completions after the last refusal", which refusals near the end of
+  // a healthy run defeat. Replayed against the 35 real job streams on disk
+  // that carry the diagnostic (2026-10-01), this rule fails exactly the 15
+  // whose answers say they could not read or run anything, and passes the
+  // other 20, the six above among them: the closest call was 15 refused
+  // against 14 completed, an answer citing specific files and lines.
+  // MIN_COMPLETED_COMMANDS is a handful: too few to have read a codebase.
+  const { completed, refused } = countCommandOutcomes(streams);
+  if (diagnostics.length >= 2 && refused >= completed && completed < MIN_COMPLETED_COMMANDS) {
     return (
       "the harness could not spawn any child process — its sandbox refused " +
       "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
@@ -183,15 +194,37 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   return undefined;
 }
 
+const SANDBOX_REFUSAL_RE = /CreateProcessAsUserW failed:\s*\d+/i;
+
+/** See detectHarnessEnvironmentFailure. */
+const MIN_COMPLETED_COMMANDS = 5;
+
 /**
- * Does this transcript show a command the harness ran to a clean exit?
+ * How long the breaker leaves a route alone after its sandbox refused to start
+ * anything. The refusals come in clusters (seven refused runs started within
+ * five minutes of each other on 2026-09-26, in the job store), so the default
+ * 300 s only paid for the next doomed attempt; half an hour skips a cluster
+ * without parking the route for the day.
+ */
+export const ENVIRONMENT_FAULT_COOLDOWN_SEC = 30 * 60;
+
+/**
+ * Shell commands the harness ran to a clean exit, and ones its sandbox refused.
  *
  * Codex's JSON event stream reports every shell command as a
- * `command_execution` item with its exit code. Other harnesses print nothing
- * matching, and for them the diagnostic count alone decides, as before.
+ * `command_execution` item with its exit code; a refused one completes with
+ * the diagnostic in its output. Other harnesses print nothing matching, so
+ * both counts are 0 and the diagnostic count alone decides, as before.
  */
-function reportsACompletedCommand(stream: string): boolean {
-  return /"type":"command_execution"[^\n]*"exit_code":0[,}]/.test(stream);
+function countCommandOutcomes(streams: string[]): { completed: number; refused: number } {
+  let completed = 0;
+  let refused = 0;
+  for (const line of streams.flatMap((s) => s.split("\n"))) {
+    if (!line.includes('"type":"command_execution"')) continue;
+    if (/"exit_code":0[,}]/.test(line)) completed += 1;
+    else if (line.includes('"type":"item.completed"') && SANDBOX_REFUSAL_RE.test(line)) refused += 1;
+  }
+  return { completed, refused };
 }
 
 /**
@@ -1194,6 +1227,10 @@ export class GenericCliDispatcher extends BaseDispatcher {
     if (rateLimited) {
       result.rateLimited = true;
       if (retryAfter !== null) result.retryAfter = retryAfter;
+    } else if (envFailure !== undefined) {
+      // Not this run's bad luck: the sandbox refuses every attempt for a while.
+      result.environmentFault = true;
+      result.retryAfter = ENVIRONMENT_FAULT_COOLDOWN_SEC;
     }
     if (tokensUsed) result.tokensUsed = tokensUsed;
     yield { type: "completion", result };
