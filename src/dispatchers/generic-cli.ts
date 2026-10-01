@@ -844,6 +844,26 @@ export class GenericCliDispatcher extends BaseDispatcher {
       if (envVar === protocol.apiKeyEnvVar) continue;
       if (process.env[envVar]) extraEnv[envVar] = "";
     }
+    // Credentials no route's config names, which the delegate still has no
+    // business holding. The first four silently move a subscription route
+    // onto metered billing — Codex reads CODEX_API_KEY / CODEX_ACCESS_TOKEN,
+    // Claude Code ANTHROPIC_AUTH_TOKEN and the Bedrock/Vertex switches — while
+    // the route stays classified product_login, so spend could start with no
+    // `allow_paid_usage` opt-in. The HTTP token is this server's own, and
+    // GITHUB_TOKEN reached every delegate too (audit5 F5). A route that names
+    // one as its own api_key_env_var still gets it, set below.
+    for (const envVar of [
+      "CODEX_API_KEY",
+      "CODEX_ACCESS_TOKEN",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "HARNESS_DISPATCH_HTTP_TOKEN",
+      "GITHUB_TOKEN",
+    ]) {
+      if (envVar === protocol.apiKeyEnvVar) continue;
+      if (process.env[envVar]) extraEnv[envVar] = "";
+    }
     if (protocol.apiKeyEnvVar) {
       if (this.apiKey) {
         extraEnv[protocol.apiKeyEnvVar] = this.apiKey;
@@ -851,6 +871,32 @@ export class GenericCliDispatcher extends BaseDispatcher {
         extraEnv[protocol.apiKeyEnvVar] = "";
       }
     }
+    // Mark the child as delegated work, one level deeper than this process.
+    // A delegate with shell, or with this server among its MCP servers, can
+    // dispatch again, and nothing bounded that (audit5 F7). One level of
+    // nesting is allowed; a delegate's delegate cannot start another agent.
+    const maxDepth = 2;
+    const depth = Number.parseInt(process.env["HARNESS_DISPATCH_DEPTH"] ?? "0", 10) || 0;
+    if (depth >= maxDepth) {
+      yield {
+        type: "completion",
+        result: {
+          output: "",
+          service: this.id,
+          success: false,
+          error:
+            `refused: this dispatch comes from an agent that was itself started by a dispatch ` +
+            `of a dispatch (HARNESS_DISPATCH_DEPTH=${depth}), and nesting stops at ` +
+            `${maxDepth} levels so delegates cannot start agents without bound. ` +
+            `Do the work directly instead.`,
+          // Not the route's fault, so not the route's failure.
+          inputRejected: true,
+          durationMs: 0,
+        },
+      };
+      return;
+    }
+    extraEnv["HARNESS_DISPATCH_DEPTH"] = String(depth + 1);
 
     // Arguments a Windows command shim would mangle or execute, refused before
     // spawning. See unsafeForCmdShim.

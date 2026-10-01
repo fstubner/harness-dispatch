@@ -14,6 +14,7 @@ import { GenericCliDispatcher } from "../dispatchers/generic-cli.js";
 import { OpenAICompatibleDispatcher } from "../dispatchers/openai-compatible.js";
 import type { Dispatcher } from "../dispatchers/base.js";
 import { PROTOCOL_PRESETS } from "../harness-presets.js";
+import { collectSecrets } from "../redaction.js";
 import type { RouterConfig, ServiceConfig } from "../types.js";
 
 /**
@@ -45,11 +46,30 @@ export function collectApiKeyEnvVars(config: RouterConfig): ReadonlySet<string> 
   // documented shape) and `envRefs` stores the original string as its key, so
   // an anchored match would miss a key embedded in a larger string and leave it
   // visible to every spawned CLI.
+  //
+  // But only a variable that HOLDS a credential. `${VAR}` is legal in any
+  // string value, so blanking every reference also blanked `${LOCALAPPDATA}`
+  // in a `command:` or `${HOME}` in a path, in every child (audit4 A1-1,
+  // measured: the probe route's child saw LOCALAPPDATA=""). A variable is a
+  // credential when its value is one the config holds as a secret — exactly
+  // what redaction scrubs (collectSecrets: api keys, and credential parts of
+  // a base_url) — or when it is written as a route's `api_key`.
+  const secrets = new Set(collectSecrets(config));
+  const apiKeyRefs = [
+    ...(config.apiKeyRefs?.values() ?? []),
+    ...[...(config.fieldRefs?.values() ?? [])].map((r) => r.apiKey ?? ""),
+  ];
   const REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   for (const ref of config.envRefs?.values() ?? []) {
     for (const match of ref.matchAll(REF_RE)) {
       const name = match[1];
-      if (name) vars.add(name);
+      const value = name === undefined ? undefined : process.env[name]?.trim();
+      if (name && value !== undefined && secrets.has(value)) vars.add(name);
+    }
+  }
+  for (const ref of apiKeyRefs) {
+    for (const match of ref.matchAll(REF_RE)) {
+      if (match[1]) vars.add(match[1]);
     }
   }
   return vars;

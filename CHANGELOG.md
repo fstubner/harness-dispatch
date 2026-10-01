@@ -552,6 +552,27 @@ pre-1.0, so minor versions can carry behaviour changes.
   for that profile unless you override the floor; `read_only` and `full_auto`
   are unchanged.
 
+- **Delegates no longer inherit credentials that switch billing or belong to
+  this server.** `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` are blanked for every
+  agent CLI (each can move a subscription route onto metered billing without
+  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN` and
+  `GITHUB_TOKEN`. A route that names one of them as its own
+  `api_key_env_var` still receives it. A delegate that needs GitHub access uses
+  the `gh` login stored on the machine rather than the inherited token.
+
+- **Only `${VAR}`s that hold a credential are hidden from delegates.** Every
+  variable named anywhere in `config.yaml` was blanked in every agent's
+  environment, so `command: ${LOCALAPPDATA}\...` on one route emptied
+  `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
+  `api_key`, or holds a value the config treats as a secret.
+
+- **Dispatches can nest only one level.** Every agent harness-dispatch starts
+  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate can still dispatch (it may
+  have this server among its own MCP servers, or a shell), but an agent it
+  starts that way cannot start another: the dispatch is refused with an
+  explanation and does not count against the route.
+
 ## [0.11.0] — 2026-09-11
 
 ### Security
