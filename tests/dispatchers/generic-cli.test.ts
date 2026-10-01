@@ -1530,4 +1530,88 @@ describe("how a CLI route fails (audit 5, order B)", () => {
     expect(res.error).toMatch(/Retry without hints\.model/);
     expect(res.error).toMatch(/retry_job with service set to another route/);
   });
+
+  it("reads is_error from a JSON body that follows a banner line (A1-3)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: 'Update available: 1.2.3\n{"is_error":true,"result":"API Error: 500 overloaded"}', exitCode: 0 }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        successRequiresOutput: false,
+        output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("API Error: 500 overloaded");
+  });
+
+  it("keeps stdout's is_error when the answer text came from stderr's JSON (A1-9)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: '{"is_error":true,"result":""}', stderr: '{"result":"some text"}', exitCode: 0 }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        successRequiresOutput: false,
+        output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+  });
+
+  it("lets an answer that follows a recovered error frame stand (A1-4)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: [
+          '{"type":"error","message":"transient upstream error"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"All done."}}',
+        ].join("\n"),
+        exitCode: 0,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(true);
+    expect(res.output).toBe("All done.");
+  });
+
+  it("still fails when the error comes after the answer (A1-4)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: [
+          '{"type":"item.completed","item":{"type":"agent_message","text":"Partial."}}',
+          '{"type":"turn.failed","error":{"message":"stream disconnected"}}',
+        ].join("\n"),
+        exitCode: 0,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("stream disconnected");
+  });
+});
+
+describe("the POSIX command-line budget is per argument (A1-5)", () => {
+  const realPlatform = process.platform;
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: realPlatform });
+  });
+
+  it("measures the longest argument, not the sum of all of them", async () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const { __commandLineLengthForTest } = (await import("../../src/dispatchers/generic-cli.js")) as unknown as {
+      __commandLineLengthForTest: (c: string, a: string[]) => number;
+    };
+    // Three 60 KB arguments each fit MAX_ARG_STRLEN (128 KiB); their sum does not.
+    const arg = "x".repeat(60 * 1024);
+    expect(__commandLineLengthForTest("/usr/bin/agy", [arg, arg, arg])).toBe(60 * 1024);
+  });
 });

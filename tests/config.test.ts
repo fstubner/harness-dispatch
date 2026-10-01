@@ -1150,6 +1150,34 @@ clis:
     expect(cfg.services.claude_default!.idleTimeoutMs).toBeUndefined();
   });
 
+  it("protocol.extends merges endpoint_native_args per provider instead of dropping the preset's", async () => {
+    // `endpoint_native_args: {}`, or an entry for one other provider, replaced
+    // the whole map and silently lost the preset's ollama/lmstudio arguments.
+    const yamlText = `
+clis:
+  - name: empty_map
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      endpoint_native_args: {}
+  - name: one_provider
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      endpoint_native_args:
+        vllm: ["--oss", "--local-provider", "vllm"]
+`;
+    const p = await writeTmpYaml("clis-generic-extends-native-args.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const ollama = ["--oss", "--local-provider", "ollama"];
+    expect(cfg.services.empty_map!.protocol?.endpointNativeArgs?.ollama).toEqual(ollama);
+    const one = cfg.services.one_provider!.protocol?.endpointNativeArgs as Record<string, string[]>;
+    expect(one.vllm).toEqual(["--oss", "--local-provider", "vllm"]);
+    expect(one.ollama).toEqual(ollama);
+  });
+
   it("skips protocol.extends with an unrecognized preset name, with a warning", async () => {
     const yamlText = `
 clis:

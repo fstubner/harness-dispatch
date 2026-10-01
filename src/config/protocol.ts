@@ -247,17 +247,18 @@ export function parseProtocolFields(
     protocol.successRequiresOutput = base.successRequiresOutput;
   }
 
+  // Merged per provider over the preset's, like `safety:` above. Replacing the
+  // whole map meant `endpoint_native_args: {}`, or one entry for another
+  // provider, silently dropped the preset's ollama/lmstudio arguments.
   const endpointNativeArgsRaw = r.endpoint_native_args;
+  const ena: Partial<Record<EndpointProvider, string[]>> = { ...base?.endpointNativeArgs };
   if (endpointNativeArgsRaw !== null && typeof endpointNativeArgsRaw === "object") {
-    const ena: Partial<Record<EndpointProvider, string[]>> = {};
     for (const [k, v] of Object.entries(endpointNativeArgsRaw as Record<string, unknown>)) {
       const args2 = stringArrayFrom(v);
       if (args2 !== undefined) ena[k as EndpointProvider] = args2;
     }
-    if (Object.keys(ena).length > 0) protocol.endpointNativeArgs = ena;
-  } else if (base?.endpointNativeArgs) {
-    protocol.endpointNativeArgs = base.endpointNativeArgs;
   }
+  if (Object.keys(ena).length > 0) protocol.endpointNativeArgs = ena;
 
   // Placeholder sanity checks on the FINAL merged args (so `extends:` results
   // are covered too). A typo'd placeholder is the most likely user error in a

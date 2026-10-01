@@ -439,7 +439,11 @@ function commandLineLength(command: string, args: string[]): number {
     // and the spawn dies with E2BIG. Reachable in practice: the guard only
     // runs when a protocol does NOT use stdin, and antigravity_cli puts the
     // prompt in argv while advertising a two-million-token input.
-    return args.reduce((n, a) => n + Buffer.byteLength(a, "utf8") + 1, Buffer.byteLength(command, "utf8"));
+    //
+    // The LONGEST argument, because that is what POSIX_ARG_MAX bounds. Summing
+    // them all measured a different quantity against it, and refused a prompt
+    // plus file paths that each fit.
+    return args.reduce((n, a) => Math.max(n, Buffer.byteLength(a, "utf8")), Buffer.byteLength(command, "utf8"));
   }
   if (commandLineBudget(command) !== WINDOWS_CMD_SHIM_MAX) {
     // Straight to CreateProcess: the same quoting, without cmd.exe's escaping.
@@ -489,14 +493,33 @@ function extractField(obj: unknown, fields: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * The JSON body a harness printed, or undefined.
+ *
+ * Whole text first; failing that, the LAST line that parses as an object. A
+ * CLI that prints a banner or a warning line before its JSON otherwise had no
+ * parseable body at all, so `is_error: true` was never read and a lenient
+ * route returned the raw error JSON as a successful answer.
+ */
 function parseJsonBlob(source: string): unknown {
   const trimmed = source.trim();
   if (!trimmed) return undefined;
   try {
     return JSON.parse(trimmed);
   } catch {
-    return undefined;
+    // Fall through to the line-by-line search.
   }
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      // Not this one.
+    }
+  }
+  return undefined;
 }
 
 /** Unique parent directories of absolute file paths, excluding workingDir itself — same rule for every harness. */
@@ -586,7 +609,7 @@ class JsonlAccumulator {
    * it never decides success, so a benign frame cannot fail a healthy run.
    */
   lastEventType: string | undefined;
-  /** Set by the first matching emit: "error" rule; last one wins if several match across the stream. */
+  /** Set by a matching emit: "error" rule; cleared by a later answer (emit: "text"). Last one wins. */
   errorMessage: string | undefined;
 
   constructor(private readonly rules: CliEventRule[]) {}
@@ -620,7 +643,16 @@ class JsonlAccumulator {
   #apply(rule: CliEventRule, event: unknown): DispatcherEvent[] {
     if (rule.emit === "text") {
       const text = rule.textField ? getPath(event, rule.textField) : undefined;
-      if (typeof text === "string" && text.length > 0) this.lastText = text;
+      if (typeof text === "string" && text.length > 0) {
+        this.lastText = text;
+        // The stream's last word decides. An error frame was sticky, so a run
+        // that reported an error, recovered and went on to answer was failed.
+        // Not yet seen for real (every top-level Codex `error` frame in the
+        // job store on 2026-10-01 was a usage limit, with no answer after
+        // it), so this only matters for a harness that does recover. An error
+        // AFTER the answer still sets it again below.
+        this.errorMessage = undefined;
+      }
       return [];
     }
 
@@ -1146,8 +1178,15 @@ export class GenericCliDispatcher extends BaseDispatcher {
             usageSource = stderrJson ?? stdoutJson;
           }
           tokensUsed = readUsage(usageSource, protocol.output.usage) ?? tokensUsed;
+          // Both bodies, stdout first: switching usageSource to stderr's JSON
+          // (because stdout's carried no text) used to drop an `is_error: true`
+          // that stdout's body DID carry, and the run reported success.
           structuredError =
-            readStructuredError(usageSource, protocol.output.error, fields) ?? structuredError;
+            readStructuredError(stdoutJson, protocol.output.error, fields) ??
+            (usageSource !== stdoutJson
+              ? readStructuredError(usageSource, protocol.output.error, fields)
+              : undefined) ??
+            structuredError;
           break;
         }
         case "jsonl_stream": {
