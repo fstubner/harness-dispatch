@@ -184,8 +184,6 @@ pre-1.0, so minor versions can carry behaviour changes.
   read-only, `cancel_job` and `workspace` destructive, so a client can approve
   polling without asking each time.
 
-### Fixed
-
 - **A streamed request that failed no longer ends as an empty success.** A
   cancelled or crashed single-route stream, and a streamed fanout whose every
   arm failed, ended with `finish_reason: "stop"` and `[DONE]`; they now end with
@@ -240,8 +238,6 @@ pre-1.0, so minor versions can carry behaviour changes.
   success. An exit-0 run with an empty answer is now a failure, not the raw
   event stream returned as the answer.
 
-### Fixed
-
 - **A usage limit is waited out until the time the provider stated.** Codex's
   "try again at Sep 26th, 2026 1:34 PM" and Claude Code's "resets 1:30am
   (Europe/Dublin)" now set how long the route is skipped (at most 24 hours at a
@@ -291,8 +287,10 @@ pre-1.0, so minor versions can carry behaviour changes.
   reused pid. Before, nothing knew their pids and the cancel killed nothing.
 
 - **Cancelled runs appear in the dispatch log**, with `reason: "cancelled"`, the
-  job id and who asked. A cancel bypasses the router so the route is not
-  charged a failure, and that had kept it out of the log as well.
+  job id and who asked, and no `scores` (a run cancelled before routing scored
+  nothing, and its row had read `"scores":{}`). A cancel bypasses the router so
+  the route is not charged a failure, and that had kept it out of the log as
+  well.
 
 - **A queued job says where it stands.** `job_status` on a job waiting for a
   concurrency slot now gives its place in the queue (`queuePosition`), the jobs
