@@ -17,6 +17,8 @@ import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
 import { initObservability } from "../observability/index.js";
 import { VERSION } from "../version.js";
+import { scrubSecrets, collectSecrets } from "../redaction.js";
+import type { RouterConfig } from "../types.js";
 
 const SERVER_NAME = "harness-dispatch";
 const SERVER_VERSION = VERSION;
@@ -51,6 +53,31 @@ const SERVER_INSTRUCTIONS =
   "harness-dispatch://status or harness-dispatch://status.json for route readiness, " +
   "billing policy, and safety detail.";
 
+/**
+ * What a connecting agent is told: the server's own instructions, then the
+ * operator's from config.yaml — a top-level `instructions:` block and each
+ * enabled route's `instructions:`. Written once in config, this reaches every
+ * client, instead of being repeated in each one's own instruction file.
+ *
+ * Read when a session connects, so an edit reaches new sessions only. Secret
+ * values are scrubbed: config is interpolated as a whole, so a `${VAR}` in
+ * this text would otherwise expand to the variable's value.
+ */
+export function serverInstructions(config: RouterConfig | undefined): string {
+  if (config === undefined) return SERVER_INSTRUCTIONS;
+  const parts = [SERVER_INSTRUCTIONS];
+  if (config.instructions !== undefined) {
+    parts.push(`Operator instructions for this machine (from its config.yaml):\n${config.instructions}`);
+  }
+  const perRoute = Object.entries(config.services)
+    .filter(([, svc]) => svc.enabled !== false && svc.instructions !== undefined)
+    .map(([id, svc]) => `- ${id}: ${svc.instructions}`);
+  if (perRoute.length > 0) {
+    parts.push(`Operator instructions per route (also shown in \`usage\`):\n${perRoute.join("\n")}`);
+  }
+  return scrubSecrets(parts.join("\n\n"), collectSecrets(config));
+}
+
 // ---------------------------------------------------------------------------
 // Builder — shared between stdio and HTTP entry points
 // ---------------------------------------------------------------------------
@@ -81,7 +108,7 @@ export function buildMcpServerInstance(
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { instructions: SERVER_INSTRUCTIONS },
+    { instructions: serverInstructions(holder.state.config) },
   );
   // BEFORE registerTools: the SDK installs its CallTool handler on the first
   // tool registration, and this wraps that handler as it goes in. See

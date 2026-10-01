@@ -192,6 +192,36 @@ edit the written file for those.
 The current command is conservative: it prints detected routes by default and writes
 only when explicitly asked with `--yes`.
 
+## Instructions for connecting agents
+
+Routing policy for this machine — which model tier for which kind of task, which
+route to prefer — can live in `config.yaml` instead of in every client's own
+instruction file (CLAUDE.md, AGENTS.md and the like):
+
+```yaml
+instructions: |              # told to every agent that connects
+  Prefer Codex for refactors; keep the strongest models for hard judgment.
+
+overrides:                   # an auto-detected route
+  claude_code_cli:
+    instructions: "haiku for sweeps, sonnet for most work, opus only for hard judgment"
+endpoints:
+  - name: local_box
+    base_url: http://127.0.0.1:1234/v1
+    instructions: "one model loaded; leave hints.model unset"
+```
+
+- The server sends its own instructions to every agent when it connects, and
+  appends these: the top-level block, then each enabled route's, listed by route
+  id. A route's text is also returned for that route by the `usage` tool.
+- `instructions:` works on `clis:`, `endpoints:`, `overrides:` and legacy
+  `services:` entries.
+- Each value is capped at 1,000 characters; longer text is cut, with a warning.
+  Every connected session carries this text in its context.
+- It is read when a session connects: an edit reaches sessions that connect
+  afterwards, not ones already open.
+- A secret the config holds (an API key, say) is scrubbed from this text.
+
 ## Endpoint Modes
 
 harness-dispatch supports two local/custom endpoint patterns:

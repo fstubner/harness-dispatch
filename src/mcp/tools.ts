@@ -972,7 +972,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "harness as-is, so a wrong model name fails at the harness rather than here. " +
         "Each route also includes modelHint (where that harness's real model catalog " +
         "is documented or listed live) and, when the operator declared one, models: " +
-        "a list of known-good ids. For OpenAI-compatible endpoint routes, pass " +
+        "a list of known-good ids, and instructions: the operator's policy for that " +
+        "route (which model for which kind of task, for instance) — follow it. " +
+        "For OpenAI-compatible endpoint routes, pass " +
         "listModels: <route id> to fetch the endpoint's live GET /models catalog " +
         "server-side and get the real ids back under liveModels — use these to pick " +
         "a real model up front or self-correct after a dispatch failure caused by an " +
