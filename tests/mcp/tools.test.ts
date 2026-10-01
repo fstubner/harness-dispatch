@@ -873,7 +873,7 @@ describe("MCP tools — dispatch", () => {
 
     const started = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir },
+      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const startData = started.data as {
@@ -1056,6 +1056,24 @@ describe("MCP tools — dispatch", () => {
     expect(existsSync(runningJobDir)).toBe(true);
   });
 
+  it("warns when hints.taskType is omitted, as it does for workingDir", async () => {
+    // The tool text says routing quality degrades without it; before, the reply
+    // looked identical to a correct call.
+    const holder = buildHolder(
+      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
+    );
+    const without = await invokeTool("dispatch", { prompt: "hi", workingDir: workDir }, { holder });
+    expect((without.data as { warning?: string }).warning).toMatch(/hints\.taskType was not provided/);
+
+    const withIt = await invokeTool(
+      "dispatch",
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
+      { holder },
+    );
+    expect((withIt.data as { warning?: string }).warning).toBeUndefined();
+  });
+
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
     const holder = buildHolder(
       { a: makeService("a", { leaderboardModel: "a-model" }) },
@@ -1068,7 +1086,7 @@ describe("MCP tools — dispatch", () => {
 
     const withWorkingDir = await invokeTool(
       "dispatch",
-      { prompt: "hi", workingDir: workDir },
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const withData = withWorkingDir.data as { warning?: string };
@@ -1298,6 +1316,19 @@ describe("MCP tools — usage listModels", () => {
     const r = await invokeTool("usage", { listModels: "does_not_exist" }, { holder });
     const data = r.data as { liveModels: { route: string; error?: string } };
     expect(data.liveModels.error).toContain("unknown route");
+  });
+
+  it("does not read prototype keys as routes, and answers an empty listModels", async () => {
+    const holder = buildHolder({}, {});
+    for (const id of ["constructor", "toString", "__proto__"]) {
+      const r = await invokeTool("usage", { listModels: id }, { holder });
+      const data = r.data as { liveModels: { error?: string } };
+      expect(data.liveModels.error, id).toContain("unknown route");
+    }
+    // "" used to be falsy and silently skipped: no liveModels member at all.
+    const r = await invokeTool("usage", { listModels: "" }, { holder });
+    const data = r.data as { liveModels?: { error?: string } };
+    expect(data.liveModels?.error).toContain("unknown route");
   });
 
   it("appends /v1 before /models for a baseUrl that doesn't already end in /v1, matching the dispatcher", async () => {

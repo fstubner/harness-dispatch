@@ -712,6 +712,20 @@ async function pollDispatch(jobId: string): Promise<DispatchPollResponse> {
   return response;
 }
 
+const TASK_TYPE_WARNING =
+  "hints.taskType was not provided — capability weighting and model escalation are " +
+  "off, so routing quality degrades. Pass hints.taskType (execute | plan | review | local).";
+
+/** Says so on the reply when `hints.taskType` is missing, as it does for `workingDir`. */
+function withTaskTypeWarning<T extends { warning?: string }>(
+  input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
+  response: T,
+): T {
+  if (input.hints?.taskType !== undefined) return response;
+  response.warning = [response.warning, TASK_TYPE_WARNING].filter(Boolean).join(" ");
+  return response;
+}
+
 export async function handleDispatch(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
@@ -724,7 +738,7 @@ export async function handleDispatch(
           "dispatch: `service` forces a single route and is incompatible with mode='fanout' — use `models` to select fanout routes",
         );
       }
-      return startFanout(deps, input, extra);
+      return withTaskTypeWarning(input, await startFanout(deps, input, extra));
     }
     // The mirror of the check above. Single mode never read `models`, so a
     // call that meant to fan out and forgot `mode` ran on whatever single
@@ -735,7 +749,7 @@ export async function handleDispatch(
           "add mode: 'fanout' to run on those routes, or use `service` to force one route",
       );
     }
-    return startSingle(deps, input, extra);
+    return withTaskTypeWarning(input, await startSingle(deps, input, extra));
   });
 }
 
@@ -743,17 +757,19 @@ export async function handleDispatch(
 const LIST_LIMIT = 20;
 
 export async function handleCancelJob(args: { jobId: string; reason?: string | undefined }) {
-  return cancelJob(args.jobId, args.reason);
+  return withMcpToolSpan({ "tool.name": "cancel_job" }, () => cancelJob(args.jobId, args.reason));
 }
 
 export async function handleRetryJob(
   deps: ToolDeps,
   args: { jobId: string; service?: string | undefined },
 ) {
-  await ensureFreshConfig(deps.reloader);
-  return retryJob(args.jobId, { holder: deps.holder }, {
-    ...(args.service !== undefined ? { service: args.service } : {}),
-    ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+  return withMcpToolSpan({ "tool.name": "retry_job" }, async () => {
+    await ensureFreshConfig(deps.reloader);
+    return retryJob(args.jobId, { holder: deps.holder }, {
+      ...(args.service !== undefined ? { service: args.service } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+    });
   });
 }
 
@@ -762,7 +778,9 @@ export async function handleWorkspace(args: {
   action: "diff" | "apply" | "discard";
   force?: boolean | undefined;
 }) {
-  return resolveJobWorkspace(args.jobId, args.action, args.force !== undefined ? { force: args.force } : {});
+  return withMcpToolSpan({ "tool.name": "workspace" }, () =>
+    resolveJobWorkspace(args.jobId, args.action, args.force !== undefined ? { force: args.force } : {}),
+  );
 }
 
 export async function handleJobStatus(
@@ -862,21 +880,27 @@ async function fetchEndpointModels(
 }
 
 async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefined } = {}) {
-  await ensureFreshConfig(deps.reloader);
-  const state = deps.holder.state;
-  const status = await buildStatus(
-    state.config,
-    state.dispatchers,
-    state.quota,
-    state.router,
-    state.leaderboard,
-  );
-  const usage = buildUsage(status);
-  if (args.listModels) {
-    const svc = state.config.services[args.listModels];
-    return { ...usage, liveModels: await fetchEndpointModels(args.listModels, svc) };
-  }
-  return usage;
+  return withMcpToolSpan({ "tool.name": "usage" }, async () => {
+    await ensureFreshConfig(deps.reloader);
+    const state = deps.holder.state;
+    const status = await buildStatus(
+      state.config,
+      state.dispatchers,
+      state.quota,
+      state.router,
+      state.leaderboard,
+    );
+    const usage = buildUsage(status);
+    // `!== undefined`, so an empty string is answered ("unknown route ''") instead of
+    // silently ignored; `hasOwn`, so `constructor` or `toString` is not a route.
+    if (args.listModels !== undefined) {
+      const svc = Object.hasOwn(state.config.services, args.listModels)
+        ? state.config.services[args.listModels]
+        : undefined;
+      return { ...usage, liveModels: await fetchEndpointModels(args.listModels, svc) };
+    }
+    return usage;
+  });
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
@@ -923,6 +947,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         + "Nothing is lost by " +
         "checking late; results persist on disk.",
       inputSchema: jobStatusInputShape,
+      annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleJobStatus(args)),
   );
@@ -942,6 +967,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "route nothing. Cancelling an already-finished job is a harmless no-op that " +
         "reports what it found.",
       inputSchema: cancelJobInputShape,
+      annotations: { destructiveHint: true, idempotentHint: true },
     },
     async (args) => jsonText(await handleCancelJob(args)),
   );
@@ -982,6 +1008,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "written to the job directory, so `git apply` by hand is available even when " +
         "the automatic apply declines.",
       inputSchema: workspaceInputShape,
+      annotations: { destructiveHint: true },
     },
     async (args) => jsonText(await handleWorkspace(args)),
   );
@@ -994,9 +1021,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Per-route call counts (success/failure), quota remaining, billing kind, and " +
         "circuit-breaker state for this session. Call this before using an unfamiliar " +
         "`hints.model`/`service`/`models` value to see valid route ids and their " +
-        "current models. `service` and `models` ARE validated — an unknown route id is " +
-        "rejected, naming the valid ones — while `hints.model` is forwarded to the picked " +
-        "harness as-is, so a wrong model name fails at the harness rather than here. " +
+        "current models. An unknown `service` or `models` route id is rejected, naming " +
+        "the valid ones; `hints.model` is not checked (see its description). " +
         "Each route also includes modelHint (where that harness's real model catalog " +
         "is documented or listed live) and, when the operator declared one, models: " +
         "a list of known-good ids, and instructions: the operator's policy for that " +
@@ -1007,6 +1033,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "a real model up front or self-correct after a dispatch failure caused by an " +
         "unsupported model name.",
       inputSchema: usageInputShape,
+      annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleUsage(deps, args)),
   );
