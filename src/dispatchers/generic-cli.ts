@@ -27,6 +27,7 @@ import { DEFAULT_MAX_OUTPUT_BYTES, streamSubprocess } from "./shared/stream-subp
 import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
 import { commandAvailable } from "./shared/which-available.js";
+import { statedResetSeconds } from "./shared/rate-limit-reset.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -99,6 +100,9 @@ const LIMITER_PHRASES = [
   // OpenAI Codex's phrasing ("You've hit your usage limit... try again at
   // ..."), which none of the phrases above match.
   "usage limit",
+  // Claude Code's ("You've hit your session limit · resets 1:30am
+  // (Europe/Dublin)"), which was counted as an ordinary failure.
+  "session limit",
 ];
 
 /** Exported for tests: the false-positive space here is what trips breakers. */
@@ -115,10 +119,9 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
   const retryAfter = match?.[1] ? Number.parseFloat(match[1]) : null;
-  return {
-    rateLimited: true,
-    retryAfter: retryAfter !== null && Number.isFinite(retryAfter) ? retryAfter : null,
-  };
+  if (retryAfter !== null && Number.isFinite(retryAfter)) return { rateLimited: true, retryAfter };
+  // No machine-readable delay: the time the provider stated in prose, if any.
+  return { rateLimited: true, retryAfter: statedResetSeconds(text) };
 }
 
 /**
