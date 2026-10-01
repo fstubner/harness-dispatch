@@ -7,7 +7,7 @@
  * this process (detached, unref'd) and watches the job directory. Orphan
  * detection (jobs.ts heartbeat) covers this runner itself dying.
  *
- * Usage: node dist/job-runner.js <jobDir>
+ * Usage: node dist/job-runner.js <jobDir> | --supervisor <id> | --detach-probe <dir>
  * Config: HARNESS_DISPATCH_CONFIG (set by the spawning server so the run
  * bootstraps against the same config file), else the state directory's
  * config.yaml if present, else auto-detect. Shared with bin.ts through resolveConfigPath(), so the two
@@ -18,6 +18,8 @@ import { resolveConfigPath } from "./config.js";
 import { installOutputRedaction } from "./redaction.js";
 import { bootstrapRuntime, RuntimeHolder } from "./mcp/config-hot-reload.js";
 import { drainSlotQueue, executeJobDir, runSupervisor } from "./jobs.js";
+import { runDetachProbeChild, runDetachProbeParent } from "./jobs/detach.js";
+import { fileURLToPath } from "node:url";
 import { initObservability, shutdownObservability } from "./observability/index.js";
 
 async function main(): Promise<void> {
@@ -27,8 +29,18 @@ async function main(): Promise<void> {
   installOutputRedaction();
   const arg = process.argv[2];
   if (!arg) {
-    console.error("usage: job-runner <jobDir> | job-runner --supervisor");
+    console.error("usage: job-runner <jobDir> | job-runner --supervisor <id> | job-runner --detach-probe <dir>");
     process.exit(2);
+  }
+  // `doctor`'s survival probe: no config and no runtime, just the same launch
+  // path a supervisor takes. See probeDetachedSurvival.
+  if (arg === "--detach-probe") {
+    await runDetachProbeParent(fileURLToPath(import.meta.url), process.argv[3]!);
+    process.exit(0);
+  }
+  if (arg === "--detach-probe-child") {
+    await runDetachProbeChild(process.argv[3]!, Number(process.argv[4]));
+    process.exit(0);
   }
   const configPath = resolveConfigPath();
   const state = await bootstrapRuntime(

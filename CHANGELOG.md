@@ -270,6 +270,84 @@ pre-1.0, so minor versions can carry behaviour changes.
   preset adds to the preset's providers instead of replacing them; and an
   endpoint stream a caller stops reading is closed at once.
 
+- **A fanout keeps the arms that started when another arm fails to start.** One
+  arm failing after others had begun threw away the whole response, including
+  the job ids of the runs already going. The failed arm now appears in
+  `results` with its error. A fanout also reports every arm's warning rather
+  than whichever was read last.
+
+- **Smaller job fixes.** A job still waiting for a slot after the job retention
+  window is reported `orphaned` (use `retry_job`) instead of being deleted out
+  from under its caller. A retry of a job that had `contextJobs` is listed by its
+  task rather than by the context preamble. A second workspace action on the
+  same job in the same server now gives up after 120 s like one from another
+  process, instead of waiting indefinitely. Job records carry a format version,
+  and a build too old for a record says to upgrade rather than misreading it.
+
+- **Cancelling an orphaned job now stops the agent it left running.** A running
+  job records the processes it starts in its status; when its supervisor dies,
+  `job_status` names them and `cancel_job` (or `retry_job`, which cancels
+  first) kills them, after checking each is still the same process and not a
+  reused pid. Before, nothing knew their pids and the cancel killed nothing.
+
+- **Cancelled runs appear in the dispatch log**, with `reason: "cancelled"`, the
+  job id and who asked. A cancel bypasses the router so the route is not
+  charged a failure, and that had kept it out of the log as well.
+
+- **A queued job says where it stands.** `job_status` on a job waiting for a
+  concurrency slot now gives its place in the queue (`queuePosition`), the jobs
+  holding the slots it waits for (`waitingOn`), and says so in its
+  instructions. Before, a job stuck behind two silent runs read exactly like one
+  about to start.
+
+- **A queue left behind by dead supervisors moves again when you ask about it.**
+  If every supervisor had died, a waiting job sat until some unrelated dispatch
+  came along while its polls kept saying "wait". Polling it now starts a
+  supervisor when none is alive and nothing is running; the concurrency cap
+  still decides what runs. A job that was released to run but not yet picked up
+  now reads as `queued` rather than `orphaned`: it was reported finished
+  (`completed: true`) while its own message said it would still start.
+
+- **A cancelled job no longer tells its caller to keep polling** until it
+  completes.
+
+- **Job scans are cheaper.** The slot drain and each supervisor pass no longer
+  read every retained job's status when nothing is waiting, and the scans that
+  do run read 16 files at a time. Measured on 2,000 retained jobs: listing
+  1.1–1.4 s → 0.2 s, an empty drain 1.1–1.6 s → 2 ms.
+
+- **MCP progress notifications now arrive for ordinary dispatches.** They were
+  sent only when a job ran inside the server process, which is the mode the test
+  suite forces and no real install uses, so a client asking for progress got
+  none. While `dispatch` waits out its grace window it now forwards the run's
+  output as it is written. The dispatch call also stops watching the job once
+  that window ends; it used to keep reading the job's status file every 300 ms
+  for up to 70 minutes with nothing waiting on it.
+
+- **Background jobs now survive the session that started them on Windows, even
+  behind a launcher shim.** A launcher that kills its descendants when it exits
+  (the nvx shim does) took every job's supervisor and agent CLI with it when the
+  session ended, because Node's detached spawn does not leave a Windows job
+  object; the job stayed `queued` or `running` forever. Supervisors are now
+  started through WMI (`Win32_Process.Create`), which creates them outside the
+  caller's job, falling back to the old spawn if WMI is unavailable. Starting a
+  supervisor this way takes about a second longer. POSIX is unchanged.
+  `doctor` now proves it: its `job-runner` check starts a probe through the same
+  launch path, under the same `node` a client runs, and checks it outlives its
+  parent, instead of only checking that the runner file exists.
+
+- **A supervisor that cannot be started no longer crashes the server.** A failed
+  spawn was an unhandled error event. It is now written to the supervisor's
+  spawn log, its slot is given back, and the next drain retries. A drain also
+  now starts a supervisor for a released job nobody has claimed, instead of
+  waiting for some other job to be released.
+
+- **A supervisor whose jobs directory is deleted lets its running jobs finish**
+  rather than exiting and, on Windows, killing their agent CLIs mid-edit.
+
+- **Supervisor spawn logs are pruned after the job retention window.** Logs that
+  recorded a crash were kept forever.
+
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
   often its most expensive model — even on mechanical work. They also say to

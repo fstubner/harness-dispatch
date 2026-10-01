@@ -285,14 +285,14 @@ describe("a job whose heartbeat is old but whose process is alive", () => {
     expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");
   });
 
-  it("an unclaimed released job says to retry, not to re-dispatch", async () => {
-    // It has not started and WILL start when a supervisor next runs, so a
-    // fresh dispatch of the same task ran it twice.
+  it("an unclaimed released job is still waiting, not orphaned", async () => {
+    // It has not started and WILL start once a supervisor runs. Reporting it
+    // orphaned made it terminal — `completed: true` from the dispatch tool —
+    // while its own error said it would still run.
     const jobId = await plant("queued", undefined);
-    const job = await getAsyncJob(jobId);
-    expect(job.status.status).toBe("orphaned");
-    expect(job.status.error).toMatch(/retry_job/);
-    expect(job.status.error).toMatch(/Do NOT re-dispatch/);
+    const job = await getAsyncJob(jobId, { recover: false });
+    expect(job.status.status).toBe("queued");
+    expect(job.status.instructions).toMatch(/waiting for a supervisor/);
   });
 
   it("a live claim on it cannot be taken by a second supervisor", async () => {

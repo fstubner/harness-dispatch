@@ -18,7 +18,10 @@ import {
   workspaceDiff,
 } from "../workspace-resolve.js";
 import { acquireWorkspaceLock } from "../workspace-lock.js";
+import { killJobChildren } from "./children.js";
+import { logCancelledRun } from "./run.js";
 import {
+  clearPending,
   requestCancel,
   jobsRoot,
   readJson,
@@ -59,7 +62,8 @@ export interface CancelOutcome {
  * circuit breaker never sees it.
  */
 export async function cancelJob(jobId: string, reason?: string): Promise<CancelOutcome> {
-  const job = await getAsyncJob(jobId); // throws the friendly "No such job" for a stranger
+  // recover: false — a cancel must never start a supervisor.
+  const job = await getAsyncJob(jobId, { recover: false }); // friendly "No such job" for a stranger
   const current = job.status.status;
 
   // There are TWO kinds of orphaned job and they need opposite answers.
@@ -96,21 +100,52 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
   await requestCancel(jobDir, reason);
 
   // A job still waiting for a slot has no runner to notice the marker, so stop
-  // it here; claimNextJob also refuses a marked job, closing the window where
-  // a supervisor picks it up between these two steps. `orphaned` joins
+  // it here. claimNextJob also refuses a marked job, which NARROWS the window
+  // where a supervisor picks it up between these two steps but does not close
+  // it: a supervisor that checked for the marker just before it was written
+  // still claims, and its run writes `running` over the `cancelled` below.
+  // That run sees the marker on its first cancel poll and stops, so the agent
+  // runs for about a second at most. `orphaned` joins
   // `queued` because an orphaned job has no live runner by definition, so
   // nothing would act on the marker and it would sit at "cancelling" forever.
   if (current === "queued" || current === "orphaned") {
     // Out of the slot queue as well: left marked, a cancelled job was still
-    // counted as waiting for a slot.
-    const { slotQueued: _waiting, ...rest } = job.status;
+    // counted as waiting for a slot. And without the poll guidance and queue
+    // standing `getAsyncJob` adds for a live job: written back, a cancelled
+    // job told its caller to keep checking until it completed.
+    const {
+      slotQueued: _waiting,
+      nextPollSeconds: _poll,
+      instructions: _instructions,
+      queuePosition: _position,
+      waitingOn: _waitingOn,
+      ...rest
+    } = job.status;
+    // An orphan's supervisor is gone, but the agent CLI it started may not be
+    // (POSIX spawns it in its own process group; on Windows a descendant can
+    // escape a tree kill). Its pids were recorded while it ran.
+    const killed = current === "orphaned" ? await killJobChildren(rawStatus?.children) : [];
+    const { children: _children, ...record } = rest;
+    const error = reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it started.";
     await updateStatus(jobDir, {
-      ...rest,
+      ...record,
       status: "cancelled",
       updatedAt: timestamp(),
       success: false,
-      error: reason !== undefined ? `Cancelled: ${reason}` : "Cancelled before it started.",
+      error,
     });
+    await clearPending(jobId);
+    // A run that had started and lost its supervisor is a dispatch attempt the
+    // router never logged; one that never started is not an attempt at all.
+    if (rawStatus?.status === "running") {
+      logCancelledRun(
+        rawStatus.route ?? rawStatus.service ?? job.manifest.service ?? "none",
+        error,
+        undefined,
+        null,
+        { jobId, ...(job.manifest.caller ?? {}) },
+      );
+    }
     // Deliberately NOT draining the slot queue: drainSlotQueue can SPAWN
     // supervisor processes, and a cancel must not start any. Every dispatch
     // and every runner exit already drains.
@@ -121,8 +156,11 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
       message:
         current === "orphaned"
           ? `Job ${jobId} was orphaned — the process running it is gone — and is now ` +
-            `marked cancelled, so no supervisor can reclaim it. Any partial output it ` +
-            `wrote is still available from job_status.`
+            `marked cancelled, so no supervisor can reclaim it. ` +
+            (killed.length > 0
+              ? `Stopped process(es) it had started that were still running: ${killed.join(", ")}. `
+              : "") +
+            `Any partial output it wrote is still available from job_status.`
           : `Job ${jobId} was waiting for a slot and has been cancelled; it never started.`,
     };
   }
@@ -152,7 +190,7 @@ export async function resolveJobWorkspace(
   action: "diff" | "apply" | "discard",
   opts: { force?: boolean } = {},
 ): Promise<unknown> {
-  const job = await getAsyncJob(jobId);
+  const job = await getAsyncJob(jobId, { recover: false });
   const run = job.result?.result?.workspace;
   if (!isResolvable(run)) {
     // A separate binding: the type guard narrows `run` to never on this
@@ -178,7 +216,7 @@ export async function resolveJobWorkspace(
   // work. Keyed on the job directory, so it never contends with a dispatch.
   let release: () => void;
   try {
-    release = await acquireWorkspaceLock(jobDir, JOB_ACTION_LOCK_TIMEOUT_MS);
+    release = await acquireJobActionLock(jobDir, JOB_ACTION_LOCK_TIMEOUT_MS);
   } catch {
     throw new Error(
       `Another workspace action on ${jobId} is still running after ` +
@@ -194,6 +232,30 @@ export async function resolveJobWorkspace(
   } finally {
     release();
   }
+}
+
+/**
+ * The per-job action lock, with a deadline that holds inside one process too.
+ *
+ * acquireWorkspaceLock's timeout bounds only the wait on ANOTHER process: a
+ * second action in the same server queues behind the first on a promise chain
+ * with no deadline, so the "still running after 120s" error never fired there
+ * and the caller waited as long as the first action took. On timeout the
+ * acquisition still pending is released the moment it lands.
+ *
+ * Exported for tests: the in-process wait cannot be shortened from outside.
+ */
+export async function acquireJobActionLock(jobDir: string, timeoutMs: number): Promise<() => void> {
+  const acquiring = acquireWorkspaceLock(jobDir, timeoutMs);
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<"expired">((resolve) => {
+    timer = setTimeout(() => resolve("expired"), timeoutMs);
+    timer.unref?.();
+  });
+  const winner = await Promise.race([acquiring, expired]).finally(() => clearTimeout(timer));
+  if (winner !== "expired") return winner;
+  acquiring.then((release) => release(), () => undefined);
+  throw new Error(`job action lock on ${jobDir} not acquired within ${timeoutMs} ms`);
 }
 
 export interface RetryOutcome {
@@ -229,7 +291,7 @@ export async function retryJob(
   deps: JobDeps,
   opts: { service?: string; caller?: DispatchCaller } = {},
 ): Promise<RetryOutcome> {
-  const prior = await getAsyncJob(jobId); // friendly "No such job" for a stranger
+  const prior = await getAsyncJob(jobId, { recover: false }); // friendly "No such job" for a stranger
   const state = prior.status.status;
   if (state === "running" || state === "queued") {
     throw new Error(
@@ -277,6 +339,7 @@ export async function retryJob(
     files: manifest.files.map((f) => f.originalPath),
     workingDir: manifest.workingDir,
     retryOf: jobId,
+    ...(manifest.promptPreview !== undefined ? { promptPreview: manifest.promptPreview } : {}),
     ...(hints !== undefined ? { hints } : {}),
     ...(manifest.workspacePolicy !== undefined
       ? { workspacePolicy: manifest.workspacePolicy }

@@ -255,7 +255,11 @@ describe("detached run concurrency bound", () => {
     // twice. Measured in an audit: six such jobs, 105 s in, four running and
     // two "orphaned". The excess must stay slotQueued, which is reported as
     // waiting and is exempt from the orphan rule.
-    configPath = await writeLightConfig(4, 2_000);
+    // Long enough that no job finishes while the six are still being
+    // dispatched: starting a supervisor on Windows goes through WMI and takes
+    // over a second per dispatch, and a slot legitimately freed by a finished
+    // job would release a fifth.
+    configPath = await writeLightConfig(4, 10_000);
     const d = await deps();
 
     const jobs = [];

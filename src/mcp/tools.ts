@@ -122,7 +122,8 @@ export interface RouteResponse {
 
 export interface FanoutItem {
   route: string;
-  jobId: string;
+  /** Absent only for an arm that could not be started at all (see `error`). */
+  jobId?: string;
   /** false = still running past the grace window; poll its jobId. */
   completed: boolean;
   success?: boolean;
@@ -475,7 +476,7 @@ async function startSingle(
   const counter = { value: 0 };
   const onEvent = makeProgressTap(extra, live, counter, input.service);
 
-  const { status, completion } = await startAsyncJobTracked(
+  const { status, completion, stopWatching } = await startAsyncJobTracked(
     { holder: deps.holder },
     {
       prompt: input.prompt,
@@ -493,6 +494,8 @@ async function startSingle(
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(completion, graceMs);
   live.value = false;
+  // Nobody awaits the rest: the caller polls job_status from here on.
+  stopWatching();
 
   const job = await getAsyncJob(status.jobId);
   if (jobCompleted(job)) {
@@ -585,7 +588,11 @@ async function startFanout(
   // shared grace window for all of them — a route that beats the deadline
   // reports inline, the rest hand back their jobIds. Per-route job dirs also
   // give each fanout arm its own artifacts.
-  const started = await Promise.all(
+  //
+  // allSettled, not all: one arm failing to start (a disk error, a spawn
+  // failure) after others had started threw away the whole response — and
+  // with it the jobIds of arms already running, which then ran unattended.
+  const settled = await Promise.allSettled(
     candidates.map(async (routeName) => {
       const svc = state.config.services[routeName]!;
       const cap = svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0;
@@ -609,16 +616,26 @@ async function startFanout(
       return { routeName, cap, job };
     }),
   );
+  const started = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const startFailures = settled.flatMap((s, i) =>
+    s.status === "rejected" ? [{ routeName: candidates[i]!, reason: s.reason as unknown }] : [],
+  );
+  // Nothing started: the same refusal a single dispatch gives, not a
+  // success-shaped list of failures.
+  if (started.length === 0) throw startFailures[0]!.reason;
 
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(Promise.all(started.map((s) => s.job.completion)).then(() => undefined), graceMs);
   live.value = false;
+  for (const s of started) s.job.stopWatching();
 
-  let warning: string | undefined;
+  // Every distinct arm warning, not the last one to resolve: a single
+  // variable kept whichever arm's read finished last and dropped the rest.
+  const warnings: string[] = [];
   const results = await Promise.all(
     started.map(async ({ routeName, cap, job }): Promise<FanoutItem> => {
       const current = await getAsyncJob(job.status.jobId);
-      if (current.status.warning !== undefined) warning = current.status.warning;
+      if (current.status.warning !== undefined) warnings.push(current.status.warning);
       const item: FanoutItem = {
         route: routeName,
         jobId: job.status.jobId,
@@ -639,6 +656,17 @@ async function startFanout(
     }),
   );
 
+  for (const { routeName, reason } of startFailures) {
+    const svc = state.config.services[routeName]!;
+    results.push({
+      route: routeName,
+      completed: true,
+      success: false,
+      error: `This arm could not be started: ${reason instanceof Error ? reason.message : String(reason)}`,
+      capabilityScore: svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0,
+    });
+  }
+
   results.sort((a, b) => {
     if (a.completed !== b.completed) return a.completed ? -1 : 1;
     if (a.success !== b.success) return a.success ? -1 : 1;
@@ -650,7 +678,11 @@ async function startFanout(
     results,
   };
   if (skippedRoutes.length > 0) response.skippedRoutes = skippedRoutes;
-  if (warning !== undefined) response.warning = warning;
+  // One arm's warning often contains another's (the shared workingDir note,
+  // plus that arm's own), so only the ones no other warning already says.
+  const distinct = [...new Set(warnings)];
+  const kept = distinct.filter((w) => !distinct.some((other) => other !== w && other.includes(w)));
+  if (kept.length > 0) response.warning = kept.join(" ");
   return response;
 }
 

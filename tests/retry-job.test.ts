@@ -138,6 +138,16 @@ describe("retryJob", () => {
     expect(manifest.retryOf).toBe("job-1700000000001-aaaaaaaa");
   });
 
+  it("lists the retry by the task, not by the context preamble its prompt opens with", async () => {
+    await plantFinished("job-1700000000002-aaaaaaaa", { promptPreview: "fix the parser" });
+    const out = await retryJob("job-1700000000002-aaaaaaaa", await buildDeps());
+    await settle(out.jobId);
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(jobsDir, out.jobId, "manifest.json"), "utf8"),
+    ) as { promptPreview: string };
+    expect(manifest.promptPreview).toBe("fix the parser");
+  });
+
   it("retargets to another route, which is the usual reason to retry", async () => {
     await plantFinished("job-1700000000002-bbbbbbbb");
     const out = await retryJob("job-1700000000002-bbbbbbbb", await buildDeps(), { service: "beta" });
@@ -294,16 +304,20 @@ describe("retrying a derived orphan", () => {
       }),
       "utf8",
     );
-    // Raw status `queued`, heartbeat stale: derived orphan, still claimable.
+    // Raw status `running`, heartbeat stale, claimant dead: derived orphan,
+    // and still reclaimable once that claim is judged stale. (A `queued` job
+    // nobody claimed is no longer a derived orphan at all — it is waiting, and
+    // retry refuses it like any queued job.)
     await fs.writeFile(
       path.join(dir, "status.json"),
       JSON.stringify({
-        jobId, status: "queued", jobDir: dir,
+        jobId, status: "running", jobDir: dir,
         createdAt: new Date(Date.now() - 600_000).toISOString(),
         updatedAt: new Date(Date.now() - 600_000).toISOString(),
       }),
       "utf8",
     );
+    await fs.writeFile(path.join(dir, "claim.json"), JSON.stringify({ pid: 0x7ffffffe, at: "x" }), "utf8");
 
     const { getAsyncJob } = await import("../src/jobs.js");
     expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");
