@@ -154,5 +154,5 @@ with no effect.
 | `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS` | Age after which a project's old workspaces are deleted on its next isolated dispatch. Positive milliseconds; default 24 h. A run still in progress is never deleted, however old; the age counts from when it finished. |
 | `HARNESS_DISPATCH_LOG_DIR` | Directory of the local dispatch log. |
 | `HARNESS_DISPATCH_TELEMETRY` | `1` or `true` turns on OpenTelemetry tracing. |
-| `HARNESS_DISPATCH_DEPTH` | Set by harness-dispatch on every agent it starts: how many dispatches deep that agent is. An agent at depth 2 cannot start another (a delegate may delegate once). Not meant to be set by hand. |
+| `HARNESS_DISPATCH_DEPTH` | Set by harness-dispatch on every agent it starts: how many dispatches deep that agent is. An agent at depth 1 or more cannot start another: a delegate may not dispatch at all. Not meant to be set by hand. |
 | `HARNESS_DISPATCH_INPROC_JOBS` | `1` runs jobs inside the server process instead of a detached runner — for tests. Such runs die with the server, and the concurrency cap does not apply. |
