@@ -70,6 +70,16 @@ function lockKey(workingDir: string): string {
   return process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real;
 }
 
+/**
+ * The lock file a working directory maps to. Exported so tests plant locks
+ * through the same key rule instead of a copy of it: a copy that missed the
+ * realpath step passed locally and failed on CI, where the temp directory's
+ * spelling differs from its real path.
+ */
+export function workspaceLockPath(workingDir: string): string {
+  return lockFileFor(lockKey(workingDir));
+}
+
 function lockFileFor(key: string): string {
   const dir = stateRoot();
   const digest = createHash("sha256").update(key).digest("hex").slice(0, 16);

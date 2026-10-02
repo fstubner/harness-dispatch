@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { acquireWorkspaceLock, LOCK_STALE_MS } from "../src/workspace-lock.js";
+import { acquireWorkspaceLock, LOCK_STALE_MS, workspaceLockPath } from "../src/workspace-lock.js";
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "workspace-lock.js");
 
@@ -325,13 +325,7 @@ describe("acquireWorkspaceLock — recovery", () => {
 
 /** Reproduce the module's own file naming, so tests can plant a lock. */
 function readdirSyncSafeName(workingDir: string): string {
-  const key =
-    process.platform === "win32"
-      ? path.resolve(workingDir).toLowerCase()
-      : path.resolve(workingDir);
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createHash } = require("node:crypto") as typeof import("node:crypto");
-  return `${createHash("sha256").update(key).digest("hex").slice(0, 16)}.json`;
+  return path.basename(workspaceLockPath(workingDir));
 }
 
 describe("pruneDeadWorkspaceLocks", () => {

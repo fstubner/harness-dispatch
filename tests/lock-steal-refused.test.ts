@@ -47,17 +47,12 @@ afterEach(() => {
 
 describe("a lock that cannot be stolen", () => {
   it("the workspace lock still gives up at its deadline", async () => {
-    const { acquireWorkspaceLock } = await import("../src/workspace-lock.js");
-    const { createHash } = await import("node:crypto");
+    const { acquireWorkspaceLock, workspaceLockPath } = await import("../src/workspace-lock.js");
     const work = path.join(dir, "work");
     mkdirSync(work);
-    const key = process.platform === "win32" ? path.resolve(work).toLowerCase() : path.resolve(work);
-    const locks = path.join(dir, "workspace-locks");
-    mkdirSync(locks, { recursive: true });
-    writeFileSync(
-      path.join(locks, `${createHash("sha256").update(key).digest("hex").slice(0, 16)}.json`),
-      JSON.stringify({ pid: 0x7ffffffe, key, beatMs: Date.now() }),
-    );
+    const lockFile = workspaceLockPath(work);
+    mkdirSync(path.dirname(lockFile), { recursive: true });
+    writeFileSync(lockFile, JSON.stringify({ pid: 0x7ffffffe, key: work, beatMs: Date.now() }));
     const started = Date.now();
     await expect(acquireWorkspaceLock(work, 500)).rejects.toThrow(/timed out/);
     expect(Date.now() - started).toBeLessThan(3_000);
