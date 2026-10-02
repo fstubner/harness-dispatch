@@ -78,15 +78,20 @@ clis:
       # tools exist at all, and --strict-mcp-config (with no --mcp-config)
       # loads no MCP servers, so the user's servers — harness-dispatch itself
       # among them — are not handed to a read_only or workspace_edit delegate.
+      # --setting-sources user keeps the project's own .claude/settings.json
+      # (and its hooks) out of those two profiles: the project is what the
+      # delegate is being asked to read, and a hook there runs shell commands
+      # whatever --tools says. The user's own settings still load, so login
+      # and user-level hooks are unchanged. full_auto is left as it was.
       # Each variadic list is followed by another option so it cannot swallow
       # the next argument. Flags checked against `claude --help`, 2.1.278.
       safety:
         read_only:
           ["--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
-           "--strict-mcp-config", "--permission-mode", "plan"]
+           "--strict-mcp-config", "--setting-sources", "user", "--permission-mode", "plan"]
         workspace_edit:
           ["--tools", "Read,Grep,Glob,Edit,Write", "--allowedTools", "Read,Grep,Glob,Edit,Write",
-           "--strict-mcp-config", "--permission-mode", "acceptEdits"]
+           "--strict-mcp-config", "--setting-sources", "user", "--permission-mode", "acceptEdits"]
         full_auto: ["--allowedTools", "Bash,Read,Edit,Write", "--permission-mode", "acceptEdits"]
       # Claude Code reads ANTHROPIC_API_KEY itself to switch from
       # subscription/OAuth session auth to API-key billing — without this,
