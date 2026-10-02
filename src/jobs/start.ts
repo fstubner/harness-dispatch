@@ -145,8 +145,20 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // finds the job in the plain `queued` state it briefly had above — which
   // reads as already released.
   await markPending(jobId);
-  await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
-  const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+  const launchWarning = await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
+  let settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+  if (launchWarning !== undefined) {
+    // The runner rebuilds status.json from the manifest as it goes, so the
+    // warning goes into both or the first progress write would drop it. The
+    // status is only rewritten while it is still `queued`: the runner has had
+    // no time to boot yet, so this cannot overwrite a newer state of its own.
+    const joined = [warning, launchWarning].filter((w): w is string => w !== undefined).join(" ");
+    await writeJson(path.join(jobDir, "manifest.json"), { ...manifest, warning: joined });
+    if (settled.status === "queued") {
+      settled = { ...settled, warning: joined };
+      await updateStatus(jobDir, settled);
+    }
+  }
   const watch = new AbortController();
   const configPath = deps.holder.state.configPath;
   const completion = watchUntilTerminal(jobDir, {

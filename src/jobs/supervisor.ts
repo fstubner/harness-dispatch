@@ -5,7 +5,7 @@
  */
 
 import { executeJobDir, resolveRunnerPath } from "./run.js";
-import { launchDetached } from "./detach.js";
+import { fallbackWarning, launchDetached } from "./detach.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -451,16 +451,20 @@ export async function orphanStrandedSlotQueue(): Promise<number> {
  *
  * NOT called at server start: that would silently run jobs abandoned by a dead
  * session. `orphanStrandedSlotQueue` runs there instead and reports them.
+ *
+ * Returns a warning when a supervisor it started only came up through the
+ * plain-spawn fallback (see detach.ts): the dispatch that triggered the drain
+ * passes it on, since that job may not survive its session.
  */
 export async function drainSlotQueue(
   config: RouterConfig | undefined,
   configPath: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const limit = maxConcurrentRuns(config);
   const runnerPath = resolveRunnerPath();
-  if (runnerPath === undefined) return;
+  if (runnerPath === undefined) return undefined;
   // Nothing waiting and nothing released-but-unclaimed: no scan, no lock.
-  if (!(await mayHavePendingJobs())) return;
+  if (!(await mayHavePendingJobs())) return undefined;
 
   // ONE drainer at a time, across processes. The body below is a
   // read-count-release, so two drainers whose reads interleave with each
@@ -476,7 +480,7 @@ export async function drainSlotQueue(
     // Another process is mid-drain and sees the same queue, so this call's
     // trigger is covered by that drain or the next one; waiting is not worth
     // blocking a dispatch for.
-    return;
+    return undefined;
   }
   let slots: string[];
   try {
@@ -488,7 +492,9 @@ export async function drainSlotQueue(
   // WMI and takes over a second, and every other dispatch waits on this lock.
   // The slots themselves were registered inside it, which is what the count
   // depends on.
-  await Promise.all(slots.map((id) => launchSupervisor(id, runnerPath, configPath)));
+  const fallbacks: string[] = [];
+  await Promise.all(slots.map((id) => launchSupervisor(id, runnerPath, configPath, fallbacks)));
+  return fallbacks[0];
 }
 
 /**
@@ -762,12 +768,15 @@ function registerSupervisorSlot(): string {
  *
  * Never throws. A launch that fails gives the slot back — its heartbeat would
  * otherwise count a supervisor that does not exist for 90 s — and says why in
- * the log, which the next drain's top-up then retries.
+ * the log, which the next drain's top-up then retries. A launch that only
+ * worked through the plain-spawn fallback is reported to `fallbacks`, so the
+ * dispatch that caused it can tell its caller.
  */
 async function launchSupervisor(
   id: string,
   runnerPath: string,
   configPath: string | undefined,
+  fallbacks?: string[],
 ): Promise<string | undefined> {
   const dir = path.join(jobsRoot(), ".supervisors");
   const logPath = path.join(dir, `spawn-${id}.log`);
@@ -780,7 +789,10 @@ async function launchSupervisor(
     },
     logPath,
   });
-  if (outcome.ok) return undefined;
+  if (outcome.ok) {
+    if (outcome.wmiError !== undefined) fallbacks?.push(fallbackWarning(outcome.wmiError));
+    return undefined;
+  }
   await rm(path.join(dir, `${id}.txt`), { force: true }).catch(() => undefined);
   await writeFile(logPath, `harness-dispatch: could not start a supervisor: ${outcome.error}
 `, {
