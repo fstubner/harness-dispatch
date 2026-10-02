@@ -21,11 +21,16 @@
  * event from the summed delta content across all events.
  */
 
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { parseRetryAfter } from "./shared/rate-limit-headers.js";
 import { DEFAULT_MAX_OUTPUT_BYTES } from "./shared/stream-subprocess.js";
 import { redactEndpointHost, scrubEndpointSecrets } from "../status.js";
+import { buildRouteBilling } from "../billing.js";
+import { isLocalRoute } from "../route-policy.js";
 
 const CHAT_PATH = "/chat/completions";
 const MESSAGES_PATH = "/messages";
@@ -240,10 +245,13 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   private readonly thinkingLevel?: string | undefined;
   private readonly wireProtocol: WireProtocol;
   private readonly maxTokens: number;
+  /** By the same test `routePolicy: "local_only"` uses — see isLocalRoute. */
+  private readonly remote: boolean;
 
   constructor(svc: ServiceConfig) {
     super();
     this.id = svc.name;
+    this.remote = !isLocalRoute(buildRouteBilling(svc));
     const base = svc.baseUrl ?? "";
     this.baseUrl = base.replace(/\/+$/, "");
     this.model = svc.model ?? "";
@@ -532,11 +540,31 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     files: string[],
     opts: DispatchOpts,
     streaming: boolean,
+    workingDir: string,
   ): Promise<
     | { ok: true; res: Response; timer: ReturnType<typeof setTimeout>; timeoutMs: number; start: number }
     | { ok: false; failure: DispatchResult; start: number }
   > {
     const start = Date.now();
+    const outside = this.remote ? filesOutside(files, workingDir) : undefined;
+    if (outside !== undefined) {
+      return {
+        ok: false,
+        start,
+        failure: {
+          output: "",
+          service: this.id,
+          success: false,
+          error:
+            `refused: ${outside} is outside the working directory (${workingDir}), and ${this.id} is ` +
+            `a remote endpoint that would receive its contents. Paste the content you need into ` +
+            `the prompt instead, or use a local or CLI route for files outside the project.`,
+          // The caller's input, not the route's fault: never charged to its breaker.
+          inputRejected: true,
+          durationMs: Date.now() - start,
+        },
+      };
+    }
     const fullPrompt = await buildPromptWithFiles(prompt, files);
     const url = this.#url();
     const model = opts.modelOverride ?? this.model;
@@ -585,10 +613,10 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   override async dispatch(
     prompt: string,
     files: string[],
-    _workingDir: string,
+    workingDir: string,
     opts: DispatchOpts = {},
   ): Promise<DispatchResult> {
-    const opened = await this.#openRequest(prompt, files, opts, false);
+    const opened = await this.#openRequest(prompt, files, opts, false, workingDir);
     if (!opened.ok) return opened.failure;
     const { res, timer, start } = opened;
     // NOT cleared here — the timer must span the body read below.
@@ -690,10 +718,10 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
   async *#runStream(
     prompt: string,
     files: string[],
-    _workingDir: string,
+    workingDir: string,
     opts: DispatchOpts,
   ): AsyncGenerator<DispatcherEvent> {
-    const opened = await this.#openRequest(prompt, files, opts, true);
+    const opened = await this.#openRequest(prompt, files, opts, true, workingDir);
     if (!opened.ok) {
       yield { type: "completion", result: opened.failure };
       return;
@@ -965,6 +993,33 @@ function headersToObject(h: Headers): Record<string, string> {
     if (/ratelimit|rate-limit|retry-after/i.test(key)) out[key] = value;
   });
   return out;
+}
+
+/** A path with symlinks resolved; the path as given when it does not exist. */
+function realOrResolved(p: string): string {
+  const resolved = resolve(p);
+  let real: string;
+  try {
+    real = realpathSync.native(resolved);
+  } catch {
+    real = resolved;
+  }
+  return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+/**
+ * The first of `files` that resolves outside `workingDir`, if any.
+ *
+ * A file named in `files` is read here and sent, whole, to the endpoint. For a
+ * remote one that is the caller's own disk leaving the machine on the strength
+ * of a path, so it is limited to the project the dispatch is about.
+ */
+function filesOutside(files: string[], workingDir: string): string | undefined {
+  const root = realOrResolved(workingDir);
+  return files.find((file) => {
+    const rel = relative(root, realOrResolved(file));
+    return rel.startsWith("..") || isAbsolute(rel);
+  });
 }
 
 async function buildPromptWithFiles(

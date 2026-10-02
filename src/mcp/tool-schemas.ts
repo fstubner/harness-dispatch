@@ -210,8 +210,9 @@ export const dispatchInputShape = {
     .describe(
       `Absolute file paths to snapshot and include as context (max ` +
         `${MAX_CONTEXT_FILES}); a relative path is resolved against workingDir. A path ` +
-        `outside workingDir is still sent, but ` +
-        `for CLI routes its PARENT DIRECTORY is also granted to the agent via ` +
+        `outside workingDir is still sent, except to a remote endpoint route, which ` +
+        `refuses it (paste the content into the prompt instead). ` +
+        `For CLI routes the PARENT DIRECTORY of such a path is also granted to the agent via ` +
         `--add-dir, so it escapes an isolated workspace — the response carries ` +
         `a warning naming the directories when that happens.`,
     ),
