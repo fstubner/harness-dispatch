@@ -69,6 +69,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A background run that started through the fallback now says so.** On
+  Windows a job's runner is started through WMI so it survives the session that
+  dispatched it. When WMI is unavailable the runner still starts with a plain
+  spawn, which a launcher that kills its descendants (the nvx shim does) takes
+  down with the session. The dispatch reply's `warning` now says the job may not
+  survive its session, and `doctor`'s `job-runner` row shows a warning with a
+  next step instead of passing silently.
+
 - **`configure --force` no longer writes an API key into the file as plain text.**
   A key given as the per-route shorthand (`codex_cli_api_key: ${VAR}`) was
   written back as its resolved value; it is now written back as the `${VAR}`
@@ -853,6 +861,21 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Security
 
+- **A remote endpoint no longer receives files from outside the project.** A
+  path in `files` that resolves outside the dispatch's working directory
+  (symlinks and `..` followed; case ignored on Windows) is refused before any
+  request is made when the route is an endpoint that is not local. The error
+  names the file and says to paste the content you need into the prompt. The
+  refusal does not count against the route. Local endpoints and CLI routes are
+  unchanged.
+
+- **Claude Code at `read_only` and `workspace_edit` no longer runs the project's
+  own hooks.** Those two profiles now pass `--setting-sources user`, so a
+  `.claude/settings.json` in the project being read cannot start commands of
+  its own. Your user-level settings, login and hooks still apply; `full_auto`
+  is unchanged. Checked live: a project hook that writes a file ran under the
+  old flags and did not under the new ones.
+
 - **A delegate in a `git_worktree` can no longer make harness-dispatch run a
   command.** The worktree's `.git` is a file the agent can rewrite. An agent
   that only wrote files replaced it with a repository whose config set
@@ -913,10 +936,9 @@ pre-1.0, so minor versions can carry behaviour changes.
   `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
   `api_key`, or holds a value the config treats as a secret.
 
-- **Dispatches can nest only one level.** Every agent harness-dispatch starts
-  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate can still dispatch (it may
-  have this server among its own MCP servers, or a shell), but an agent it
-  starts that way cannot start another: the dispatch is refused with an
+- **A delegate cannot dispatch at all.** Every agent harness-dispatch starts
+  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate may have this server among
+  its own MCP servers, or a shell, but any dispatch it makes is refused with an
   explanation and does not count against the route.
 
 - **`api_key_file:` keeps a route's key out of every process environment.**

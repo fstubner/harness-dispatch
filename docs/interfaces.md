@@ -33,6 +33,11 @@ harness-dispatch auth show               # print HTTP bearer token
 harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
+The CLI `dispatch` runs in the calling process, not as a background job, so it
+is deliberately **outside** `max_concurrent_runs`: that cap bounds the detached
+runners the MCP and HTTP dispatch paths start. A shell loop of `dispatch`
+commands is not queued; it is as parallel as you make it.
+
 `mcp` is supported: it is what the plugin launcher and some client entries run,
 and `mcp --http <port>` is the same as `serve --port <port>`.
 
