@@ -1216,7 +1216,8 @@ describe("post-run git never honours config the agent could have written", () =>
       () => undefined,
       (e: unknown) => e as Error,
     );
-    expect(err?.message).toMatch(/Could not collect the agent's new files/);
+    // Older git fails at add, newer at diff; either way the hint must be there.
+    expect(err?.message).toMatch(/emb/);
     expect(err?.message).toMatch(/git init/);
   });
 

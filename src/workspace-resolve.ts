@@ -215,9 +215,7 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       (err: unknown) => {
         throw new Error(
           `Could not collect the agent's new files in ${root}, so no complete patch can be ` +
-            `built: ${err instanceof Error ? err.message.trim() : String(err)}\n` +
-            `A common cause is a nested repository the agent created with \`git init\` and ` +
-            `never committed to. Remove that folder's .git, or commit inside it, then try again.`,
+            `built: ${err instanceof Error ? err.message.trim() : String(err)}\n${NESTED_REPO_HINT}`,
         );
       },
     );
@@ -261,7 +259,13 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
         "--",
       ],
       root,
-    );
+    ).catch((err: unknown) => {
+      // Newer git stages such a repository and fails here instead of at add.
+      if (err instanceof Error && /does not have a commit checked out/.test(err.message)) {
+        throw new Error(`${err.message.trim()}\n${NESTED_REPO_HINT}`);
+      }
+      throw err;
+    });
   }
 
   // A copy patch is built FILE BY FILE, from the list of what the agent
@@ -299,6 +303,11 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       `${root}, or re-run the dispatch.`,
   );
 }
+
+/** Why a worktree patch most often cannot be built, and what to do about it. */
+const NESTED_REPO_HINT =
+  "A common cause is a nested repository the agent created with `git init` and never " +
+  "committed to. Remove that folder's .git, or commit inside it, then try again.";
 
 /**
  * Pathspecs excluding every gitlink in the worktree's index, for `git add`.
