@@ -2,6 +2,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { pruneDeadWorkspaceLocks } from "../workspace-lock.js";
+import { assertMayDispatch } from "../nested-dispatch.js";
 import path from "node:path";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { buildContextPreamble } from "./context.js";
@@ -31,6 +32,13 @@ export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promis
 }
 
 export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput): Promise<StartedJob> {
+  // First, before a job directory exists: an agent that a dispatch started may
+  // not dispatch, whatever kind of route it asked for. Decided here, from the
+  // environment of the process accepting the dispatch, because the job itself
+  // will run in a supervisor whose environment belongs to whoever started it.
+  // MCP dispatch, fanout, retry and HTTP all come through this function.
+  assertMayDispatch();
+
   // Before anything is created on disk. Every dispatch path — MCP, HTTP,
   // fanout — funnels through here, so this is the one place that catches a bad
   // workingDir while the error can still name the real cause, and the only

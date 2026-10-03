@@ -6,6 +6,7 @@ import path from "node:path";
 import { readHttpToken, tokenPath } from "../auth.js";
 import { BreakerStore } from "../breaker-store.js";
 import { AUTO_DETECT_COMMANDS } from "../config.js";
+import { isRemovedKeyWarning } from "../config/validation.js";
 import { commandAvailable } from "../dispatchers/shared/which-available.js";
 import { codexLoginState } from "../dispatchers/shared/harness-login.js";
 import { clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
@@ -199,7 +200,12 @@ export async function cmdDoctor(
     },
     {
       name: "config-warnings",
-      ok: (runtime.config.configWarnings?.length ?? 0) === 0,
+      // Fails on a key that is ignored and should not be (a typo, a setting
+      // that was never implemented). A key that was REMOVED still loads and
+      // changes nothing, so it only warns: the config is fine, the line is
+      // just dead.
+      ok: (runtime.config.configWarnings ?? []).every(isRemovedKeyWarning),
+      warn: (runtime.config.configWarnings?.length ?? 0) > 0,
       detail:
         runtime.config.configWarnings && runtime.config.configWarnings.length > 0
           ? runtime.config.configWarnings.join(" | ")

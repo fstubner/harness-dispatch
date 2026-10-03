@@ -69,6 +69,13 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`doctor` no longer fails a config for the removed `leaderboard:` and
+  `leaderboard_model:` keys.** The file still loaded, as the entry above says,
+  but `doctor` counted the warning as a failure: exit 1, "NOT READY ...
+  (config-warnings)". Those two now show as a warning and `doctor` exits 0.
+  Every other config warning (a misspelled key, a setting that was never
+  implemented) still fails it.
+
 - **A background run that started through the fallback now says so.** On
   Windows a job's runner is started through WMI so it survives the session that
   dispatched it. When WMI is unavailable the runner still starts with a plain
@@ -925,21 +932,31 @@ pre-1.0, so minor versions can carry behaviour changes.
   this server.** `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_AUTH_TOKEN`,
   `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` are blanked for every
   agent CLI (each can move a subscription route onto metered billing without
-  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN` and
-  `GITHUB_TOKEN`. A route that names one of them as its own
-  `api_key_env_var` still receives it. A delegate that needs GitHub access uses
-  the `gh` login stored on the machine rather than the inherited token.
+  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN`,
+  `GITHUB_TOKEN` and `GH_TOKEN` (`gh` prefers the latter). A route that names
+  one of them as its own `api_key_env_var` still receives it. A delegate that
+  needs GitHub access no longer gets the token this process was started with.
 
 - **Only `${VAR}`s that hold a credential are hidden from delegates.** Every
   variable named anywhere in `config.yaml` was blanked in every agent's
   environment, so `command: ${LOCALAPPDATA}\...` on one route emptied
   `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
-  `api_key`, or holds a value the config treats as a secret.
+  `api_key`, or holds a value the config treats as a secret. On Windows, where
+  variable names ignore case, this holds however the config spells the name:
+  `${groq_api_key}` blanks the real `GROQ_API_KEY`.
 
-- **A delegate cannot dispatch at all.** Every agent harness-dispatch starts
-  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate may have this server among
-  its own MCP servers, or a shell, but any dispatch it makes is refused with an
-  explanation and does not count against the route.
+- **A delegate cannot dispatch at all, to any kind of route.** Every agent
+  harness-dispatch starts is marked with `HARNESS_DISPATCH_DEPTH`. A delegate may
+  have this server among its own MCP servers, or a shell, but a dispatch made
+  from a process carrying the marker is refused with an explanation, before any
+  job exists or any request is sent, and counts against no route. That covers
+  the `dispatch` and `retry_job` tools, fanout, the REST API (answered 403) and
+  `harness-dispatch dispatch`, and endpoint routes as well as agent CLIs. The
+  refusal is decided from the environment of the process that
+  accepts the dispatch, not of the shared background process that runs it. This
+  stops an agent that cooperates. An agent with a shell can unset the variable,
+  and a REST server reads its own environment, not the caller's, so neither is
+  stopped by it.
 
 - **`api_key_file:` keeps a route's key out of the environment every process
   inherits.** The documented ways to hand the server a key were an environment variable,

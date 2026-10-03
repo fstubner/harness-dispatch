@@ -28,6 +28,8 @@ import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
 import { commandAvailable } from "./shared/which-available.js";
 import { statedResetSeconds } from "./shared/rate-limit-reset.js";
+import { sameEnvName } from "./shared/env-names.js";
+import { dispatchDepth,nestedDispatchRefusal } from "../nested-dispatch.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -930,7 +932,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // reason for Codex to receive a Groq key. Blanking rather than deleting
     // because streamSubprocess merges over process.env.
     for (const envVar of this.siblingApiKeyEnvVars) {
-      if (envVar === protocol.apiKeyEnvVar) continue;
+      if (protocol.apiKeyEnvVar !== undefined && sameEnvName(envVar, protocol.apiKeyEnvVar)) continue;
       if (process.env[envVar]) extraEnv[envVar] = "";
     }
     // Credentials no route's config names, which the delegate still has no
@@ -949,8 +951,11 @@ export class GenericCliDispatcher extends BaseDispatcher {
       "CLAUDE_CODE_USE_VERTEX",
       "HARNESS_DISPATCH_HTTP_TOKEN",
       "GITHUB_TOKEN",
+      // `gh` prefers GH_TOKEN over GITHUB_TOKEN, so blanking only the latter
+      // left the credential it actually reads.
+      "GH_TOKEN",
     ]) {
-      if (envVar === protocol.apiKeyEnvVar) continue;
+      if (protocol.apiKeyEnvVar !== undefined && sameEnvName(envVar, protocol.apiKeyEnvVar)) continue;
       if (process.env[envVar]) extraEnv[envVar] = "";
     }
     if (protocol.apiKeyEnvVar) {
@@ -961,23 +966,19 @@ export class GenericCliDispatcher extends BaseDispatcher {
       }
     }
     // Mark the child as delegated work, one level deeper than this process.
-    // A delegate with shell, or with this server among its MCP servers, can
-    // dispatch again, and nothing bounded that (audit5 F7). No nesting is
-    // allowed: an agent that was itself started by a dispatch (depth 1) cannot
-    // start another.
-    const maxDepth = 1;
-    const depth = Number.parseInt(process.env["HARNESS_DISPATCH_DEPTH"] ?? "0", 10) || 0;
-    if (depth >= maxDepth) {
+    // The refusal is made where a dispatch is ACCEPTED, from the caller's
+    // environment (nested-dispatch.ts); this process may be a shared
+    // supervisor that says nothing about who is asking. It is repeated here
+    // only for a dispatcher used directly, with no entry point in front.
+    const refusal = nestedDispatchRefusal();
+    if (refusal !== undefined) {
       yield {
         type: "completion",
         result: {
           output: "",
           service: this.id,
           success: false,
-          error:
-            `refused: this dispatch comes from an agent that was itself started by a dispatch ` +
-            `(HARNESS_DISPATCH_DEPTH=${depth}). A delegate may not dispatch at all, so delegation ` +
-            `cannot nest without bound. Do the work directly instead.`,
+          error: refusal,
           // Not the route's fault, so not the route's failure.
           inputRejected: true,
           durationMs: 0,
@@ -985,6 +986,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
       };
       return;
     }
+    const depth = dispatchDepth();
     extraEnv["HARNESS_DISPATCH_DEPTH"] = String(depth + 1);
 
     // Arguments a Windows command shim would mangle or execute, refused before

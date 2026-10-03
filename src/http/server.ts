@@ -47,6 +47,7 @@ import {
 // not move where callers get it from.
 export { BadRequestError };
 import type { RuntimeHolder } from "../mcp/config-hot-reload.js";
+import { NestedDispatchError } from "../nested-dispatch.js";
 
 export interface HttpServerHandle extends McpHandle {
   port: number;
@@ -902,6 +903,8 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           sendJson(res, 413, { error: err.message });
         } else if (err instanceof BadRequestError) {
           sendJson(res, 400, { error: err.message });
+        } else if (err instanceof NestedDispatchError) {
+          sendJson(res, 403, { error: err.message });
         } else {
           sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
         }
