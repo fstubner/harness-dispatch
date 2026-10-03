@@ -140,5 +140,7 @@ jobs:
             echo "A release for $GITHUB_REF_NAME already exists — leaving it alone."
             exit 0
           fi
-          awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 { f = 1; next } /^## \[/ { f = 0 } f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          # One line per paragraph: a release body renders every newline as a
+          # line break, and CHANGELOG.md is hard-wrapped (see the script).
+          node scripts/release-notes.mjs "$VERSION" > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
