@@ -209,9 +209,18 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // the diff as additions. It touches only the throwaway worktree's index.
     // Never into a submodule: see gitlinkExclusions.
     //
-    // Not caught: an `add` that fails leaves the agent's new files out of the
-    // patch, and `apply` would then report success without them.
-    await gitAddPathspecs(pinned, root, ["-A", "-N"], [".", ...(await gitlinkExclusions(pinned, root))]);
+    // Not swallowed: an `add` that fails leaves the agent's new files out of
+    // the patch, and `apply` would then report success without them.
+    await gitAddPathspecs(pinned, root, ["-A", "-N"], [".", ...(await gitlinkExclusions(pinned, root))]).catch(
+      (err: unknown) => {
+        throw new Error(
+          `Could not collect the agent's new files in ${root}, so no complete patch can be ` +
+            `built: ${err instanceof Error ? err.message.trim() : String(err)}\n` +
+            `A common cause is a nested repository the agent created with \`git init\` and ` +
+            `never committed to. Remove that folder's .git, or commit inside it, then try again.`,
+        );
+      },
+    );
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
     // a filesystem fingerprint. So an agent that writes a gitignored file (a
     // `.env`, a local config) has that file reported as changed and applied

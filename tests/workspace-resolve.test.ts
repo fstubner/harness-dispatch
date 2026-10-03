@@ -1203,6 +1203,23 @@ describe("post-run git never honours config the agent could have written", () =>
     expect(patch).toContain("+glob");
   });
 
+  it("says how to recover when the agent's new files cannot be collected", async () => {
+    // A nested repository with no commit makes `git add` fail. That used to be
+    // swallowed, leaving every new file out of the patch while apply reported
+    // success; now it fails, and the message has to say what to do.
+    const { run } = await plantedWorktree();
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    await git(["init", "-q", path.join(worktree, "emb")], dir);
+    await fs.writeFile(path.join(worktree, "emb", "x.txt"), "x\n", "utf8");
+    await fs.writeFile(path.join(worktree, "new.js"), "export const n = 1;\n", "utf8");
+    const err = await buildWorkspacePatch(run).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toMatch(/Could not collect the agent's new files/);
+    expect(err?.message).toMatch(/git init/);
+  });
+
   it("keeps new files in the patch of a repository with very many submodules", async () => {
     // One exclusion pathspec per gitlink: on the command line they overflowed
     // Windows' limit at about 700 submodules, the `add` failed silently, and
