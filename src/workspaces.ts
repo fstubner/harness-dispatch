@@ -14,6 +14,7 @@ import {
   rm,
   stat,
   symlink,
+  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -481,6 +482,60 @@ async function lastActiveMs(runPath: string): Promise<number> {
 }
 
 /**
+ * Remove every symbolic link and directory junction at or under `dir` — the
+ * link itself, never what it points at — so that whatever deletes `dir` next
+ * finds only real files and directories.
+ *
+ * `git worktree remove --force` on Windows treats a junction as a directory:
+ * it walks INTO it and deletes the target's contents before removing the
+ * junction (measured, Git 2.45.1.windows.1: a folder outside the workspace
+ * went from one file to none). A junction needs no privilege to create, so a
+ * delegate that only writes files could empty any folder the user can write by
+ * planting one in its worktree. Node's own recursive `rm` removes a junction
+ * without following it (measured on the same machine), so only git's removal
+ * was exposed; this still runs before every workspace removal, so one rule
+ * covers them all.
+ *
+ * Throws when a directory cannot be read or a link cannot be removed. The
+ * caller must then not delete `dir`: a corner this could not examine may still
+ * hold a link.
+ */
+export async function removeLinksWithin(dir: string): Promise<void> {
+  const gone = (err: unknown): boolean => (err as NodeJS.ErrnoException)?.code === "ENOENT";
+  let info;
+  try {
+    info = await lstat(dir);
+  } catch (err) {
+    if (gone(err)) return;
+    throw err;
+  }
+  if (info.isSymbolicLink()) {
+    // On Windows `unlink` removes a directory junction itself (measured).
+    await unlink(dir).catch((err: unknown) => {
+      if (!gone(err)) throw err;
+    });
+    return;
+  }
+  if (!info.isDirectory()) return;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (gone(err)) return;
+    throw err;
+  }
+  // Sequential: a worktree can hold an installed dependency tree, and an
+  // unbounded fan-out over it runs out of file handles.
+  // A junction's entry reads as a symbolic link, not a directory (measured);
+  // plain files are skipped without a stat each.
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || entry.isDirectory()) {
+      await removeLinksWithin(path.join(dir, entry.name));
+    }
+  }
+}
+
+/**
  * Delete this project's aged run directories, whatever policy made them.
  *
  * Shared by both isolation policies, so a guard added here cannot be added to
@@ -519,6 +574,8 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
     const workspaceRoot = path.join(root, entry.name);
     try {
       if (now - (await lastActiveMs(workspaceRoot)) <= maxAgeMs) continue;
+      // Throws when it cannot finish, which skips this run entirely.
+      await removeLinksWithin(workspaceRoot);
       // A `worktree` child is the tell that git still has this registered.
       const worktreeRoot = path.join(workspaceRoot, "worktree");
       if (gitRoot !== undefined && existsSync(worktreeRoot)) {
@@ -1289,7 +1346,9 @@ async function git(args: string[], cwd: string): Promise<string> {
  *  - Callers that diff or ask for status also pass `--ignore-submodules=dirty`,
  *    so git never starts a child inside an embedded repository (its filters
  *    are not covered by the overrides above), and `--no-ext-diff
- *    --no-textconv` where a patch is produced.
+ *    --no-textconv` where a patch is produced. `git add` has no such option
+ *    and overrides `diff.ignoreSubmodules`, so its callers exclude every
+ *    gitlink path instead — see gitlinkExclusions in workspace-resolve.ts.
  *
  * Nothing run here fetches or pages, so `core.sshCommand`, `core.pager` and
  * credential helpers are never consulted; diff and filter drivers come only
@@ -1391,7 +1450,11 @@ async function prepareGitWorktreeWorkspace(
     // The worktree starts from HEAD, and a working directory that exists only
     // as uncommitted files is not in HEAD. Left alone, this was a bare ENOENT
     // plus a worktree registered in the user's repository until retention.
-    await git(["worktree", "remove", "--force", worktreeRoot], gitRoot).catch(() => undefined);
+    // No agent has run here yet; removed like every other workspace anyway,
+    // so no removal path skips the link sweep.
+    await removeLinksWithin(workspaceRoot)
+      .then(() => git(["worktree", "remove", "--force", worktreeRoot], gitRoot))
+      .catch(() => undefined);
     await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
     throw new Error(
       `workspace_policy: git_worktree starts from the last commit, and ${prefix} is not in it ` +
@@ -1448,7 +1511,9 @@ async function prepareGitWorktreeWorkspace(
         // `git worktree remove` fails — an index lock, a concurrent git
         // operation — deleting it anyway strands `.git/worktrees/<name>`
         // inside the user's repository.
-        const unregistered = await git(["worktree", "remove", "--force", worktreeRoot], gitRoot)
+        // Links first: git's removal follows a junction (see removeLinksWithin).
+        const unregistered = await removeLinksWithin(workspaceRoot)
+          .then(() => git(["worktree", "remove", "--force", worktreeRoot], gitRoot))
           .then(() => true)
           .catch(() => false);
         if (unregistered) {

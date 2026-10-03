@@ -938,6 +938,26 @@ describe("discard only deletes inside the workspaces directory", () => {
       await fs.rm(outside, { recursive: true, force: true });
     }
   });
+
+  it("refuses the workspaces directory itself, which holds every project's workspaces", async () => {
+    const base = path.join(dir, "workspaces");
+    const otherProject = path.join(base, "other-project-1234abcd", "run");
+    await fs.mkdir(otherProject, { recursive: true });
+    await fs.writeFile(path.join(otherProject, "work.txt"), "someone else's job", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: dir,
+      effectiveWorkingDir: base,
+      workspaceRoot: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [],
+    };
+    const out = await discardWorkspace("job-1", run, { force: true });
+    expect(out.discarded).toBe(false);
+    expect(out.message).toMatch(/not inside the workspaces directory/);
+    expect(await fs.readFile(path.join(otherProject, "work.txt"), "utf8")).toBe("someone else's job");
+  });
 });
 
 describe("two workspace actions on one job at once", () => {
@@ -1095,5 +1115,71 @@ describe("post-run git never honours config the agent could have written", () =>
     const patch = await buildWorkspacePatch(run);
     expect(patch).toContain("+const a = 2;");
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it("diffs a worktree whose TRACKED submodule the agent filled in, without running its filters", async () => {
+    // A fresh worktree leaves a submodule's directory empty. A delegate that
+    // only writes files can put a repository there at the gitlink's commit,
+    // with a clean filter in its config. `git add -A` checks a gitlink that
+    // still matches its commit by running `git status` INSIDE it, and unlike
+    // diff and status, add takes no --ignore-submodules and overrides
+    // diff.ignoreSubmodules — so the planted filter ran as the user, at job end.
+    const { run, marker, hook } = await plantedWorktree();
+    const repo = run.originalWorkingDir;
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    const subSrc = path.join(dir, "sub-src");
+    await fs.mkdir(subSrc);
+    await git(["init", "-q"], subSrc);
+    // No newline, so autocrlf cannot change the size and a same-size edit
+    // below can only be detected by reading the file through the filter.
+    await fs.writeFile(path.join(subSrc, "f.txt"), "x");
+    await git(["add", "-A"], subSrc);
+    await git(["-c", "user.email=t@example.test", "-c", "user.name=T", "commit", "-qm", "s"], subSrc);
+    await git(
+      ["-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc.split("\\").join("/"), "sub"],
+      repo,
+    );
+    await git(["commit", "-qm", "add submodule"], repo);
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+    const gitlink = (await git(["rev-parse", "HEAD:sub"], repo)).stdout.trim();
+    await git(["checkout", "-q", "--detach", base], worktree);
+    await fs.writeFile(path.join(worktree, "app.js"), "const a = 2;\n", "utf8");
+    await fs.writeFile(path.join(worktree, "new.js"), "export const n = 1;\n", "utf8");
+    // Recorded changes become pathspecs for the force-add of ignored files,
+    // and as a glob this ignored file's name matches `sub`: that call needs
+    // the exclusions too.
+    await fs.writeFile(path.join(worktree, "[s]ub"), "glob\n", "utf8");
+    await fs.writeFile(path.join(worktree, ".gitignore"), "\\[s\\]ub\n", "utf8");
+
+    const sub = path.join(worktree, "sub");
+    expect(await fs.readdir(sub)).toEqual([]);
+    await git(["init", "-q"], sub);
+    await git(["fetch", "-q", subSrc], sub);
+    await git(["checkout", "-q", gitlink], sub);
+    await git(["config", "filter.ev.clean", `${hook.replace(/; true$/, "")}; cat`], sub);
+    await fs.writeFile(path.join(sub, ".gitattributes"), "* filter=ev\n");
+    await fs.writeFile(path.join(sub, "f.txt"), "y");
+    // The fixture is live: git inside the planted repository runs the filter.
+    await git(["status", "--porcelain"], sub);
+    expect(existsSync(marker), "the planted filter never runs, so this test proves nothing").toBe(true);
+    await fs.rm(marker);
+
+    const planted: WorkspaceRun = {
+      ...run,
+      baseCommit: base,
+      changedFiles: [
+        { path: "app.js", kind: "modified" },
+        { path: "new.js", kind: "added" },
+        { path: ".gitignore", kind: "added" },
+        { path: "[s]ub", kind: "added" },
+      ],
+    };
+    // The job-end path (jobs/run.ts), then the one `workspace diff` takes.
+    await persistWorkspacePatch(jobDir, planted);
+    const patch = await buildWorkspacePatch(planted);
+    expect(existsSync(marker)).toBe(false);
+    expect(patch).toContain("+const a = 2;");
+    expect(patch).toContain("+export const n = 1;");
+    expect(patch).toContain("+glob");
   });
 });

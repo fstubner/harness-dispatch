@@ -21,6 +21,7 @@ import {
   eolDigest,
   GIT_ENV,
   isUnderOrEqual,
+  removeLinksWithin,
   workspacesBase,
   worktreeGitArgs,
 } from "./workspaces.js";
@@ -47,13 +48,13 @@ function describeGitSpawnFailure(err: unknown): Error | undefined {
   );
 }
 
-async function git(args: string[], cwd: string): Promise<string> {
+async function git(args: string[], cwd: string, maxBuffer = MAX_PATCH_BYTES): Promise<string> {
   try {
     const { stdout } = await execFile("git", args, {
       cwd,
       windowsHide: true,
       env: GIT_ENV,
-      maxBuffer: MAX_PATCH_BYTES,
+      maxBuffer,
     });
     return String(stdout);
   } catch (err) {
@@ -205,7 +206,11 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     const pinned = await worktreeGitArgs(root, run.originalWorkingDir);
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
-    await git([...pinned, "add", "-A", "-N"], root).catch(() => undefined);
+    // Never into a submodule: see gitlinkExclusions.
+    await git(
+      [...pinned, "add", "-A", "-N", "--", ".", ...(await gitlinkExclusions(pinned, root))],
+      root,
+    ).catch(() => undefined);
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
     // a filesystem fingerprint. So an agent that writes a gitignored file (a
     // `.env`, a local config) has that file reported as changed and applied
@@ -224,9 +229,15 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     const ignoredCandidates = (run.changedFiles ?? [])
       .filter((c) => c.kind !== "deleted")
       .map((c) => c.path);
+    // Read again: the add above turns an embedded repository the agent
+    // created into a new gitlink.
+    const exclusions =
+      ignoredCandidates.length > 0 ? await gitlinkExclusions(pinned, root) : [];
     for (let i = 0; i < ignoredCandidates.length; i += 100) {
       const batch = ignoredCandidates.slice(i, i + 100);
-      await git([...pinned, "add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
+      await git([...pinned, "add", "-N", "--force", "--", ...batch, ...exclusions], root).catch(
+        () => undefined,
+      );
     }
     return gitDiff(
       [
@@ -277,6 +288,35 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       "never included as deletions. Inspect it by hand at " +
       `${root}, or re-run the dispatch.`,
   );
+}
+
+/**
+ * Pathspecs excluding every gitlink in the worktree's index, for `git add`.
+ *
+ * `git add` checks a gitlink whose directory still holds the recorded commit
+ * by running `git status` INSIDE that repository, which honours the
+ * repository's own clean filters. A fresh worktree leaves a submodule's
+ * directory empty, so a delegate that only writes files can put a repository
+ * there at the gitlink's commit with a filter in its config — and
+ * harness-dispatch's own `add` at job end ran it as the user. Unlike diff and
+ * status, `add` takes no `--ignore-submodules`, and it overrides both
+ * `diff.ignoreSubmodules` and `submodule.recurse=false` (measured, git 2.45).
+ * A path excluded by pathspec is skipped before git looks at it at all.
+ *
+ * Read from the same index `add` is about to walk, so every gitlink it holds
+ * is excluded — including any the agent added by running git in its worktree.
+ * `ls-files --stage` only reads the index; it starts nothing. Its output
+ * scales with the repository, not the patch, hence the larger buffer. When it
+ * fails this throws, and `add` does not run without its exclusions.
+ */
+async function gitlinkExclusions(pinned: string[], root: string): Promise<string[]> {
+  const out = await git([...pinned, "ls-files", "--stage", "-z"], root, 256 * 1024 * 1024);
+  const gitlinks = new Set<string>();
+  for (const entry of out.split("\0")) {
+    // "<mode> <object> <stage>\t<path>"; 160000 is a gitlink.
+    if (entry.startsWith("160000 ")) gitlinks.add(entry.slice(entry.indexOf("\t") + 1));
+  }
+  return [...gitlinks].map((p) => `:(top,literal,exclude)${p}`);
 }
 
 /** git's own name for "this side does not exist", accepted on Windows too. */
@@ -1042,12 +1082,21 @@ export interface DiscardResult {
  * removed through git, with a filesystem sweep afterwards for the wrapper
  * directory git does not own.
  */
-/** Whether `dir` lies inside the workspaces directory, compared as written and as resolved. */
+/**
+ * Whether `dir` lies strictly inside the workspaces directory, compared as
+ * written and as resolved.
+ *
+ * Strictly: the directory itself holds every project's workspaces, so a record
+ * naming it would have discard delete all of them.
+ */
 async function isInsideWorkspacesBase(dir: string): Promise<boolean> {
   const base = workspacesBase();
-  if (isUnderOrEqual(dir, base)) return true;
+  // path.relative, not string equality: it compares case-insensitively on Windows.
+  const strictlyUnder = (candidate: string, root: string): boolean =>
+    isUnderOrEqual(candidate, root) && path.relative(path.resolve(root), path.resolve(candidate)) !== "";
+  if (strictlyUnder(dir, base)) return true;
   try {
-    return isUnderOrEqual(await realpath(dir), await realpath(base));
+    return strictlyUnder(await realpath(dir), await realpath(base));
   } catch {
     return false;
   }
@@ -1121,6 +1170,22 @@ export async function discardWorkspace(
           `force: true if you genuinely want them thrown away.`,
       };
     }
+  }
+
+  // Links out of the workspace go first, as links: `git worktree remove`
+  // follows a junction and deletes what it points at. See removeLinksWithin.
+  try {
+    await removeLinksWithin(root);
+  } catch (err) {
+    return {
+      jobId,
+      discarded: false,
+      message:
+        `Refused: could not check ${root} for links before deleting it ` +
+        `(${err instanceof Error ? err.message : String(err)}). Deleting it with a link still ` +
+        `inside could delete files outside the workspace, so its files were left in place. ` +
+        `Remove it by hand once the cause is fixed.`,
+    };
   }
 
   if (run.policy === "git_worktree") {

@@ -649,7 +649,8 @@ pre-1.0, so minor versions can carry behaviour changes.
 - **`workspace discard` only deletes inside the workspaces directory.** It
   deleted whatever directory a job's result record named, so a record edited by
   hand — or by a delegated agent with shell access — could point it at any
-  folder. It now refuses anything outside, even with `force`.
+  folder. It now refuses anything outside, and the workspaces directory itself,
+  which holds every project's workspaces, even with `force`.
 
 - **`configure` no longer turns one route's address into another route's
   variable.** When two routes shared a base URL and one was written as
@@ -889,11 +890,23 @@ pre-1.0, so minor versions can carry behaviour changes.
   `core.fsmonitor`, and harness-dispatch's own `git add` / `git diff` at job
   end ran that command as you, outside any harness sandbox; an embedded
   repository in a subdirectory reached the same place through its fsmonitor
-  and clean filters. Post-run git now runs against the worktree's registration
-  in your repository, never discovers one from the worktree, overrides
-  `core.fsmonitor` and `core.hooksPath`, and does not look inside embedded
-  repositories. A worktree whose `.git` no longer points at its own
-  registration is refused with an explanation instead of diffed.
+  and clean filters, and so did a repository planted in a submodule's
+  directory, which a fresh worktree leaves empty: `git add` checked it by
+  running `git status` inside it. Post-run git now runs against the worktree's
+  registration in your repository, never discovers one from the worktree,
+  overrides `core.fsmonitor` and `core.hooksPath`, and does not look inside
+  embedded repositories or submodules. A worktree whose `.git` no longer points
+  at its own registration is refused with an explanation instead of diffed.
+
+- **Removing a workspace no longer deletes files outside it on Windows.** On
+  Windows, `git worktree remove --force` treats a directory junction as an
+  ordinary folder and deletes what it points at. A junction needs no special
+  rights to create, so an agent that only wrote files in its worktree could
+  empty any folder you can write to, and that happened on `workspace discard`,
+  on the retention clean-up of old workspaces, and on the clean-up of a failed
+  attempt. Every link inside a workspace is now removed as a link before
+  anything deletes the workspace; the folder it pointed at is left alone.
+  Removing a `copy` workspace was not affected.
 
 - **A `config.yaml` in the current directory is no longer loaded on its own.**
   It ranked above your own config, and the config decides which commands
