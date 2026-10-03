@@ -42,8 +42,28 @@ export interface DetachedLaunch {
 }
 
 export type LaunchOutcome =
-  | { ok: true; method: "wmi" | "spawn"; pid?: number; note?: string }
+  | { ok: true; method: "wmi" | "spawn"; pid?: number; note?: string; wmiError?: string }
   | { ok: false; error: string };
+
+/** What `launchDetached` needs from the outside world; tests substitute both. */
+export interface LaunchSeams {
+  platform?: NodeJS.Platform;
+  viaWmi?: (spec: DetachedLaunch) => Promise<LaunchOutcome>;
+}
+
+/**
+ * What a dispatch's caller is told when the background runner was started by
+ * the plain-spawn fallback: the run works, but it is not protected from a
+ * launcher that kills its descendants when the session ends.
+ */
+export function fallbackWarning(wmiError: string): string {
+  return (
+    `The background runner for this job was started with a plain detached spawn because ` +
+    `the durable Windows (WMI) launch failed (${wmiError}), so the job may not survive this ` +
+    `session ending. Run \`harness-dispatch doctor\` (the job-runner row) to see why WMI is ` +
+    `unavailable.`
+  );
+}
 
 /** How long PowerShell may take to start and ask WMI. Measured 1.0-1.7 s. */
 const WMI_LAUNCH_TIMEOUT_MS = 30_000;
@@ -53,9 +73,9 @@ const WMI_LAUNCH_TIMEOUT_MS = 30_000;
  * Never throws: a launch that fails is reported, and the caller decides what
  * a missing process means.
  */
-export async function launchDetached(spec: DetachedLaunch): Promise<LaunchOutcome> {
-  if (process.platform !== "win32") return spawnDetached(spec);
-  const viaWmi = await launchViaWmi(spec);
+export async function launchDetached(spec: DetachedLaunch, seams: LaunchSeams = {}): Promise<LaunchOutcome> {
+  if ((seams.platform ?? process.platform) !== "win32") return spawnDetached(spec);
+  const viaWmi = await (seams.viaWmi ?? launchViaWmi)(spec);
   if (viaWmi.ok) return viaWmi;
   // WMI can be unavailable (the service disabled by policy, PowerShell
   // removed). A plain detached spawn still survives everything except a
@@ -71,7 +91,7 @@ export async function launchDetached(spec: DetachedLaunch): Promise<LaunchOutcom
   } catch {
     // The log is diagnostics; failing to write it changes nothing.
   }
-  return fallback.ok ? { ...fallback, note: note.trim() } : fallback;
+  return fallback.ok ? { ...fallback, note: note.trim(), wmiError: viaWmi.error } : fallback;
 }
 
 function spawnDetached(spec: DetachedLaunch): Promise<LaunchOutcome> {
@@ -232,7 +252,7 @@ const PROBE_SETTLE_MS = 2_000;
 export async function probeDetachedSurvival(
   runnerPath: string,
   probeDir: string,
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<{ ok: boolean; warn?: boolean; detail: string }> {
   const launcher = launcherNode();
   const started = Date.now();
   const parentExit = await new Promise<number | null>((resolve) => {
@@ -269,16 +289,48 @@ export async function probeDetachedSurvival(
     await new Promise((r) => setTimeout(r, 200));
   }
   const how = launch !== undefined ? (JSON.parse(launch) as LaunchOutcome) : undefined;
+  return probeVerdict({
+    how,
+    survived: read("survived") !== undefined,
+    launcher,
+    tookMs: Date.now() - started,
+    log: (read("child.log") ?? "").trim().split(/\r?\n/).slice(-3).join(" | "),
+  });
+}
+
+/**
+ * What the probe observed, as doctor's row. A survivor that got there by the
+ * plain-spawn fallback is a `warn`: it outlived this launcher, but the durable
+ * WMI launch is broken, so a launcher that kills its descendants would take
+ * real jobs with it.
+ */
+export function probeVerdict(o: {
+  how: LaunchOutcome | undefined;
+  survived: boolean;
+  launcher: string;
+  tookMs: number;
+  log: string;
+}): { ok: boolean; warn?: boolean; detail: string } {
+  const { how, launcher } = o;
   const method = how?.ok ? how.method : "none";
-  if (read("survived") !== undefined) {
+  const wmiError = how?.ok ? how.wmiError : undefined;
+  const nextStep =
+    wmiError !== undefined
+      ? ` The durable Windows (WMI) launch failed (${wmiError}) and the plain-spawn fallback ran ` +
+        `instead, so jobs started this way die with their session under a launcher that kills ` +
+        `its descendants. Next: make the WMI service and Windows PowerShell available (the ` +
+        `service "Windows Management Instrumentation" must be running), then re-run doctor.`
+      : "";
+  if (o.survived) {
     return {
       ok: true,
+      ...(wmiError !== undefined ? { warn: true } : {}),
       detail:
         `a background run outlives the session that started it (launched via ${method}, ` +
-        `parent run under ${launcher}; probe took ${Date.now() - started} ms)`,
+        `parent run under ${launcher}; probe took ${o.tookMs} ms)` +
+        nextStep,
     };
   }
-  const log = (read("child.log") ?? "").trim().split(/\r?\n/).slice(-3).join(" | ");
   const why =
     how === undefined
       ? "the probe recorded no launch at all"
@@ -290,7 +342,7 @@ export async function probeDetachedSurvival(
           `a background run was KILLED when the process that started it exited ` +
           `(launched via ${method}, parent run under ${launcher}). Jobs will die with ` +
           `the session that dispatched them.`;
-  return { ok: false, detail: why + (log !== "" ? ` Log: ${log}` : "") };
+  return { ok: false, detail: why + nextStep + (o.log !== "" ? ` Log: ${o.log}` : "") };
 }
 
 /** The probe's middle generation: launch the grandchild, record how, exit. */

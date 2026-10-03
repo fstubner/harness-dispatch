@@ -177,12 +177,15 @@ describe("the shipped antigravity and claude routes restrict what they claim to"
     // audit5 F4. --tools is what removes a tool; --strict-mcp-config with no
     // --mcp-config loads no servers.
     const svc = await shipped("claude_code_cli", "claude_code", "claude");
+    expect(svc.protocol?.safety?.full_auto, "full_auto is unchanged").not.toContain("--setting-sources");
     for (const profile of ["read_only", "workspace_edit"] as const) {
       const flags = svc.protocol?.safety?.[profile] ?? [];
       const tools = flags[flags.indexOf("--tools") + 1] ?? "";
       expect(flags, profile).toContain("--tools");
       expect(tools.split(","), profile).not.toContain("Bash");
       expect(flags, profile).toContain("--strict-mcp-config");
+      // The project's own settings, and the hooks in them, stay out.
+      expect(flags[flags.indexOf("--setting-sources") + 1], profile).toBe("user");
       // A variadic list must not be last, or it swallows the next argument.
       expect(flags.at(-2), profile).toBe("--permission-mode");
     }

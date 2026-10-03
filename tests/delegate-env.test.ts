@@ -104,7 +104,7 @@ describe("a delegate's environment", () => {
     expect(out["HD_TEST_MODEL"]).toBe("some-model-name");
   });
 
-  it("is marked one level deeper, and a delegate's delegate cannot start another agent", async () => {
+  it("is marked one level deeper, and a delegate cannot dispatch at all", async () => {
     // audit5 F7: nothing marked a delegate as nested, so a delegate with this
     // server among its MCP servers, or with shell, could dispatch without bound.
     vi.stubEnv("HARNESS_DISPATCH_DEPTH", "");
@@ -112,13 +112,10 @@ describe("a delegate's environment", () => {
     expect(seen(await run())["HARNESS_DISPATCH_DEPTH"]).toBe("1");
 
     vi.stubEnv("HARNESS_DISPATCH_DEPTH", "1");
-    expect(seen(await run())["HARNESS_DISPATCH_DEPTH"]).toBe("2");
-
-    vi.stubEnv("HARNESS_DISPATCH_DEPTH", "2");
     const refused = await run();
     expect(refused.success).toBe(false);
     expect(refused.inputRejected).toBe(true);
-    expect(refused.error).toMatch(/nesting stops at 2 levels/);
+    expect(refused.error).toMatch(/may not dispatch at all/);
     expect(refused.output).toBe("");
-  });
+});
 });

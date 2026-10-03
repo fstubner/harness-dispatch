@@ -41,7 +41,7 @@ function stateDirWritable(): { ok: boolean; detail: string } {
   }
 }
 
-async function jobRunnerCheck(): Promise<{ ok: boolean; detail: string }> {
+async function jobRunnerCheck(): Promise<{ ok: boolean; warn?: boolean; detail: string }> {
   if (process.env.HARNESS_DISPATCH_INPROC_JOBS === "1") {
     return {
       ok: true,

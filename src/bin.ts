@@ -37,7 +37,7 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  harness-dispatch breaker reset <route>   Close a route's circuit breaker now (it persists across restarts).",
       "  harness-dispatch serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
       "  harness-dispatch mcp [--http <port>]     The same as no command (stdio MCP); with --http, as serve.",
-      '  harness-dispatch dispatch "<prompt>"     Route one task and print the result.',
+      '  harness-dispatch dispatch "<prompt>"     Route one task and print the result (not counted against max_concurrent_runs).',
       "  harness-dispatch auth show               Print the HTTP bearer token.",
       "  harness-dispatch auth rotate             Rotate the HTTP bearer token.",
       "",

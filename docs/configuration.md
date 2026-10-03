@@ -178,6 +178,26 @@ parsing yields nothing). Billing for a `generic` route defaults to `unknown` (bl
 until you classify it — there's no way to know an arbitrary CLI's real billing model) —
 set `billing_kind:` / `paid_usage_possible:` explicitly once you know it.
 
+### Safety profiles on the shipped Codex route
+
+Codex's `full_auto` runs with `--sandbox workspace-write`, the same as
+`workspace_edit`. That is deliberate: the unsandboxed reading of "full auto" is
+`danger-full-access`, and the shipped default keeps shell inside Codex's own
+sandbox. If you really want the unsandboxed behaviour for that route, say so in
+your own config:
+
+```yaml
+overrides:
+  codex_cli:
+    protocol:
+      extends: codex
+      safety:
+        full_auto: ["--sandbox", "danger-full-access"]   # only this profile changes
+```
+
+`safety` merges per profile, so `read_only` and `workspace_edit` keep their
+shipped sandboxes.
+
 ## Configure
 
 `configure` is the main setup flow. It does four things, in order, and prompts for

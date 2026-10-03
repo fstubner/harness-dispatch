@@ -962,9 +962,10 @@ export class GenericCliDispatcher extends BaseDispatcher {
     }
     // Mark the child as delegated work, one level deeper than this process.
     // A delegate with shell, or with this server among its MCP servers, can
-    // dispatch again, and nothing bounded that (audit5 F7). One level of
-    // nesting is allowed; a delegate's delegate cannot start another agent.
-    const maxDepth = 2;
+    // dispatch again, and nothing bounded that (audit5 F7). No nesting is
+    // allowed: an agent that was itself started by a dispatch (depth 1) cannot
+    // start another.
+    const maxDepth = 1;
     const depth = Number.parseInt(process.env["HARNESS_DISPATCH_DEPTH"] ?? "0", 10) || 0;
     if (depth >= maxDepth) {
       yield {
@@ -975,9 +976,8 @@ export class GenericCliDispatcher extends BaseDispatcher {
           success: false,
           error:
             `refused: this dispatch comes from an agent that was itself started by a dispatch ` +
-            `of a dispatch (HARNESS_DISPATCH_DEPTH=${depth}), and nesting stops at ` +
-            `${maxDepth} levels so delegates cannot start agents without bound. ` +
-            `Do the work directly instead.`,
+            `(HARNESS_DISPATCH_DEPTH=${depth}). A delegate may not dispatch at all, so delegation ` +
+            `cannot nest without bound. Do the work directly instead.`,
           // Not the route's fault, so not the route's failure.
           inputRejected: true,
           durationMs: 0,

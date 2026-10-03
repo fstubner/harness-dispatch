@@ -168,6 +168,13 @@ the route is skipped until then, at most 24 hours at a time. A Codex run that
 fails because its Windows sandbox refused the repository commands skips the
 route for 30 minutes.
 
+That cooldown is route-wide on purpose, not per project: Codex's sandbox
+refuses spawns intermittently and the cause has not been pinned to particular
+directories, so one refusal pauses the route for every project. If you suspect
+the refusals cluster in certain project folders, check the dispatch log: each
+row's `jobId` names a job folder under `~/.harness-dispatch/jobs/`, and that
+job's `manifest.json` records the `workingDir` it ran in.
+
 **A harness goes silent.** A CLI route with an idle limit (`idle_timeout_ms`;
 shipped as 15 minutes for Codex and Antigravity, which print as they work) is
 stopped when it has printed nothing on either stream for that long, and the

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ServiceConfig } from "../../src/types.js";
 
@@ -1167,5 +1170,77 @@ describe("a consumer that stops reading an event stream (A1-12)", () => {
       if (ev.type === "stdout") break;
     }
     expect(cancelled).toBe(true);
+  });
+});
+
+describe("files outside the project are not sent to a remote endpoint", () => {
+  // A file named in `files` is read and sent whole, so for a remote endpoint a
+  // path outside the project is the caller's disk leaving the machine.
+  let root: string;
+  let project: string;
+  let outsideFile: string;
+  let insideFile: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), "hd-outside-"));
+    project = path.join(root, "project");
+    mkdirSync(project);
+    outsideFile = path.join(root, "secrets.txt");
+    insideFile = path.join(project, "notes.txt");
+    writeFileSync(outsideFile, "outside-content");
+    writeFileSync(insideFile, "inside-content");
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("refuses an outside file on a remote route before any request is made", async () => {
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const result = await d.dispatch("hi", [outsideFile], project);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(outsideFile);
+    expect(result.error).toMatch(/Paste the content you need into the prompt/);
+    // Not the route's fault, so the router does not charge its breaker.
+    expect(result.inputRejected).toBe(true);
+  });
+
+  it("refuses it on the streaming path too", async () => {
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const events = [];
+    for await (const ev of d.stream("hi", [insideFile, outsideFile], project)) events.push(ev);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const done = events.find((e) => e.type === "completion");
+    expect(done).toMatchObject({ result: { success: false, inputRejected: true } });
+  });
+
+  it("allows a file inside the project on a remote route", async () => {
+    fetchMock.mockResolvedValue(mockJsonResponse(chatCompletion("ok")));
+    const result = await new OpenAICompatibleDispatcher(baseSvc()).dispatch("hi", [insideFile], project);
+    expect(result.success).toBe(true);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toContain("inside-content");
+  });
+
+  it("allows an outside file on a local endpoint", async () => {
+    fetchMock.mockResolvedValue(mockJsonResponse(chatCompletion("ok")));
+    const d = new OpenAICompatibleDispatcher(baseSvc({ baseUrl: "http://localhost:11434/v1", apiKey: "" }));
+    const result = await d.dispatch("hi", [outsideFile], project);
+    expect(result.success).toBe(true);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toContain("outside-content");
+  });
+
+  it("sees through `..` and, where the OS allows it, a symlink out of the project", async () => {
+    const d = new OpenAICompatibleDispatcher(baseSvc());
+    const sneaky = path.join(project, "..", "secrets.txt");
+    expect((await d.dispatch("hi", [sneaky], project)).inputRejected).toBe(true);
+    const link = path.join(project, "link.txt");
+    try {
+      symlinkSync(outsideFile, link);
+    } catch {
+      return; // creating a symlink needs privileges on some Windows setups
+    }
+    expect((await d.dispatch("hi", [link], project)).inputRejected).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

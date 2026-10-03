@@ -309,7 +309,8 @@ runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
 permission rules, and Antigravity's `full_auto` approves everything. A Claude
 Code delegate at `read_only` or `workspace_edit` gets only the file tools
 (`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
-Claude Code login, user settings, hooks and `CLAUDE.md` files.
+Claude Code login, user settings, user-level hooks and `CLAUDE.md` files, but not
+the project's own settings or hooks (`--setting-sources user`).
 
 ## CLI
 
