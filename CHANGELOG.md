@@ -6,6 +6,66 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-04
+
+The fifth audit and the fixes it led to: delegates are boxed in
+more tightly (no project hooks or arbitrary tools for Claude Code at
+`read_only` / `workspace_edit`, no inherited billing credentials, no nested
+dispatch, no files from outside the project sent to a remote endpoint),
+background jobs survive the session that started them on Windows, a run that
+goes silent is stopped as hung instead of holding a slot, and stated usage-limit
+reset times are waited out. Routing policy can now be written once in
+`config.yaml` and is told to every connecting agent, every dispatch records
+which client and session asked, and `status` / `usage` show each route's last
+7 days. The Arena-ELO leaderboard is removed.
+
+**Upgrading — what can change for you:**
+
+- A `config.yaml` in the current directory is no longer loaded. Pass
+  `--config ./config.yaml` or set `HARNESS_DISPATCH_CONFIG` if you relied on it.
+- `antigravity_cli` is skipped for `workspace_edit` unless you override its
+  `full_auto` floor.
+- Claude Code delegates at `read_only` and `workspace_edit` no longer load the
+  project's settings or hooks, load no MCP servers, and get only the file tools
+  (Read, Grep, Glob, plus Edit and Write at `workspace_edit`).
+- `leaderboard:` and `leaderboard_model:` still load, with a warning (`doctor`
+  shows it as a warning, exit 0), and do nothing. `LeaderboardCache` is no
+  longer exported, `ServiceConfig.leaderboardModel` and
+  `RouterConfig.leaderboard` are gone from the exported types, and
+  `qualityScore` / `elo` are gone from routing results, fanout items, `status`
+  and the dispatch log.
+- `dispatch` refuses `models` without `mode: "fanout"`.
+- A dispatch from an agent that harness-dispatch started is refused, for every
+  kind of route, through the MCP tools and `harness-dispatch dispatch` (exit 1).
+  A REST server answers 403 only when it was itself started by such an agent:
+  it checks its own environment, not the caller's.
+- A remote endpoint route refuses `files` outside `workingDir`.
+- A route that has been given five or more calls and never succeeded is no
+  longer chosen by the router; naming it with `service` still runs it.
+- `job_status` without a `jobId` lists the 20 most recent jobs, not all.
+- Through a Windows `.cmd` launcher, any argument containing `"` or a line
+  break is refused, and so is a `!` where the launcher enables delayed
+  expansion. On `agy.cmd`, which takes the prompt as an argument, that means a
+  multi-line prompt, including any dispatch with files attached, is refused.
+- On a `git_worktree` job, `workspace diff` and `apply` fail with a message
+  saying how to recover when git cannot stage the agent's new files (for
+  example a nested repository it created with `git init` and never committed);
+  before, those files were left out of the patch without a word.
+- Codex and Antigravity runs that print nothing for 15 minutes are stopped as
+  hung, and Antigravity has a 25-minute time limit (`idle_timeout_ms`,
+  `timeout_ms` per route).
+- A custom route whose `safety:` flags have no `{{safety}}` placeholder in its
+  args is treated as `full_auto`.
+- An endpoint whose `api_key` is a `${VAR}` that is not set is skipped.
+- A remote endpoint whose hostname contains "ollama" is no longer assumed free;
+  give it `billing_kind: local_compute` if it is.
+- Delegates no longer see `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`,
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
+  `HARNESS_DISPATCH_HTTP_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN` unless a route
+  names one as its own `api_key_env_var`.
+
+Acceptance: `acceptance/0.12.0.md`.
+
 ### Added
 
 - **Every dispatch records who asked.** The dispatch log and each job record
@@ -3663,7 +3723,8 @@ the MCP surface to three tools: `dispatch`, `job_status`, `usage`.
 Known issues in this release, fixed in 0.5.0: `configure` writes resolved API keys into
 its output, and `configure --yes --force` can delete user-added harnesses.
 
-[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/fstubner/harness-dispatch/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/fstubner/harness-dispatch/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/fstubner/harness-dispatch/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/fstubner/harness-dispatch/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/fstubner/harness-dispatch/compare/v0.8.0...v0.9.0
