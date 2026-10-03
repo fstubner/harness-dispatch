@@ -192,6 +192,23 @@ const ROOT_MARKER = ".harness-dispatch-root";
 const RUN_DIR_RE = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-\d+-.+-[0-9a-f]{8}$/;
 
 /**
+ * Whether `dir` is a directory of workspaces rather than one workspace: a
+ * project root this tool marked, or one holding run directories. Discard
+ * refuses such a directory, since deleting it deletes every run inside.
+ */
+export async function holdsWorkspaceRuns(dir: string): Promise<boolean> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some(
+    (e) => e.name === ROOT_MARKER || (e.isDirectory() && RUN_DIR_RE.test(e.name)),
+  );
+}
+
+/**
  * Refuse one already-existing workspace path segment we cannot vouch for, and
  * bring the ones we can up to 0700.
  *
@@ -490,7 +507,7 @@ async function lastActiveMs(runPath: string): Promise<number> {
  * it walks INTO it and deletes the target's contents before removing the
  * junction (measured, Git 2.45.1.windows.1: a folder outside the workspace
  * went from one file to none). A junction needs no privilege to create, so a
- * delegate that only writes files could empty any folder the user can write by
+ * delegate with a shell could empty any folder the user can write by
  * planting one in its worktree. Node's own recursive `rm` removes a junction
  * without following it (measured on the same machine), so only git's removal
  * was exposed; this still runs before every workspace removal, so one rule

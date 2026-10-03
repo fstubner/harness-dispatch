@@ -20,6 +20,7 @@ import type { WorkspaceRun } from "./types.js";
 import {
   eolDigest,
   GIT_ENV,
+  holdsWorkspaceRuns,
   isUnderOrEqual,
   removeLinksWithin,
   workspacesBase,
@@ -207,10 +208,10 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
     // Never into a submodule: see gitlinkExclusions.
-    await git(
-      [...pinned, "add", "-A", "-N", "--", ".", ...(await gitlinkExclusions(pinned, root))],
-      root,
-    ).catch(() => undefined);
+    //
+    // Not caught: an `add` that fails leaves the agent's new files out of the
+    // patch, and `apply` would then report success without them.
+    await gitAddPathspecs(pinned, root, ["-A", "-N"], [".", ...(await gitlinkExclusions(pinned, root))]);
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
     // a filesystem fingerprint. So an agent that writes a gitignored file (a
     // `.env`, a local config) has that file reported as changed and applied
@@ -235,7 +236,7 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       ignoredCandidates.length > 0 ? await gitlinkExclusions(pinned, root) : [];
     for (let i = 0; i < ignoredCandidates.length; i += 100) {
       const batch = ignoredCandidates.slice(i, i + 100);
-      await git([...pinned, "add", "-N", "--force", "--", ...batch, ...exclusions], root).catch(
+      await gitAddPathspecs(pinned, root, ["-N", "--force"], [...batch, ...exclusions]).catch(
         () => undefined,
       );
     }
@@ -317,6 +318,33 @@ async function gitlinkExclusions(pinned: string[], root: string): Promise<string
     if (entry.startsWith("160000 ")) gitlinks.add(entry.slice(entry.indexOf("\t") + 1));
   }
   return [...gitlinks].map((p) => `:(top,literal,exclude)${p}`);
+}
+
+/**
+ * `git add <flags>` with its pathspecs on stdin, NUL-separated.
+ *
+ * One exclusion per gitlink can be thousands of arguments, and on the command
+ * line they overflowed: in a repository with about 700 submodules on Windows
+ * the `add` failed, was ignored, and the agent's new files silently dropped
+ * out of the patch (measured: 500 was fine, 700 failed). stdin has no such
+ * limit.
+ */
+async function gitAddPathspecs(
+  pinned: string[],
+  root: string,
+  flags: string[],
+  pathspecs: string[],
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = execFileCb(
+      "git",
+      [...pinned, "add", ...flags, "--pathspec-from-file=-", "--pathspec-file-nul"],
+      { cwd: root, windowsHide: true, env: GIT_ENV, maxBuffer: MAX_PATCH_BYTES },
+      (err) => (err ? reject(describeGitSpawnFailure(err) ?? err) : resolve()),
+    );
+    child.stdin?.on("error", () => undefined);
+    child.stdin?.end(pathspecs.map((p) => `${p}\0`).join(""));
+  });
 }
 
 /** git's own name for "this side does not exist", accepted on Windows too. */
@@ -1145,6 +1173,20 @@ export async function discardWorkspace(
         `workspaces directory (${workspacesBase()}), so it is not something this tool created ` +
         `and it will not delete it. If it really is a leftover workspace — for instance ` +
         `HARNESS_DISPATCH_WORKSPACES_DIR has changed since the dispatch — delete it by hand.`,
+    };
+  }
+
+  // A project's directory of workspaces is inside the workspaces directory
+  // too, and deleting it deletes every run of that project, other jobs'
+  // unapplied work included.
+  if (await holdsWorkspaceRuns(root)) {
+    return {
+      jobId,
+      discarded: false,
+      message:
+        `Refused: this job's workspace is recorded as ${root}, which holds other runs' ` +
+        `workspaces rather than being one, so discarding it would delete their work too. ` +
+        `Discard those jobs individually.`,
     };
   }
 

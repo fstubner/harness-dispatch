@@ -649,8 +649,9 @@ pre-1.0, so minor versions can carry behaviour changes.
 - **`workspace discard` only deletes inside the workspaces directory.** It
   deleted whatever directory a job's result record named, so a record edited by
   hand — or by a delegated agent with shell access — could point it at any
-  folder. It now refuses anything outside, and the workspaces directory itself,
-  which holds every project's workspaces, even with `force`.
+  folder. It now refuses anything outside, the workspaces directory itself,
+  which holds every project's workspaces, and a project's directory of
+  workspaces, which holds that project's other runs, even with `force`.
 
 - **`configure` no longer turns one route's address into another route's
   variable.** When two routes shared a base URL and one was written as
@@ -901,7 +902,7 @@ pre-1.0, so minor versions can carry behaviour changes.
 - **Removing a workspace no longer deletes files outside it on Windows.** On
   Windows, `git worktree remove --force` treats a directory junction as an
   ordinary folder and deletes what it points at. A junction needs no special
-  rights to create, so an agent that only wrote files in its worktree could
+  rights to create, so an agent with a shell in its worktree could
   empty any folder you can write to, and that happened on `workspace discard`,
   on the retention clean-up of old workspaces, and on the clean-up of a failed
   attempt. Every link inside a workspace is now removed as a link before

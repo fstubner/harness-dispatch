@@ -958,6 +958,26 @@ describe("discard only deletes inside the workspaces directory", () => {
     expect(out.message).toMatch(/not inside the workspaces directory/);
     expect(await fs.readFile(path.join(otherProject, "work.txt"), "utf8")).toBe("someone else's job");
   });
+
+  it("refuses a project's directory of workspaces, which holds other jobs' runs", async () => {
+    const project = path.join(dir, "workspaces", "proj-1234abcd");
+    const otherRun = path.join(project, "2026-10-03T12-00-00-000Z-4242-codex_cli-0123abcd");
+    await fs.mkdir(otherRun, { recursive: true });
+    await fs.writeFile(path.join(otherRun, "work.txt"), "another job's unapplied work", "utf8");
+    const run: WorkspaceRun = {
+      policy: "copy",
+      originalWorkingDir: dir,
+      effectiveWorkingDir: project,
+      workspaceRoot: project,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [],
+    };
+    const out = await discardWorkspace("job-1", run);
+    expect(out.discarded).toBe(false);
+    expect(out.message).toMatch(/holds other runs' workspaces/);
+    expect(await fs.readFile(path.join(otherRun, "work.txt"), "utf8")).toBe("another job's unapplied work");
+  });
 });
 
 describe("two workspace actions on one job at once", () => {
@@ -1181,5 +1201,34 @@ describe("post-run git never honours config the agent could have written", () =>
     expect(patch).toContain("+const a = 2;");
     expect(patch).toContain("+export const n = 1;");
     expect(patch).toContain("+glob");
+  });
+
+  it("keeps new files in the patch of a repository with very many submodules", async () => {
+    // One exclusion pathspec per gitlink: on the command line they overflowed
+    // Windows' limit at about 700 submodules, the `add` failed silently, and
+    // the agent's new file dropped out of the patch.
+    const { run } = await plantedWorktree();
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    const sha = "1".repeat(40);
+    const entries = Array.from(
+      { length: 1500 },
+      (_, i) => `160000 ${sha}\tvendor/a-rather-long-submodule-directory-name-to-fill-the-line/${i}\n`,
+    ).join("");
+    await new Promise<void>((resolve, reject) => {
+      const child = execFileCb("git", ["update-index", "--index-info"], { cwd: worktree }, (err) =>
+        err ? reject(err) : resolve(),
+      );
+      child.stdin?.end(entries);
+    });
+    await fs.writeFile(path.join(worktree, "new.js"), "export const n = 1;\n", "utf8");
+
+    const patch = await buildWorkspacePatch({
+      ...run,
+      changedFiles: [
+        { path: "app.js", kind: "modified" },
+        { path: "new.js", kind: "added" },
+      ],
+    });
+    expect(patch).toContain("+export const n = 1;");
   });
 });
