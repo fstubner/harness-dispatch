@@ -165,6 +165,39 @@ export function redact(text: string): string {
 }
 
 /**
+ * `redact` for a sink written chunk by chunk, where a secret can arrive split
+ * across two writes.
+ *
+ * Scrubbing each chunk alone misses a key whose first half ends one chunk and
+ * second half starts the next — both halves land in the file and together they
+ * are the key (audit5 F8: the one state file holding a full fake key was
+ * `stdout.partial.log`). So each push scrubs what is held plus the new chunk,
+ * and holds back the last (longest secret form − 1) characters: an incomplete
+ * secret is shorter than that, so it starts inside the held tail and is
+ * completed, then scrubbed, by a later push. `flush` releases the tail.
+ */
+export function createStreamRedactor(): { push(chunk: string): string; flush(): string } {
+  let held = "";
+  return {
+    push(chunk: string): string {
+      const text = redact(held + chunk);
+      const longest = activeSecrets.reduce(
+        (max, s) => Math.max(max, s.length, JSON.stringify(s).length - 2),
+        0,
+      );
+      const keep = Math.min(text.length, Math.max(0, longest - 1));
+      held = text.slice(text.length - keep);
+      return text.slice(0, text.length - keep);
+    },
+    flush(): string {
+      const out = redact(held);
+      held = "";
+      return out;
+    },
+  };
+}
+
+/**
  * Redact everything written to stdout and stderr, for the life of the process.
  *
  * The terminal is a sink like any other: without this, a path-embedded

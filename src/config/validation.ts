@@ -63,7 +63,6 @@ export const FAIL_OPEN_ENUMS: Record<string, readonly string[]> = {
  * entries.
  */
 export const KNOWN_TOP_LEVEL_KEYS = new Set([
-  "version",
   // Opt back into auto-detection when a config defines its own routes, or
   // opt out when it does not. See loadConfig for the three cases.
   "detect",
@@ -73,17 +72,11 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   "disabled",
   "overrides",
   "api_keys",
-  "protocols",
-  "policy",
   "telemetry",
   "retention",
-  "leaderboard",
   "max_concurrent_runs",
   // Operator instructions for connecting agents — see config/instructions.ts.
   "instructions",
-  "default_safety_profile",
-  "workspace_policy",
-  "protocol",
 ]);
 
 /**
@@ -98,11 +91,11 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
  * drift, each missing something the other has.
  */
 export const KNOWN_ROUTE_KEYS = new Set([
-  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint",
+  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint", "api_key_file",
   "instructions",
-  "tier", "weight", "cli_capability", "capabilities", "timeout_ms",
+  "tier", "weight", "cli_capability", "capabilities", "timeout_ms", "idle_timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
-  "leaderboard_model", "escalate_model", "escalate_on", "resource_weight",
+  "escalate_model", "escalate_on", "resource_weight",
   "api_key", "base_url", "protocol", "filter",
   "provider", "surface", "auth_source", "billing_kind", "billing_confidence",
   "billing_notes", "paid_usage_possible", "allow_paid_usage",
@@ -110,13 +103,38 @@ export const KNOWN_ROUTE_KEYS = new Set([
   "endpoint_mode", "endpoint_provider", "wire_protocol",
 ]);
 
+/**
+ * Route keys that used to do something and no longer do.
+ *
+ * Accepted, so a config written for an earlier version keeps loading, but
+ * said out loud: a key that silently stopped meaning anything is the same
+ * failure as a typo. They are reported on the legacy `services:` shape too,
+ * which does not run the unknown-key check.
+ */
+const REMOVED_ROUTE_KEYS: Record<string, string> = {
+  leaderboard_model:
+    "removed, has no effect — the Arena-ELO leaderboard was cut. Routing is tier, then " +
+    "weight x capability, then fallback, so `tier:` alone sets the order. Delete the line.",
+};
+
+export function warnRemovedRouteKeys(
+  entry: Record<string, unknown>,
+  label: string,
+  warnings: string[],
+): void {
+  for (const [key, why] of Object.entries(REMOVED_ROUTE_KEYS)) {
+    if (entry[key] !== undefined) warnings.push(`${label}: ${key}: ${why}`);
+  }
+}
+
 export function warnUnknownRouteKeys(
   entry: Record<string, unknown>,
   label: string,
   warnings: string[],
 ): void {
+  warnRemovedRouteKeys(entry, label, warnings);
   for (const key of Object.keys(entry)) {
-    if (KNOWN_ROUTE_KEYS.has(key)) continue;
+    if (KNOWN_ROUTE_KEYS.has(key) || Object.hasOwn(REMOVED_ROUTE_KEYS, key)) continue;
     warnings.push(
       `${label}: unknown key "${key}" — IGNORED. If this was meant to be a ` +
         `safety or workspace setting, it is NOT in effect; check the spelling.`,
@@ -124,6 +142,8 @@ export function warnUnknownRouteKeys(
   }
   warnMistypedRouteValues(entry, label, warnings);
 }
+
+const ESCALATE_ON_VALUES: readonly string[] = ["execute", "plan", "review", "local"];
 
 /** Recognised keys whose value must be a number, and what they mean if lost. */
 const NUMERIC_ROUTE_KEYS = new Set([
@@ -133,6 +153,7 @@ const NUMERIC_ROUTE_KEYS = new Set([
   "max_output_tokens",
   "max_input_tokens",
   "timeout_ms",
+  "idle_timeout_ms",
 ]);
 
 /**
@@ -162,6 +183,7 @@ const NUMERIC_ROUTE_MINIMUMS: Record<string, { min: number; exclusive: boolean }
   max_output_tokens: { min: 0, exclusive: true },
   max_input_tokens: { min: 0, exclusive: true },
   timeout_ms: { min: 0, exclusive: true },
+  idle_timeout_ms: { min: 0, exclusive: true },
 };
 
 /**
@@ -239,6 +261,30 @@ export function warnMistypedRouteValues(
     if (value === null || value === undefined) continue;
     if (key === "instructions") {
       warnInstructions(value, label, warnings);
+      continue;
+    }
+    if (key === "escalate_on") {
+      // A list of task types. Anything else is dropped by the parser; `[]` is
+      // honoured ("never escalate"), so a typo here is not the same as `[]`
+      // and must say what happened instead of quietly meaning something else.
+      if (!Array.isArray(value)) {
+        warnings.push(
+          `${label}: escalate_on is ${describeValue(value)}, which is not a list — IGNORED, ` +
+            `and the default (plan, review) applies instead.`,
+        );
+      } else {
+        const bad = value.filter((v) => !ESCALATE_ON_VALUES.includes(v as string));
+        if (bad.length > 0) {
+          warnings.push(
+            `${label}: escalate_on has ${bad.map(describeValue).join(", ")}, which ` +
+              `${bad.length === 1 ? "is not a task type" : "are not task types"} ` +
+              `(${ESCALATE_ON_VALUES.join(", ")}) — IGNORED. ` +
+              (bad.length === value.length
+                ? `Nothing valid is left, so this route never escalates to its escalate_model.`
+                : `The valid ones still apply.`),
+          );
+        }
+      }
       continue;
     }
     if (key === "capabilities" && typeof value === "object" && !Array.isArray(value)) {
@@ -348,12 +394,14 @@ export function warnDuplicateRouteNames(
 }
 
 /**
- * Keys the parser ACCEPTS and nothing reads.
+ * Top-level keys the parser ACCEPTS and nothing reads, each with what to do
+ * instead.
  *
  * Silently allowing them is worse than rejecting them: `default_safety_profile`
  * is a safety-control name that does nothing at all, which is the exact
  * failure this module exists to prevent. They stay allow-listed (so they are
- * not reported as typos) but say plainly that setting them has no effect.
+ * not reported as typos, and an older file keeps loading) but say plainly that
+ * setting them has no effect.
  *
  * If one is implemented later, delete it from here and the warning goes away.
  *
@@ -361,21 +409,55 @@ export function warnDuplicateRouteNames(
  * per-route keys (see KNOWN_ROUTE_KEYS), which makes the top-level spelling
  * plausible enough to write by mistake: it looks like a global default for the
  * per-route setting, and there is no such thing. (`raw?.policy` in jobs.ts
- * reads a JOB MANIFEST, not this config file.)
+ * reads a JOB MANIFEST, not this config file.) `protocol` is the same shape of
+ * mistake: it is a real key INSIDE a `clis:` entry, never at the top level.
+ *
+ * `leaderboard` is here for a different reason: it was implemented and then
+ * removed (see REMOVED_ROUTE_KEYS), and a config that still sets it must be
+ * told so rather than left believing it is scoring by benchmark.
  */
-const ACCEPTED_BUT_UNIMPLEMENTED = new Set([
-  "protocols",
-  "default_safety_profile",
-  "policy",
-  "workspace_policy",
-]);
+const ACCEPTED_BUT_IGNORED: Record<string, { status: string; instead: string }> = {
+  version: { status: "NEVER READ", instead: "Remove it." },
+  protocol: {
+    status: "NEVER READ at the top level",
+    instead:
+      "A protocol block belongs inside a `clis:` entry (see " +
+      "docs/configuration.md#adding-a-harness). Remove it from here.",
+  },
+  protocols: {
+    status: "NOT IMPLEMENTED",
+    instead: "Define the protocol inside the `clis:` entry that needs it.",
+  },
+  default_safety_profile: {
+    status: "NOT IMPLEMENTED",
+    instead:
+      "Set `safety_profile:` on each `clis:` / `endpoints:` entry; until then routes run " +
+      "under the built-in default.",
+  },
+  policy: {
+    status: "NOT IMPLEMENTED",
+    instead: "`policy` is not a global setting; see the per-route keys.",
+  },
+  workspace_policy: {
+    status: "NOT IMPLEMENTED",
+    instead:
+      "Set `workspace_policy:` on each route, or pass `workspacePolicy` per dispatch.",
+  },
+  leaderboard: {
+    status: "REMOVED",
+    instead:
+      "The Arena-ELO leaderboard was cut. Routing is tier, then weight x capability, " +
+      "then fallback. Delete the block.",
+  },
+};
 
 export function warnUnknownTopLevelKeys(raw: Record<string, unknown>, warnings: string[]): void {
   for (const key of Object.keys(raw)) {
-    if (ACCEPTED_BUT_UNIMPLEMENTED.has(key)) {
+    if (Object.hasOwn(ACCEPTED_BUT_IGNORED, key)) {
+      const { status, instead } = ACCEPTED_BUT_IGNORED[key]!;
       warnings.push(
-        `${key}: recognised but NOT IMPLEMENTED — setting it has no effect. ` +
-          `Remove it, or track the gap; it is not a typo.`,
+        `${key}: recognised but ${status} — setting it has no effect. ${instead} ` +
+          `It is not a typo.`,
       );
       continue;
     }

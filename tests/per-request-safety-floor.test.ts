@@ -146,6 +146,49 @@ describe("the shipped cursor route", () => {
   });
 });
 
+describe("the shipped antigravity and claude routes restrict what they claim to", () => {
+  async function shipped(name: string, harness: string, command: string): Promise<ServiceConfig> {
+    const file = path.join(dir, `${name}.yaml`);
+    await fs.writeFile(
+      file,
+      `clis:\n  - name: ${name}\n    harness: ${harness}\n    command: ${command}\n`,
+      "utf8",
+    );
+    const cfg = await loadConfig(file, { whichFn: async () => `/usr/bin/${command}` });
+    return cfg.services[name]!;
+  }
+
+  it("antigravity does not serve workspace_edit with flags that auto-approve shell", async () => {
+    // Its workspace_edit flags were `--mode accept-edits
+    // --dangerously-skip-permissions` with no --sandbox: every tool request
+    // approved, the terminal unrestricted, reported as workspace_edit
+    // ("no arbitrary shell") — audit5 F3.
+    const svc = await shipped("antigravity_cli", "antigravity_cli", "agy");
+    expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("full_auto");
+    expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(false);
+    expect(safetyProfileCompatible(svc, "read_only")).toBe(true);
+    expect(safetyProfileCompatible(svc, "full_auto")).toBe(true);
+  });
+
+  it("claude's read_only and workspace_edit set the tool list, not only approvals", async () => {
+    // --allowedTools only adds auto-approvals on top of the user's own allow
+    // rules, so Bash stayed available wherever the user's settings allowed it,
+    // and every user-scope MCP server (harness-dispatch included) loaded —
+    // audit5 F4. --tools is what removes a tool; --strict-mcp-config with no
+    // --mcp-config loads no servers.
+    const svc = await shipped("claude_code_cli", "claude_code", "claude");
+    for (const profile of ["read_only", "workspace_edit"] as const) {
+      const flags = svc.protocol?.safety?.[profile] ?? [];
+      const tools = flags[flags.indexOf("--tools") + 1] ?? "";
+      expect(flags, profile).toContain("--tools");
+      expect(tools.split(","), profile).not.toContain("Bash");
+      expect(flags, profile).toContain("--strict-mcp-config");
+      // A variadic list must not be last, or it swallows the next argument.
+      expect(flags.at(-2), profile).toBe("--permission-mode");
+    }
+  });
+});
+
 describe("a CLI route with no flags for the requested profile", () => {
   const base = {
     name: "byo",
@@ -239,15 +282,34 @@ describe("a CLI route with no flags for the requested profile", () => {
 
   it("a pin still applies where the flags DO back it", () => {
     // The guard must not fire on the case the pin legitimately covers: a
-    // harness whose capability varies by mode, with a flag for the mode asked
-    // for. Pinning workspace_edit down to read_only is honoured.
+    // harness whose capability varies by mode, with flags for the mode the
+    // pin lands on. Pinning workspace_edit down to read_only is honoured.
     const svc = {
       ...base,
       effectiveSafety: { workspace_edit: "read_only" },
-      protocol: { args: ["{{safety}}"], safety: { workspace_edit: ["--sandbox"] } },
+      protocol: {
+        args: ["{{safety}}"],
+        safety: { read_only: ["--plan"], workspace_edit: ["--sandbox"] },
+      },
     } as never;
     expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("read_only");
     expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(true);
+  });
+
+  it("a pin is checked against the flags of the profile it pins TO", () => {
+    // The router launches the harness with the EFFECTIVE profile's flags.
+    // This fixture used to be the one above, and was reported read_only with
+    // no read_only flags — so the harness launched with no safety argument at
+    // all (audit4 A3-1: argv `["hello"]`).
+    for (const effectiveSafety of [{ workspace_edit: "read_only" }, "read_only"]) {
+      const svc = {
+        ...base,
+        effectiveSafety,
+        protocol: { args: ["{{safety}}"], safety: { workspace_edit: ["--sandbox"] } },
+      } as never;
+      expect(effectiveSafetyProfile(svc, "workspace_edit")).toBe("full_auto");
+      expect(safetyProfileCompatible(svc, "workspace_edit")).toBe(false);
+    }
   });
 });
 

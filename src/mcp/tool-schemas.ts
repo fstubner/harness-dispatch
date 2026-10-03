@@ -6,6 +6,12 @@
  * any handler runs, so a key absent here is a key silently stripped — and a
  * stripped safety setting runs the dispatch with more access than the caller
  * asked for.
+ *
+ * Keys that are NOT fields but that a caller will plausibly send (a snake_case
+ * spelling, a hint put at the top level) are refused by the near-miss guard in
+ * near-miss-guard.ts, which sees the raw arguments before the SDK strips them.
+ * They used to be `z.never()` fields here; that put 15 properties into every
+ * session's tools/list for keys that only exist to be rejected.
  */
 
 import { z } from "zod";
@@ -56,32 +62,18 @@ export const publicHintsSchema = z
       .refine(noNul, `hints.model ${NO_NUL_MESSAGE}`)
       .optional()
       .describe(
-        "Preferred route or model name (e.g. a route id like 'codex' or a model like " +
-          "'gpt-5.6-sol'). Routes that statically declare this model get a scoring " +
-          "boost. A value that names a CONFIGURED ROUTE steers routing rather than " +
-          "being sent on as a model — a route id is not a model name, and sending one " +
-          "cost real provider calls before this was separated. Naming a route runs it " +
-          "wherever it sits, including a lower tier than the router would otherwise " +
-          "pick; if that route cannot run, routing falls back normally, so this is a " +
-          "preference and `service` is still how you force one route with no fallback. " +
-          "When you ALSO name a " +
-          "route with the top-level `service` param, only a value naming THAT " +
-          "route is dropped; one that merely collides with a different route's id is a " +
-          "real model request and is still passed on. Anything else IS " +
-          "passed to the harness as an override, even on a route that doesn't recognize " +
-          "it — NOT validated, so an unfamiliar or misspelled name can still fail at " +
-          "dispatch time if the harness doesn't support it. Two response fields tell " +
-          "you which happened: routing.modelHintDropped: true means it named a route " +
-          "and was used for routing only, so the route ran its own default model; " +
-          "routing.modelHintMatched: true means the picked route actually declares " +
-          "this model, and false means it was forwarded blind and you should treat the " +
-          "result with more suspicion (or check why). " +
-          "Call the `usage` tool first to see valid route ids, their default models, " +
-          "and a modelHint per route pointing to where that harness's real model " +
-          "catalog is documented (or how to list it) — use it to pick correctly up " +
-          "front or self-correct after an unfamiliar-model failure. In fanout mode " +
-          "this field is ignored entirely — use `models` (top-level, not under " +
-          "hints) to select fanout candidates instead.",
+        "Preferred model name, e.g. 'gpt-5.6-sol' (`usage` lists each route's models). " +
+          "Routes that declare it get a scoring boost; anything else goes to the harness " +
+          "as an override, unvalidated, so an unknown name can fail at dispatch. Pair it " +
+          "with `service` for the route it belongs to. A value that names a configured " +
+          "route id steers routing instead of being sent as a model: that route runs its " +
+          "own default model, wherever it sits in the tiers, and routing falls back if it " +
+          "cannot run (`service` is how you force one route with no fallback). With " +
+          "`service` set, only that route's own id is treated this way; another route's " +
+          "id is sent as a model. In the response, routing.modelHintDropped: true means " +
+          "it was used for routing only, and routing.modelHintMatched: false means the " +
+          "picked route does not declare it, so it was forwarded blind. Ignored in " +
+          "fanout — use `models`.",
       ),
     taskType: taskTypeSchema
       .optional()
@@ -104,7 +96,10 @@ export const publicHintsSchema = z
         "Maximum permission the routed harness may use: 'read_only' (inspect only — use " +
           "for review/plan), 'workspace_edit' (default; may edit files in workingDir), " +
           "'full_auto' (unrestricted shell — only when explicitly needed). Routes that " +
-          "cannot honor the requested profile are skipped.",
+          "cannot honor the requested profile are skipped. Each harness enforces the " +
+          "profile itself, with different strength (an OS sandbox for Codex, in-process " +
+          "permission rules for Claude Code and Cursor); it is a limit passed to the " +
+          "harness, not a sandbox harness-dispatch imposes.",
       ),
     workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
     routePolicy: routePolicySchema
@@ -165,94 +160,6 @@ export const MAX_CONTEXT_FILES = 64;
  */
 export const MAX_CONTEXT_JOBS = 16;
 
-/**
- * Keys that mean nothing at the top level, trapped IN THE SCHEMA.
- *
- * `hints` is .strict(), so `hints: { safety_profile: ... }` is rejected. The
- * OUTER object cannot be, so without these traps moving the same key up one
- * level makes it vanish silently instead:
- *
- *   hints.safetyProfile = read_only      -> honoured
- *   TOP-LEVEL safetyProfile = read_only  -> dropped, runs with write access
- *
- * Schema fields and not a guard function: the MCP SDK validates arguments
- * against this shape in strip mode BEFORE the registered handler runs, so no
- * code inside a handler can ever see a misplaced key — it is already gone.
- * z.never() fields make the SDK's own validation throw the guidance message on
- * every surface that parses this shape, and advertise as {"not":{}} in the
- * tool's JSON schema.
- *
- * Full .strict() on the outer object is deliberately NOT used: MCP clients may
- * attach their own fields (_meta and similar). Naming the specific misplaced
- * keys closes the trap without guessing at what else may legitimately arrive.
- */
-function misplacedKeyTrap(message: string) {
-  return z.never({ error: message }).optional().describe(message);
-}
-
-function hintKeyTrap(key: string) {
-  return misplacedKeyTrap(
-    `${key} belongs inside \`hints\`, not at the top level — e.g. hints: { ${key}: ... }. ` +
-      `At the top level it does nothing, which for a safety setting means the dispatch ` +
-      `runs with MORE access than you asked for.`,
-  );
-}
-
-/**
- * A snake_case near-miss at the top level.
- *
- * The OUTER object cannot be strict — the SDK carries `_meta` here and the
- * HTTP surface must tolerate OpenAI's own fields — so a snake_case slip one
- * level up would stay silent. A named list, because an unknown top-level key is
- * tolerated by design and a near-miss is not.
- *
- * `where` is per key and not a constant: `workingDir` and `contextJobs` are
- * top-level dispatch parameters, so telling a caller to move them "inside
- * `hints`" produces a SECOND error ("Unrecognized key"), costing the round trip
- * this exists to save.
- */
-function snakeCaseTrap(wrong: string, right: string, where: string) {
-  return misplacedKeyTrap(
-    `${wrong} is not a field — this tool spells it ${right}, ${where}. As written it ` +
-      `does nothing, which for a safety setting means the dispatch runs with MORE ` +
-      `access than you asked for.`,
-  );
-}
-
-const IN_HINTS = "inside `hints`";
-const TOP_LEVEL = "at the top level";
-
-export const misplacedTopLevelKeys = {
-  safety_profile: snakeCaseTrap("safety_profile", "safetyProfile", IN_HINTS),
-  route_policy: snakeCaseTrap("route_policy", "routePolicy", IN_HINTS),
-  task_type: snakeCaseTrap("task_type", "taskType", IN_HINTS),
-  prefer_large_context: snakeCaseTrap("prefer_large_context", "preferLargeContext", IN_HINTS),
-  timeout_ms: snakeCaseTrap("timeout_ms", "timeoutMs", IN_HINTS),
-  // Accepted in BOTH placements — a real top-level parameter as well as a
-  // hint, with the top-level value winning when both are given.
-  workspace_policy: snakeCaseTrap(
-    "workspace_policy",
-    "workspacePolicy",
-    `${TOP_LEVEL} or ${IN_HINTS}`,
-  ),
-  working_dir: snakeCaseTrap("working_dir", "workingDir", TOP_LEVEL),
-  context_jobs: snakeCaseTrap("context_jobs", "contextJobs", TOP_LEVEL),
-  safetyProfile: hintKeyTrap("safetyProfile"),
-  routePolicy: hintKeyTrap("routePolicy"),
-  taskType: hintKeyTrap("taskType"),
-  preferLargeContext: hintKeyTrap("preferLargeContext"),
-  timeoutMs: hintKeyTrap("timeoutMs"),
-  model: misplacedKeyTrap(
-    "model belongs inside `hints` for single mode — hints: { model: ... }. " +
-      "In fanout mode use the top-level `models` array instead. At the top " +
-      "level it does nothing.",
-  ),
-  escalate: misplacedKeyTrap(
-    "escalate is not a dispatch field — escalation is configured per route in " +
-      "config.yaml (escalate_model / escalate_on), not per call.",
-  ),
-};
-
 export const dispatchInputShape = {
   prompt: z
     .string()
@@ -311,7 +218,6 @@ export const dispatchInputShape = {
   workingDir: z.string().optional().describe(workingDirDescription),
   workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
   hints: publicHintsSchema.optional(),
-  ...misplacedTopLevelKeys,
   models: z
     .array(z.string().refine(noNul, NO_NUL_MESSAGE))
     // An EXPLICIT empty array is a caller mistake, and the most expensive one
@@ -339,9 +245,9 @@ export const dispatchInputShape = {
     .string()
     .optional()
     .describe(
-      "Optional explicit route id to run (e.g. 'codex', 'cursor', 'local_inference' — " +
-        "see the `usage` tool for valid ids). Omit to let the router pick. Single " +
-        "mode only — incompatible with mode='fanout' (use `models` there).",
+      "Route id to run, exactly as `usage` lists it (e.g. 'codex_cli'; ids differ per " +
+        "machine). Omit to let the router pick. Single mode only — incompatible with " +
+        "mode='fanout' (use `models` there).",
     ),
   graceSeconds: z
     .number()

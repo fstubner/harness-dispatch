@@ -16,6 +16,7 @@ import {
   readdirSync,
   writeFileSync,
   mkdirSync,
+  symlinkSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { acquireWorkspaceLock, LOCK_STALE_MS } from "../src/workspace-lock.js";
+import { acquireWorkspaceLock, LOCK_STALE_MS, workspaceLockPath } from "../src/workspace-lock.js";
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "workspace-lock.js");
 
@@ -79,6 +80,25 @@ describe("acquireWorkspaceLock — same process", () => {
     expect(true).toBe(true);
   });
 
+  it("treats a symlink or junction to a directory as the same directory", async () => {
+    // `junction` is a Windows-only type that needs no privilege; POSIX ignores it.
+    const alias = path.join(dir, "alias");
+    symlinkSync(workDir, alias, "junction");
+    const held = await acquireWorkspaceLock(workDir);
+    // Keyed on the spelling of the path, this took a second lock at once and
+    // two agents edited one tree.
+    let aliasHeld = false;
+    const viaAlias = acquireWorkspaceLock(alias).then((release) => {
+      aliasHeld = true;
+      return release;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(aliasHeld).toBe(false);
+    held();
+    (await viaAlias)();
+    expect(aliasHeld).toBe(true);
+  });
+
   it("removes its lock file on release, leaving nothing behind", async () => {
     const release = await acquireWorkspaceLock(workDir);
     expect(readdirSync(lockDir()).length).toBe(1);
@@ -96,7 +116,7 @@ describe("acquireWorkspaceLock — same process", () => {
 });
 
 describe("acquireWorkspaceLock — across processes", () => {
-  it.skipIf(!existsSync(DIST))(
+  it(
     "blocks a second PROCESS while the first holds it",
     async () => {
       // The case the old in-process Map could never handle.
@@ -120,7 +140,7 @@ describe("acquireWorkspaceLock — across processes", () => {
     30_000,
   );
 
-  it.skipIf(!existsSync(DIST))(
+  it(
     "lets a second PROCESS in once the first releases",
     async () => {
       const release = await acquireWorkspaceLock(workDir);
@@ -305,13 +325,7 @@ describe("acquireWorkspaceLock — recovery", () => {
 
 /** Reproduce the module's own file naming, so tests can plant a lock. */
 function readdirSyncSafeName(workingDir: string): string {
-  const key =
-    process.platform === "win32"
-      ? path.resolve(workingDir).toLowerCase()
-      : path.resolve(workingDir);
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createHash } = require("node:crypto") as typeof import("node:crypto");
-  return `${createHash("sha256").update(key).digest("hex").slice(0, 16)}.json`;
+  return path.basename(workspaceLockPath(workingDir));
 }
 
 describe("pruneDeadWorkspaceLocks", () => {

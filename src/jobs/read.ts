@@ -9,10 +9,15 @@
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { queueStanding, startSupervisorIfNoneAlive } from "./supervisor.js";
 import {
   assertValidJobId,
+  claimHolder,
   JOB_EVENTS_LOG,
+  JOB_ID_RE,
   jobsRoot,
+  mapBounded,
+  newerFormatError,
   pollInstructions,
   readJson,
   SUGGESTED_POLL_SECONDS,
@@ -22,7 +27,17 @@ import type { JobManifest, JobResultPayload, JobStatus } from "./types.js";
 import type { DispatcherEvent } from "../types.js";
 const MAX_PARTIAL_OUTPUT_CHARS = 4000;
 
-export async function getAsyncJob(jobId: string): Promise<{
+export async function getAsyncJob(
+  jobId: string,
+  opts: {
+    /**
+     * Start a supervisor if this job is waiting and nothing alive will run it
+     * (see startSupervisorIfNoneAlive). On for a caller asking after the job;
+     * off for cancel and retry, which must never start work.
+     */
+    recover?: boolean;
+  } = {},
+): Promise<{
   manifest: JobManifest;
   status: JobStatus;
   result?: JobResultPayload;
@@ -47,7 +62,10 @@ export async function getAsyncJob(jobId: string): Promise<{
   let result: JobResultPayload | undefined;
   try {
     manifest = await readJson<JobManifest>(path.join(jobDir, "manifest.json"));
-    status = withOrphanCheck(await readJson<JobStatus>(path.join(jobDir, "status.json")));
+    status = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+    const newer = newerFormatError(manifest, jobId) ?? newerFormatError(status, jobId);
+    if (newer !== undefined) throw new Error(newer);
+    status = withOrphanCheck(status);
     const resultPath = path.join(jobDir, "output", "result.json");
     result = existsSync(resultPath) ? await readJson<JobResultPayload>(resultPath) : undefined;
   } catch (err) {
@@ -75,20 +93,56 @@ export async function getAsyncJob(jobId: string): Promise<{
   // with no trail is the defining failure" — and orphaning is exactly that
   // case: the supervisor died, so there is no result.json and the partial log
   // is all that survived.
-  const terminalOrphan = status.status === "orphaned";
   const out: { manifest: JobManifest; status: JobStatus; partialOutput?: string } = {
     manifest,
-    status: terminalOrphan
-      ? status
-      : {
-          ...status,
-          nextPollSeconds: SUGGESTED_POLL_SECONDS,
-          instructions: pollInstructions(jobId),
-        },
+    status: await withProgressGuidance(status, manifest, jobDir, opts.recover ?? true),
   };
   const partial = await readPartial(jobDir);
   if (partial !== undefined) out.partialOutput = partial;
   return out;
+}
+
+/**
+ * Poll guidance for a job still in progress, and only for one: a cancelled or
+ * failed job with no result told its caller to "check again until completed",
+ * which it never would be.
+ *
+ * A WAITING job — queued and not claimed by any supervisor — also says where
+ * it stands and what it waits on, and, if nothing alive would ever run it,
+ * gets a supervisor started (when `recover`).
+ */
+async function withProgressGuidance(
+  status: JobStatus,
+  manifest: JobManifest,
+  jobDir: string,
+  recover: boolean,
+): Promise<JobStatus> {
+  const { nextPollSeconds: _n, instructions: _i, ...bare } = status;
+  if (status.status !== "queued" && status.status !== "running") return bare;
+  const poll = pollInstructions(status.jobId);
+  if (status.status !== "queued" || claimHolder(jobDir) !== undefined) {
+    return { ...bare, nextPollSeconds: SUGGESTED_POLL_SECONDS, instructions: poll };
+  }
+  const launchError = recover ? await startSupervisorIfNoneAlive(manifest.configPath) : undefined;
+  const { queuePosition, waitingOn } = await queueStanding(status.jobId);
+  const where = status.slotQueued
+    ? `Waiting for a concurrency slot (max_concurrent_runs): ` +
+      `${(queuePosition ?? 1) - 1} job(s) ahead of it, ` +
+      `${waitingOn.length} running${waitingOn.length > 0 ? ` (${waitingOn.join(", ")})` : ""}. ` +
+      `It starts by itself when a slot frees; do not re-dispatch it. `
+    : `Released to run; waiting for a supervisor process to pick it up. `;
+  const failed =
+    launchError !== undefined
+      ? `Starting a supervisor for it failed: ${launchError} (details in ` +
+        `${path.join(jobsRoot(), ".supervisors")}). `
+      : "";
+  return {
+    ...bare,
+    ...(queuePosition !== undefined ? { queuePosition } : {}),
+    waitingOn,
+    nextPollSeconds: SUGGESTED_POLL_SECONDS,
+    instructions: where + failed + poll,
+  };
 }
 
 /** The tail of a job's live output log, if it wrote one. */
@@ -110,18 +164,17 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
   const root = jobsRoot();
   if (!existsSync(root)) return [];
   const entries = await readdir(root, { withFileTypes: true });
-  const statuses: JobStatus[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  const names = entries.filter((e) => e.isDirectory() && JOB_ID_RE.test(e.name)).map((e) => e.name);
+  const read = await mapBounded(names, async (name) => {
     try {
-      statuses.push(
-        withOrphanCheck(await readJson<JobStatus>(path.join(root, entry.name, "status.json"))),
-      );
+      return withOrphanCheck(await readJson<JobStatus>(path.join(root, name, "status.json")));
     } catch {
-      // Ignore incomplete or manually edited job directories.
+      return undefined; // Ignore incomplete or manually edited job directories.
     }
-  }
-  return statuses.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  });
+  return read
+    .filter((s): s is JobStatus => s !== undefined)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /**
@@ -132,12 +185,17 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
  */
 export async function jobListingContext(
   jobId: string,
-): Promise<{ workingDir?: string; promptPreview?: string }> {
+): Promise<{ workingDir?: string; promptPreview?: string; client?: string; session?: string }> {
   try {
     const manifest = await readJson<JobManifest>(path.join(jobsRoot(), jobId, "manifest.json"));
+    const caller = manifest.caller;
     return {
       ...(typeof manifest.workingDir === "string" ? { workingDir: manifest.workingDir } : {}),
       ...(typeof manifest.promptPreview === "string" ? { promptPreview: manifest.promptPreview } : {}),
+      // Which client and connection started it: a session that lost its
+      // dispatch reply can match its own session id instead of guessing.
+      ...(typeof caller?.client === "string" ? { client: caller.client } : {}),
+      ...(typeof caller?.session === "string" ? { session: caller.session } : {}),
     };
   } catch {
     return {};

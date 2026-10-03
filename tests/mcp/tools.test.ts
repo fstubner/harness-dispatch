@@ -19,7 +19,6 @@ import { publicHintsSchema } from "../../src/mcp/tool-schemas.js";
 import { RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatcherEvent,
@@ -78,7 +77,7 @@ function makeService(name: string, over: Partial<ServiceConfig> = {}): ServiceCo
     cliCapability: 1.0,
     capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
     escalateOn: [],
-    leaderboardModel: `${name}-model`,
+    model: `${name}-model`,
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
     provider: "local",
@@ -97,23 +96,12 @@ function buildHolder(
 ): RuntimeHolder {
   const config: RouterConfig = { services };
   const quota = new QuotaCache(dispatchers, { stateFile: throwawayQuotaStateFile() });
-  const leaderboard = new LeaderboardCache();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (leaderboard as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (leaderboard as any).data = {
-    "a-model": 1500,
-    "b-model": 1400,
-    "c-model": 1300,
-    "preferred-model": 1600,
-  };
-  const router = new Router(config, quota, dispatchers, leaderboard);
+  const router = new Router(config, quota, dispatchers);
   const state: RuntimeState = {
     config,
     dispatchers,
     quota,
     router,
-    leaderboard,
     mtimeMs: 0,
   };
   return new RuntimeHolder(state);
@@ -147,8 +135,8 @@ describe("MCP tools — dispatch", () => {
   it("routes successfully in default single mode", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
@@ -175,8 +163,8 @@ describe("MCP tools — dispatch", () => {
   it("boosts a preferred model without exposing service or harness hints", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "preferred-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "preferred-model" }),
       },
       {
         a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }),
@@ -197,7 +185,7 @@ describe("MCP tools — dispatch", () => {
 
   it("surfaces modelHintMatched: false when the requested model matches no configured route", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "from a", service: "a", success: true }) },
     );
 
@@ -422,9 +410,9 @@ describe("MCP tools — dispatch", () => {
           authSource: "api_key",
           billingKind: "metered_api",
           paidUsagePossible: true,
-          leaderboardModel: "preferred-model",
+          model: "preferred-model",
         }),
-        local: makeService("local", { leaderboardModel: "a-model" }),
+        local: makeService("local", { model: "a-model" }),
       },
       {
         paid: new FakeDispatcher("paid", { output: "paid", service: "paid", success: true }),
@@ -449,9 +437,9 @@ describe("MCP tools — dispatch", () => {
           authSource: "api_key",
           billingKind: "included_plan_usage",
           paidUsagePossible: false,
-          leaderboardModel: "preferred-model",
+          model: "preferred-model",
         }),
-        local: makeService("local", { leaderboardModel: "a-model" }),
+        local: makeService("local", { model: "a-model" }),
       },
       {
         cloud: new FakeDispatcher("cloud", { output: "cloud", service: "cloud", success: true }),
@@ -524,6 +512,73 @@ describe("MCP tools — dispatch", () => {
     expect(data.results).toHaveLength(2);
     expect(data.results[0]!.route).toBe("a");
     expect(data.results.map((item) => item.output).sort()).toEqual(["A", "B"]);
+  });
+
+  it("keeps the arms that started when another arm fails to start", async () => {
+    // Promise.all over the arms: one rejecting after the others had written
+    // their jobs and started threw away the whole response, so nothing told
+    // the caller those runs existed.
+    const holder = buildHolder(
+      { a: makeService("a"), b: makeService("b") },
+      {
+        a: new FakeDispatcher("a", { output: "A", service: "a", success: true }),
+        b: new FakeDispatcher("b", { output: "B", service: "b", success: true }),
+      },
+    );
+    // The second arm's start throws (standing in for a disk or spawn error);
+    // the arms start in candidate order, so that is route b.
+    let starts = 0;
+    const caller = () => {
+      starts += 1;
+      if (starts === 2) throw new Error("disk full");
+      return { client: "test" };
+    };
+
+    const r = await invokeTool(
+      "dispatch",
+      { mode: "fanout", prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
+      { holder, caller },
+    );
+    const data = r.data as { results: Array<{ route: string; jobId?: string; success?: boolean; error?: string }> };
+    const a = data.results.find((item) => item.route === "a")!;
+    const b = data.results.find((item) => item.route === "b")!;
+    expect(a.jobId, "the started arm's jobId was lost").toBeDefined();
+    expect(a.success).toBe(true);
+    expect(b.success).toBe(false);
+    expect(b.error).toMatch(/could not be started: disk full/);
+  });
+
+  it("reports every arm's warning, not whichever was read last", async () => {
+    // A single `warning` variable, overwritten per arm. Arm a hits a write
+    // failure after its result is saved, so its warning says more than b's.
+    const jobsDir = process.env.HARNESS_DISPATCH_JOBS_DIR!;
+    class BreaksResultMd extends FakeDispatcher {
+      override async *stream(): AsyncIterable<DispatcherEvent> {
+        for (const name of readdirSync(jobsDir)) {
+          const manifest = path.join(jobsDir, name, "manifest.json");
+          if (!existsSync(manifest)) continue;
+          if (JSON.parse(readFileSync(manifest, "utf8")).service !== "a") continue;
+          mkdirSync(path.join(jobsDir, name, "output", "result.md"), { recursive: true });
+        }
+        yield { type: "completion", result: { output: "A", service: "a", success: true } };
+      }
+    }
+    const holder = buildHolder(
+      { a: makeService("a"), b: makeService("b") },
+      {
+        a: new BreaksResultMd("a"),
+        b: new FakeDispatcher("b", { output: "B", service: "b", success: true }),
+      },
+    );
+    for (let i = 0; i < 3; i += 1) {
+      const r = await invokeTool(
+        "dispatch",
+        { mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
+        { holder },
+      );
+      const data = r.data as { warning?: string };
+      expect(data.warning, "arm a's warning was dropped").toMatch(/result was saved/);
+    }
   });
 
   it("rejects an unknown forced service at the boundary, without creating a job", async () => {
@@ -781,8 +836,8 @@ describe("MCP tools — dispatch", () => {
   it("filters fanout by model labels", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a"),
@@ -799,8 +854,8 @@ describe("MCP tools — dispatch", () => {
   it("ignores hints.model entirely in fanout mode — only top-level models: narrows candidates", async () => {
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
-        b: makeService("b", { leaderboardModel: "b-model" }),
+        a: makeService("a", { model: "a-model" }),
+        b: makeService("b", { model: "b-model" }),
       },
       {
         a: new FakeDispatcher("a"),
@@ -821,7 +876,7 @@ describe("MCP tools — dispatch", () => {
 
   it("returns a full inline result with its jobId when the run beats the grace window", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "fast A", service: "a", success: true }) },
     );
 
@@ -866,14 +921,14 @@ describe("MCP tools — dispatch", () => {
     };
     const holder = buildHolder(
       {
-        a: makeService("a", { leaderboardModel: "a-model" }),
+        a: makeService("a", { model: "a-model" }),
       },
       { a: slow },
     );
 
     const started = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir },
+      { prompt: "hi", service: "a", graceSeconds: 0, workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const startData = started.data as {
@@ -931,7 +986,7 @@ describe("MCP tools — dispatch", () => {
   it("gives every dispatch a 60-minute background timeout by default, not the dispatcher's short one", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: dispatcher },
     );
 
@@ -947,7 +1002,7 @@ describe("MCP tools — dispatch", () => {
   it("lets hints.timeoutMs override the 60-minute background default", async () => {
     const dispatcher = new FakeDispatcher("a", { output: "async A", service: "a", success: true });
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: dispatcher },
     );
 
@@ -973,7 +1028,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(staleJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1007,7 +1062,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(oldJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1041,7 +1096,7 @@ describe("MCP tools — dispatch", () => {
     utimesSync(runningJobDir, staleTime, staleTime);
 
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "async A", service: "a", success: true }) },
     );
 
@@ -1056,9 +1111,27 @@ describe("MCP tools — dispatch", () => {
     expect(existsSync(runningJobDir)).toBe(true);
   });
 
+  it("warns when hints.taskType is omitted, as it does for workingDir", async () => {
+    // The tool text says routing quality degrades without it; before, the reply
+    // looked identical to a correct call.
+    const holder = buildHolder(
+      { a: makeService("a") },
+      { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
+    );
+    const without = await invokeTool("dispatch", { prompt: "hi", workingDir: workDir }, { holder });
+    expect((without.data as { warning?: string }).warning).toMatch(/hints\.taskType was not provided/);
+
+    const withIt = await invokeTool(
+      "dispatch",
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
+      { holder },
+    );
+    expect((withIt.data as { warning?: string }).warning).toBeUndefined();
+  });
+
   it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
     );
 
@@ -1068,7 +1141,7 @@ describe("MCP tools — dispatch", () => {
 
     const withWorkingDir = await invokeTool(
       "dispatch",
-      { prompt: "hi", workingDir: workDir },
+      { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } },
       { holder },
     );
     const withData = withWorkingDir.data as { warning?: string };
@@ -1079,7 +1152,7 @@ describe("MCP tools — dispatch", () => {
     const holder = buildHolder(
       {
         a: makeService("a", {
-          leaderboardModel: "a-model",
+          model: "a-model",
           capabilities: { execute: 1.0, plan: 0.4, review: 1.0 },
         }),
       },
@@ -1112,7 +1185,7 @@ describe("MCP tools — dispatch", () => {
   it("bounds a huge dispatcher error in the inline result but keeps the full text in stderr.log", async () => {
     const hugeError = "X".repeat(200_000);
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       {
         a: new FakeDispatcher("a", {
           output: "",
@@ -1149,7 +1222,7 @@ describe("MCP tools — dispatch", () => {
 describe("MCP tools — job_status", () => {
   it("lists known background dispatches when jobId is omitted", async () => {
     const holder = buildHolder(
-      { a: makeService("a", { leaderboardModel: "a-model" }) },
+      { a: makeService("a", { model: "a-model" }) },
       { a: new FakeDispatcher("a", { output: "A", service: "a", success: true }) },
     );
 
@@ -1300,6 +1373,19 @@ describe("MCP tools — usage listModels", () => {
     expect(data.liveModels.error).toContain("unknown route");
   });
 
+  it("does not read prototype keys as routes, and answers an empty listModels", async () => {
+    const holder = buildHolder({}, {});
+    for (const id of ["constructor", "toString", "__proto__"]) {
+      const r = await invokeTool("usage", { listModels: id }, { holder });
+      const data = r.data as { liveModels: { error?: string } };
+      expect(data.liveModels.error, id).toContain("unknown route");
+    }
+    // "" used to be falsy and silently skipped: no liveModels member at all.
+    const r = await invokeTool("usage", { listModels: "" }, { holder });
+    const data = r.data as { liveModels?: { error?: string } };
+    expect(data.liveModels?.error).toContain("unknown route");
+  });
+
   it("appends /v1 before /models for a baseUrl that doesn't already end in /v1, matching the dispatcher", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [{ id: "model-a" }] }), { status: 200 }),
@@ -1322,6 +1408,52 @@ describe("MCP tools — usage listModels", () => {
       expect.anything(),
     );
     fetchSpy.mockRestore();
+  });
+});
+
+describe("every tool emits an MCP span", () => {
+  // spans.ts says it covers MCP tool invocations; only `dispatch` and
+  // `job_status` did, so the other four were invisible to a trace.
+  it("names the tool on a span for all six", async () => {
+    const seen: string[] = [];
+    const span = {
+      setAttributes: (a: Record<string, unknown>) => {
+        if (typeof a["tool.name"] === "string") seen.push(a["tool.name"]);
+      },
+      setAttribute: () => undefined,
+      setStatus: () => undefined,
+      recordException: () => undefined,
+      end: () => undefined,
+      isRecording: () => true,
+    };
+    const tracer = {
+      startActiveSpan: (_name: string, fn: (s: unknown) => unknown) => fn(span),
+    };
+    const { trace } = await import("@opentelemetry/api");
+    const spy = vi.spyOn(trace, "getTracer").mockReturnValue(tracer as never);
+    try {
+      const holder = buildHolder(
+        { a: makeService("a") },
+        { a: new FakeDispatcher("a", { output: "x", service: "a", success: true }) },
+      );
+      const id = "job-1700000000001-aaaaaaaa";
+      const calls: Array<[string, Record<string, unknown>]> = [
+        ["dispatch", { prompt: "hi", workingDir: workDir, hints: { taskType: "plan" } }],
+        ["job_status", {}],
+        ["usage", {}],
+        ["cancel_job", { jobId: id }],
+        ["retry_job", { jobId: id }],
+        ["workspace", { jobId: id, action: "diff" }],
+      ];
+      for (const [name, args] of calls) {
+        // cancel_job, retry_job and workspace refuse an unknown job; the span
+        // is what is under test, not the refusal.
+        await invokeTool(name, args, { holder }).catch(() => undefined);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect([...new Set(seen)].sort()).toEqual([...TOOL_NAMES].sort());
   });
 });
 

@@ -41,7 +41,6 @@ import type {
 export interface CliDefaults {
   command: string;
   harness: string;
-  leaderboardModel: string;
   cliCapability: number;
   tier: number;
   thinkingLevel?: "low" | "medium" | "high";
@@ -59,6 +58,10 @@ export interface CliDefaults {
   models?: string[];
   /** Where this harness's real model catalog lives — see ServiceConfig.modelHint. */
   modelHint?: string;
+  /** Shipped wall-clock limit per attempt — see ServiceConfig.timeoutMs. */
+  timeoutMs?: number;
+  /** Shipped no-output limit — see ServiceConfig.idleTimeoutMs. */
+  idleTimeoutMs?: number;
   /** Default dispatch protocol for this harness — see the shipped config.default.yaml. */
   protocol?: CliProtocolConfig;
 }
@@ -73,7 +76,6 @@ export interface CliDefaults {
 const GENERIC_DEFAULTS: CliDefaults = {
   command: "",
   harness: "generic",
-  leaderboardModel: "",
   cliCapability: 1.0,
   tier: 3,
   capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
@@ -86,7 +88,7 @@ const GENERIC_DEFAULTS: CliDefaults = {
 
 /**
  * Resolve the package's own bundled config.default.yaml relative to this
- * module — the same "walk up" as leaderboard.ts's benchmark file, so it works
+ * module — walking up from this file until it is found, so it works
  * compiled (dist/) or via tsx (src/). A DIFFERENT file from a user's own
  * config.yaml, so a package update to the shipped defaults never collides with
  * a user's live instance.
@@ -124,11 +126,9 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
       // Through the shared field table, so a row added there works here too.
       ...resolveSharedRouteFields(raw),
       // This shape's own required identity fields, after the spread so they
-      // win: the table cannot supply them, and `leaderboardModel` is required
-      // here while the table leaves it optional.
+      // win: the table cannot supply them.
       command: str(raw.command) ?? "",
       harness,
-      leaderboardModel: str(raw.leaderboard_model) ?? "",
       cliCapability: num(raw.cli_capability, 1.0),
       tier: int(raw.tier, 1),
       capabilities: capsFrom(raw.capabilities),

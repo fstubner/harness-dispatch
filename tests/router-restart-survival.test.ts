@@ -16,7 +16,6 @@ import path from "node:path";
 
 import { Router } from "../src/router.js";
 import { QuotaCache } from "../src/quota.js";
-import { LeaderboardCache } from "../src/leaderboard.js";
 import { BreakerStore } from "../src/breaker-store.js";
 import { buildStatus, renderStatusText } from "../src/status.js";
 import type { Dispatcher } from "../src/dispatchers/base.js";
@@ -125,8 +124,7 @@ describe("Router restart survival — breaker state persists across process boun
   ): Router {
     const config: RouterConfig = { services };
     const quota = new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") });
-    const leaderboard = new LeaderboardCache();
-    return new Router(config, quota, dispatchers, leaderboard, new BreakerStore(stateFile));
+    return new Router(config, quota, dispatchers, new BreakerStore(stateFile));
   }
 
   it("a rate-limited route stays excluded after the router is reconstructed (simulated server restart)", async () => {
@@ -252,7 +250,6 @@ describe("Router restart survival — breaker state persists across process boun
         { services },
         new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
         dispatchers,
-        new LeaderboardCache(),
         new BreakerStore(stateDir),
       );
 
@@ -275,7 +272,6 @@ describe("Router restart survival — breaker state persists across process boun
       dispatchers,
       new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
       routerB,
-      new LeaderboardCache(),
     );
     expect(status.routes[0]!.breaker.stateUnreadable).toBe(true);
     expect(renderStatusText(status)).toContain("saved breaker state unreadable");
@@ -297,7 +293,6 @@ describe("Router restart survival — breaker state persists across process boun
       { services },
       new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
       dispatchers,
-      new LeaderboardCache(),
       new BreakerStore(stateDir),
     );
     router.circuitBreakerStatus();
@@ -323,7 +318,6 @@ describe("Router restart survival — breaker state persists across process boun
       { services },
       new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
       dispatchers,
-      new LeaderboardCache(),
       new BreakerStore(stateDir),
     );
     const status = await buildStatus(
@@ -331,7 +325,6 @@ describe("Router restart survival — breaker state persists across process boun
       dispatchers,
       new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
       router,
-      new LeaderboardCache(),
     );
 
     expect(status.stateWarnings).toEqual([
@@ -362,7 +355,6 @@ describe("breaker state shared between live processes", () => {
       { services },
       new QuotaCache(dispatchers, { stateFile: path.join(dir, "quota_state.json") }),
       dispatchers,
-      new LeaderboardCache(),
       new BreakerStore(stateDir),
     );
   }
@@ -421,7 +413,6 @@ describe("breaker state shared between live processes", () => {
       limited,
       new QuotaCache(limited, { stateFile: path.join(dir, "quota_state.json") }),
       router,
-      new LeaderboardCache(),
     );
     expect((status.stateWarnings ?? []).join(" ")).toMatch(/circuit-breaker state is not reaching disk/);
   });

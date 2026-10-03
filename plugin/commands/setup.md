@@ -12,14 +12,12 @@ this command to ADD what it cannot detect (HTTP endpoints, per-route preferences
 or to explain what it wrote. Re-running `configure --yes` later regenerates a file
 it wrote and nobody has edited, so installing a harness afterwards needs no flags.
 
-**The rule that governs every edit below.** A config that contains a `clis:` or
-`endpoints:` key is AUTHORITATIVE about routes: auto-detection is switched off and
-the file's own list is the whole route table. So adding an `endpoints:` block to a
-file that relied on detection silently removes every CLI harness — `disabled:` and
-`overrides:` then apply to nothing, because they tune detection. Whenever this
-command writes `endpoints:` (or `clis:`), it MUST either add `detect: true` to
-keep the detected harnesses in the mix, or list every CLI route explicitly under
-`clis:`. Never write `endpoints:` alongside `disabled:`/`overrides:` and stop
+**The rule that governs every edit below:** a config that lists `clis:` or
+`endpoints:` is authoritative and turns auto-detection off (full explanation:
+https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
+So whenever this command writes `endpoints:` (or `clis:`), it MUST either add
+`detect: true` to keep the detected harnesses, or list every CLI route explicitly
+under `clis:`. Never write `endpoints:` alongside `disabled:`/`overrides:` and stop
 there. Verify with `harness-dispatch doctor`, which reports both the ignored-key
 warning and any harness installed but missing from the config.
 
@@ -51,13 +49,18 @@ warning and any harness installed but missing from the config.
      `endpoints:`. Detection stays off; `disabled:`/`overrides:` do nothing here,
      so drop them and edit the entries directly.
 
-   API keys MUST be written as `${ENV_VAR}` references — never literal
-   secrets. Keep the file commented so it's self-explanatory.
+   API keys MUST NOT be written into config.yaml as literal secrets. Use
+   `api_key_file: ~/.harness-dispatch/keys/<route>` (one key per file, read
+   at load, never in any process environment) — or, if the user prefers, an
+   `${ENV_VAR}` reference. Never put keys in an MCP client config's `env`
+   block: it is plaintext JSON that a delegate can read. Keep the file
+   commented so it's self-explanatory.
 
-4. **Report what's needed from the user.** List the exact env vars they must
-   set (e.g. `setx GROQ_API_KEY ...` on Windows, shell profile export
-   elsewhere), where to get each key, and that the host app (Claude Code /
+4. **Report what's needed from the user.** List the exact key files they must
+   create (and, on macOS/Linux, `chmod 600`), or the env vars if they chose
+   those, where to get each key, and that the host app (Claude Code /
    Claude Desktop / Codex) must be restarted to pick up env and MCP changes.
+   Do not ask them to paste a key into the chat.
 
 5. **Verify.** Run `harness-dispatch doctor` and read two lines in particular:
    `config-warnings` (a key that had no effect — the authoritative-config

@@ -17,7 +17,13 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
-import { eolDigest, GIT_ENV, isUnderOrEqual, workspacesBase } from "./workspaces.js";
+import {
+  eolDigest,
+  GIT_ENV,
+  isUnderOrEqual,
+  workspacesBase,
+  worktreeGitArgs,
+} from "./workspaces.js";
 
 const execFile = promisify(execFileCb);
 
@@ -36,7 +42,7 @@ function describeGitSpawnFailure(err: unknown): Error | undefined {
   if (code !== "ENOENT") return undefined;
   return new Error(
     "git is required for isolated workspaces but was not found on PATH. Install git, or " +
-      "use workspace_policy: shared / shared_locked, which need no git. `doctor` reports " +
+      "use workspacePolicy: shared / shared_locked, which need no git. `doctor` reports " +
       "whether git was found.",
   );
 }
@@ -193,9 +199,13 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
           `${root}, or re-run the dispatch.`,
       );
     }
+    // Never git's own discovery from inside the worktree: the agent could
+    // have rewritten its `.git` — see worktreeGitArgs. Throws, with the
+    // reason, when the worktree no longer points at its own registration.
+    const pinned = await worktreeGitArgs(root, run.originalWorkingDir);
     // `add -A -N` registers untracked files as intent-to-add so they appear in
     // the diff as additions. It touches only the throwaway worktree's index.
-    await git(["add", "-A", "-N"], root).catch(() => undefined);
+    await git([...pinned, "add", "-A", "-N"], root).catch(() => undefined);
     // ...but it obeys .gitignore, and `changedFiles` does not — it comes from
     // a filesystem fingerprint. So an agent that writes a gitignored file (a
     // `.env`, a local config) has that file reported as changed and applied
@@ -216,9 +226,21 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
       .map((c) => c.path);
     for (let i = 0; i < ignoredCandidates.length; i += 100) {
       const batch = ignoredCandidates.slice(i, i + 100);
-      await git(["add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
+      await git([...pinned, "add", "-N", "--force", "--", ...batch], root).catch(() => undefined);
     }
-    return gitDiff(["diff", "--binary", run.baseCommit, "--"], root);
+    return gitDiff(
+      [
+        ...pinned,
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=dirty",
+        run.baseCommit,
+        "--",
+      ],
+      root,
+    );
   }
 
   // A copy patch is built FILE BY FILE, from the list of what the agent
@@ -568,8 +590,15 @@ export async function workspaceDiff(
   }
 
   const patch = await buildWorkspacePatch(run);
-  await mkdir(path.dirname(patchPath), { recursive: true });
-  await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  // An EMPTY live patch is not a reason to erase a saved one. After a copy job
+  // has been applied the project matches the workspace, so the live diff is
+  // empty — and writing that over the saved patch left nothing for the later
+  // "workspace gone" path to recover, which then raised a false "report this"
+  // data-loss alarm for work that had landed correctly.
+  if (patch.length > 0 || ((await cachedPatch(jobDir)) ?? "").length === 0) {
+    await mkdir(path.dirname(patchPath), { recursive: true });
+    await writeFile(patchPath, patch, { encoding: "utf8", mode: 0o600 });
+  }
   return fromPatchText(jobId, run, patchPath, patch, false);
 }
 
@@ -702,6 +731,48 @@ function alreadyApplied(jobId: string, patchPath: string, changedCount: number):
   };
 }
 
+/** Where `git apply` runs for this job, and the `--directory` that goes with it. */
+async function applyLocation(
+  run: WorkspaceRun,
+  target: string,
+): Promise<{ applyCwd: string; directoryArgs: string[] }> {
+  const root = await repoRoot(target);
+  const applyPrefix =
+    root !== undefined && run.policy !== "git_worktree"
+      ? path.relative(root, target).split(path.sep).join("/")
+      : "";
+  return {
+    applyCwd: root ?? target,
+    directoryArgs: applyPrefix !== "" ? [`--directory=${applyPrefix}`] : [],
+  };
+}
+
+/**
+ * Is this patch already in the project? True when it applies cleanly BACKWARDS,
+ * i.e. the project holds its result.
+ *
+ * For a patch recovered after the workspace is gone, which cannot be compared
+ * file by file: without this, re-applying work that had landed (and was
+ * committed) was refused as "changed since the dispatch started" and pointed at
+ * `force`, which then changed nothing.
+ */
+async function patchAlreadyInProject(
+  run: WorkspaceRun,
+  target: string,
+  patchPath: string,
+): Promise<boolean> {
+  const { applyCwd, directoryArgs } = await applyLocation(run, target);
+  try {
+    const out = await gitBoth(
+      ["apply", "--reverse", "--check", ...directoryArgs, "--whitespace=nowarn", patchPath],
+      applyCwd,
+    );
+    return !/^Skipped patch /m.test(out);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Apply the agent's work into the real project.
  *
@@ -717,6 +788,14 @@ export async function applyWorkspace(
   opts: { force?: boolean } = {},
 ): Promise<ApplyResult> {
   const diff = await workspaceDiff(jobId, jobDir, run);
+  if (
+    diff.fromCache === true &&
+    diff.bytes > 0 &&
+    (run.changedFiles?.length ?? 0) > 0 &&
+    (await patchAlreadyInProject(run, run.originalWorkingDir, diff.patchPath))
+  ) {
+    return alreadyApplied(jobId, diff.patchPath, run.changedFiles?.length ?? 0);
+  }
   if (diff.bytes === 0) {
     // An empty patch is only honest when nothing changed. changedFiles is
     // computed separately, by comparing fingerprints, so the two disagreeing
@@ -869,13 +948,7 @@ export async function applyWorkspace(
   // Running from the subdirectory instead does not work: `git apply` inside a
   // repo ignores paths that resolve outside the current directory, so it
   // matches nothing, prints `Skipped patch`, and exits 0.
-  const root = await repoRoot(target);
-  const applyCwd = root ?? target;
-  const applyPrefix =
-    root !== undefined && run.policy !== "git_worktree"
-      ? path.relative(root, target).split(path.sep).join("/")
-      : "";
-  const directoryArgs = applyPrefix !== "" ? [`--directory=${applyPrefix}`] : [];
+  const { applyCwd, directoryArgs } = await applyLocation(run, target);
   const beforeAttempt = await dirtyPaths(target);
   let applyError: string | undefined;
   for (const args of [

@@ -175,6 +175,14 @@ export interface DispatchResult {
    * and three failures, tripping healthy routes.
    */
   inputRejected?: boolean;
+  /**
+   * The route's own ENVIRONMENT could not do the work (Codex's Windows
+   * sandbox refusing to start any process). A failure, but one that repeats
+   * on every attempt for a while, so the breaker trips at once for
+   * `retryAfter` seconds rather than counting it like an ordinary failure.
+   */
+  environmentFault?: boolean;
+  /** Seconds the route should be left alone; the breaker's cooldown when it trips. */
   retryAfter?: number;
   rateLimitHeaders?: Record<string, string>;
   /**
@@ -373,7 +381,6 @@ export interface ServiceConfig {
   tier: number;
   weight: number;
   cliCapability: number;
-  leaderboardModel?: string;
   thinkingLevel?: ThinkingLevel;
   escalateModel?: string;
   escalateOn: TaskType[];
@@ -457,6 +464,26 @@ export interface ServiceConfig {
    * specific route; a per-call `hints.timeoutMs` takes precedence over this.
    */
   timeoutMs?: number;
+  /**
+   * CLI routes only: stop the run once the harness has printed nothing for
+   * this many milliseconds (`idle_timeout_ms`). Only for a harness that
+   * streams as it works (codex, antigravity in stream-json); one that prints
+   * only its final answer would be stopped mid-task. See
+   * StreamSubprocessOpts.idleTimeoutMs.
+   */
+  idleTimeoutMs?: number;
+}
+
+/**
+ * Who asked for a dispatch: the MCP client's own name and version (sent by
+ * every client when it connects), and an id for the connection, so one
+ * agent session's dispatches can be told from another's. `client` is "cli"
+ * or "http" for the other two surfaces.
+ */
+export interface DispatchCaller {
+  client?: string;
+  clientVersion?: string;
+  session?: string;
 }
 
 export interface RouterConfig {
@@ -493,14 +520,13 @@ export interface RouterConfig {
    * run a collector. `HARNESS_DISPATCH_TELEMETRY=1` is the env equivalent.
    */
   telemetry?: { enabled: boolean };
+  /**
+   * Absolute path of the config file this was loaded from; absent when none was
+   * (auto-detect). Only recorded in the dispatch log — see DispatchLogContext.
+   */
+  configPath?: string;
   /** Local artifact retention. jobsDays: how long ~/.harness-dispatch/jobs entries live (default 7). */
   retention?: { jobsDays?: number };
-  /**
-   * Arena ELO scoring. OFF by default: routing ranks on the `tier` and
-   * `weight` you set, and the router makes no outbound request. Enable to let
-   * public benchmark scores influence ranking and tier auto-derivation.
-   */
-  leaderboard?: { enabled?: boolean };
   /**
    * Resolved secret -> the `${VAR}` reference it came from, for every
    * `${VAR}` in the config file that resolved to a non-empty value, so
@@ -532,7 +558,7 @@ export interface RouterConfig {
    * Keyed by route, so a route only ever gets its own reference back. Never
    * serialize this map.
    */
-  fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string }>;
+  fieldRefs?: ReadonlyMap<string, { apiKey?: string; baseUrl?: string; apiKeyFile?: string }>;
   /**
    * Per route, the keys its entry in the file actually wrote. `configure`
    * emits a field whose loaded value may be a computed default only when the
@@ -573,14 +599,13 @@ export interface RoutingDecision {
   service: string;
   tier: number;
   quotaScore: number;
-  qualityScore: number;
   cliCapability: number;
   capabilityScore: number;
   taskType: TaskType;
   model: string | undefined;
   /**
    * Set only when hints.model was provided. true if it matched something
-   * this route statically declares (model/leaderboardModel/escalateModel/
+   * this route statically declares (model/escalateModel/
    * route name) — false if it was passed to the dispatcher "blind" because
    * nothing recognized it, which can still work (CLIs often accept arbitrary
    * --model values) or can fail with the harness's own rejection. hints.model
@@ -597,7 +622,6 @@ export interface RoutingDecision {
    * model was discarded would read the opposite of what happened.
    */
   modelHintDropped?: boolean;
-  elo: number | undefined;
   finalScore: number;
   reason: string;
   /**

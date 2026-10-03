@@ -17,6 +17,7 @@ harness-dispatch connect --remove        # take the entry back out
 harness-dispatch doctor                  # validate install, auth, config, and routes
 harness-dispatch doctor --live           # run one eligible live routed probe
 harness-dispatch doctor --live --allow-paid
+harness-dispatch doctor --prune-state    # also delete saved breaker/usage state for routes this config does not name
 harness-dispatch status                  # readable route readiness
 harness-dispatch status --json           # structured route metadata
 harness-dispatch status --watch          # live status refresh
@@ -24,16 +25,21 @@ harness-dispatch usage                   # per-route call counts, quota, billing
 harness-dispatch usage --json            # structured usage metadata
 harness-dispatch dispatch "<prompt>"     # route one task and print the result
 harness-dispatch dispatch "<prompt>" --service codex_cli --safety read_only --task-type review --no-fallback --json
+harness-dispatch breaker reset <route>   # close a tripped circuit breaker now
 harness-dispatch serve --port 3333       # /mcp and /v1/* over local HTTP
+harness-dispatch mcp                     # stdio MCP, same as no command (what launchers use)
+harness-dispatch mcp --http 3333         # same as serve --port 3333
 harness-dispatch auth show               # print HTTP bearer token
 harness-dispatch auth rotate             # rotate HTTP bearer token
 ```
 
-Hidden compatibility aliases currently map old alpha commands to the new surface:
-`dashboard` and `list-services` map to `status`, `route <prompt>` is an alias of
-`dispatch`, and `mcp --http <port>` maps to `serve`.
-They are not part of the public vocabulary and may be removed without a major
-version bump.
+`mcp` is supported: it is what the plugin launcher and some client entries run,
+and `mcp --http <port>` is the same as `serve --port <port>`.
+
+Hidden compatibility aliases map old alpha commands to the new surface:
+`dashboard` and `list-services` map to `status`, and `route <prompt>` is an alias
+of `dispatch`. They are not part of the public vocabulary and may be removed
+without a major version bump.
 
 ## MCP Surface
 
@@ -57,16 +63,22 @@ immediately, then waits up to `graceSeconds` (default 25) for it to finish. With
 window you get the complete result inline, exactly as if the call had blocked. Past it
 you get the `jobId` — call `job_status` with that `jobId` to see a `partialOutput` tail
 while it runs and the full `result` once `completed`. Expect the `jobId` path to be
-ordinary rather than exceptional: real agent-CLI work regularly runs for minutes, so on
-this maintainer's install a little over half of live dispatches finish past the default
-window. Treat a `completed: false` as the normal shape of a substantial task, not as a
-sign anything went wrong. Because the run never depends on
+ordinary rather than exceptional: real agent-CLI work regularly runs for minutes. On
+the maintainer's install in October 2026, 200 of the 292 CLI runs in the dispatch log
+that succeeded took longer than 25 seconds (68 percent), and the median retained job
+took about 6.5 minutes (386 seconds, over 69 jobs). Most CLI runs therefore outlive
+the default window; endpoint routes mostly do not. Treat a `completed: false` as the
+normal shape of a substantial task, not as a sign anything went wrong; if you would
+rather not wait inline at all, pass `graceSeconds: 0`. Because the run never depends on
 the MCP call staying open, a client-side timeout costs you the inline reply, never the
 work. Background runs default to a generous 60-minute ceiling meant only to catch a
 genuinely hung process (stuck waiting on input, a stalled network call), not to cap
 normal work — raise it per call with `hints.timeoutMs` (milliseconds), or set a
 permanent per-route default with `timeout_ms:` in that service's config entry.
 Precedence is `hints.timeoutMs` > the service's `timeout_ms` > the 60-minute default.
+Antigravity ships its own 25-minute `timeout_ms`, and Codex and Antigravity stop a run
+that has printed nothing for 15 minutes (`idle_timeout_ms`); see
+[configuration](configuration.md#time-limits).
 
 Starting a task:
 
@@ -76,26 +88,33 @@ Starting a task:
   "files": [],
   "workingDir": "/path/to/project",
   "workspacePolicy": "shared_locked",
+  "service": "codex_cli",
   "hints": {
-    "model": "gpt-5.4",
+    "model": "gpt-5.6-terra",
     "taskType": "review",
     "preferLargeContext": false,
-    "safetyProfile": "workspace_edit"
+    "safetyProfile": "read_only"
   }
 }
 ```
 
-For fanout (each route that outlives the grace window returns its own `jobId`):
+`service` names the route the `model` belongs to; both are optional, and the route
+ids on your machine are the ones `usage` lists.
+
+For fanout (each route that outlives the grace window returns its own `jobId`). `models`
+takes route ids from `usage` (or model names a route declares), never a model you hope
+a route has; a read-only fanout needs no workspace policy, while a write-capable one
+needs `workspacePolicy: "copy"` or `"git_worktree"`:
 
 ```json
 {
   "mode": "fanout",
   "prompt": "Compare the maintainability tradeoffs in this refactor.",
-  "models": ["claude-opus-4-6", "gpt-5.4"],
-  "workspacePolicy": "copy",
+  "workingDir": "/path/to/project",
+  "models": ["claude_code_cli", "codex_cli"],
   "hints": {
     "taskType": "plan",
-    "safetyProfile": "workspace_edit"
+    "safetyProfile": "read_only"
   }
 }
 ```
@@ -125,10 +144,18 @@ Endpoints:
 - `POST /v1/chat/completions` with `stream: true` sends the answer as SSE
   deltas. An endpoint route streams its text as it arrives; a CLI harness emits
   protocol on stdout, so its answer is sent once, at completion — the deltas
-  never carry harness protocol either way. A streamed request is a job like any
-  other: its id arrives in the `x-harness-dispatch-job-id` response header, and
-  if the connection drops the run continues and its result stays collectable
-  with `job_status` (`cancel_job` stops it).
+  never carry harness protocol either way. A single-route streamed request is a
+  job like any other: its id arrives in the `x-harness-dispatch-job-id` response
+  header, and if the connection drops the run continues and its result stays
+  collectable with `job_status` (`cancel_job` stops it). A streamed fanout sends
+  no such header; each arm reports its own `jobId` in the stream. A stream that
+  fails (the run was cancelled, crashed, or every route or arm failed) ends with
+  an `error` frame before `[DONE]`, where the non-streaming reply answers 500 or
+  502. On a single-route stream the final frame carries the routed `model` and a
+  `harness_dispatch` member with the `jobId` and any `warning`.
+- `/mcp` answers 404 for an `mcp-session-id` the server does not hold (idle for
+  30 minutes, or from before a restart), which tells an MCP client to initialise a
+  new session.
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
   `harness-dispatch://status.json`). Authenticated, because that answer is not
   for strangers.
@@ -165,7 +192,10 @@ curl http://127.0.0.1:3333/v1/chat/completions \
 The REST surface is OpenAI-compatible enough for local clients that can speak
 `/v1/chat/completions`. The `model` field is treated as a routing/model hint;
 it is also the way to pick a route here, since the MCP `service` parameter is
-refused on this surface rather than silently ignored.
+refused on this surface rather than silently ignored. A `model` that names a
+route runs that route when it is eligible; if it is blocked or fails, the
+router can still fall back to another, unlike MCP `service`. HTTP `models` for
+a fanout takes route ids only.
 
 Non-streaming completions are backed by the same persisted job pipeline as the
 MCP `dispatch` tool: the reply carries `harness_dispatch.jobId`, and the same id

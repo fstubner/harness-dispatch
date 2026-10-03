@@ -90,7 +90,11 @@ unless you opt in:
 Every dispatch also appends one JSONL line to a local
 dispatch log at `~/.harness-dispatch/logs/dispatches.jsonl` (override the
 directory with `HARNESS_DISPATCH_LOG_DIR`) — route, success, duration, token
-counts, and a capped error string, for post-hoc debugging. It's local-only,
+counts, a capped error string, which config file was loaded (`config`), and who
+asked: the MCP client's name and version, a per-connection session id, and the
+job id (`http` or `cli` for the other surfaces). `status` and `usage` read the
+last 7 days of it to show each route's recent success rate. For post-hoc debugging and for seeing which agents use which
+routes. It's local-only,
 size-capped via single-file rotation, and never sent anywhere. Job artifacts
 (prompt, snapshotted files, stdout/stderr, result) live under
 `~/.harness-dispatch/jobs/<jobId>/` and are pruned after 7 days of inactivity by
@@ -113,32 +117,42 @@ with a per-job wrapper.
 Prompts and outputs flow only to the harnesses/endpoints you configured. **The
 router makes no other network call by default.**
 
-Routes rank on the `tier` and `weight` you set. Optionally, public Arena ELO
-benchmark data can inform ranking and derive tiers automatically:
+### How a route is chosen
 
-```yaml
-leaderboard:
-  enabled: true    # default false
-```
+Routing is: **tier, then weight x capability, then fallback.**
 
-Turning it on adds one GET to `api.wulong.dev` per process, refreshed daily.
-It sends nothing about you or your prompts. It is off by default because a
-benchmark maintained elsewhere should not quietly reorder the subscriptions
-you are paying for, and because a routing tool should not need the network to
-decide which of your local CLIs to run.
+1. Routes are grouped by `tier` (lowest number first). The lowest tier with an
+   eligible route wins; a higher tier is used only when no lower-tier route is
+   eligible (disabled, unavailable, circuit-broken, blocked by billing or route
+   policy, or already tried for this request).
+2. Within that tier, the route with the highest `cli_capability x
+   capabilities[task_type] x quota x weight` wins. Nothing else enters the score
+   but a few explicit adjustments: a cost penalty under the `standard` route
+   policy, a bonus when `hints.model` names the route or its model, and a bonus
+   for declared large context under `preferLargeContext`.
+3. If the pick fails, the router excludes it and tries the next best, up to
+   `maxFallbacks` more times.
+
+So `tier:` and `weight:` in your config are the whole ordering. There is no
+benchmark or leaderboard input: an earlier version could fetch public Arena ELO
+scores to re-rank routes and derive tiers, but it was off by default and never
+changed a logged decision, so it was removed. A `leaderboard:` block or a
+`leaderboard_model:` key in an old config still loads and is reported as removed,
+with no effect.
 
 ## Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `HARNESS_DISPATCH_CONFIG` | Path of the config file to load instead of `~/.harness-dispatch/config.yaml`. |
+| `HARNESS_DISPATCH_CONFIG` | Path of the config file to load instead of `<state dir>/config.yaml` (`~/.harness-dispatch/config.yaml` by default). `--config` wins over it. A `config.yaml` in the current directory is never loaded unless named here or with `--config`. |
 | `HARNESS_DISPATCH_STATE_DIR` | Root of all state (default `~/.harness-dispatch`): config, jobs, breaker state, quota counters, logs, token. |
 | `HARNESS_DISPATCH_HOME` | Directory holding the HTTP token file only (default: the state root). |
 | `HARNESS_DISPATCH_HTTP_TOKEN` | HTTP bearer token. Overrides the token file; `auth rotate` refuses while it is set. |
 | `HARNESS_DISPATCH_JOBS_DIR` | Where job bundles live (default `<state root>/jobs`). |
 | `HARNESS_DISPATCH_JOB_MAX_AGE_MS` | Job retention in milliseconds; overrides `retention.jobs_days`. |
 | `HARNESS_DISPATCH_WORKSPACES_DIR` | Where `copy` and `git_worktree` workspaces are made (default: under the system temp directory). |
-| `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS` | Age after which a project's old workspaces are deleted on its next isolated dispatch. Positive milliseconds; default 24 h. |
+| `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS` | Age after which a project's old workspaces are deleted on its next isolated dispatch. Positive milliseconds; default 24 h. A run still in progress is never deleted, however old; the age counts from when it finished. |
 | `HARNESS_DISPATCH_LOG_DIR` | Directory of the local dispatch log. |
 | `HARNESS_DISPATCH_TELEMETRY` | `1` or `true` turns on OpenTelemetry tracing. |
+| `HARNESS_DISPATCH_DEPTH` | Set by harness-dispatch on every agent it starts: how many dispatches deep that agent is. An agent at depth 2 cannot start another (a delegate may delegate once). Not meant to be set by hand. |
 | `HARNESS_DISPATCH_INPROC_JOBS` | `1` runs jobs inside the server process instead of a detached runner — for tests. Such runs die with the server, and the concurrency cap does not apply. |

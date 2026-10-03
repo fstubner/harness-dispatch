@@ -156,9 +156,28 @@ describe.each(HARNESSES)("$harness, driven by its shipped preset", ({ harness, c
   });
 
   it("has a stable id and reports availability from the command on PATH", async () => {
-    const d = dispatcherFor(harness, command);
-    expect(d.id).toBe(harness);
-    expect(d.isAvailable()).toBe(true);
+    // A real stub on a PATH of its own: availability reads PATH directories
+    // itself (shared/which-available.ts), so mocking `which` no longer reaches
+    // it, and the real CLI is installed on some machines and not others.
+    const { chmodSync, mkdtempSync, writeFileSync } = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resetPathCache } = await import("../../src/dispatchers/shared/which-available.js");
+    const dir = mkdtempSync(path.join(os.tmpdir(), "hd-preset-path-"));
+    const win = process.platform === "win32";
+    const stub = path.join(dir, win ? `${command}.cmd` : command);
+    writeFileSync(stub, win ? "@echo off\r\n" : "#!/bin/sh\n");
+    if (!win) chmodSync(stub, 0o755);
+    vi.stubEnv("PATH", dir);
+    resetPathCache();
+    try {
+      const d = dispatcherFor(harness, command);
+      expect(d.id).toBe(harness);
+      expect(d.isAvailable()).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      resetPathCache();
+    }
   });
 });
 

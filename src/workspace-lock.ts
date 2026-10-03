@@ -26,7 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -55,7 +55,29 @@ const inProcessLocks = new Map<string, Promise<void>>();
 
 function lockKey(workingDir: string): string {
   const resolved = path.resolve(workingDir || process.cwd());
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  // The real path, so a symlink, junction or `/var` -> `/private/var` spelling
+  // of one project cannot take a second lock on it. A directory that does not
+  // exist yet keeps its resolved spelling.
+  let real = resolved;
+  try {
+    real = realpathSync.native(resolved);
+  } catch {
+    // ENOENT and the like: nothing to canonicalise.
+  }
+  // Windows and macOS file systems are case-insensitive by default, so two
+  // casings are one directory. Folding on a case-sensitive macOS volume only
+  // makes two sibling directories share a lock, which is harmless.
+  return process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real;
+}
+
+/**
+ * The lock file a working directory maps to. Exported so tests plant locks
+ * through the same key rule instead of a copy of it: a copy that missed the
+ * realpath step passed locally and failed on CI, where the temp directory's
+ * spelling differs from its real path.
+ */
+export function workspaceLockPath(workingDir: string): string {
+  return lockFileFor(lockKey(workingDir));
 }
 
 function lockFileFor(key: string): string {
@@ -203,7 +225,7 @@ async function acquireFileLock(key: string, timeoutMs: number): Promise<() => vo
       throw new Error(
         `workspace lock timed out after ${Math.round(timeoutMs / 1000)}s waiting for ` +
           `pid ${record?.pid ?? "unknown"} to release ${key}. Another dispatch is still ` +
-          `using this workspace; use workspace_policy: copy to run them concurrently.`,
+          `using this workspace; use workspacePolicy: copy to run them concurrently.`,
       );
     }
     await new Promise((r) => setTimeout(r, RETRY_MS));

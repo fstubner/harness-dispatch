@@ -78,21 +78,8 @@ vi.mock("../../src/quota.js", () => {
   return { QuotaCache };
 });
 
-vi.mock("../../src/leaderboard.js", () => {
-  class LeaderboardCache {
-    async getQualityScore() {
-      return { qualityScore: 1.0, elo: null };
-    }
-    async autoTier(_m: string | undefined, _t: unknown, fallbackTier: number): Promise<number> {
-      return fallbackTier;
-    }
-  }
-  return { LeaderboardCache };
-});
-
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type {
   DispatchResult,
   DispatcherEvent,
@@ -207,11 +194,9 @@ class ScriptedDispatcher implements Dispatcher {
 
 describe("Router.stream", () => {
   let quota: QuotaCache;
-  let leaderboard: LeaderboardCache;
 
   beforeEach(() => {
     quota = new QuotaCache({});
-    leaderboard = new LeaderboardCache();
   });
 
   it("emits events from the picked dispatcher with the active decision", async () => {
@@ -228,7 +213,6 @@ describe("Router.stream", () => {
       makeConfig([svc("alpha")]),
       quota,
       { alpha },
-      leaderboard,
     );
     const events: DispatcherEvent[] = [];
     let decisionSeen = false;
@@ -265,7 +249,6 @@ describe("Router.stream", () => {
       ]),
       quota,
       { alpha, beta },
-      leaderboard,
     );
 
     const services: string[] = [];
@@ -310,7 +293,6 @@ describe("Router.stream", () => {
       ]),
       quota,
       { alpha, beta },
-      leaderboard,
     );
     const completions: DispatcherEvent[] = [];
     for await (const { event } of router.stream("p", [], "/tmp")) {
@@ -330,7 +312,6 @@ describe("Router.stream", () => {
       makeConfig([svc("alpha", { enabled: false })]),
       quota,
       {},
-      leaderboard,
     );
     const events: DispatcherEvent[] = [];
     for await (const { event } of router.stream("p", [], "/tmp")) events.push(event);
@@ -354,7 +335,6 @@ describe("Router.stream", () => {
       makeConfig([svc("alpha"), svc("beta", { tier: 2 })]),
       quota,
       { alpha },
-      leaderboard,
     );
     const services: string[] = [];
     for await (const { decision } of router.streamTo("alpha", "p", [], "/tmp")) {
@@ -376,7 +356,6 @@ describe("Router.stream", () => {
       makeConfig([svc("alpha")]),
       quota,
       { alpha },
-      leaderboard,
     );
     const { result } = await router.route("p", [], "/tmp");
     expect(result.success).toBe(true);

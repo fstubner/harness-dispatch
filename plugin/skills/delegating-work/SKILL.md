@@ -89,15 +89,15 @@ Two things cancelling does NOT do, and both matter before you rely on it:
   even when it does not declare it (`routing.modelHintMatched: false`); only
   fallback routes fall back to their own default.
 - `hints.model` is not validated against the harness's own catalog — an unknown
-  name is forwarded to the picked harness as-is and fails there. Two values are
-  handled before that: an empty or whitespace-only string is refused by the
-  schema, and one naming a configured route steers routing rather than being
-  forwarded, reported back as `routing.modelHintDropped`. `service` IS
-  validated: an unknown route id is REJECTED with `Unknown service: <name>` and
-  the list of valid ids.
-- Route ids carry their suffix — `codex_cli`, not `codex`. This page used to
-  say `service` was unvalidated and then gave `service: "codex"` as its worked
-  example, so following it produced the very error it said could not happen.
+  name is forwarded to the picked harness as-is and fails there. An empty or
+  whitespace-only string is refused by the schema. A value naming a configured
+  route steers routing instead of being forwarded, and is reported back as
+  `routing.modelHintDropped` — except when you also pass `service`: then only a
+  value naming THAT route is dropped, and one naming a different route's id is
+  sent to the harness as a model. `service` IS validated: an unknown route id is
+  REJECTED with `Unknown service: <name>` and the list of valid ids.
+- Route ids carry their suffix — `codex_cli`, not `codex`; `usage` lists the ids
+  on this machine.
 - Omit `service` to let the router pick by per-task capability scores;
   pass it only when you specifically want one harness (e.g. `service:
   "codex_cli"` with `hints.model: "gpt-5.6-sol"` for a hard refactor).

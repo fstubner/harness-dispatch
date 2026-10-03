@@ -101,7 +101,6 @@ describe("dispatch log", () => {
       tier: 1,
       reason: "tier 1 best (3 available)",
       quotaScore: 0.9,
-      qualityScore: 0.82,
       capabilityScore: 0.75,
       finalScore: 0.92,
     } as unknown as RoutingDecision;
@@ -109,7 +108,6 @@ describe("dispatch log", () => {
     const entry = buildDispatchLogEntry("picked", result(), decision);
     expect(entry.scores).toEqual({
       quota: 0.9,
-      quality: 0.82,
       capability: 0.75,
       final: 0.92,
     });
@@ -124,11 +122,20 @@ describe("dispatch log", () => {
       tier: 1,
       reason: "explicit",
       quotaScore: 1,
-      qualityScore: 0.5,
       capabilityScore: 1,
       finalScore: 1,
     } as unknown as RoutingDecision;
     expect(buildDispatchLogEntry("only", result(), forced).scores?.final).toBe(1);
+  });
+
+  it("writes no scores for a decision that scored nothing", () => {
+    // A run cancelled before routing logs a decision that carries only a
+    // reason; `"scores":{}` would read as a route that scored undefined.
+    const cancelled = { reason: "cancelled" } as unknown as RoutingDecision;
+    const entry = buildDispatchLogEntry("fake", result({ success: false }), cancelled);
+    expect(entry.reason).toBe("cancelled");
+    expect("scores" in entry).toBe(false);
+    expect(JSON.stringify(entry)).not.toContain('"scores"');
   });
 
   it("records failures with a capped error string and rateLimited flag", () => {

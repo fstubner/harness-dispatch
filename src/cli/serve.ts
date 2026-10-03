@@ -17,7 +17,9 @@ export async function cmdServe(
   process.stderr.write(`MCP:  http://${handle.host}:${handle.port}/mcp\n`);
   process.stderr.write(`REST: http://${handle.host}:${handle.port}/v1/chat/completions\n`);
   if (handle.token) {
-    process.stderr.write(`Auth: Bearer ${maskToken(handle.token)}\n`);
+    process.stderr.write(
+      `Auth: Bearer ${maskToken(handle.token)}  (run \`harness-dispatch auth show\` for the full token)\n`,
+    );
   }
   const shutdown = async (): Promise<void> => {
     try {

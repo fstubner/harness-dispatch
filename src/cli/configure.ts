@@ -43,6 +43,7 @@ export async function cmdConfigure(
         svc.apiKey !== undefined &&
         svc.apiKey !== "" &&
         config.fieldRefs?.get(svc.name)?.apiKey === undefined &&
+        config.fieldRefs?.get(svc.name)?.apiKeyFile === undefined &&
         config.apiKeyRefs?.get(svc.name) === undefined,
     );
     // The note has to name everything it redacted: a base_url can carry a
@@ -92,7 +93,7 @@ export async function cmdConfigure(
   for (const [name, svc] of Object.entries(config.services)) {
     process.stdout.write(
       `- ${name}: harness=${svc.harness ?? name} billing=${buildRouteBilling(svc).kind} safety=${effectiveSafetyProfile(svc)} model=${
-        svc.model ?? svc.leaderboardModel ?? "unknown"
+        svc.model ?? "unknown"
       }\n`,
     );
   }
@@ -153,37 +154,47 @@ export async function cmdConfigure(
   // Applied on create only: a replaced file keeps its existing permissions,
   // so re-running `configure` will not silently tighten a file the user
   // deliberately made group-readable.
-  // The default target lives in the state directory, which a first run has
-  // not created yet. Same mode the rest of the state dir gets.
-  await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-  // Replacing a file the user wrote keeps a copy of it, and the new file goes
-  // in by rename: a plain overwrite truncates first, so an interrupted write
-  // or a full disk left neither version, and a rewrite that dropped a setting
-  // left nothing to recover it from.
-  let mode = 0o600;
+  // A failed write names the file and the way out, not a bare `EPERM: operation
+  // not permitted, mkdir ...` with the detection summary above it.
   let backup: string | undefined;
-  if (existsSync(target)) {
-    mode = (await fs.stat(target)).mode & 0o777;
-    if (!regenerate) {
-      backup = `${target}.${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
-      await fs.copyFile(target, backup, constants.COPYFILE_EXCL);
+  try {
+    // The default target lives in the state directory, which a first run has
+    // not created yet. Same mode the rest of the state dir gets.
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    // Replacing a file the user wrote keeps a copy of it, and the new file goes
+    // in by rename: a plain overwrite truncates first, so an interrupted write
+    // or a full disk left neither version, and a rewrite that dropped a setting
+    // left nothing to recover it from.
+    let mode = 0o600;
+    if (existsSync(target)) {
+      mode = (await fs.stat(target)).mode & 0o777;
+      if (!regenerate) {
+        backup = `${target}.${new Date().toISOString().replace(/[:.]/g, "-")}.bak`;
+        await fs.copyFile(target, backup, constants.COPYFILE_EXCL);
+      }
     }
+    const tmp = `${target}.${process.pid}.tmp`;
+    // A killed earlier run can leave one at this name; `wx` would then fail
+    // after the backup was already taken.
+    await fs.rm(tmp, { force: true });
+    // Stamped as regenerable only when it came from detection alone. A rewrite
+    // of the user's own file carries their settings, and stamped, the next
+    // `configure --yes` treated it as disposable: rebuilt it from detection,
+    // dropping `detect: false` and every endpoint, with no backup.
+    const fromDetectionOnly = existing === undefined || regenerate;
+    await fs.writeFile(tmp, fromDetectionOnly ? stampGenerated(yamlText) : yamlText, {
+      encoding: "utf-8",
+      mode,
+      flag: "wx",
+    });
+    await fs.rename(tmp, target);
+  } catch (err) {
+    throw new Error(
+      `configure: could not write ${path.resolve(target)}: ` +
+        `${err instanceof Error ? err.message : String(err)}. Check that the folder exists and is ` +
+        "writable, or pass --config <other-path>; --print shows the YAML without writing it.",
+    );
   }
-  const tmp = `${target}.${process.pid}.tmp`;
-  // A killed earlier run can leave one at this name; `wx` would then fail
-  // after the backup was already taken.
-  await fs.rm(tmp, { force: true });
-  // Stamped as regenerable only when it came from detection alone. A rewrite
-  // of the user's own file carries their settings, and stamped, the next
-  // `configure --yes` treated it as disposable: rebuilt it from detection,
-  // dropping `detect: false` and every endpoint, with no backup.
-  const fromDetectionOnly = existing === undefined || regenerate;
-  await fs.writeFile(tmp, fromDetectionOnly ? stampGenerated(yamlText) : yamlText, {
-    encoding: "utf-8",
-    mode,
-    flag: "wx",
-  });
-  await fs.rename(tmp, target);
   const absoluteTarget = path.resolve(target);
   process.stdout.write(
     `Wrote ${absoluteTarget}.${backup !== undefined ? ` The previous version is at ${path.resolve(backup)}.` : ""}\n`,

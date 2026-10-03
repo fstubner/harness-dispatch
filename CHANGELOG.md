@@ -8,6 +8,14 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Added
 
+- **Every dispatch records who asked.** The dispatch log and each job record
+  now carry the MCP client's own name and version (as it introduced itself on
+  connecting), an id for the connection, and the job id; REST and CLI
+  dispatches are recorded as `http` and `cli`. `job_status` lists each job's
+  client and session, so a session whose dispatch reply was lost can find its
+  own job by session id. Before, the log said how routes performed but not
+  which agent or session used them.
+
 - **Routing policy in config.yaml, told to every connecting agent.** A top-level
   `instructions:` block and a per-route `instructions:` (on `clis:`,
   `endpoints:`, `overrides:` or `services:` entries) are appended to the
@@ -16,7 +24,327 @@ pre-1.0, so minor versions can carry behaviour changes.
   written once instead of in every client's CLAUDE.md or AGENTS.md. Capped at
   1,000 characters each; secrets the config holds are scrubbed from it.
 
+- **`status` and `usage` show how each route has done in the last 7 days.** Next
+  to the lifetime counts, each route that was tried shows `last 7d: 15/75
+  succeeded (20%), 43 rate-limited`, read from the dispatch log. A route that
+  fails most of the time this week no longer looks healthy because it did well
+  over its lifetime. The lifetime counts are now dated `since` the day they began
+  (counts written before this carry no date, and are not given one).
+
+- **`harness-dispatch breaker reset <route>` closes a tripped circuit breaker.**
+  OPERATIONS.md said a restart clears one; it does not (breaker state is saved
+  per route so a restart cannot forget a cooldown), which left deleting a file by
+  hand as the only way out. The runbook is corrected.
+
+- **Each dispatch-log row records which config file was loaded** (`config`), so
+  a demo run against a throwaway config can be told from real use. `doctor` now
+  lists saved breaker and usage state for routes the config does not name, and
+  `doctor --prune-state` deletes it; nothing is deleted without the flag, because
+  the state directory is shared by every config on the machine.
+
+- **`mcp` is a supported subcommand,** documented and in `--help`: the plugin
+  launcher and existing client entries run it, and `mcp --http <port>` is
+  `serve --port <port>`.
+
+- **Finding a harness on PATH is much faster.** The resolver read
+  every PATH directory on every call, synchronously: 0.58-0.72 s for the four
+  harness names on this machine, repeated on each routing decision, each `status`
+  and each process start that auto-detects. It now reads each directory once and
+  matches names in memory (31 ms for the same four, measured), and remembers the
+  answer for five seconds, so a harness installed while a server runs is still
+  found without a restart. It finds the same files `which` does.
+
+### Removed
+
+- **The Arena-ELO leaderboard is gone.** It was off by default, and every logged
+  routing decision had a quality score of 1, so it never changed a pick. Routing
+  is now documented as what it was in practice: tier, then weight x capability,
+  then fallback. The `leaderboard:` block and the per-route `leaderboard_model:`
+  key still load but are reported as removed and have no effect (a config that
+  set `leaderboard_model` to a nonsense value only to make `tier:` win no longer
+  needs to). `LeaderboardCache` is no longer exported, and the `qualityScore` /
+  `elo` fields are gone from routing results, fanout items, `status` and the
+  dispatch log's `scores`. The shipped `data/coding_benchmarks.json` and <!-- claims-check-ignore -->
+  `scripts/fetch_benchmarks.py` are deleted. <!-- claims-check-ignore -->
+
 ### Fixed
+
+- **`configure --force` no longer writes an API key into the file as plain text.**
+  A key given as the per-route shorthand (`codex_cli_api_key: ${VAR}`) was
+  written back as its resolved value; it is now written back as the `${VAR}`
+  reference, like every other key.
+
+- **`configure` no longer loses routes or settings on a rewrite.** A legacy
+  `services:` entry with no `harness:` (its own command and protocol) is written
+  back as a working generic route instead of one the loader rejects; `clis: []`
+  stays "no routes" instead of turning into a file that detects every installed
+  harness; `escalate_on: []` is kept, and is honoured as "never escalate"
+  instead of becoming `[plan, review]`. A list of mistyped task types in
+  `escalate_on` now warns.
+
+- **Config problems now say what they are.** A bare `-` in `clis:` or
+  `endpoints:` is reported as an empty entry instead of crashing with "Cannot
+  read properties of null"; a `clis:` entry missing only its `harness` no longer
+  claims the `name` is missing too; `version:` and a top-level `protocol:` (both
+  read by nothing) are reported like the other ignored top-level keys; a legacy
+  `services:` endpoint whose `${VAR}` key is unset is skipped instead of shown
+  as ready; `doctor` and `configure` no longer say a legacy config was
+  "auto-detected".
+
+- **`connect` no longer overwrites a client config created while it waited.** If
+  Claude Code or Cursor created its config file between `connect` planning and
+  writing (it asks first), the entry is now merged into that file with a backup
+  instead of replacing it.
+
+- **A flag that needs a value now says so.** `dispatch "…" --service` with no
+  value ran as ordinary routing, and `--clients`, `--host` and `--interval`
+  with no value were ignored; each is now a usage error.
+
+- **Routing state from other processes is read everywhere it matters.** A
+  route named with `service` honoured a stale in-memory breaker (refusing one
+  another process had healed, running one it had tripped); a route skipped as
+  "never succeeded" stayed skipped after another process recorded its first
+  success; and a breaker whose record went unreadable and was then deleted stayed
+  tripped. With an unwritable state directory the breaker never tripped (every
+  failure counted as the first); it now trips on this process's own count. A
+  breaker write error now clears once writes work again, and a record that cannot
+  be removed is reported.
+
+- **A fallback is no longer started with a few milliseconds of budget.** When
+  the first attempt used up nearly all of a dispatch's overall time limit, the
+  fallback was handed what was left (observed: 2 ms), timed out at once, and was
+  charged a breaker failure. Under a second of budget, no fallback is attempted.
+
+- **A fallback no longer says "model hint not sent" when the hint was a route
+  name,** which was never meant to be sent as a model. A damaged per-route entry
+  in `quota_state.json` (for example `"codex": 12`) no longer stops usage counting
+  for every route, and a dispatcher whose stream throws no longer leaves its
+  isolated workspace behind.
+
+- **Isolated workspaces (`copy`, `git_worktree`) prepare much faster on big
+  projects.** Files are now copied and hashed sixteen at a time instead of one
+  at a time, the starting hash is taken from the source while it is copied, and
+  finishing a run re-reads only files whose size or timestamps changed. On a
+  12,000-file project (Windows, NTFS, a busy machine) a `copy` run's setup took
+  287 s and 293 s before and 63 s and 7.5 s after, and its wrap-up 33 s and
+  6.5 s before and 0.7 s and 0.5 s after (two back-to-back before/after pairs).
+  A `git_worktree` run's setup took 277 s and 223 s before and 79 s and 62 s
+  after. What counts as a change is unchanged by this.
+
+- **`status`, `usage`, `doctor` and `--version` start faster.** The command line
+  no longer loads the whole MCP server (and its libraries) before it reads a
+  flag; each command loads only what it uses. Alternating before and after,
+  median of 15 runs: `--version` 842 ms to 145 ms, `status` 842 ms to 353 ms.
+
+- **A successful job no longer keeps a second copy of its output.** The raw
+  progress log (`stdout.partial.log`) is removed once the full answer is saved,
+  which was most of the state directory's size. Failed jobs, and successes with
+  no output, keep it.
+
+- **A git worktree run now reports edits to tracked files in `bin/`, `dist/`,
+  `build/`, `target/` and the other skipped directory names.** The patch already
+  carried them; the list of changed files did not, so the two disagreed.
+  Directories the agent creates itself (an install, a build) are still left
+  out.
+
+- **`git_worktree` from a directory that exists only as uncommitted files** now
+  says so, and removes the worktree it had just registered, instead of failing
+  with a bare `ENOENT` and leaving the registration behind.
+
+- **Diffing a `copy` job after applying it no longer erases its saved patch,
+  and re-applying work that already landed says "Already applied".** Both
+  previously ended in a false "changed since the dispatch started" or "please
+  report this" refusal once the workspace was gone.
+
+- **A sibling package's file in a monorepo is no longer reported as an escape
+  from `git_worktree` isolation.** The worktree holds the whole repository, so
+  only paths outside it now trigger the warning.
+
+- **A long-running isolated job's workspace is no longer deleted by another
+  dispatch in the same project** when the job outlasts
+  `HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS`. A live run now keeps a heartbeat
+  file in its run directory, and retention counts from the later of that and the
+  directory's own time.
+
+- **`doctor` has a warn level and a verdict.** A row that passes but wants
+  something done (a client not yet registered, `git` missing, a route that has
+  never succeeded) now reads `warn` instead of `ok`, exit code unchanged, and the
+  output ends with one line: `OK`, `OK, with N thing(s) worth doing`, or
+  `NOT READY`. `--json` carries it as `verdict`.
+
+- **A config reference.** docs/configuration.md lists every key the parser
+  recognises with its type, default and meaning, including `escalate_model`,
+  `escalate_on` and `resource_weight`, which were documented nowhere.
+  `scripts/check-claims.mjs` fails when a recognised key is missing from it.
+
+- **A dispatch without `hints.taskType` now says so.** The reply carries a
+  `warning`, as it already did for a missing `workingDir`.
+
+- **MCP tools carry annotations.** `job_status` and `usage` are marked
+  read-only, `cancel_job` and `workspace` destructive, so a client can approve
+  polling without asking each time.
+
+- **A streamed request that failed no longer ends as an empty success.** A
+  cancelled or crashed single-route stream, and a streamed fanout whose every
+  arm failed, ended with `finish_reason: "stop"` and `[DONE]`; they now end with
+  an `error` frame, as the non-streaming reply answers 500 or 502. A streamed
+  reply also names the routed model (it said `harness-dispatch`), carries the
+  `workingDir` warning, and a NUL byte in the top-level `model` is a 400 instead
+  of a failed route with breaker credit. An MCP session id the HTTP server does
+  not hold now answers 404, so clients re-initialise, instead of 400.
+
+- **The 15 decoy fields are out of the published `dispatch` schema.**
+  `tools/list` shrank from 19,728 to 15,271 characters and the server
+  instructions from 2,084 to 1,645, measured with a real stdio client. The
+  refusals are unchanged: each misplaced or snake_case key (`safety_profile`,
+  a top-level `taskType`, `model`, `escalate`, and the rest) is still rejected
+  by name, now by the near-miss guard instead of by `z.never()` fields.
+  `hints.model`'s description dropped from 1,777 to 864 characters, the
+  `service` example uses a real route id (`codex_cli`), and the instructions no
+  longer repeat what the schema says.
+
+- **Errors that told an MCP caller to use `workspace_policy` now say
+  `workspacePolicy`**, the spelling the tool accepts.
+
+- **Raw or dead-end errors.** `configure` names the file it could not write and
+  how to get out; `dispatch` with no routes gives the same remedy `usage` does;
+  two runtime errors that pointed at docs/ (not shipped in the npm package) now
+  link the page on GitHub; the HTTP 401 body points at `auth show`, and so does
+  the `serve` banner.
+
+- **`usage` with `listModels` read prototype keys as routes** (`constructor`)
+  and ignored an empty string; both are now answered as an unknown route. Every
+  tool now emits a trace span, not only `dispatch` and `job_status`.
+
+- **Documentation corrected.** The README's Cursor override would have removed
+  every other harness (it is now an `overrides:` entry); the shipped config no
+  longer says providers hard-stop at your plan's included usage, or that
+  `disabled:` hides an entry of your own; OPERATIONS.md no longer says a running
+  job dies with the server; the endpoint timeout, the streamed job-id header,
+  the `--force` help, the skill's `service` rule and ARCHITECTURE.md's claims
+  about the supervisor pool and shared liveness are fixed. AGENTS.md and
+  CLAUDE.md were the same text twice; CLAUDE.md now imports AGENTS.md.
+
+- **A run that goes silent is stopped as hung.** A new per-route
+  `idle_timeout_ms` stops a CLI run that has printed nothing for that long,
+  instead of letting it hold a concurrency slot until the 60-minute job
+  ceiling. Codex and Antigravity ship with 15 minutes; Claude Code and Cursor
+  print only their final answer, so they ship without one.
+
+- **Antigravity shows progress while it runs.** The shipped route now asks
+  `agy` for `stream-json`, so a running job has partial output and tool
+  steps, and a slow job no longer looks the same as a stuck one. It also
+  ships a 25-minute time limit of its own, about twice its longest logged
+  success. An exit-0 run with an empty answer is now a failure, not the raw
+  event stream returned as the answer.
+
+- **A usage limit is waited out until the time the provider stated.** Codex's
+  "try again at Sep 26th, 2026 1:34 PM" and Claude Code's "resets 1:30am
+  (Europe/Dublin)" now set how long the route is skipped (at most 24 hours at a
+  time), instead of the router retrying every five minutes. Claude Code's
+  "session limit" message is now recognised as a usage limit at all.
+
+- **Codex's Windows sandbox refusal is caught when one stray command ran.** A
+  run whose only repository command was refused counted as a success because
+  one earlier command outside the repository had completed. Runs are now
+  judged on how many commands completed against how many were refused, and a
+  refusal skips the route for 30 minutes instead of five, since the refusals
+  come in clusters.
+
+- **A burst of output no longer fails a healthy run.** A harness printing
+  faster than the job runner could save it was killed ("internal queue
+  exceeded 1000 chunks"); it is now slowed down instead.
+
+- **Cursor's "Named models unavailable" error says what to do next:** retry
+  without `hints.model`, or retry on another route.
+
+- **Smaller dispatcher fixes.** An error reported in a JSON body after a banner
+  line, or on stdout while the answer text came from stderr, is no longer
+  missed; an error a run reports and then recovers from no longer fails its
+  answer; the POSIX command-line check measures the longest argument rather
+  than the sum of all of them; `endpoint_native_args` in a route that extends a
+  preset adds to the preset's providers instead of replacing them; and an
+  endpoint stream a caller stops reading is closed at once.
+
+- **A fanout keeps the arms that started when another arm fails to start.** One
+  arm failing after others had begun threw away the whole response, including
+  the job ids of the runs already going. The failed arm now appears in
+  `results` with its error. A fanout also reports every arm's warning rather
+  than whichever was read last.
+
+- **Smaller job fixes.** A job still waiting for a slot after the job retention
+  window is reported `orphaned` (use `retry_job`) instead of being deleted out
+  from under its caller. A retry of a job that had `contextJobs` is listed by its
+  task rather than by the context preamble. A second workspace action on the
+  same job in the same server now gives up after 120 s like one from another
+  process, instead of waiting indefinitely. Job records carry a format version,
+  and a build too old for a record says to upgrade rather than misreading it.
+
+- **Cancelling an orphaned job now stops the agent it left running.** A running
+  job records the processes it starts in its status; when its supervisor dies,
+  `job_status` names them and `cancel_job` (or `retry_job`, which cancels
+  first) kills them, after checking each is still the same process and not a
+  reused pid. Before, nothing knew their pids and the cancel killed nothing.
+
+- **Cancelled runs appear in the dispatch log**, with `reason: "cancelled"`, the
+  job id and who asked, and no `scores` (a run cancelled before routing scored
+  nothing, and its row had read `"scores":{}`). A cancel bypasses the router so
+  the route is not charged a failure, and that had kept it out of the log as
+  well.
+
+- **A queued job says where it stands.** `job_status` on a job waiting for a
+  concurrency slot now gives its place in the queue (`queuePosition`), the jobs
+  holding the slots it waits for (`waitingOn`), and says so in its
+  instructions. Before, a job stuck behind two silent runs read exactly like one
+  about to start.
+
+- **A queue left behind by dead supervisors moves again when you ask about it.**
+  If every supervisor had died, a waiting job sat until some unrelated dispatch
+  came along while its polls kept saying "wait". Polling it now starts a
+  supervisor when none is alive and nothing is running; the concurrency cap
+  still decides what runs. A job that was released to run but not yet picked up
+  now reads as `queued` rather than `orphaned`: it was reported finished
+  (`completed: true`) while its own message said it would still start.
+
+- **A cancelled job no longer tells its caller to keep polling** until it
+  completes.
+
+- **Job scans are cheaper.** The slot drain and each supervisor pass no longer
+  read every retained job's status when nothing is waiting, and the scans that
+  do run read 16 files at a time. Measured on 2,000 retained jobs: listing
+  1.1–1.4 s → 0.2 s, an empty drain 1.1–1.6 s → 2 ms.
+
+- **MCP progress notifications now arrive for ordinary dispatches.** They were
+  sent only when a job ran inside the server process, which is the mode the test
+  suite forces and no real install uses, so a client asking for progress got
+  none. While `dispatch` waits out its grace window it now forwards the run's
+  output as it is written. The dispatch call also stops watching the job once
+  that window ends; it used to keep reading the job's status file every 300 ms
+  for up to 70 minutes with nothing waiting on it.
+
+- **Background jobs now survive the session that started them on Windows, even
+  behind a launcher shim.** A launcher that kills its descendants when it exits
+  (the nvx shim does) took every job's supervisor and agent CLI with it when the
+  session ended, because Node's detached spawn does not leave a Windows job
+  object; the job stayed `queued` or `running` forever. Supervisors are now
+  started through WMI (`Win32_Process.Create`), which creates them outside the
+  caller's job, falling back to the old spawn if WMI is unavailable. Starting a
+  supervisor this way takes about a second longer. POSIX is unchanged.
+  `doctor` now proves it: its `job-runner` check starts a probe through the same
+  launch path, under the same `node` a client runs, and checks it outlives its
+  parent, instead of only checking that the runner file exists.
+
+- **A supervisor that cannot be started no longer crashes the server.** A failed
+  spawn was an unhandled error event. It is now written to the supervisor's
+  spawn log, its slot is given back, and the next drain retries. A drain also
+  now starts a supervisor for a released job nobody has claimed, instead of
+  waiting for some other job to be released.
+
+- **A supervisor whose jobs directory is deleted lets its running jobs finish**
+  rather than exiting and, on Windows, killing their agent CLIs mid-edit.
+
+- **Supervisor spawn logs are pruned after the job retention window.** Logs that
+  recorded a crash were kept forever.
 
 - **The server instructions and the delegating-work skill now ask for a model on
   every dispatch.** Left unset, each route ran its default — for Claude Code
@@ -472,6 +800,12 @@ pre-1.0, so minor versions can carry behaviour changes.
   named route cannot run, routing falls back as before — `service` is still how
   you force one route with no fallback.
 
+- **`shared_locked` held on one spelling of a path, not the directory.** The
+  lock was keyed on the path as written, so a symlink, junction or
+  differently-cased spelling of the same project took a second lock and two
+  agents edited one tree. The key is now the real path, case-folded on
+  Windows and macOS.
+
 ### Changed
 
 - **A route that has failed every call it has ever been given is no longer
@@ -496,6 +830,109 @@ pre-1.0, so minor versions can carry behaviour changes.
   answer the question a routing tool exists to answer. A route that declares no
   model says so in words rather than printing an empty value, and the value is
   delimited because the reason that follows it is parenthesised.
+
+- **The install is smaller: tracing uses only the trace packages.**
+  `@opentelemetry/sdk-node` brought the gRPC, Prometheus, Zipkin, metrics and
+  logs exporters along, none of which harness-dispatch loads. A fresh install
+  of the packed tarball goes from 188 packages and 64.2 MB to 133 packages and
+  46.6 MB, and the `@grpc/grpc-js` advisory path is gone. Tracing is unchanged:
+  still off unless you opt in, `env,host` resource detectors (no command line),
+  http and fs instrumentation, spans flushed on exit.
+
+- **The tests and release path check more.** CI installs the packed tarball
+  into a scratch prefix and runs it (`--version`, `doctor`, an MCP handshake)
+  on Linux, macOS and Windows; the publish job ships that verified file, needs
+  a changelog section and a tag on `main`, and opens a draft GitHub release. A
+  weekly job installs without the lockfile, runs the checks and audits what
+  ships. `npm run lint` (promise misuse only) is part of `npm run check`.
+  `npm run build` builds beside `dist/` and swaps it in, so a running server
+  never loses its files; every way of running the tests builds first if
+  `dist/` is missing or stale instead of silently skipping the tests that need
+  it. `@types/node` is pinned to the supported floor (22), and `fast-uri` and
+  `ip-address` are bumped so `npm audit` is clean.
+
+### Security
+
+- **A delegate in a `git_worktree` can no longer make harness-dispatch run a
+  command.** The worktree's `.git` is a file the agent can rewrite. An agent
+  that only wrote files replaced it with a repository whose config set
+  `core.fsmonitor`, and harness-dispatch's own `git add` / `git diff` at job
+  end ran that command as you, outside any harness sandbox; an embedded
+  repository in a subdirectory reached the same place through its fsmonitor
+  and clean filters. Post-run git now runs against the worktree's registration
+  in your repository, never discovers one from the worktree, overrides
+  `core.fsmonitor` and `core.hooksPath`, and does not look inside embedded
+  repositories. A worktree whose `.git` no longer points at its own
+  registration is refused with an explanation instead of diffed.
+
+- **A `config.yaml` in the current directory is no longer loaded on its own.**
+  It ranked above your own config, and the config decides which commands
+  routes run, which credentials go where, and the "Operator instructions" every
+  connecting agent is told to follow — so any cloned repository carrying a
+  `config.yaml` became the operator for CLI commands run inside it and for an
+  MCP server started there without `--config` (measured: a repo's route ran its
+  own command under a `read_only` dispatch). **If you relied on it**, pass
+  `--config ./config.yaml` or set `HARNESS_DISPATCH_CONFIG`; `configure` now
+  writes to the state directory unless one of those names a file.
+
+- **A route whose `effective_safety` pins a profile it has no flags for is
+  skipped instead of launched unrestricted.** The flag check looked at the
+  requested profile, but the harness is launched with the flags of the profile
+  the pin turns it into. A route pinning `read_only` with flags only for
+  `workspace_edit` reported `read_only` for a `workspace_edit` request and ran
+  with no safety argument at all. Such a route now reports `full_auto`, so a
+  stricter request refuses it. No shipped route was affected.
+
+- **Claude Code delegates at `read_only` and `workspace_edit` get only the file
+  tools, and no MCP servers.** The shipped flags were `--allowedTools`, which
+  only adds approvals on top of your own settings, so Bash stayed available
+  wherever your allow rules permitted it, and every MCP server you had
+  registered (harness-dispatch included) loaded into the delegate. The profiles
+  now pass `--tools` (Read, Grep, Glob, plus Edit and Write for
+  `workspace_edit`) and `--strict-mcp-config`. `full_auto` is unchanged.
+
+- **`antigravity_cli` no longer serves `workspace_edit`.** Its edit-mode flags
+  auto-approve every tool request with nothing restricting the terminal, so
+  "edit files, no arbitrary shell" was not what it ran. It now declares a
+  `full_auto` floor for `workspace_edit`, as `cursor_cli` does, and is skipped
+  for that profile unless you override the floor; `read_only` and `full_auto`
+  are unchanged.
+
+- **Delegates no longer inherit credentials that switch billing or belong to
+  this server.** `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` are blanked for every
+  agent CLI (each can move a subscription route onto metered billing without
+  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN` and
+  `GITHUB_TOKEN`. A route that names one of them as its own
+  `api_key_env_var` still receives it. A delegate that needs GitHub access uses
+  the `gh` login stored on the machine rather than the inherited token.
+
+- **Only `${VAR}`s that hold a credential are hidden from delegates.** Every
+  variable named anywhere in `config.yaml` was blanked in every agent's
+  environment, so `command: ${LOCALAPPDATA}\...` on one route emptied
+  `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
+  `api_key`, or holds a value the config treats as a secret.
+
+- **Dispatches can nest only one level.** Every agent harness-dispatch starts
+  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate can still dispatch (it may
+  have this server among its own MCP servers, or a shell), but an agent it
+  starts that way cannot start another: the dispatch is refused with an
+  explanation and does not count against the route.
+
+- **`api_key_file:` keeps a route's key out of every process environment.**
+  The documented ways to hand the server a key were an environment variable,
+  which every process you start inherits, or an MCP client's `env` block, which
+  is plaintext JSON in your home directory that any delegate able to read files
+  there can read. `api_key_file: ~/.harness-dispatch/keys/groq` reads the key
+  when the config loads; it is redacted like any other key, `configure` writes
+  the file name back rather than the key, and an unreadable or empty file is an
+  error naming the route. The setup command and plugin docs now recommend it.
+
+- **A key split across two output chunks no longer lands in the partial log.**
+  `stdout.partial.log` was scrubbed chunk by chunk, so a key whose halves
+  arrived in two reads was written whole, while the result and the final logs
+  were scrubbed. The partial log now holds back a short tail until the next
+  chunk can complete any key that starts in it.
 
 ## [0.11.0] — 2026-09-11
 
@@ -1399,7 +1836,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   here — `scripts/check-claims.mjs` could not see tool descriptions at all, and
   now does.
 
-- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its
+- `scripts/fetch_benchmarks.py` no longer replaces good benchmark data with its <!-- claims-check-ignore -->
   bundled fallback when the network fails. It swallowed every exception,
   returned an empty set, wrote it out and exited 0 — turning a transient outage
   into a permanent downgrade of the file that ships in the package.

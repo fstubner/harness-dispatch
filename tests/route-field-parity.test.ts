@@ -55,7 +55,6 @@ const SHARED_FIELDS: Array<{
   { yaml: "max_input_tokens: 123456", field: "maxInputTokens", expected: 123456 },
   { yaml: "max_output_tokens: 4096", field: "maxOutputTokens", expected: 4096 },
   { yaml: "thinking_level: high", field: "thinkingLevel", expected: "high" },
-  { yaml: "leaderboard_model: some-model", field: "leaderboardModel", expected: "some-model" },
   // Added after a review found escalate_model honoured on clis: and dropped on
   // endpoints: — this list pinned 16 keys and missed it, so the gap it exists
   // to catch went to a human instead.
@@ -74,6 +73,7 @@ const SHARED_FIELDS: Array<{
   // these three were in neither the old hand-written list nor any other test,
   // so nothing proved any shape read them.
   { yaml: "timeout_ms: 900000", field: "timeoutMs", expected: 900000 },
+  { yaml: "idle_timeout_ms: 600000", field: "idleTimeoutMs", expected: 600000 },
   { yaml: "resource_weight: 0.25", field: "resourceWeight", expected: 0.25 },
   { yaml: "billing_confidence: documented", field: "billingConfidence", expected: "documented" },
   { yaml: 'models: ["m-one", "m-two"]', field: "models", expected: ["m-one", "m-two"] },
@@ -151,7 +151,6 @@ describe("shared route keys are honoured by every entry shape", () => {
     const svc = cfg.services["probe"];
     expect(svc, "the probe route was dropped entirely").toBeDefined();
     // Every shared key config.default.yaml actually sets on cursor_cli.
-    expect(svc!.leaderboardModel, "leaderboard_model was not inherited").toBe("claude-sonnet-4-6");
     expect(svc!.maxOutputTokens, "max_output_tokens was not inherited").toBe(64000);
     expect(svc!.maxInputTokens, "max_input_tokens was not inherited").toBe(1000000);
     expect(svc!.modelHint, "model_hint was not inherited").toMatch(/cursor\.com\/docs\/models/);

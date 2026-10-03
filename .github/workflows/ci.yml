@@ -49,3 +49,11 @@ jobs:
 
       - name: Inspect package contents
         run: npm pack --dry-run
+
+      # Pack, install the TARBALL into a scratch prefix and run what it
+      # installed: --version, doctor and an MCP handshake. Tests run the
+      # checkout and `--dry-run` only lists files, so a wrong `files` entry, a
+      # missing runtime dependency or a broken bin shim passed both. Runs on
+      # every OS in the matrix because the shim differs (symlink vs .cmd).
+      - name: Install and run the packed tarball
+        run: node scripts/verify-tarball.mjs

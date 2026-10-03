@@ -43,10 +43,89 @@ interface RawCallToolRequest {
   params?: { name?: unknown; arguments?: unknown };
 }
 
-/** The near-miss message for the first offending key, or undefined. */
+/**
+ * Keys that mean nothing at the top level of `dispatch`, each with the message
+ * the caller is refused with.
+ *
+ * `hints` is .strict(), so `hints: { safety_profile: ... }` is rejected. The
+ * OUTER object cannot be, so without these moving the same key up one level
+ * makes it vanish silently instead:
+ *
+ *   hints.safetyProfile = read_only      -> honoured
+ *   TOP-LEVEL safetyProfile = read_only  -> dropped, runs with write access
+ *
+ * Full .strict() on the outer object is deliberately NOT used: MCP clients may
+ * attach their own fields (_meta and similar). Naming the specific misplaced
+ * keys closes the trap without guessing at what else may legitimately arrive.
+ */
+function hintKeyMessage(key: string): string {
+  return (
+    `${key} belongs inside \`hints\`, not at the top level — e.g. hints: { ${key}: ... }. ` +
+    `At the top level it does nothing, which for a safety setting means the dispatch ` +
+    `runs with MORE access than you asked for.`
+  );
+}
+
+/**
+ * A snake_case near-miss at the top level.
+ *
+ * `where` is per key and not a constant: `workingDir` and `contextJobs` are
+ * top-level dispatch parameters, so telling a caller to move them "inside
+ * `hints`" produces a SECOND error ("Unrecognized key"), costing the round trip
+ * this exists to save.
+ */
+function snakeCaseMessage(wrong: string, right: string, where: string): string {
+  return (
+    `${wrong} is not a field — this tool spells it ${right}, ${where}. As written it ` +
+    `does nothing, which for a safety setting means the dispatch runs with MORE ` +
+    `access than you asked for.`
+  );
+}
+
+const IN_HINTS = "inside `hints`";
+const TOP_LEVEL = "at the top level";
+
+export const MISPLACED_TOP_LEVEL_KEYS: Readonly<Record<string, string>> = {
+  safety_profile: snakeCaseMessage("safety_profile", "safetyProfile", IN_HINTS),
+  route_policy: snakeCaseMessage("route_policy", "routePolicy", IN_HINTS),
+  task_type: snakeCaseMessage("task_type", "taskType", IN_HINTS),
+  prefer_large_context: snakeCaseMessage("prefer_large_context", "preferLargeContext", IN_HINTS),
+  timeout_ms: snakeCaseMessage("timeout_ms", "timeoutMs", IN_HINTS),
+  // Accepted in BOTH placements — a real top-level parameter as well as a
+  // hint, with the top-level value winning when both are given.
+  workspace_policy: snakeCaseMessage(
+    "workspace_policy",
+    "workspacePolicy",
+    `${TOP_LEVEL} or ${IN_HINTS}`,
+  ),
+  working_dir: snakeCaseMessage("working_dir", "workingDir", TOP_LEVEL),
+  context_jobs: snakeCaseMessage("context_jobs", "contextJobs", TOP_LEVEL),
+  safetyProfile: hintKeyMessage("safetyProfile"),
+  routePolicy: hintKeyMessage("routePolicy"),
+  taskType: hintKeyMessage("taskType"),
+  preferLargeContext: hintKeyMessage("preferLargeContext"),
+  timeoutMs: hintKeyMessage("timeoutMs"),
+  model:
+    "model belongs inside `hints` for single mode — hints: { model: ... }. " +
+    "In fanout mode use the top-level `models` array instead. At the top " +
+    "level it does nothing.",
+  escalate:
+    "escalate is not a dispatch field — escalation is configured per route in " +
+    "config.yaml (escalate_model / escalate_on), not per call.",
+};
+
+/** The refusal for the first offending key, or undefined. */
 export function nearMissInArguments(args: unknown, toolName?: string): string | undefined {
   if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
-  for (const key of Object.keys(args as Record<string, unknown>)) {
+  const record = args as Record<string, unknown>;
+  // Only `dispatch` has hints or a top level worth guarding; own keys only, so
+  // an argument named `constructor` is not read as a trap.
+  if (toolName === undefined || toolName === "dispatch") {
+    for (const [key, message] of Object.entries(MISPLACED_TOP_LEVEL_KEYS)) {
+      if (Object.hasOwn(record, key) && record[key] !== undefined) return message;
+    }
+  }
+  for (const key of Object.keys(record)) {
     const meant = nearMissHintKey(key);
     if (meant !== undefined) {
       // The TOOL is passed on, because the advice differs by it: on a tool

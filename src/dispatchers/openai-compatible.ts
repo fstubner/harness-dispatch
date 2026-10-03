@@ -795,6 +795,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
     const decoder = new TextDecoder();
 
     let received = 0;
+    // False only while a consumer could abandon this generator at the `yield`
+    // inside the loop: see the `finally` below.
+    let loopEnded = false;
     try {
       outer: while (true) {
         const { value, done } = await reader.read();
@@ -829,7 +832,9 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
           boundary = SSE_FRAME_BOUNDARY.exec(buffer);
         }
       }
+      loopEnded = true;
     } catch (err) {
+      loopEnded = true;
       clearTimeout(timer);
       // Scrubbed, like every other error leaving this dispatcher. undici embeds
       // the request URL in its failure messages, so a base_url carrying
@@ -851,6 +856,15 @@ export class OpenAICompatibleDispatcher extends BaseDispatcher {
         },
       };
       return;
+    } finally {
+      // A consumer that stops iterating (a `break` in its for-await) returns
+      // this generator at a `yield` above, which skipped every release below:
+      // the response body stayed open, and the abort timer kept the request
+      // alive until it fired.
+      if (!loopEnded) {
+        clearTimeout(timer);
+        reader.cancel().catch(() => undefined);
+      }
     }
     clearTimeout(timer);
 

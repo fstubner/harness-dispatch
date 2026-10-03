@@ -32,6 +32,18 @@ import type {
 
 const execFile = promisify(execFileCb);
 
+/**
+ * Directory names a copy never copies and the change fingerprint never walks.
+ * ONE list for both policies' fingerprints; tests/workspace-audit5.test.ts pins
+ * that `git_worktree`'s changedFiles agrees with git's patch for every name here.
+ *
+ * It is the fingerprint that has this list, not git, so the two only agree
+ * where the fingerprint is told what git knows. A copy leaves these directories
+ * out entirely (and says so). A worktree is a checkout, so a `bin/` in it is
+ * TRACKED and its edits are in the patch: its fingerprint walks every excluded
+ * directory that exists at checkout time and skips only the ones the agent
+ * creates afterwards (see `FingerprintOptions.walkExcluded`).
+ */
 export const EXCLUDED_DIRS = new Set([
   ".git",
   "node_modules",
@@ -60,6 +72,12 @@ interface FileFingerprint {
    * settings rewrote the file on the way in must NOT read as a change.
    */
   eolHash: string;
+  /**
+   * The file's stat when it was hashed, so a later pass can skip re-reading a
+   * file whose stat has not moved. Absent on entries that were not stat'ed.
+   */
+  mtimeMs?: number;
+  ctimeMs?: number;
 }
 
 type FingerprintMap = Map<string, FileFingerprint>;
@@ -415,6 +433,54 @@ function workspaceMaxAgeMs(): number {
 }
 
 /**
+ * Proof that a run is still going. A directory's mtime moves only when its
+ * DIRECT entries change, and an agent writes deeper than that, so judging a run
+ * by its directory alone deleted live workspaces once a job outlasted the
+ * retention age (measured: HARNESS_DISPATCH_WORKSPACE_MAX_AGE_MS lowered, or a
+ * `timeoutMs` past 24 h). Sits in the run directory, outside the workspace, so
+ * it is never copied, fingerprinted or patched.
+ */
+const HEARTBEAT_FILE = ".alive";
+
+/**
+ * Longest a heartbeat keeps going. A run whose `finish` never came (an
+ * abandoned stream inside a long-lived server) must not pin its workspace for
+ * the life of the process.
+ */
+const HEARTBEAT_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Keep this run's heartbeat fresh until the returned function is called, which
+ * also removes the file — leaving the directory's mtime at the finish time, so
+ * retention counts from the end of the run.
+ */
+async function startHeartbeat(workspaceRoot: string): Promise<() => Promise<void>> {
+  const file = path.join(workspaceRoot, HEARTBEAT_FILE);
+  const beat = (): Promise<void> =>
+    writeFile(file, "").catch(() => undefined);
+  await beat();
+  const started = Date.now();
+  // Often enough that a lowered max age still sees a fresh stamp.
+  const period = Math.min(60_000, Math.max(100, workspaceMaxAgeMs() / 4));
+  const timer = setInterval(() => {
+    if (Date.now() - started > HEARTBEAT_MAX_MS) clearInterval(timer);
+    else void beat();
+  }, period);
+  timer.unref();
+  return async () => {
+    clearInterval(timer);
+    await rm(file, { force: true }).catch(() => undefined);
+  };
+}
+
+/** When a run last showed signs of life: its directory, or its heartbeat if newer. */
+async function lastActiveMs(runPath: string): Promise<number> {
+  const dir = await stat(runPath);
+  const beat = await stat(path.join(runPath, HEARTBEAT_FILE)).catch(() => undefined);
+  return Math.max(dir.mtimeMs, beat?.mtimeMs ?? 0);
+}
+
+/**
  * Delete this project's aged run directories, whatever policy made them.
  *
  * Shared by both isolation policies, so a guard added here cannot be added to
@@ -452,8 +518,7 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
     if (!RUN_DIR_RE.test(entry.name)) continue;
     const workspaceRoot = path.join(root, entry.name);
     try {
-      const info = await stat(workspaceRoot);
-      if (now - info.mtimeMs <= maxAgeMs) continue;
+      if (now - (await lastActiveMs(workspaceRoot)) <= maxAgeMs) continue;
       // A `worktree` child is the tell that git still has this registered.
       const worktreeRoot = path.join(workspaceRoot, "worktree");
       if (gitRoot !== undefined && existsSync(worktreeRoot)) {
@@ -580,8 +645,7 @@ async function pruneAbandonedProjectRoots(base: string, currentRoot: string): Pr
           allStale = false;
           break;
         }
-        const info = await stat(runPath);
-        if (now - info.mtimeMs <= maxAgeMs) {
+        if (now - (await lastActiveMs(runPath)) <= maxAgeMs) {
           allStale = false;
           break;
         }
@@ -661,13 +725,53 @@ async function copyLink(
   }
 }
 
-async function copyTree(
-  sourceRoot: string,
-  destRoot: string,
-  rel = "",
-  skipped: string[] = [],
-  vanished: string[] = [],
-  excludeRoots: string[] = [],
+/**
+ * How many files are copied or hashed at once.
+ *
+ * One await at a time left a 12,000-file project at minutes per run on Windows,
+ * where the cost is per-file latency (first read after a write, antivirus), not
+ * bandwidth, and only overlapping requests hide it. A fixed small bound keeps
+ * fanout (one copy per arm) from exhausting file handles.
+ */
+const FILE_CONCURRENCY = 16;
+
+/** Run at most `width` of the functions passed to the returned limiter at once. */
+function createLimiter(width: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async (fn) => {
+    // A finishing task hands its slot straight to the next waiter, so `active`
+    // never dips below the width while anyone is queued.
+    if (active >= width) await new Promise<void>((resolve) => waiting.push(resolve));
+    else active += 1;
+    try {
+      return await fn();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  };
+}
+
+/**
+ * Wait for EVERY task, then throw the first failure. Plain Promise.all would
+ * reject at the first error while sibling copies kept writing into a workspace
+ * the caller is about to give up on.
+ */
+async function settleAll(tasks: Array<Promise<void>>): Promise<void> {
+  const results = await Promise.allSettled(tasks);
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
+  }
+}
+
+interface CopyContext {
+  sourceRoot: string;
+  destRoot: string;
+  skipped: string[];
+  vanished: string[];
+  excludeRoots: string[];
   /**
    * EXCLUDED_DIRS entries that actually existed and were left out. Collected
    * because the omission is otherwise invisible: `bin`, `dist`, `build`,
@@ -675,77 +779,145 @@ async function copyTree(
    * directories, so a delegate can "edit" a committed file that was never in
    * its workspace — and reasons from an incomplete tree either way.
    */
-  excludedDirs: string[] = [],
-): Promise<void> {
-  const sourceDir = rel ? path.join(sourceRoot, rel) : sourceRoot;
-  const destDir = rel ? path.join(destRoot, rel) : destRoot;
-  await mkdir(destDir, { recursive: true });
-  const entries = await readdir(sourceDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const childRel = rel ? path.join(rel, entry.name) : entry.name;
-    try {
-      if (entry.isDirectory()) {
-        if (shouldExclude(childRel, entry.name)) {
-          // Only the name-list exclusions are reported. The workspaces-root
-          // ones below are this tool's own scratch space and mean nothing to
-          // the user; `.git` is excluded on every branch and would be noise on
-          // every single run.
-          if (EXCLUDED_DIRS.has(entry.name) && entry.name !== ".git") {
-            excludedDirs.push(childRel.split(path.sep).join("/"));
-          }
-          continue;
-        }
-        const childAbs = path.join(sourceDir, entry.name);
-        if (excludeRoots.some((root) => isUnderOrEqual(childAbs, root))) continue;
-        await copyTree(sourceRoot, destRoot, childRel, skipped, vanished, excludeRoots, excludedDirs);
-        continue;
-      }
-      if (entry.isFile()) {
-        // COPYFILE_FICLONE asks the filesystem for a copy-on-write reflink, so
-        // on APFS, Btrfs/XFS and ReFS/Dev Drive a workspace clone is
-        // near-instant and allocates nothing — which matters because `copy`
-        // duplicates a whole project per dispatch and fanout does it per arm.
-        //
-        // FICLONE, deliberately NOT FICLONE_FORCE: the plain flag falls back
-        // to an ordinary copy where reflinks are unavailable (plain NTFS, ext4,
-        // a cross-device copy), while FORCE fails outright. A best-effort
-        // speedup must never turn a working copy into an error.
-        await copyFile(
-          path.join(sourceRoot, childRel),
-          path.join(destRoot, childRel),
-          fsConstants.COPYFILE_FICLONE,
-        );
-        continue;
-      }
-      if (entry.isSymbolicLink()) {
-        await copyLink(sourceRoot, destRoot, childRel, skipped);
-      }
-    } catch (err) {
-      // A working directory is LIVE while it is being copied: by the time each
-      // readdir entry is read it may be gone — an editor saving over a temp
-      // file, a build watcher cleaning output, another fanout arm writing into
-      // the same tree (write-capable fanout REQUIRES copy, so concurrent copies
-      // of one directory are the documented case). Failing the whole dispatch
-      // because one incidental file blinked out loses the caller real work over
-      // a file they did not care about.
-      //
-      // Only "it disappeared" is tolerated. A permission error or a full disk
-      // still fails loudly, because those mean the copy is not the snapshot it
-      // claims to be for reasons that will not have fixed themselves.
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "ENOENT") throw err;
-      vanished.push(childRel.split(path.sep).join("/"));
-    }
-  }
+  excludedDirs: string[];
+  /** The "before" fingerprint of the copy, filled in as each file lands. */
+  fingerprints: FingerprintMap;
+  limit: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
-async function fingerprintFile(filePath: string): Promise<FileFingerprint> {
-  const data = await readFile(filePath);
+/**
+ * Copy one file and record its fingerprint, hashing the SOURCE bytes.
+ *
+ * The source was just read for the hash, so the copy reads it warm; reading the
+ * freshly written destination afterwards is what cost most of the time. If the
+ * source changed while this ran, the hash may not describe what landed, and the
+ * destination is hashed instead — the answer the old two-pass code always gave.
+ */
+async function copyAndFingerprint(ctx: CopyContext, childRel: string): Promise<void> {
+  const source = path.join(ctx.sourceRoot, childRel);
+  const dest = path.join(ctx.destRoot, childRel);
+  const sourceBefore = await stat(source);
+  const data = await readFile(source);
+  // COPYFILE_FICLONE asks the filesystem for a copy-on-write reflink, so
+  // on APFS, Btrfs/XFS and ReFS/Dev Drive a workspace clone is
+  // near-instant and allocates nothing — which matters because `copy`
+  // duplicates a whole project per dispatch and fanout does it per arm.
+  //
+  // FICLONE, deliberately NOT FICLONE_FORCE: the plain flag falls back
+  // to an ordinary copy where reflinks are unavailable (plain NTFS, ext4,
+  // a cross-device copy), while FORCE fails outright. A best-effort
+  // speedup must never turn a working copy into an error.
+  await copyFile(source, dest, fsConstants.COPYFILE_FICLONE);
+  const sourceAfter = await stat(source);
+  const steady =
+    sourceAfter.size === sourceBefore.size &&
+    sourceAfter.mtimeMs === sourceBefore.mtimeMs &&
+    data.byteLength === sourceBefore.size;
+  const fingerprint = steady ? fingerprintOf(data) : await fingerprintFile(dest);
+  const info = await stat(dest);
+  ctx.fingerprints.set(childRel.split(path.sep).join("/"), {
+    ...fingerprint,
+    mtimeMs: info.mtimeMs,
+    ctimeMs: info.ctimeMs,
+  });
+}
+
+async function copyDir(ctx: CopyContext, rel: string): Promise<void> {
+  const sourceDir = rel ? path.join(ctx.sourceRoot, rel) : ctx.sourceRoot;
+  const destDir = rel ? path.join(ctx.destRoot, rel) : ctx.destRoot;
+  await mkdir(destDir, { recursive: true });
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  await settleAll(
+    entries.map(async (entry) => {
+      const childRel = rel ? path.join(rel, entry.name) : entry.name;
+      try {
+        if (entry.isDirectory()) {
+          if (shouldExclude(childRel, entry.name)) {
+            // Only the name-list exclusions are reported. The workspaces-root
+            // ones below are this tool's own scratch space and mean nothing to
+            // the user; `.git` is excluded on every branch and would be noise on
+            // every single run.
+            if (EXCLUDED_DIRS.has(entry.name) && entry.name !== ".git") {
+              ctx.excludedDirs.push(childRel.split(path.sep).join("/"));
+            }
+            return;
+          }
+          const childAbs = path.join(sourceDir, entry.name);
+          if (ctx.excludeRoots.some((root) => isUnderOrEqual(childAbs, root))) return;
+          await copyDir(ctx, childRel);
+          return;
+        }
+        if (entry.isFile()) {
+          await ctx.limit(() => copyAndFingerprint(ctx, childRel));
+          return;
+        }
+        if (entry.isSymbolicLink()) {
+          await copyLink(ctx.sourceRoot, ctx.destRoot, childRel, ctx.skipped);
+        }
+      } catch (err) {
+        // A working directory is LIVE while it is being copied: by the time each
+        // readdir entry is read it may be gone — an editor saving over a temp
+        // file, a build watcher cleaning output, another fanout arm writing into
+        // the same tree (write-capable fanout REQUIRES copy, so concurrent copies
+        // of one directory are the documented case). Failing the whole dispatch
+        // because one incidental file blinked out loses the caller real work over
+        // a file they did not care about.
+        //
+        // Only "it disappeared" is tolerated. A permission error or a full disk
+        // still fails loudly, because those mean the copy is not the snapshot it
+        // claims to be for reasons that will not have fixed themselves.
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== "ENOENT") throw err;
+        ctx.vanished.push(childRel.split(path.sep).join("/"));
+      }
+    }),
+  );
+}
+
+/**
+ * Copy `sourceRoot` into `destRoot` and return the fingerprint of what landed.
+ *
+ * The three report arrays are filled in whatever order the concurrent walk
+ * finishes, so they are sorted before anyone reads them.
+ */
+async function copyTree(
+  sourceRoot: string,
+  destRoot: string,
+  skipped: string[],
+  vanished: string[],
+  excludeRoots: string[],
+  excludedDirs: string[],
+): Promise<FingerprintMap> {
+  const fingerprints: FingerprintMap = new Map();
+  await copyDir(
+    {
+      sourceRoot,
+      destRoot,
+      skipped,
+      vanished,
+      excludeRoots,
+      excludedDirs,
+      fingerprints,
+      limit: createLimiter(FILE_CONCURRENCY),
+    },
+    "",
+  );
+  skipped.sort();
+  vanished.sort();
+  excludedDirs.sort();
+  return fingerprints;
+}
+
+function fingerprintOf(data: Buffer): FileFingerprint {
   return {
     hash: createHash("sha256").update(data).digest("hex"),
     size: data.byteLength,
     eolHash: eolDigest(data),
   };
+}
+
+async function fingerprintFile(filePath: string): Promise<FileFingerprint> {
+  return fingerprintOf(await readFile(filePath));
 }
 
 /**
@@ -759,26 +931,94 @@ export function eolDigest(data: Buffer): string {
     .digest("hex");
 }
 
-async function fingerprintTree(root: string, rel = "", out: FingerprintMap = new Map()): Promise<FingerprintMap> {
-  const current = rel ? path.join(root, rel) : root;
-  const entries = await readdir(current, { withFileTypes: true });
-  for (const entry of entries) {
-    const childRel = rel ? path.join(rel, entry.name) : entry.name;
-    if (entry.isDirectory()) {
-      if (shouldExclude(childRel, entry.name)) continue;
-      await fingerprintTree(root, childRel, out);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    try {
-      out.set(childRel.split(path.sep).join("/"), await fingerprintFile(path.join(root, childRel)));
-    } catch (err) {
-      // Same race, other end: a file listed a moment ago can be gone before it
-      // is hashed. An absent file simply does not appear in the fingerprint,
-      // which diffFingerprints already reads as "deleted" — the truth.
-      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-    }
+/**
+ * A file stamped within this long of the snapshot may still be rewritten inside
+ * the same timestamp tick, on a filesystem with coarse timestamps, without its
+ * stat changing. Such files are always re-read. (Git's "racy" rule, for the
+ * same reason.)
+ */
+const RACY_WINDOW_MS = 2000;
+
+interface FingerprintOptions {
+  /**
+   * With this, a file whose size, mtime and ctime still match its entry in the
+   * earlier fingerprint is not read again: the second pass of a run, over a tree
+   * where the agent touched a handful of files, becomes a stat per file. ctime
+   * is part of the match because it cannot be set back by `utimes`, so an edit
+   * that restores size and mtime still shows.
+   */
+  reuse?: { before: FingerprintMap; settledAt: number };
+  /**
+   * Which EXCLUDED_DIRS directories to walk anyway: `"all"` (every one but
+   * `.git`) or the set of relative paths a previous walk reported in `found`.
+   * Default: none, which is what a copy wants, since it never copied them.
+   *
+   * A git_worktree is a checkout, so a directory named `bin` or `dist` in it
+   * holds TRACKED files, and the patch (made by git) carries edits to them. The
+   * walk must see them too, or `changedFiles` and the patch disagree about what
+   * the agent changed. Directories the agent creates afterwards (`npm install`,
+   * a build) are not in the first walk's `found`, so they stay out, as before.
+   */
+  walkExcluded?: "all" | ReadonlySet<string>;
+  /** Filled with the relative path of every excluded directory that was walked. */
+  found?: Set<string>;
+}
+
+/** Fingerprint every regular file under `root`, hashing through a bounded pool. Exported for tests. */
+export async function fingerprintTree(root: string, opts: FingerprintOptions = {}): Promise<FingerprintMap> {
+  const { reuse, walkExcluded, found } = opts;
+  const out: FingerprintMap = new Map();
+  const limit = createLimiter(FILE_CONCURRENCY);
+
+  async function visit(rel: string): Promise<void> {
+    const current = rel ? path.join(root, rel) : root;
+    const entries = await readdir(current, { withFileTypes: true });
+    await settleAll(
+      entries.map(async (entry) => {
+        const childRel = rel ? path.join(rel, entry.name) : entry.name;
+        const key = childRel.split(path.sep).join("/");
+        if (entry.isDirectory()) {
+          if (shouldExclude(childRel, entry.name)) {
+            const walked =
+              EXCLUDED_DIRS.has(entry.name) &&
+              entry.name !== ".git" &&
+              (walkExcluded === "all" || walkExcluded?.has(key) === true);
+            if (!walked) return;
+            found?.add(key);
+          }
+          await visit(childRel);
+          return;
+        }
+        if (!entry.isFile()) return;
+        await limit(async () => {
+          const absolute = path.join(root, childRel);
+          try {
+            const info = await stat(absolute);
+            const prior = reuse?.before.get(key);
+            if (
+              reuse &&
+              prior &&
+              prior.mtimeMs === info.mtimeMs &&
+              prior.ctimeMs === info.ctimeMs &&
+              prior.size === info.size &&
+              Math.max(info.mtimeMs, info.ctimeMs) < reuse.settledAt - RACY_WINDOW_MS
+            ) {
+              out.set(key, prior);
+              return;
+            }
+            out.set(key, { ...(await fingerprintFile(absolute)), mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs });
+          } catch (err) {
+            // Same race, other end: a file listed a moment ago can be gone before it
+            // is hashed. An absent file simply does not appear in the fingerprint,
+            // which diffFingerprints already reads as "deleted" — the truth.
+            if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+          }
+        });
+      }),
+    );
   }
+
+  await visit("");
   return out;
 }
 
@@ -941,16 +1181,16 @@ async function prepareCopyWorkspace(
   // project's root under it: whenever the override points inside the project,
   // every run's workspace — ours, a sibling's, another project's — sits in the
   // source tree and none of them is copyable.
-  await copyTree(
+  const before = await copyTree(
     originalWorkingDir,
     effectiveWorkingDir,
-    "",
     skippedLinks,
     vanishedFiles,
     [workspacesBase()],
     excludedDirs,
   );
-  const before = await fingerprintTree(effectiveWorkingDir);
+  const settledAt = Date.now();
+  const stopHeartbeat = await startHeartbeat(workspaceRoot);
   return {
     policy: "copy",
     originalWorkingDir,
@@ -959,7 +1199,8 @@ async function prepareCopyWorkspace(
     isolated: true,
     workspaceRoot,
     async finish(result) {
-      const after = await fingerprintTree(effectiveWorkingDir);
+      await stopHeartbeat();
+      const after = await fingerprintTree(effectiveWorkingDir, { reuse: { before, settledAt } });
       const changedFiles = diffFingerprints(before, after);
       return attachWorkspace(result, {
         policy: "copy",
@@ -1021,6 +1262,88 @@ async function git(args: string[], cwd: string): Promise<string> {
   return String(stdout).trim();
 }
 
+/**
+ * The leading git arguments for every command run INSIDE a git_worktree after
+ * the agent has had it: the worktree's own registration, pinned, and no
+ * config-driven command honoured from anything the agent could have written.
+ *
+ * Without this, git DISCOVERS its repository from the worktree, and the
+ * worktree's `.git` is a file the agent can replace. An agent that only writes
+ * files swapped it for a `.git` directory whose config set `core.fsmonitor`,
+ * and harness-dispatch's own post-run `git add` / `git diff` then ran that
+ * command as the user, outside any harness sandbox (audit5 F1). An embedded
+ * repository the agent creates in a subdirectory reaches the same place
+ * another way: `git diff` checks a gitlink for local changes by running
+ * `git status` INSIDE it, which honours that repository's fsmonitor and its
+ * clean filters (measured, git 2.45).
+ *
+ * So:
+ *  - `--git-dir` is the registration under `<repo>/.git/worktrees/`, which
+ *    lives in the user's project, outside the agent's tree. The worktree's
+ *    gitfile is only read to find it, and is refused unless it points at
+ *    exactly this worktree's registration — a replaced or redirected `.git`
+ *    means nothing here runs git against the worktree at all.
+ *  - `-c core.fsmonitor=false` and an unusable `core.hooksPath` reach every
+ *    child git through GIT_CONFIG_PARAMETERS and outrank repository config,
+ *    an embedded repository's included.
+ *  - Callers that diff or ask for status also pass `--ignore-submodules=dirty`,
+ *    so git never starts a child inside an embedded repository (its filters
+ *    are not covered by the overrides above), and `--no-ext-diff
+ *    --no-textconv` where a patch is produced.
+ *
+ * Nothing run here fetches or pages, so `core.sshCommand`, `core.pager` and
+ * credential helpers are never consulted; diff and filter drivers come only
+ * from config, which with the gitdir pinned is the user's own.
+ */
+export async function worktreeGitArgs(worktreeRoot: string, projectDir: string): Promise<string[]> {
+  const refuse = (why: string): Error =>
+    new Error(
+      `The git worktree at ${worktreeRoot} no longer points at its own registration in the ` +
+        `project's repository (${why}). Only the agent that ran there could have changed ` +
+        `that, and a repository written by the agent can make git run commands, so ` +
+        `harness-dispatch will not run git against this worktree. Nothing has been applied. ` +
+        `Inspect its files by hand, ignoring its .git.`,
+    );
+  const commonDir = path.resolve(
+    projectDir,
+    await git(["rev-parse", "--git-common-dir"], projectDir),
+  );
+  const gitfile = path.join(worktreeRoot, ".git");
+  // Unreadable (EISDIR) when a `.git` directory was planted in place of the file.
+  const content = await readFile(gitfile, "utf8").catch(() => undefined);
+  const declared = content === undefined ? undefined : /^gitdir:\s*(.+?)\s*$/m.exec(content)?.[1];
+  if (declared === undefined) throw refuse(".git is no longer a gitfile");
+  const [adminDir, registrations] = await Promise.all([
+    realpath(path.resolve(worktreeRoot, declared)).catch(() => undefined),
+    realpath(path.join(commonDir, "worktrees")).catch(() => undefined),
+  ]);
+  if (
+    adminDir === undefined ||
+    registrations === undefined ||
+    adminDir === registrations ||
+    !isUnderOrEqual(adminDir, registrations)
+  ) {
+    throw refuse(".git points outside the repository's worktree registrations");
+  }
+  // And it must be THIS worktree's registration, not another job's.
+  const backLink = await readFile(path.join(adminDir, "gitdir"), "utf8").catch(() => "");
+  const [registered, actual] = await Promise.all([
+    realpath(backLink.trim()).catch(() => undefined),
+    realpath(gitfile).catch(() => undefined),
+  ]);
+  if (registered === undefined || registered !== actual) {
+    throw refuse(".git points at another worktree's registration");
+  }
+  return [
+    `--git-dir=${adminDir}`,
+    `--work-tree=${worktreeRoot}`,
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    `core.hooksPath=${os.devNull}`,
+  ];
+}
+
 async function prepareGitWorktreeWorkspace(
   routeName: string,
   workingDir: string,
@@ -1036,14 +1359,14 @@ async function prepareGitWorktreeWorkspace(
     (err: unknown) => {
       if ((err as { code?: unknown } | null)?.code === "ENOENT") {
         throw new Error(
-          "workspace_policy: git_worktree needs git on PATH, and it was not found. Install " +
-            "git, or use workspace_policy: copy, which needs no git. `doctor` reports whether " +
+          "workspacePolicy: git_worktree needs git on PATH, and it was not found. Install " +
+            "git, or use workspacePolicy: copy, which needs no git. `doctor` reports whether " +
             "it found one.",
         );
       }
       throw new Error(
-        `workspace_policy: git_worktree needs ${originalWorkingDir} to be inside a git ` +
-          `repository, and it is not. Use workspace_policy: copy for a directory that is not ` +
+        `workspacePolicy: git_worktree needs ${originalWorkingDir} to be inside a git ` +
+          `repository, and it is not. Use workspacePolicy: copy for a directory that is not ` +
           `version-controlled.`,
       );
     },
@@ -1056,14 +1379,32 @@ async function prepareGitWorktreeWorkspace(
   // `git worktree add` has nothing to branch from in it.
   const baseCommit = await git(["rev-parse", "HEAD"], gitRoot).catch(() => {
     throw new Error(
-      `workspace_policy: git_worktree needs at least one commit to branch a worktree from, ` +
-        `and ${gitRoot} has none yet. Make an initial commit, or use workspace_policy: copy.`,
+      `workspacePolicy: git_worktree needs at least one commit to branch a worktree from, ` +
+        `and ${gitRoot} has none yet. Make an initial commit, or use workspacePolicy: copy.`,
     );
   });
   await git(["worktree", "add", "--detach", worktreeRoot, baseCommit], gitRoot);
   const effectiveWorkingDir = prefix ? path.join(worktreeRoot, prefix) : worktreeRoot;
-  await stat(effectiveWorkingDir);
-  const before = await fingerprintTree(worktreeRoot);
+  try {
+    await stat(effectiveWorkingDir);
+  } catch {
+    // The worktree starts from HEAD, and a working directory that exists only
+    // as uncommitted files is not in HEAD. Left alone, this was a bare ENOENT
+    // plus a worktree registered in the user's repository until retention.
+    await git(["worktree", "remove", "--force", worktreeRoot], gitRoot).catch(() => undefined);
+    await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    throw new Error(
+      `workspace_policy: git_worktree starts from the last commit, and ${prefix} is not in it ` +
+        `(${originalWorkingDir} holds only uncommitted files). Commit it first, or use ` +
+        `workspace_policy: copy, which copies the directory as it is.`,
+    );
+  }
+  // Everything in a fresh worktree is tracked, so no excluded directory is
+  // skipped here, and the ones found are the ones the second walk keeps.
+  const trackedExcluded = new Set<string>();
+  const before = await fingerprintTree(worktreeRoot, { walkExcluded: "all", found: trackedExcluded });
+  const settledAt = Date.now();
+  const stopHeartbeat = await startHeartbeat(workspaceRoot);
   return {
     policy: "git_worktree",
     originalWorkingDir,
@@ -1072,7 +1413,11 @@ async function prepareGitWorktreeWorkspace(
     isolated: true,
     workspaceRoot,
     async finish(result) {
-      const after = await fingerprintTree(worktreeRoot);
+      await stopHeartbeat();
+      const after = await fingerprintTree(worktreeRoot, {
+        reuse: { before, settledAt },
+        walkExcluded: trackedExcluded,
+      });
       const changedFiles = diffFingerprints(before, after);
 
       // A failed attempt that changed nothing leaves nothing to inspect, and
@@ -1085,14 +1430,16 @@ async function prepareGitWorktreeWorkspace(
       //
       // Only when the attempt both failed AND changed nothing: a failure that
       // wrote files may still hold work worth recovering.
-      // Git is asked too: the fingerprint skips bin/, dist/, build/, target/
-      // and obj/ at any depth, so a run whose edits were only there recorded
-      // no change and lost them with the worktree — measured with an edit to
-      // bin/cli.js. Anything git reports, or a git that cannot be asked,
-      // keeps it.
+      // Git is asked too: the fingerprint still skips excluded directories the
+      // agent created (a build's dist/, an install's node_modules/), and an
+      // untracked-but-not-ignored file there is work worth keeping. Anything
+      // git reports, or a git that cannot be asked, keeps it.
       const gitSeesChanges =
         !result.success && changedFiles.length === 0
-          ? await git(["status", "--porcelain"], worktreeRoot)
+          ? await worktreeGitArgs(worktreeRoot, gitRoot)
+              .then((pinned) =>
+                git([...pinned, "status", "--porcelain", "--ignore-submodules=dirty"], worktreeRoot),
+              )
               .then((out) => out.trim() !== "")
               .catch(() => true)
           : true;
@@ -1139,7 +1486,9 @@ async function prepareGitWorktreeWorkspace(
         notes: [
           "The git worktree starts from HEAD; uncommitted source-workspace changes are not copied into it.",
           "This isolates project state, but it is not a hardened OS sandbox for commands with host filesystem access.",
-          ...escapeNote(files, originalWorkingDir),
+          // Measured from the REPOSITORY root: that is what mapFiles maps into the
+          // worktree, so a sibling package's file is isolated, not an escape.
+          ...escapeNote(files, gitRoot),
         ],
       });
     },

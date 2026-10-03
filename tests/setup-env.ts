@@ -33,6 +33,9 @@ process.env.HARNESS_DISPATCH_STATE_DIR = sandbox("hr-test-state-");
 // ~/.harness-dispatch/jobs, which then polluted every job_status list in
 // live sessions (observed: a dozen junk "route: a" entries).
 process.env.HARNESS_DISPATCH_JOBS_DIR = sandbox("hr-test-jobs-");
+// A suite run from inside a delegated agent inherits its nesting depth, and at
+// the limit every fake route the suite spawns would be refused as nesting.
+delete process.env.HARNESS_DISPATCH_DEPTH;
 // Unit tests inject fake dispatchers through an in-memory RuntimeHolder — a
 // detached runner process could never see those, so jobs run in-process
 // here. The detached path gets its own end-to-end coverage in

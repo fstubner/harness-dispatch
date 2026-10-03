@@ -11,7 +11,6 @@ export { CircuitBreaker } from "./circuit-breaker.js";
 // the live agent smoke script, chiefly — can hand Router an isolated store.
 export { BreakerStore } from "./breaker-store.js";
 export { QuotaCache, QuotaState } from "./quota.js";
-export { LeaderboardCache } from "./leaderboard.js";
 export { loadConfig, watchConfig } from "./config.js";
 export * from "./types.js";
 export type { Dispatcher, DispatchOpts } from "./dispatchers/base.js";

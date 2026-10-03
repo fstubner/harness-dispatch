@@ -54,6 +54,16 @@ describe("billing enums fail open, so they must warn", () => {
   });
 });
 
+describe("warnings that point at documentation", () => {
+  it("links the generic-harness page by URL, since npm users are not shipped docs/", async () => {
+    // The page the warning names is not in the published package (package.json
+    // `files`), so a relative `docs/configuration.md` led nowhere for them.
+    const w = await warningsFor("clis:\n  - name: g\n    harness: generic\n    command: node\n");
+    expect(w).toContain("requires a \"protocol\" block");
+    expect(w).toContain("https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#adding-a-harness");
+  });
+});
+
 describe("keys accepted but not implemented", () => {
   it("says default_safety_profile has no effect rather than accepting it silently", async () => {
     // A safety-control NAME that does nothing is the exact failure the

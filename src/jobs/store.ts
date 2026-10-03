@@ -78,21 +78,12 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
     if (Date.now() - seen.since < LIVE_STALE_OBSERVE_MS) return status;
   }
   staleSeen.delete(status.jobId);
-  if (status.status === "queued" && holder === undefined) {
-    // Released but never claimed: it has not started, and it WILL start when
-    // a supervisor next runs — so re-dispatching it ran and billed the task
-    // twice. retry_job cancels this copy first.
-    return {
-      ...status,
-      status: "orphaned",
-      success: false,
-      error:
-        "This job was released to run but no supervisor has picked it up, so it has not " +
-        "started. It will still start the next time a supervisor runs (another dispatch " +
-        "starts one). Use `retry_job` to run it now — it cancels this copy first. Do NOT " +
-        "re-dispatch the same task: both would run.",
-    };
-  }
+  // Released but never claimed: it has not started, and it WILL start once a
+  // supervisor runs — so it is waiting, not dead. Reporting it `orphaned` made
+  // it terminal (`completed: true`) while its own error said it would still
+  // run, and re-dispatching it ran and billed the task twice. Polling it now
+  // starts a supervisor when none is alive (see getAsyncJob).
+  if (status.status === "queued" && holder === undefined) return status;
   return {
     ...status,
     status: "orphaned",
@@ -105,7 +96,15 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
       "This job stopped reporting progress and the process running it is gone — " +
       "either the run crashed or whatever was supervising it died. Nothing will " +
       "advance it now. Its partial output is on disk; `retry_job` re-runs the same " +
-      "task, or re-dispatch it.",
+      "task, or re-dispatch it." +
+      // Its agent CLI can outlive the supervisor, still editing the working
+      // directory; this is the one place a caller learns that, and how to
+      // stop it.
+      (status.children !== undefined && status.children.length > 0
+        ? ` Processes it started may still be running (${status.children
+            .map((c) => `pid ${c.pid} ${c.command}`)
+            .join(", ")}); \`cancel_job\` stops them, and \`retry_job\` does before re-running.`
+        : ""),
   };
 }
 
@@ -230,13 +229,32 @@ export async function pruneStaleJobs(): Promise<void> {
       try {
         const status = JSON.parse(
           await readFile(path.join(jobDir, "status.json"), "utf8"),
-        ) as { status?: string; updatedAt?: string };
+        ) as JobStatus;
         const beat = Date.parse(status.updatedAt ?? "");
         if (
           (status.status === "running" || status.status === "queued") &&
           Number.isFinite(beat) &&
           now - beat <= ORPHAN_THRESHOLD_MS
         ) {
+          continue;
+        }
+        // Still in the slot queue: a request nobody has acted on, not a
+        // finished record. Deleting it made a waiting job vanish into "No such
+        // job"; running it after this long would start a task nobody is
+        // watching. It is reported instead, like a queue a dead server left
+        // behind, and ages out from here.
+        if (status.slotQueued === true && status.status === "queued") {
+          const { slotQueued: _cleared, ...rest } = status;
+          await updateStatus(jobDir, {
+            ...rest,
+            status: "orphaned",
+            updatedAt: timestamp(),
+            success: false,
+            error:
+              "This job waited for a concurrency slot for longer than the job retention " +
+              "window and never started. It is NOT run now: a task queued that long ago " +
+              "should not start with nobody watching. Use retry_job to run it.",
+          });
           continue;
         }
       } catch {
@@ -251,6 +269,68 @@ export async function pruneStaleJobs(): Promise<void> {
 
 export function timestamp(): string {
   return new Date().toISOString();
+}
+
+/**
+ * How many status files a scan reads at once. Every scan of the jobs root used
+ * to read them one after another: measured on 2,000 retained jobs, 1,009 ms
+ * sequential against 132 ms 16 at a time.
+ */
+const STATUS_READ_WIDTH = 16;
+
+/**
+ * `fn` over `items` with at most STATUS_READ_WIDTH in flight, results in input
+ * order. A bounded pool rather than Promise.all: a jobs root holds thousands of
+ * directories for a busy HTTP or CI user, and opening them all at once runs
+ * into the per-process file-handle limit.
+ */
+export async function mapBounded<T, R>(items: readonly T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(STATUS_READ_WIDTH, items.length) }, worker));
+  return out;
+}
+
+/**
+ * Index of jobs that may still need a supervisor: one empty file per job
+ * id, written when a job joins the slot queue and removed when a supervisor
+ * claims it. Only a hint that lets the drain and the claim loop skip their
+ * full scan of every retained job directory when nothing is waiting — which
+ * is almost always, and each supervisor pass did two such scans. Any scan that
+ * does run reconciles it with the job directories, so a stale or missing entry
+ * costs one extra scan, never a lost job.
+ */
+const PENDING_DIR = ".pending";
+
+export function pendingIndexDir(): string {
+  return path.join(jobsRoot(), PENDING_DIR);
+}
+
+export async function markPending(jobId: string): Promise<void> {
+  await mkdir(pendingIndexDir(), { recursive: true, mode: 0o700 });
+  await writeFile(path.join(pendingIndexDir(), jobId), "", { encoding: "utf8", mode: 0o600 });
+}
+
+export async function clearPending(jobId: string): Promise<void> {
+  await rm(path.join(pendingIndexDir(), jobId), { force: true }).catch(() => undefined);
+}
+
+/**
+ * False only when the index exists and is empty. A missing index — a jobs
+ * root written by a build that predates it — rules nothing out.
+ */
+export async function mayHavePendingJobs(): Promise<boolean> {
+  try {
+    return (await readdir(pendingIndexDir())).length > 0;
+  } catch {
+    return true;
+  }
 }
 
 export function safeBaseName(filePath: string): string {
@@ -282,10 +362,29 @@ export async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(filePath, "utf8")) as T;
 }
 
+/**
+ * The on-disk shape of status.json and manifest.json, written into both as
+ * `v`. Compatibility was by tolerant parsing alone, so a file written by a
+ * newer build was read by an older one as if it meant the same thing. Bump it
+ * when a field changes meaning, not when one is added; a missing `v` is 1.
+ */
+export const JOB_FORMAT_VERSION = 1;
+
+/** Why this build must not act on a job record, or undefined if it may. */
+export function newerFormatError(record: { v?: unknown }, jobId: string): string | undefined {
+  const v = record.v;
+  if (typeof v !== "number" || v <= JOB_FORMAT_VERSION) return undefined;
+  return (
+    `Job ${jobId} was written by a newer harness-dispatch (job format v${v}; this build ` +
+    `understands v${JOB_FORMAT_VERSION}). Upgrade harness-dispatch to read or run it.`
+  );
+}
+
 export async function updateStatus(jobDir: string, status: JobStatus): Promise<void> {
   try {
     await writeJson(path.join(jobDir, "status.json"), {
       ...status,
+      v: JOB_FORMAT_VERSION,
       updatedAt: timestamp(),
     });
   } catch (err) {

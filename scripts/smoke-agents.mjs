@@ -11,7 +11,6 @@ import {
   buildDispatchers,
   buildStatus,
   evaluateRoutePolicy,
-  LeaderboardCache,
   loadConfig,
   QuotaCache,
   Router,
@@ -200,7 +199,7 @@ function harnessId(routeName, svc) {
 }
 
 function routeLabel(routeName, svc) {
-  const model = svc.model ?? svc.leaderboardModel ?? "model";
+  const model = svc.model ?? "model";
   return `${routeName} (${harnessId(routeName, svc)} / ${model})`;
 }
 
@@ -358,7 +357,6 @@ async function main() {
   // counts across smoke runs.
   const breakerDir = await mkdtemp(path.join(tmpdir(), "harness-dispatch-smoke-state-"));
   const quota = new QuotaCache(dispatchers, { stateFile: path.join(breakerDir, "quota_state.json") });
-  const leaderboard = new LeaderboardCache();
   // Breaker state is isolated for the same reason the quota counters above
   // are, and it was NOT: Router defaults to a BreakerStore pointed at the
   // user's real state directory, so a smoke run wrote real cooldowns. Observed
@@ -366,10 +364,10 @@ async function main() {
   // circuit-broken in the actual install. Accurate that time, but a smoke
   // failure for any unrelated reason would block a healthy route for real
   // dispatches, and a test harness must not do that to the thing it tests.
-  const router = new Router(config, quota, dispatchers, leaderboard, new BreakerStore(breakerDir));
-  const runtime = { config, dispatchers, quota, leaderboard, router };
+  const router = new Router(config, quota, dispatchers, new BreakerStore(breakerDir));
+  const runtime = { config, dispatchers, quota, router };
 
-  const status = await buildStatus(config, dispatchers, quota, router, leaderboard);
+  const status = await buildStatus(config, dispatchers, quota, router);
   const { selected, skipped } = selectRoutes(config, dispatchers, router, opts);
 
   console.log(`harness-dispatch ${VERSION} live agent smoke`);

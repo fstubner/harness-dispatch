@@ -35,11 +35,16 @@ import path from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { applyWorkspace, discardWorkspace, workspaceDiff } from "../src/workspace-resolve.js";
 import { prepareWorkspace } from "../src/workspaces.js";
 import type { DispatchResult, WorkspacePolicy, WorkspaceRun } from "../src/types.js";
+
+// Real git and real detached processes: individual tests take 10 to 40 s under
+// load, so the 15 s global timeout turned a busy machine into a failing suite.
+// Raised for this file only; the rest of the suite keeps the tight limit.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const execFile = promisify(execFileCb);
 const git = (args: string[], cwd: string) => execFile("git", args, { cwd, windowsHide: true });
@@ -643,6 +648,9 @@ describe("a workspace root that is a symlink", () => {
       files: [],
     });
     const wsRoot = workspaceRootFor(project);
+    // Finished first: a run still in progress keeps a heartbeat and is never
+    // reclaimed, however old its directory looks (see workspace-audit5.test.ts).
+    await first.finish({ output: "", service: "r", success: true });
 
     // One aged directory we DID name, and one aged directory we did not —
     // the shape an attacker or an unrelated tool would leave in a world-

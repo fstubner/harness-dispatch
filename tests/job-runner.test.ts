@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,7 @@ afterEach(async () => {
  * test needs no external CLI and works on every CI platform.
  */
 describe("detached job runner", () => {
-  it.skipIf(!existsSync(RUNNER))(
+  it(
     "executes a job bundle to completion in a separate process",
     async () => {
       const configPath = path.join(tmpDir, "config.yaml");
@@ -113,7 +113,7 @@ describe("telemetry from the detached runner", () => {
   // Every MCP and HTTP dispatch runs in this process, and it never set up
   // telemetry, so router and dispatcher spans were never exported whatever
   // the config said. Found in an audit.
-  it.skipIf(!existsSync(RUNNER))(
+  it(
     "exports the run's spans when the config enables telemetry",
     async () => {
       const { createServer } = await import("node:http");

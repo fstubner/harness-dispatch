@@ -54,6 +54,25 @@ describe("pruneStaleJobs ownership", () => {
     await expect(fs.stat(ours), "a real stale job survived retention").rejects.toThrow();
   });
 
+  it("reports a job still waiting for a slot instead of deleting it", async () => {
+    // A slot-queued job is a request nobody has acted on. Deleted, it turned
+    // into "No such job" for the caller still polling it.
+    const jobId = "job-1700000000002-abcdef12";
+    const dir = path.join(root, jobId);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "status.json"),
+      JSON.stringify({ jobId, status: "queued", slotQueued: true, createdAt: stale.toISOString(), updatedAt: stale.toISOString(), jobDir: dir }),
+      "utf8",
+    );
+    await fs.utimes(dir, stale, stale);
+    await pruneStaleJobs();
+    const status = JSON.parse(await fs.readFile(path.join(dir, "status.json"), "utf8"));
+    expect(status.status).toBe("orphaned");
+    expect(status.slotQueued).toBeUndefined();
+    expect(status.error).toMatch(/retry_job/);
+  });
+
   it.each([
     ["a dated backup directory", "backup-20260401", "data.bin"],
     ["an ordinary directory", "my-notes", "n.txt"],

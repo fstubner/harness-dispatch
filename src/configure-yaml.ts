@@ -46,15 +46,17 @@ function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<str
     tier: own("tier", svc.tier),
     weight: own("weight", svc.weight),
     cli_capability: own("cli_capability", svc.cliCapability),
-    leaderboard_model: own("leaderboard_model", svc.leaderboardModel),
     thinking_level: own("thinking_level", svc.thinkingLevel),
     escalate_model: svc.escalateModel,
-    escalate_on: own("escalate_on", svc.escalateOn.length > 0 ? svc.escalateOn : undefined),
+    // `[]` is a real setting ("never escalate"), so it is written when the user wrote it.
+    escalate_on: own("escalate_on", svc.escalateOn),
     capabilities: own(
       "capabilities",
       Object.keys(svc.capabilities).length > 0 ? svc.capabilities : undefined,
     ),
-    timeout_ms: svc.timeoutMs,
+    // Both now have harness defaults (config.default.yaml), so only the user's own.
+    timeout_ms: own("timeout_ms", svc.timeoutMs),
+    idle_timeout_ms: own("idle_timeout_ms", svc.idleTimeoutMs),
     max_output_tokens: own("max_output_tokens", svc.maxOutputTokens),
     max_input_tokens: own("max_input_tokens", svc.maxInputTokens),
     allow_paid_usage: svc.allowPaidUsage ? true : undefined,
@@ -153,6 +155,17 @@ function apiKeyForYaml(
   return `\${${envVar}}`;
 }
 
+/** `api_key_file:` back as itself, never as the key it resolved to; else `api_key:`. */
+function apiKeyFieldForYaml(
+  svc: ServiceConfig,
+  config: RouterConfig,
+  opts: { redactLiterals: boolean },
+): Record<string, string | undefined> {
+  const file = config.fieldRefs?.get(svc.name)?.apiKeyFile;
+  if (file !== undefined) return { api_key_file: file };
+  return { api_key: apiKeyForYaml(svc, config, opts) };
+}
+
 export interface YamlOpts {
   redactLiterals: boolean;
 }
@@ -171,12 +184,16 @@ function cliEntryToYaml(
   // Built-in harnesses keep the lean output: their preset supplies protocol and
   // billing, and emitting a copy would freeze a snapshot — the same reasoning
   // commonEntryFields gives for omitting billing fields generally.
-  const isGeneric = svc.harness === "generic";
+  //
+  // A harness-less route (a legacy `services:` entry that named only a command
+  // and a protocol) is the same case: written without a harness it came back
+  // as an entry the loader rejects, and the route was gone.
+  const isGeneric = svc.harness === undefined || svc.harness === "generic";
   return {
     name: svc.name,
-    harness: svc.harness,
+    harness: svc.harness ?? "generic",
     command: svc.command,
-    api_key: apiKeyForYaml(svc, config, opts),
+    ...apiKeyFieldForYaml(svc, config, opts),
     ...commonEntryFields(svc, config),
     ...(isGeneric
       ? {
@@ -200,7 +217,7 @@ function endpointEntryToYaml(
   return {
     name: svc.name,
     base_url: baseUrlForYaml(svc, config, opts),
-    api_key: apiKeyForYaml(svc, config, opts),
+    ...apiKeyFieldForYaml(svc, config, opts),
     ...commonEntryFields(svc, config),
     // Endpoints have no shipped preset behind them, so an omitted billing
     // field is not recomputed on reload — it is lost. An endpoint declaring
@@ -254,9 +271,6 @@ function topLevelToYaml(config: RouterConfig, definesRoutes: boolean): Record<st
   if (config.telemetry?.enabled !== undefined) {
     out.telemetry = { enabled: config.telemetry.enabled };
   }
-  if (config.leaderboard?.enabled !== undefined) {
-    out.leaderboard = { enabled: config.leaderboard.enabled };
-  }
   return out;
 }
 
@@ -271,6 +285,12 @@ export function configToYaml(config: RouterConfig, opts: YamlOpts): string {
   const doc: Record<string, unknown> = { ...topLevelToYaml(config, definesRoutes) };
   if (clis.length > 0) doc.clis = clis;
   if (endpoints.length > 0) doc.endpoints = endpoints;
+  // A file that said `clis: []` meant "no routes", and detection stayed off
+  // for it. With nothing to write the key vanished, and the next load — a
+  // file defining no routes — auto-detected every installed harness.
+  if (!definesRoutes && config.detectionRan === false && config.detect === undefined) {
+    doc.clis = [];
+  }
   const body = yaml.dump(doc, { noRefs: true, lineWidth: 100 });
   // `{}` is what js-yaml emits for an empty document, and it is what a machine
   // with no harness CLI installed produces — the ordinary first-run case on

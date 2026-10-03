@@ -13,12 +13,12 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const spawned: unknown[][] = [];
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
-  spawn: (...args: unknown[]) => {
-    spawned.push(args);
-    return { unref() {} };
+const spawned: Array<{ execPath: string; args: string[] }> = [];
+vi.mock("../src/jobs/detach.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/jobs/detach.js")>()),
+  launchDetached: async (spec: { execPath: string; args: string[] }) => {
+    spawned.push(spec);
+    return { ok: true, method: "spawn" };
   },
 }));
 vi.mock("../src/status.js", async (importOriginal) => ({
@@ -59,7 +59,7 @@ describe("an outdated supervisor", () => {
     expect(existsSync(path.join(jobDir, "claim.json")), "the outdated supervisor claimed a job").toBe(false);
     if (resolveRunnerPath() !== undefined) {
       expect(spawned).toHaveLength(1);
-      expect(spawned[0]![1]).toEqual([resolveRunnerPath(), "--supervisor", expect.any(String)]);
+      expect(spawned[0]!.args).toEqual([resolveRunnerPath(), "--supervisor", expect.any(String)]);
     }
   }, 20_000);
 });

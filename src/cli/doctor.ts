@@ -1,13 +1,16 @@
 /** `doctor`: check the install, config and every route. */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { readHttpToken, tokenPath } from "../auth.js";
+import { BreakerStore } from "../breaker-store.js";
 import { AUTO_DETECT_COMMANDS } from "../config.js";
 import { commandAvailable } from "../dispatchers/shared/which-available.js";
 import { codexLoginState } from "../dispatchers/shared/harness-login.js";
 import { clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
 import { resolveRunnerPath } from "../jobs.js";
+import { probeDetachedSurvival } from "../jobs/detach.js";
 import { NEVER_SUCCEEDED_MIN_CALLS } from "../route-policy.js";
 import { buildStatus } from "../status.js";
 import { stateRoot } from "../state-dir.js";
@@ -38,9 +41,36 @@ function stateDirWritable(): { ok: boolean; detail: string } {
   }
 }
 
+async function jobRunnerCheck(): Promise<{ ok: boolean; detail: string }> {
+  if (process.env.HARNESS_DISPATCH_INPROC_JOBS === "1") {
+    return {
+      ok: true,
+      detail:
+        "HARNESS_DISPATCH_INPROC_JOBS=1: jobs run inside the server process, so there is " +
+        "no concurrency cap and a run dies with the server",
+    };
+  }
+  const runnerPath = resolveRunnerPath();
+  if (runnerPath === undefined) {
+    return {
+      ok: false,
+      detail:
+        "dist/job-runner.js not found — jobs will run IN-PROCESS, which " +
+        "removes the max_concurrent_runs cap and does not survive a server " +
+        "restart. Run `npm run build`, or reinstall the package.",
+    };
+  }
+  const probeDir = mkdtempSync(path.join(os.tmpdir(), "hd-detach-probe-"));
+  try {
+    return await probeDetachedSurvival(runnerPath, probeDir);
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
 export async function cmdDoctor(
   configPath: string | undefined,
-  opts: { json: boolean; live: boolean; allowPaid: boolean },
+  opts: { json: boolean; live: boolean; allowPaid: boolean; pruneState?: boolean },
 ): Promise<number> {
   const runtime = await buildRuntime(configPath);
   const status = await buildStatus(
@@ -48,7 +78,6 @@ export async function cmdDoctor(
     runtime.dispatchers,
     runtime.quota,
     runtime.router,
-    runtime.leaderboard,
   );
   // Must agree with package.json engines (>=22.22.2) and the README:
   // disagreement fails `doctor` on a runtime where dispatch works correctly.
@@ -71,7 +100,10 @@ export async function cmdDoctor(
           (command) => commandAvailable(command) && !configuredCommands.has(command),
         )
       : [];
-  const checks: Array<{ name: string; ok: boolean; detail: string }> = [
+  // `warn` is for a row that passes (exit 0) but wants something done: the next
+  // step of setup, or an optional piece that is missing. Without it the one
+  // thing a new user must do (`connect`) looked identical to a healthy row.
+  const checks: Array<{ name: string; ok: boolean; warn?: boolean; detail: string }> = [
     {
       name: "node",
       ok: nodeOk,
@@ -115,6 +147,7 @@ export async function cmdDoctor(
         return {
           name: "mcp-clients",
           ok: true,
+          warn: true,
           detail:
             present.length > 0
               ? `${present.join(", ")} installed but harness-dispatch is not registered with it — ` +
@@ -156,6 +189,7 @@ export async function cmdDoctor(
     {
       name: "git",
       ok: true,
+      warn: !commandAvailable("git"),
       detail: commandAvailable("git")
         ? "available — workspace diff/apply and git_worktree isolation can run"
         : "NOT FOUND — optional. Dispatch still works, but the `workspace` tool " +
@@ -214,7 +248,7 @@ export async function cmdDoctor(
       ...stateDirWritable(),
     },
     {
-      // Whether dispatches will actually be detached.
+      // Whether dispatches will actually be detached AND outlive the session.
       //
       // `resolveRunnerPath()` returning undefined is not an error — it is the
       // signal to run the job IN-PROCESS, which is right for an unbuilt
@@ -222,14 +256,14 @@ export async function cmdDoctor(
       // the supervisor pool, so in-process mode silently removes the bound
       // that exists to prevent an OOM. Dispatch says so once on stderr, which
       // is not somewhere "am I actually capped?" can be answered from.
+      //
+      // A runner that exists proves nothing about survival: this check used to
+      // say "jobs run detached" from the file alone, on a machine where every
+      // background run died with its session because the launcher killed its
+      // descendants. So it starts a probe through the real launch path and
+      // checks the probe outlives its parent.
       name: "job-runner",
-      ok: resolveRunnerPath() !== undefined,
-      detail:
-        resolveRunnerPath() !== undefined
-          ? "found; jobs run detached and the concurrency cap applies"
-          : "dist/job-runner.js not found — jobs will run IN-PROCESS, which " +
-            "removes the max_concurrent_runs cap and does not survive a server " +
-            "restart. Run `npm run build`, or reinstall the package.",
+      ...(await jobRunnerCheck()),
     },
     {
       name: "http-auth",
@@ -282,6 +316,7 @@ export async function cmdDoctor(
   checks.push({
     name: "route-health",
     ok: true,
+    warn: deadRoutes.length > 0,
     detail:
       deadRoutes.length === 0
         ? "no ready route has failed every call it has been given"
@@ -312,6 +347,36 @@ export async function cmdDoctor(
               )
               .join("; "),
   });
+  // Breaker files and usage counters for routes this config does not name. The
+  // state directory is shared by every config on the machine, so a throwaway
+  // config run against it leaves its routes behind, and a route removed from the
+  // real one does too. Only reported by default: "not in THIS config" is not
+  // "unused", so deleting is a flag, never a side effect of loading.
+  {
+    const named = (n: string): boolean => Object.hasOwn(runtime.config.services, n);
+    const breakers = new BreakerStore();
+    const orphanBreakers = breakers.savedRoutes().filter((n) => !named(n));
+    const orphanUsage = runtime.quota.savedRoutes().filter((n) => !named(n));
+    const orphans = [...new Set([...orphanBreakers, ...orphanUsage])];
+    let removed: string[] = [];
+    if (opts.pruneState === true && orphans.length > 0) {
+      removed = [
+        ...new Set([...breakers.prune(Object.keys(runtime.config.services)), ...runtime.quota.pruneRoutes(Object.keys(runtime.config.services))]),
+      ];
+    }
+    checks.push({
+      name: "saved-routes",
+      ok: true,
+      detail:
+        orphans.length === 0
+          ? "saved breaker and usage state hold only routes this config names"
+          : removed.length > 0
+            ? `removed saved state for ${removed.length} route(s) this config does not name: ${removed.join(", ")}`
+            : `saved state holds ${orphans.length} route(s) this config does not name: ${orphans.join(", ")}. ` +
+              `They may belong to another config (the state directory is shared), so they are ` +
+              `left alone; \`harness-dispatch doctor --prune-state\` deletes them.`,
+    });
+  }
   checks.push({
     name: "billing-policy",
     ok: true,
@@ -378,14 +443,24 @@ export async function cmdDoctor(
     });
   }
 
-  const payload = { ok: checks.every((check) => check.ok), checks, status, liveProbe };
+  const failed = checks.filter((check) => !check.ok);
+  const warned = checks.filter((check) => check.ok && check.warn === true);
+  const verdict =
+    failed.length > 0
+      ? `NOT READY: ${failed.length} problem(s) to fix (${failed.map((c) => c.name).join(", ")})`
+      : warned.length > 0
+        ? `OK, with ${warned.length} thing(s) worth doing (${warned.map((c) => c.name).join(", ")})`
+        : "OK";
+  const payload = { ok: failed.length === 0, verdict, checks, status, liveProbe };
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
     process.stdout.write("harness-dispatch doctor\n\n");
     for (const check of checks) {
-      process.stdout.write(`${check.ok ? "ok" : "fail"} ${check.name}: ${check.detail}\n`);
+      const level = !check.ok ? "fail" : check.warn === true ? "warn" : "ok";
+      process.stdout.write(`${level} ${check.name}: ${check.detail}\n`);
     }
+    process.stdout.write(`\n${verdict}\n`);
   }
   return payload.ok ? 0 : 1;
 }

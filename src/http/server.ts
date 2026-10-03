@@ -17,7 +17,7 @@ import { createAnswerStream } from "./answer-stream.js";
 import { buildStatus, buildUsage } from "../status.js";
 import { VERSION } from "../version.js";
 import type { RouteHints, RouteSkip } from "../types.js";
-import { evaluateRoutePolicy } from "../route-policy.js";
+import { UnknownFanoutTargetError, selectFanoutRoutes } from "../route-policy.js";
 import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import {
   cancelJob,
@@ -26,6 +26,9 @@ import {
   readJobEvents,
   startAsyncJobTracked,
 } from "../jobs.js";
+
+/** Who a REST dispatch is recorded as — see DispatchCaller. */
+const HTTP_CALLER = { client: "http" } as const;
 
 /** How often a streaming response reads its job's event log. */
 const STREAM_POLL_MS = 100;
@@ -125,6 +128,7 @@ async function runFanoutArms(
           workingDir: parsed.workingDir,
           hints: parsed.hints,
           service: route,
+          caller: HTTP_CALLER,
         },
       );
       // `completion` never rejects and resolves on a terminal state, so the
@@ -159,6 +163,12 @@ async function runFanoutArms(
       error: s.reason instanceof Error ? s.reason.message : String(s.reason),
     };
   });
+}
+
+function allFailedMessage(rows: Array<{ route: string; error?: string }>): string {
+  return (
+    `every fanout arm failed — ` + rows.map((row) => `${row.route}: ${row.error ?? "failed"}`).join("; ")
+  );
 }
 
 /**
@@ -198,42 +208,28 @@ async function handleChatCompletions(
     }
     parsed.hints.safetyProfile = fanoutSafetyProfile;
   }
-  const eligibleRoutes = (requestedRoutes: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
-    const routes: string[] = [];
-    const skippedRoutes: RouteSkip[] = [];
-    for (const route of requestedRoutes) {
-      const svc = state.config.services[route];
-      if (!svc) {
-        // Rejected by name, matching the MCP tool. Skipping it would answer
-        // 200 with fewer arms and an empty skippedRoutes — one input, two
-        // surfaces, two answers.
-        throw new BadRequestError(
-          `Unknown fanout target: ${route}. Valid route ids: ` +
-            `${Object.keys(state.config.services).join(", ")}.`,
-        );
-      }
-      const dispatcher = state.dispatchers[route];
-      const breaker = state.router.getBreaker(route);
-      // routePolicy is the half that decides ELIGIBILITY — local_only,
-      // approval_required and blocked are enforced here, not in routeTo, so
-      // omitting it lets a fanout arm run whatever the policy forbids.
-      const policy = evaluateRoutePolicy(route, svc, {
-        ...(dispatcher !== undefined ? { dispatcher } : {}),
-        circuitBroken: Boolean(breaker?.isTripped),
-        ...(parsed.hints.safetyProfile !== undefined
-          ? { requestedSafetyProfile: parsed.hints.safetyProfile }
-          : {}),
-        ...(parsed.hints.routePolicy !== undefined
-          ? { routePolicy: parsed.hints.routePolicy }
-          : {}),
-        // Same refusal as every other surface: an HTTP endpoint route cannot
-        // carry an `execute` task.
-        ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
+  // The same matching and policy check the MCP surface uses (selectFanoutRoutes),
+  // so a `models` entry that is valid there is valid here. An empty list means
+  // every configured route.
+  const eligibleRoutes = (requested: string[]): { routes: string[]; skippedRoutes: RouteSkip[] } => {
+    try {
+      return selectFanoutRoutes({
+        services: state.config.services,
+        dispatchers: state.dispatchers,
+        breakerTripped: (route) => Boolean(state.router.getBreaker(route)?.isTripped),
+        requested,
+        hints: {
+          ...(parsed.hints.safetyProfile !== undefined ? { safetyProfile: parsed.hints.safetyProfile } : {}),
+          ...(parsed.hints.routePolicy !== undefined ? { routePolicy: parsed.hints.routePolicy } : {}),
+          ...(parsed.hints.taskType !== undefined ? { taskType: parsed.hints.taskType } : {}),
+        },
       });
-      if (policy.skipped) skippedRoutes.push(policy.skipped);
-      if (!policy.blocked) routes.push(route);
+    } catch (err) {
+      // Rejected by name, before anything runs: skipping an unknown target
+      // would answer 200 with fewer arms and an empty skippedRoutes.
+      if (err instanceof UnknownFanoutTargetError) throw new BadRequestError(err.message);
+      throw err;
     }
-    return { routes, skippedRoutes };
   };
   if (parsed.stream) {
     // Resolve fanout targets BEFORE writing SSE headers: eligibleRoutes throws
@@ -241,21 +237,9 @@ async function handleChatCompletions(
     // handler can only res.end(), leaving the caller an HTTP 200 with a
     // zero-byte body instead of the 400 the non-streaming path returns.
     //
-    // Defaults to every dispatchable route when `models` is omitted, exactly
-    // as the non-streaming branch does; passing parsed.models straight through
-    // would fan out to ZERO routes and report success.
-    const preSelected =
-      parsed.mode === "fanout"
-        ? eligibleRoutes(
-            parsed.models.length > 0
-              ? parsed.models
-              : Object.keys(state.config.services).filter((route) =>
-                  // `Object.hasOwn`, not `in` — same prototype-chain hazard as
-                  // the non-streaming branch below.
-                  Object.hasOwn(state.dispatchers, route),
-                ),
-          )
-        : undefined;
+    // An omitted `models` means every configured route, as in the non-streaming
+    // branch: both go through eligibleRoutes, which owns that default.
+    const preSelected = parsed.mode === "fanout" ? eligibleRoutes(parsed.models) : undefined;
     // Refuse BEFORE writeHead, while a real status code is still available:
     // once the 200 and the SSE headers are out, the only way to report a
     // refusal is an error frame inside a successful stream. The non-streaming
@@ -291,6 +275,7 @@ async function handleChatCompletions(
               files: parsed.files,
               workingDir: parsed.workingDir,
               hints: parsed.hints,
+              caller: HTTP_CALLER,
             },
           );
     res.writeHead(200, {
@@ -311,9 +296,12 @@ async function handleChatCompletions(
     // One identity for the whole stream, minted before the first frame: every
     // chunk must repeat the same `id` and `created`, or a client that groups
     // or dedupes by id sees one response per frame. The model starts as what
-    // the caller asked for and is filled in below once the router has picked a
-    // route.
+    // the caller asked for and becomes the routed model once the run succeeds,
+    // as the non-streaming reply's does: frames sent before then (an endpoint
+    // route streaming text) carry the requested name, the rest the real one.
     const identity = newStreamIdentity(parsed.hints.model ?? "harness-dispatch");
+    // Extra members for the final frame; only the single-route stream has any.
+    let stopExtra: Record<string, unknown> = {};
     if (parsed.mode === "fanout") {
       const selected = preSelected!;
       const rows = await runFanoutArms(holder, selected.routes, parsed);
@@ -329,6 +317,11 @@ async function handleChatCompletions(
           },
         }),
       );
+      // The status line is already out as a 200, so the non-streaming 502 for
+      // "every arm failed" can only be an error frame here.
+      if (rows.length > 0 && rows.every((row) => !row.success)) {
+        writeSse(res, { error: { message: allFailedMessage(rows), type: "upstream_error" } });
+      }
     } else {
       // What reaches `delta.content` must be the ANSWER. Forwarding every
       // stdout chunk would hand a client concatenating deltas from a CLI
@@ -364,6 +357,14 @@ async function handleChatCompletions(
         const batch = await readJobEvents(jobId, offset);
         offset = batch.offset;
         for (const event of batch.events) {
+          if (event.type === "completion" && event.result.success) {
+            // The decision is written with the result, a moment after this
+            // event, and a success is the run's last word, so waiting costs
+            // nothing a client would see.
+            await completion;
+            const routed = (await getAsyncJob(jobId)).result?.decision?.model;
+            if (routed !== undefined) identity.model = routed;
+          }
           const text = answer.next(event);
           if (text !== undefined) {
             writeSse(res, sseContent(identity, text, { harness_dispatch: { jobId } }));
@@ -408,25 +409,39 @@ async function handleChatCompletions(
       if (!succeeded && !committedFailure && pendingFailure !== undefined) {
         writeSse(res, pendingFailure);
       }
+      // A job that ended with no completion event at all — cancelled, or its
+      // runner crashed — said nothing, and the stop frame below would read as
+      // an empty successful answer. The job record has the verdict: the
+      // non-streaming path answers 500 for the same case.
+      if (!succeeded && !committedFailure && pendingFailure === undefined && !clientGone) {
+        const job = await getAsyncJob(jobId);
+        if (job.result?.result.success !== true) {
+          writeSse(res, {
+            error: {
+              message:
+                job.result?.result.error ??
+                job.status.error ??
+                `job ${jobId} ended without a result (status: ${job.status.status})`,
+              route: job.status.route ?? job.status.service ?? "none",
+            },
+          });
+        }
+      }
+      stopExtra = {
+        harness_dispatch: {
+          jobId,
+          ...(parsed.workingDirWarning !== undefined ? { warning: parsed.workingDirWarning } : {}),
+        },
+      };
     }
-    writeSse(res, sseStop(identity));
+    writeSse(res, { ...sseStop(identity), ...stopExtra });
     res.write("data: [DONE]\n\n");
     res.end();
     return;
   }
 
   if (parsed.mode === "fanout") {
-    const routes =
-      parsed.models.length > 0
-        ? parsed.models
-        : Object.keys(state.config.services).filter((route) =>
-            // `Object.hasOwn`, not `in` — the same prototype-chain hazard the
-            // service guards carry. Here the names come from config, so it
-            // takes a route literally named `constructor` in config.yaml,
-            // which would then be treated as having a dispatcher it never got.
-            Object.hasOwn(state.dispatchers, route),
-          );
-    const selected = eligibleRoutes(routes);
+    const selected = eligibleRoutes(parsed.models);
     // An empty candidate set is a REFUSAL, not an empty success: 200 with
     // `"[]"` as the content is vacuously true over zero arms, and CI and cron
     // read 200 as "it worked". Same wording as the MCP path, which refuses the
@@ -460,9 +475,7 @@ async function handleChatCompletions(
           ...(allFailed
             ? {
                 error: {
-                  message:
-                    `every fanout arm failed — ` +
-                    rows.map((row) => `${row.route}: ${row.error ?? "failed"}`).join("; "),
+                  message: allFailedMessage(rows),
                   type: "upstream_error",
                 },
               }
@@ -494,6 +507,7 @@ async function handleChatCompletions(
       files: parsed.files,
       workingDir: parsed.workingDir,
       hints: parsed.hints,
+      caller: HTTP_CALLER,
     },
   );
   res.setHeader("x-harness-dispatch-job-id", jobStatus.jobId);
@@ -677,7 +691,12 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
 
   const requireAuth = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (isAuthorized(req.headers.authorization, activeToken())) return true;
-    sendJson(res, 401, { error: "unauthorized" });
+    // `error` stays the machine-readable word; `hint` is for the person who
+    // got a bare 401 from curl and does not know where the token lives.
+    sendJson(res, 401, {
+      error: "unauthorized",
+      hint: "send `Authorization: Bearer <token>`; run `harness-dispatch auth show` on this machine to print the token",
+    });
     return false;
   };
 
@@ -687,6 +706,9 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   // loopback check blesses the address, so nothing else catches it.
   const urlBase = `http://${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}`;
 
+  // The whole body is in a try/catch that answers the request, so a rejection
+  // never escapes this handler.
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises
   const http: NodeHttpServer = createServer(async (req, res) => {
     // Shared with handleChatCompletions, read by the catch below.
     const sse: SseState = { started: false };
@@ -723,7 +745,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         const created = Math.floor(Date.now() / 1000);
         sendJson(res, 200, {
@@ -758,7 +779,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           state.dispatchers,
           state.quota,
           state.router,
-          state.leaderboard,
         );
         sendJson(res, 200, buildUsage(status));
         return;
@@ -776,7 +796,6 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             state.dispatchers,
             state.quota,
             state.router,
-            state.leaderboard,
           ),
         );
         return;
@@ -805,6 +824,19 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         // Held so the post-request check below can dispose of a server whose
         // session never came into existence.
         let freshServer: McpServer | undefined;
+        // A session id this server does not hold — swept idle, or from before a
+        // restart — is a 404, which the MCP spec says tells the client to start
+        // a new session. The SDK's own answer for it (400 "Server not
+        // initialized") reads as a malformed request, so a client that follows
+        // the spec never re-initialises.
+        if (sessionId && !transports.has(sessionId)) {
+          sendJson(res, 404, {
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found — initialize a new session." },
+            id: null,
+          });
+          return;
+        }
         if (sessionId && transports.has(sessionId)) {
           transport = transports.get(sessionId)!;
           sessionLastSeen.set(sessionId, Date.now());

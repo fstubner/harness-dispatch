@@ -33,6 +33,11 @@ import {
 import { eolDigest } from "../src/workspaces.js";
 import type { WorkspaceRun } from "../src/types.js";
 
+// Real git and real detached processes: individual tests take 10 to 40 s under
+// load, so the 15 s global timeout turned a busy machine into a failing suite.
+// Raised for this file only; the rest of the suite keeps the tight limit.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+
 const execFile = promisify(execFileCb);
 const git = (args: string[], cwd: string) => execFile("git", args, { cwd, windowsHide: true });
 
@@ -991,4 +996,104 @@ describe("two workspace actions on one job at once", () => {
       expect(await readNorm(path.join(repo, "app.js"))).toBe("const a = 2;\n");
     }
   }, 60_000);
+});
+
+describe("post-run git never honours config the agent could have written", () => {
+  // audit5 F1. An agent confined to its git_worktree can only write files
+  // there — but the worktree's `.git` is one of those files. Replaced with a
+  // `.git` directory whose config sets core.fsmonitor, git DISCOVERED it from
+  // the worktree and ran the command during harness-dispatch's own
+  // `git add` / `git diff` at job end: as the user, outside any sandbox.
+  async function plantedWorktree(): Promise<{ run: WorkspaceRun; marker: string; hook: string }> {
+    const repo = await makeRepo("fsmon-proj");
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+    const wsRoot = path.join(dir, "workspaces", "fsmon");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+    await fs.writeFile(path.join(worktree, "app.js"), "const a = 2;\n", "utf8");
+    const marker = path.join(dir, "MARKER.txt");
+    // git runs fsmonitor and filter commands through a shell, on Windows too.
+    const hook = `echo RAN-OUTSIDE-SANDBOX >> '${marker.split("\\").join("/")}'; true`;
+    return {
+      run: {
+        policy: "git_worktree",
+        originalWorkingDir: repo,
+        effectiveWorkingDir: worktree,
+        workspaceRoot: wsRoot,
+        baseCommit: base,
+        isolated: true,
+        securityBoundary: "project_state_and_process_cwd",
+        changedFiles: [{ path: "app.js", kind: "modified" }],
+      },
+      marker,
+      hook,
+    };
+  }
+
+  it("refuses a worktree whose .git the agent replaced, without running its fsmonitor", async () => {
+    const { run, marker, hook } = await plantedWorktree();
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    // What the fake delegate in audit5/security/fsmon/evil-harness.cjs does.
+    const g = path.join(worktree, ".git");
+    await fs.rm(g, { force: true, recursive: true });
+    await fs.mkdir(path.join(g, "objects"), { recursive: true });
+    await fs.mkdir(path.join(g, "refs", "heads"), { recursive: true });
+    await fs.writeFile(path.join(g, "HEAD"), "ref: refs/heads/main\n");
+    await fs.writeFile(
+      path.join(g, "config"),
+      `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tfsmonitor = "${hook}"\n`,
+    );
+
+    // The job-end path (jobs/run.ts) — silent by design, so the marker is the
+    // only witness.
+    await persistWorkspacePatch(jobDir, run);
+    const refused = await buildWorkspacePatch(run).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(refused?.message).toMatch(/no longer a gitfile.*will not run git/s);
+  });
+
+  it("refuses a gitfile redirected to a repository inside the worktree", async () => {
+    const { run, marker, hook } = await plantedWorktree();
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    const evil = path.join(worktree, "evil");
+    await git(["init", "-q", evil], dir);
+    await git(["config", "core.fsmonitor", hook], evil);
+    // Removed first: git for Windows marks the gitfile hidden, and Windows
+    // refuses to open a hidden file for overwrite.
+    await fs.rm(path.join(worktree, ".git"));
+    await fs.writeFile(path.join(worktree, ".git"), `gitdir: ${path.join(evil, ".git")}\n`);
+
+    const refused = await buildWorkspacePatch(run).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(refused?.message).toMatch(/outside the repository's worktree registrations/);
+  });
+
+  it("diffs a worktree holding an embedded repository without running its fsmonitor or filters", async () => {
+    // The gitfile can be intact and git still reach agent-written config: a
+    // gitlink is checked for local changes by running `git status` INSIDE the
+    // embedded repository, which honours its own fsmonitor and clean filters.
+    const { run, marker, hook } = await plantedWorktree();
+    const worktree = path.join(run.workspaceRoot!, "worktree");
+    const sub = path.join(worktree, "sub");
+    await git(["init", "-q", sub], dir);
+    await fs.writeFile(path.join(sub, "f.txt"), "x\n");
+    await git(["add", "-A"], sub);
+    await git(["-c", "user.email=t@example.test", "-c", "user.name=T", "commit", "-qm", "n"], sub);
+    await git(["config", "core.fsmonitor", hook], sub);
+    await git(["config", "filter.ev.clean", `${hook.replace(/; true$/, "")}; cat`], sub);
+    await fs.writeFile(path.join(sub, ".gitattributes"), "* filter=ev\n");
+    // Same size, so only a content comparison — through the filter — can tell.
+    await fs.writeFile(path.join(sub, "f.txt"), "y\n");
+
+    const patch = await buildWorkspacePatch(run);
+    expect(patch).toContain("+const a = 2;");
+    expect(existsSync(marker)).toBe(false);
+  });
 });

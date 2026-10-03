@@ -138,19 +138,53 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     expect(err).not.toMatch(/belongs inside `hints`/);
   });
 
-  it("advertises the trap keys as unacceptable in the tool schema", async () => {
-    // z.never() renders as {"not":{}} — a client that reads the schema sees
-    // the key is refused, not merely undocumented. If the traps ever fall out
-    // of the advertised schema, the SDK would go back to stripping them
-    // silently, so this assertion is load-bearing, not cosmetic.
+  /**
+   * The 15 keys that mean nothing at the top level and are refused by name.
+   * They used to be `z.never()` fields in the advertised schema (3.4k of
+   * tools/list); the near-miss guard now refuses them from the raw arguments,
+   * so these rows are the proof that moving them changed nothing a caller sees.
+   */
+  const TRAPS: Array<[string, RegExp]> = [
+    ["safety_profile", /safety_profile is not a field — this tool spells it safetyProfile, inside `hints`/],
+    ["route_policy", /route_policy is not a field — this tool spells it routePolicy, inside `hints`/],
+    ["task_type", /task_type is not a field — this tool spells it taskType, inside `hints`/],
+    ["prefer_large_context", /prefer_large_context is not a field — this tool spells it preferLargeContext, inside `hints`/],
+    ["timeout_ms", /timeout_ms is not a field — this tool spells it timeoutMs, inside `hints`/],
+    ["workspace_policy", /workspace_policy is not a field — this tool spells it workspacePolicy, at the top level or inside `hints`/],
+    ["working_dir", /working_dir is not a field — this tool spells it workingDir, at the top level/],
+    ["context_jobs", /context_jobs is not a field — this tool spells it contextJobs, at the top level/],
+    ["safetyProfile", /safetyProfile belongs inside `hints`, not at the top level/],
+    ["routePolicy", /routePolicy belongs inside `hints`, not at the top level/],
+    ["taskType", /taskType belongs inside `hints`, not at the top level/],
+    ["preferLargeContext", /preferLargeContext belongs inside `hints`, not at the top level/],
+    ["timeoutMs", /timeoutMs belongs inside `hints`, not at the top level/],
+    ["model", /model belongs inside `hints` for single mode/],
+    ["escalate", /escalate is not a dispatch field — escalation is configured per route/],
+  ];
+
+  it.each(TRAPS)("still refuses top-level %s by name", async (key, message) => {
+    expect(await dispatchError({ prompt: "hi", [key]: "x" })).toMatch(message);
+  });
+
+  it("keeps the trap keys OUT of the advertised tool schema", async () => {
+    // The point of moving them: 15 properties per session for keys that exist
+    // only to be refused. The refusal is the row above; this pins the saving.
     const tools = await client.listTools();
     const dispatch = tools.tools.find((t) => t.name === "dispatch");
     const props = (dispatch?.inputSchema as { properties?: Record<string, unknown> }).properties;
     expect(props).toBeDefined();
-    for (const key of ["safetyProfile", "routePolicy", "taskType", "timeoutMs", "model"]) {
-      expect(props![key], `schema is missing the ${key} trap`).toBeDefined();
-      expect(JSON.stringify(props![key])).toContain('"not"');
+    for (const [key] of TRAPS) {
+      expect(props![key], `the ${key} trap is advertised again`).toBeUndefined();
     }
+    expect(Object.keys(props!).sort()).toEqual(
+      ["contextJobs", "files", "graceSeconds", "hints", "mode", "models", "prompt", "service", "workingDir", "workspacePolicy"].sort(),
+    );
+  });
+
+  it("does not apply the dispatch traps to the other tools", async () => {
+    // `model` and `taskType` are ordinary words; only `dispatch` has hints.
+    const r = await client.callTool({ name: "job_status", arguments: { model: "x", taskType: "plan" } });
+    expect((r as { isError?: boolean }).isError).not.toBe(true);
   });
 
   it("still accepts the correct placement", async () => {
@@ -341,12 +375,11 @@ describe("both surfaces answer the same input the same way", () => {
     expect(err, `MCP silently accepted a top-level ${label}`).toBeDefined();
   });
 
-  it("prefers the nested hint when both placements are given, on both surfaces", () => {
+  it("prefers the nested hint when both placements are given, on both surfaces", async () => {
     const body = { prompt: "hi", workingDir: dir, taskType: "plan", hints: { taskType: "review" } };
-    const mcp = z.object(dispatchInputShape).safeParse(body);
     // MCP refuses the top-level half outright, so "nested wins" is trivially
     // true there; this pins that it refuses rather than silently preferring.
-    expect(mcp.success).toBe(false);
+    expect(await dispatchError(body)).toMatch(/taskType belongs inside `hints`/);
     expect(parseChatRequest(body).hints.taskType).toBe("review");
   });
 

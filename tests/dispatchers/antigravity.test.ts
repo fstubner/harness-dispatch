@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServiceConfig } from "../../src/types.js";
-import { PROTOCOL_PRESETS } from "../../src/harness-presets.js";
+import { CLI_DEFAULTS, PROTOCOL_PRESETS } from "../../src/harness-presets.js";
 
 const ANTIGRAVITY_PROTOCOL = PROTOCOL_PRESETS.antigravity_cli!;
 
@@ -139,20 +139,63 @@ describe("Antigravity (GenericCliDispatcher + ANTIGRAVITY_PROTOCOL)", () => {
   // shipped-presets.test.ts, asserted once per harness from one table. What
   // remains below is what is specific to this harness.
 
-  it("collects stdout and reports success on exit code 0", async () => {
+  // Event lines in the shape captured from the real agy CLI on 2026-10-01
+  // (see the antigravity entry in config.default.yaml). The result line is
+  // split across two reads, as a real pipe may deliver it.
+  const INIT = '{"event":"init","conversation_id":"c1","init":{"cwd":"/repo","tools":["run_command"]}}\n';
+  const TOOL_STARTED =
+    '{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2,"state":"ACTIVE",' +
+    '"step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"dir"}}}}\n';
+  const result = (response: string): string =>
+    `{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":${JSON.stringify(response)},` +
+    '"duration_seconds":5.59,"num_turns":1,"usage":{"input_tokens":17391,"output_tokens":698,"thinking_tokens":575}}}\n';
+
+  it("asks agy for stream-json and returns result.response as the answer", async () => {
     mockFound();
+    const resultLine = result("AGY OK");
     mockStream([
-      { stream: "stdout", chunk: "AGY " },
-      { stream: "stdout", chunk: "OK\n" },
+      { stream: "stdout", chunk: INIT + TOOL_STARTED },
+      { stream: "stdout", chunk: resultLine.slice(0, 40) },
+      { stream: "stdout", chunk: resultLine.slice(40) },
       exit(),
     ]);
     const dispatcher = new GenericCliDispatcher(baseSvc());
-    const result = await runToCompletion(dispatcher, "hello");
-    expect(result.success).toBe(true);
-    expect(result.output).toBe("AGY OK");
+    const outcome = await runToCompletion(dispatcher, "hello");
+    expect(outcome.success).toBe(true);
+    expect(outcome.output).toBe("AGY OK");
+    expect((outcome as { tokensUsed?: unknown }).tokensUsed).toEqual({ input: 17391, output: 698 });
     const args = capturedArgs();
-    expect(args).toContain("--print");
+    expect(args.join(" ")).toContain("--output-format stream-json --print");
     expect(args[args.length - 1]).toBe("hello");
+  });
+
+  it("reports each tool step as it starts, so a running job shows progress", async () => {
+    mockFound();
+    mockStream([{ stream: "stdout", chunk: INIT + TOOL_STARTED + result("done") }, exit()]);
+    const dispatcher = new GenericCliDispatcher(baseSvc());
+    const toolUses: unknown[] = [];
+    for await (const event of dispatcher.stream("hello", [], "/repo")) {
+      if (event.type === "tool_use") toolUses.push(event);
+    }
+    expect(toolUses).toEqual([{ type: "tool_use", name: "run_command", input: { CommandLine: "dir" } }]);
+  });
+
+  it("fails an exit-0 run whose response is empty instead of returning the event stream", async () => {
+    // The real probe's own outcome: one tool call denied, `"response":""`, exit 0.
+    mockFound();
+    mockStream([{ stream: "stdout", chunk: INIT + TOOL_STARTED + result("") }, exit()]);
+    const dispatcher = new GenericCliDispatcher(baseSvc());
+    const outcome = await runToCompletion(dispatcher, "hello");
+    expect(outcome.success).toBe(false);
+    expect(outcome.output).not.toContain('"event"');
+    expect(outcome.error).toContain("without producing an answer");
+    expect(outcome.error).toContain("last: result");
+  });
+
+  it("ships an idle limit and a 25-minute wall clock for this route", () => {
+    const defaults = CLI_DEFAULTS.antigravity_cli!;
+    expect(defaults.timeoutMs).toBe(1_500_000);
+    expect(defaults.idleTimeoutMs).toBe(900_000);
   });
 
   it("streams stdout events live instead of buffering until the process exits", async () => {

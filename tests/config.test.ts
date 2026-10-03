@@ -42,7 +42,6 @@ services:
     tier: 1
     weight: 1.5
     cli_capability: 1.10
-    leaderboard_model: claude-opus-4-6
     timeout_ms: 1800000
     capabilities:
       execute: 0.9
@@ -61,7 +60,6 @@ services:
     expect(cfg.services.alpha!.tier).toBe(1);
     expect(cfg.services.alpha!.weight).toBeCloseTo(1.5, 10);
     expect(cfg.services.alpha!.cliCapability).toBeCloseTo(1.1, 10);
-    expect(cfg.services.alpha!.leaderboardModel).toBe("claude-opus-4-6");
     expect(cfg.services.alpha!.timeoutMs).toBe(1_800_000);
     expect(cfg.services.alpha!.capabilities.execute).toBeCloseTo(0.9, 10);
     expect(cfg.services.beta!.enabled).toBe(false);
@@ -309,7 +307,6 @@ describe("loadConfig — auto-detect + overrides", () => {
     expect(svc.harness).toBe("claude_code");
     expect(svc.command).toBe("claude");
     expect(svc.cliCapability).toBeCloseTo(1.1, 10);
-    expect(svc.leaderboardModel).toBe("claude-opus-4-6");
     expect(svc.billingKind).toBeUndefined();
   });
 
@@ -1129,6 +1126,53 @@ clis:
     // Untouched profiles still present from the preset:
     expect(svc.protocol?.safety?.read_only).toEqual(["--sandbox", "read-only"]);
     expect(svc.protocol?.safety?.workspace_edit).toEqual(["--sandbox", "workspace-write"]);
+  });
+
+  it("a codex route inherits the shipped idle limit, and its own idle_timeout_ms replaces it", async () => {
+    const yamlText = `
+clis:
+  - name: codex_default
+    harness: codex
+  - name: codex_patient
+    harness: codex
+    idle_timeout_ms: 1800000
+  - name: claude_default
+    harness: claude_code
+`;
+    const p = await writeTmpYaml("clis-idle-timeout.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    expect(cfg.services.codex_default!.idleTimeoutMs).toBe(900_000);
+    expect(cfg.services.codex_patient!.idleTimeoutMs).toBe(1_800_000);
+    // Claude Code prints its answer only at the end: no idle limit shipped.
+    expect(cfg.services.claude_default!.idleTimeoutMs).toBeUndefined();
+  });
+
+  it("protocol.extends merges endpoint_native_args per provider instead of dropping the preset's", async () => {
+    // `endpoint_native_args: {}`, or an entry for one other provider, replaced
+    // the whole map and silently lost the preset's ollama/lmstudio arguments.
+    const yamlText = `
+clis:
+  - name: empty_map
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      endpoint_native_args: {}
+  - name: one_provider
+    harness: generic
+    command: my-codex-fork
+    protocol:
+      extends: codex
+      endpoint_native_args:
+        vllm: ["--oss", "--local-provider", "vllm"]
+`;
+    const p = await writeTmpYaml("clis-generic-extends-native-args.yaml", yamlText);
+    const cfg = await loadConfig(p, { whichFn: noCliFound });
+    const ollama = ["--oss", "--local-provider", "ollama"];
+    expect(cfg.services.empty_map!.protocol?.endpointNativeArgs?.ollama).toEqual(ollama);
+    const one = cfg.services.one_provider!.protocol?.endpointNativeArgs as Record<string, string[]>;
+    expect(one.vllm).toEqual(["--oss", "--local-provider", "vllm"]);
+    expect(one.ollama).toEqual(ollama);
   });
 
   it("skips protocol.extends with an unrecognized preset name, with a warning", async () => {

@@ -27,6 +27,7 @@ import { DEFAULT_MAX_OUTPUT_BYTES, streamSubprocess } from "./shared/stream-subp
 import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
 import { commandAvailable } from "./shared/which-available.js";
+import { statedResetSeconds } from "./shared/rate-limit-reset.js";
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes
 
@@ -99,6 +100,9 @@ const LIMITER_PHRASES = [
   // OpenAI Codex's phrasing ("You've hit your usage limit... try again at
   // ..."), which none of the phrases above match.
   "usage limit",
+  // Claude Code's ("You've hit your session limit · resets 1:30am
+  // (Europe/Dublin)"), which was counted as an ordinary failure.
+  "session limit",
 ];
 
 /** Exported for tests: the false-positive space here is what trips breakers. */
@@ -115,10 +119,9 @@ export function detectRateLimit(text: string): { rateLimited: boolean; retryAfte
   if (!flagged) return { rateLimited: false, retryAfter: null };
   const match = /retry[_\s-]after[:\s]+(\d+(?:\.\d+)?)/i.exec(text);
   const retryAfter = match?.[1] ? Number.parseFloat(match[1]) : null;
-  return {
-    rateLimited: true,
-    retryAfter: retryAfter !== null && Number.isFinite(retryAfter) ? retryAfter : null,
-  };
+  if (retryAfter !== null && Number.isFinite(retryAfter)) return { rateLimited: true, retryAfter };
+  // No machine-readable delay: the time the provider stated in prose, if any.
+  return { rateLimited: true, retryAfter: statedResetSeconds(text) };
 }
 
 /**
@@ -161,14 +164,25 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   // occurrences on stdout followed by a wall of stderr noise would otherwise
   // fall off the end of a single joined tail.
   const lines = streams.flatMap((s) => rateLimitScanTail(s).split(/\r?\n/));
-  const diagnostics = lines.filter((line) => /CreateProcessAsUserW failed:\s*\d+/i.test(line));
-  // "Could not spawn ANY child" is disproved by one that ran. Codex's sandbox
-  // refuses spawns intermittently, and logs each refusal on TWO lines, so a
-  // single refusal met the threshold: all six of one day's real Codex runs
-  // were failed this way, each after 22 to 45 commands that completed and an
-  // answer citing the files they read. The harness's own event stream says
-  // which commands completed, so ask it.
-  if (diagnostics.length >= 2 && !streams.some(reportsACompletedCommand)) {
+  const diagnostics = lines.filter((line) => SANDBOX_REFUSAL_RE.test(line));
+  // Codex's sandbox refuses spawns INTERMITTENTLY, and logs each refusal on
+  // two lines, so the diagnostic count alone failed healthy runs: all six of
+  // one day's real Codex runs, each after 22 to 45 commands that completed
+  // and an answer citing the files they read. The harness's own event stream
+  // says which commands completed and which were refused, so ask it.
+  //
+  // Weighed, not "any completed command": that rule let ONE exit-0 command —
+  // reading a skill file outside the repository, before the sandbox refused
+  // the only repository command — mark a run that read nothing a success.
+  // Nor "completions after the last refusal", which refusals near the end of
+  // a healthy run defeat. Replayed against the 35 real job streams on disk
+  // that carry the diagnostic (2026-10-01), this rule fails exactly the 15
+  // whose answers say they could not read or run anything, and passes the
+  // other 20, the six above among them: the closest call was 15 refused
+  // against 14 completed, an answer citing specific files and lines.
+  // MIN_COMPLETED_COMMANDS is a handful: too few to have read a codebase.
+  const { completed, refused } = countCommandOutcomes(streams);
+  if (diagnostics.length >= 2 && refused >= completed && completed < MIN_COMPLETED_COMMANDS) {
     return (
       "the harness could not spawn any child process — its sandbox refused " +
       "(CreateProcessAsUserW failed). Any answer it gave was produced without " +
@@ -180,15 +194,37 @@ export function detectHarnessEnvironmentFailure(...streams: string[]): string | 
   return undefined;
 }
 
+const SANDBOX_REFUSAL_RE = /CreateProcessAsUserW failed:\s*\d+/i;
+
+/** See detectHarnessEnvironmentFailure. */
+const MIN_COMPLETED_COMMANDS = 5;
+
 /**
- * Does this transcript show a command the harness ran to a clean exit?
+ * How long the breaker leaves a route alone after its sandbox refused to start
+ * anything. The refusals come in clusters (seven refused runs started within
+ * five minutes of each other on 2026-09-26, in the job store), so the default
+ * 300 s only paid for the next doomed attempt; half an hour skips a cluster
+ * without parking the route for the day.
+ */
+export const ENVIRONMENT_FAULT_COOLDOWN_SEC = 30 * 60;
+
+/**
+ * Shell commands the harness ran to a clean exit, and ones its sandbox refused.
  *
  * Codex's JSON event stream reports every shell command as a
- * `command_execution` item with its exit code. Other harnesses print nothing
- * matching, and for them the diagnostic count alone decides, as before.
+ * `command_execution` item with its exit code; a refused one completes with
+ * the diagnostic in its output. Other harnesses print nothing matching, so
+ * both counts are 0 and the diagnostic count alone decides, as before.
  */
-function reportsACompletedCommand(stream: string): boolean {
-  return /"type":"command_execution"[^\n]*"exit_code":0[,}]/.test(stream);
+function countCommandOutcomes(streams: string[]): { completed: number; refused: number } {
+  let completed = 0;
+  let refused = 0;
+  for (const line of streams.flatMap((s) => s.split("\n"))) {
+    if (!line.includes('"type":"command_execution"')) continue;
+    if (/"exit_code":0[,}]/.test(line)) completed += 1;
+    else if (line.includes('"type":"item.completed"') && SANDBOX_REFUSAL_RE.test(line)) refused += 1;
+  }
+  return { completed, refused };
 }
 
 /**
@@ -403,7 +439,11 @@ function commandLineLength(command: string, args: string[]): number {
     // and the spawn dies with E2BIG. Reachable in practice: the guard only
     // runs when a protocol does NOT use stdin, and antigravity_cli puts the
     // prompt in argv while advertising a two-million-token input.
-    return args.reduce((n, a) => n + Buffer.byteLength(a, "utf8") + 1, Buffer.byteLength(command, "utf8"));
+    //
+    // The LONGEST argument, because that is what POSIX_ARG_MAX bounds. Summing
+    // them all measured a different quantity against it, and refused a prompt
+    // plus file paths that each fit.
+    return args.reduce((n, a) => Math.max(n, Buffer.byteLength(a, "utf8")), Buffer.byteLength(command, "utf8"));
   }
   if (commandLineBudget(command) !== WINDOWS_CMD_SHIM_MAX) {
     // Straight to CreateProcess: the same quoting, without cmd.exe's escaping.
@@ -416,6 +456,24 @@ function commandLineLength(command: string, args: string[]): number {
   // `cmd.exe /d /s /c "<line>"` — the wrapper cross-spawn actually spawns, and
   // it counts against the same 8,191 ceiling.
   return cmdWrapperOverhead() + parts.join(" ").length;
+}
+
+/**
+ * A harness refusing the MODEL it was asked for says what is wrong and not
+ * what to do: "ActionRequiredError: Named models unavailable Free plans can
+ * only use Auto" (Cursor; two real jobs on 2026-10-01). The agent that
+ * chose the model needs the way out, so it is appended.
+ */
+const MODEL_REFUSAL_RE = /named models unavailable/i;
+
+function withNextStep(detail: string): string {
+  if (!MODEL_REFUSAL_RE.test(detail)) return detail;
+  return (
+    `${detail}\n\nNext step: this account cannot use the model that was asked for. Retry ` +
+    `without hints.model so the route runs its own default (Cursor's is auto), or use ` +
+    `retry_job with service set to another route. The route's model_hint, shown by the ` +
+    `usage tool, says where its usable models are listed.`
+  );
 }
 
 /** Walk a nested object by dotted path, e.g. "message.content". */
@@ -435,14 +493,33 @@ function extractField(obj: unknown, fields: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * The JSON body a harness printed, or undefined.
+ *
+ * Whole text first; failing that, the LAST line that parses as an object. A
+ * CLI that prints a banner or a warning line before its JSON otherwise had no
+ * parseable body at all, so `is_error: true` was never read and a lenient
+ * route returned the raw error JSON as a successful answer.
+ */
 function parseJsonBlob(source: string): unknown {
   const trimmed = source.trim();
   if (!trimmed) return undefined;
   try {
     return JSON.parse(trimmed);
   } catch {
-    return undefined;
+    // Fall through to the line-by-line search.
   }
+  const lines = trimmed.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      // Not this one.
+    }
+  }
+  return undefined;
 }
 
 /** Unique parent directories of absolute file paths, excluding workingDir itself — same rule for every harness. */
@@ -532,7 +609,7 @@ class JsonlAccumulator {
    * it never decides success, so a benign frame cannot fail a healthy run.
    */
   lastEventType: string | undefined;
-  /** Set by the first matching emit: "error" rule; last one wins if several match across the stream. */
+  /** Set by a matching emit: "error" rule; cleared by a later answer (emit: "text"). Last one wins. */
   errorMessage: string | undefined;
 
   constructor(private readonly rules: CliEventRule[]) {}
@@ -549,7 +626,8 @@ class JsonlAccumulator {
     }
     this.sawAnyJson = true;
     this.eventCount += 1;
-    const eventType = getPath(event, "type");
+    // `type` (Codex) or `event` (Antigravity's stream-json).
+    const eventType = getPath(event, "type") ?? getPath(event, "event");
     if (typeof eventType === "string") this.lastEventType = eventType;
 
     for (const rule of this.rules) {
@@ -565,7 +643,16 @@ class JsonlAccumulator {
   #apply(rule: CliEventRule, event: unknown): DispatcherEvent[] {
     if (rule.emit === "text") {
       const text = rule.textField ? getPath(event, rule.textField) : undefined;
-      if (typeof text === "string" && text.length > 0) this.lastText = text;
+      if (typeof text === "string" && text.length > 0) {
+        this.lastText = text;
+        // The stream's last word decides. An error frame was sticky, so a run
+        // that reported an error, recovered and went on to answer was failed.
+        // Not yet seen for real (every top-level Codex `error` frame in the
+        // job store on 2026-10-01 was a usage limit, with no answer after
+        // it), so this only matters for a harness that does recover. An error
+        // AFTER the answer still sets it again below.
+        this.errorMessage = undefined;
+      }
       return [];
     }
 
@@ -707,6 +794,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
   private readonly endpointMode: ServiceConfig["endpointMode"];
   private readonly endpointProvider: ServiceConfig["endpointProvider"];
   private readonly siblingApiKeyEnvVars: ReadonlySet<string>;
+  private readonly idleTimeoutMs: number | undefined;
 
   /**
    * @param siblingApiKeyEnvVars every api-key env var ANY route might use, so
@@ -725,6 +813,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     this.configuredModel = svc?.model;
     this.endpointMode = svc?.endpointMode;
     this.endpointProvider = svc?.endpointProvider;
+    this.idleTimeoutMs = svc?.idleTimeoutMs;
   }
 
   isAvailable(): boolean {
@@ -795,7 +884,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
           success: false,
           error:
             `Route '${this.id}' is missing 'command' and/or 'protocol' — both are ` +
-            "required for harness: generic. See docs/configuration.md#adding-a-harness.",
+            "required for harness: generic. See https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#adding-a-harness.",
         },
       };
       return;
@@ -844,6 +933,26 @@ export class GenericCliDispatcher extends BaseDispatcher {
       if (envVar === protocol.apiKeyEnvVar) continue;
       if (process.env[envVar]) extraEnv[envVar] = "";
     }
+    // Credentials no route's config names, which the delegate still has no
+    // business holding. The first four silently move a subscription route
+    // onto metered billing — Codex reads CODEX_API_KEY / CODEX_ACCESS_TOKEN,
+    // Claude Code ANTHROPIC_AUTH_TOKEN and the Bedrock/Vertex switches — while
+    // the route stays classified product_login, so spend could start with no
+    // `allow_paid_usage` opt-in. The HTTP token is this server's own, and
+    // GITHUB_TOKEN reached every delegate too (audit5 F5). A route that names
+    // one as its own api_key_env_var still gets it, set below.
+    for (const envVar of [
+      "CODEX_API_KEY",
+      "CODEX_ACCESS_TOKEN",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "HARNESS_DISPATCH_HTTP_TOKEN",
+      "GITHUB_TOKEN",
+    ]) {
+      if (envVar === protocol.apiKeyEnvVar) continue;
+      if (process.env[envVar]) extraEnv[envVar] = "";
+    }
     if (protocol.apiKeyEnvVar) {
       if (this.apiKey) {
         extraEnv[protocol.apiKeyEnvVar] = this.apiKey;
@@ -851,6 +960,32 @@ export class GenericCliDispatcher extends BaseDispatcher {
         extraEnv[protocol.apiKeyEnvVar] = "";
       }
     }
+    // Mark the child as delegated work, one level deeper than this process.
+    // A delegate with shell, or with this server among its MCP servers, can
+    // dispatch again, and nothing bounded that (audit5 F7). One level of
+    // nesting is allowed; a delegate's delegate cannot start another agent.
+    const maxDepth = 2;
+    const depth = Number.parseInt(process.env["HARNESS_DISPATCH_DEPTH"] ?? "0", 10) || 0;
+    if (depth >= maxDepth) {
+      yield {
+        type: "completion",
+        result: {
+          output: "",
+          service: this.id,
+          success: false,
+          error:
+            `refused: this dispatch comes from an agent that was itself started by a dispatch ` +
+            `of a dispatch (HARNESS_DISPATCH_DEPTH=${depth}), and nesting stops at ` +
+            `${maxDepth} levels so delegates cannot start agents without bound. ` +
+            `Do the work directly instead.`,
+          // Not the route's fault, so not the route's failure.
+          inputRejected: true,
+          durationMs: 0,
+        },
+      };
+      return;
+    }
+    extraEnv["HARNESS_DISPATCH_DEPTH"] = String(depth + 1);
 
     // Arguments a Windows command shim would mangle or execute, refused before
     // spawning. See unsafeForCmdShim.
@@ -914,6 +1049,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
 
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const subOpts: Parameters<typeof streamSubprocess>[2] = { timeoutMs };
+    if (this.idleTimeoutMs !== undefined) subOpts.idleTimeoutMs = this.idleTimeoutMs;
     if (effectiveWorkingDir) subOpts.cwd = effectiveWorkingDir;
     if (protocol.stdin) subOpts.stdin = fullPrompt;
     if (Object.keys(extraEnv).length > 0) subOpts.env = extraEnv;
@@ -926,6 +1062,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
     let exitCode = -1;
     let durationMs = 0;
     let timedOut = false;
+    let idleTimedOut = false;
     let truncated = false;
 
     const eventDriven = protocol.output.mode === "jsonl_stream" && protocol.output.eventRules;
@@ -948,6 +1085,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
           exitCode = evt.exitCode;
           durationMs = evt.durationMs;
           timedOut = evt.timedOut;
+          idleTimedOut = evt.idleTimedOut;
           truncated = evt.truncated;
           continue;
         }
@@ -997,6 +1135,27 @@ export class GenericCliDispatcher extends BaseDispatcher {
           service: this.id,
           success: false,
           error: `Timed out after ${timeoutMs}ms`,
+          durationMs,
+        },
+      };
+      return;
+    }
+
+    // Silent for idle_timeout_ms: stopped as hung rather than left to hold a
+    // concurrency slot until the wall clock. What it printed is kept.
+    if (idleTimedOut) {
+      const minutes = Math.round((this.idleTimeoutMs ?? 0) / 60_000);
+      yield {
+        type: "completion",
+        result: {
+          output: stdout,
+          service: this.id,
+          success: false,
+          error:
+            `Stopped: ${this.id} printed nothing for ${minutes} minute${minutes === 1 ? "" : "s"} ` +
+            `(idle_timeout_ms ${this.idleTimeoutMs}), so it was treated as hung. Its output up to ` +
+            `then is kept. Retry, send the task to a different route, or raise idle_timeout_ms ` +
+            `for this route if its tasks really do run that long without printing.`,
           durationMs,
         },
       };
@@ -1065,8 +1224,15 @@ export class GenericCliDispatcher extends BaseDispatcher {
             usageSource = stderrJson ?? stdoutJson;
           }
           tokensUsed = readUsage(usageSource, protocol.output.usage) ?? tokensUsed;
+          // Both bodies, stdout first: switching usageSource to stderr's JSON
+          // (because stdout's carried no text) used to drop an `is_error: true`
+          // that stdout's body DID carry, and the run reported success.
           structuredError =
-            readStructuredError(usageSource, protocol.output.error, fields) ?? structuredError;
+            readStructuredError(stdoutJson, protocol.output.error, fields) ??
+            (usageSource !== stdoutJson
+              ? readStructuredError(usageSource, protocol.output.error, fields)
+              : undefined) ??
+            structuredError;
           break;
         }
         case "jsonl_stream": {
@@ -1138,12 +1304,13 @@ export class GenericCliDispatcher extends BaseDispatcher {
     // envFailure leads: it explains WHY whatever else is here is untrustworthy,
     // and the delegate's own last message ("Unable to read file.") is a symptom
     // that reads like a normal answer on its own.
-    const errorDetail =
+    const errorDetail = withNextStep(
       envFailure ??
-      structuredError ??
-      parsedErrorDetail ??
-      streamedNothing ??
-      (rawErrorFallback || `Exit code ${exitCode}`);
+        structuredError ??
+        parsedErrorDetail ??
+        streamedNothing ??
+        (rawErrorFallback || `Exit code ${exitCode}`),
+    );
     // Scan BOTH streams, not just whichever one errorDetail resolved to: a 429
     // on the stream that lost the errorDetail race would otherwise go
     // undetected — for jsonl_stream, a rate limit on stderr while stdout
@@ -1164,6 +1331,10 @@ export class GenericCliDispatcher extends BaseDispatcher {
     if (rateLimited) {
       result.rateLimited = true;
       if (retryAfter !== null) result.retryAfter = retryAfter;
+    } else if (envFailure !== undefined) {
+      // Not this run's bad luck: the sandbox refuses every attempt for a while.
+      result.environmentFault = true;
+      result.retryAfter = ENVIRONMENT_FAULT_COOLDOWN_SEC;
     }
     if (tokensUsed) result.tokensUsed = tokensUsed;
     yield { type: "completion", result };

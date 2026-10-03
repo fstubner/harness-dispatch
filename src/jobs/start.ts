@@ -6,7 +6,9 @@ import path from "node:path";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { buildContextPreamble } from "./context.js";
 import {
+  JOB_FORMAT_VERSION,
   jobsRoot,
+  markPending,
   newJobId,
   pollInstructions,
   pruneStaleJobs,
@@ -22,6 +24,7 @@ import { resolveRunnerPath, runJob, watchUntilTerminal } from "./run.js";
 import {
   configLoadError,
   drainSlotQueue,
+  startSupervisorIfNoneAlive,
 } from "./supervisor.js";
 export async function startAsyncJob(deps: JobDeps, input: StartJobInput): Promise<JobStatus> {
   return (await startAsyncJobTracked(deps, input)).status;
@@ -76,6 +79,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   const createdAt = timestamp();
   const warning = workingDirWarning(resolvedWorkingDir);
   const manifest: JobManifest = {
+    v: JOB_FORMAT_VERSION,
     jobId,
     createdAt,
     workingDir: resolvedWorkingDir.workingDir,
@@ -85,7 +89,9 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
     ...(input.service !== undefined ? { service: input.service } : {}),
     ...(input.retryOf !== undefined ? { retryOf: input.retryOf } : {}),
-    promptPreview: promptPreview(input.prompt),
+    promptPreview: input.promptPreview ?? promptPreview(input.prompt),
+    ...(input.caller !== undefined ? { caller: input.caller } : {}),
+    ...(deps.holder.state.configPath !== undefined ? { configPath: deps.holder.state.configPath } : {}),
     ...(warning !== undefined ? { warning } : {}),
   };
   await writeJson(path.join(jobDir, "manifest.json"), manifest);
@@ -120,7 +126,7 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     // preamble — so the in-process run must dispatch the same frozen prompt,
     // not input.prompt, which would silently drop contextJobs.
     const completion = runJob(deps, jobDir, manifest, { ...input, files, prompt: effectivePrompt });
-    return { status, completion };
+    return { status, completion, stopWatching: () => undefined };
   }
 
   // Concurrency gate. Every dispatch spawns its own detached runner, so an
@@ -135,9 +141,20 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
   // fresh dispatch arriving while others wait must not jump the queue, which
   // only one FIFO drainer can guarantee.
   await updateStatus(jobDir, { ...status, slotQueued: true });
+  // After the slot-queued write, so a supervisor that sees the entry never
+  // finds the job in the plain `queued` state it briefly had above — which
+  // reads as already released.
+  await markPending(jobId);
   await drainSlotQueue(deps.holder.state.config, deps.holder.state.configPath);
   const settled = await readJson<JobStatus>(path.join(jobDir, "status.json"));
-  return { status: settled, completion: watchUntilTerminal(jobDir) };
+  const watch = new AbortController();
+  const configPath = deps.holder.state.configPath;
+  const completion = watchUntilTerminal(jobDir, {
+    ...(input.onEvent !== undefined ? { onEvent: input.onEvent } : {}),
+    signal: watch.signal,
+    onWaiting: () => startSupervisorIfNoneAlive(configPath),
+  });
+  return { status: settled, completion, stopWatching: () => watch.abort() };
 }
 
 /** The first line or so of a prompt, on one line. */

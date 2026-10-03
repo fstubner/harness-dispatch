@@ -1406,3 +1406,212 @@ describe("a delegate's own test output must not block its route", () => {
     expect(detectRateLimit(text).rateLimited).toBe(true);
   });
 });
+
+describe("how a CLI route fails (audit 5, order B)", () => {
+  const jsonlProtocol: CliProtocolConfig = {
+    args: ["{{prompt}}"],
+    successRequiresOutput: false,
+    output: {
+      mode: "jsonl_stream",
+      eventRules: [
+        { when: { type: "item.completed", "item.type": "agent_message" }, emit: "text", textField: "item.text" },
+        { when: { type: "error" }, emit: "error", messageField: "message" },
+        { when: { type: "turn.failed" }, emit: "error", messageField: "error.message" },
+      ],
+    },
+  };
+
+  /** A scripted stream whose end event can say the run went idle. */
+  function scripted(
+    chunks: Array<{ stream: "stdout" | "stderr"; chunk: string }>,
+    end: Record<string, unknown> = {},
+  ): void {
+    streamSubprocessMock.mockImplementation(async function* () {
+      for (const c of chunks) yield c;
+      yield {
+        kind: "end",
+        exitCode: 0,
+        timedOut: false,
+        idleTimedOut: false,
+        durationMs: 5,
+        totalStdoutBytes: 0,
+        totalStderrBytes: 0,
+        truncated: false,
+        ...end,
+      };
+    });
+  }
+
+  it("passes the route's idle_timeout_ms to the subprocess", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(ok({ stdout: "x" }));
+    const d = new GenericCliDispatcher(
+      svc({ args: ["{{prompt}}"], output: { mode: "text" } }, { idleTimeoutMs: 900_000 }),
+    );
+    await d.dispatch("go", [], "/tmp");
+    const opts = streamSubprocessMock.mock.lastCall?.[2] as { idleTimeoutMs?: number };
+    expect(opts.idleTimeoutMs).toBe(900_000);
+  });
+
+  it("reports an idle stop as a hang with a next step, keeping what was printed", async () => {
+    mockFound();
+    scripted([{ stream: "stdout", chunk: '{"type":"turn.started"}\n' }], { exitCode: 1, idleTimedOut: true });
+    const d = new GenericCliDispatcher(svc(jsonlProtocol, { idleTimeoutMs: 900_000 }));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/printed nothing for 15 minutes \(idle_timeout_ms 900000\)/);
+    expect(res.error).toMatch(/raise idle_timeout_ms/);
+    expect(res.output).toContain("turn.started");
+  });
+
+  // The real job this was found on (job-1790462230645-0e28313c, abridged):
+  // one command outside the repository completed, the sandbox refused the
+  // only repository command, and the run was recorded as a success.
+  const okCommand =
+    '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"pwsh -Command \\"Get-Content -Raw SKILL.md\\"",' +
+    '"aggregated_output":"---\\nname: engineering-assessment","exit_code":0,"status":"completed"}}';
+  const refusedCommand =
+    '{"type":"item.completed","item":{"id":"item_4","type":"command_execution","command":"pwsh -Command \\"git show 1ccb427\\"",' +
+    '"aggregated_output":"execution error: Io(Custom { kind: Other, error: \\"windows sandbox: runner failed during SpawnChild: ' +
+    'CreateProcessAsUserW failed: 5 (Access is denied.)\\" })","exit_code":-1,"status":"failed"}}';
+  const refusalLog = [
+    "2026-09-26T22:43:27.772511Z ERROR codex_core::exec: exec error: windows sandbox: runner failed during SpawnChild: CreateProcessAsUserW failed: 5 (Access is denied.) | cwd=H:\\repo",
+    '2026-09-26T22:43:27.773551Z ERROR codex_core::tools::router: error=execution error: Io(Custom { kind: Other, error: "windows sandbox: runner failed during SpawnChild: CreateProcessAsUserW failed: 5 (Access is denied.)',
+  ].join("\n");
+  const answer =
+    '{"type":"item.completed","item":{"id":"item_5","type":"agent_message","text":"I could not complete the audit."}}';
+
+  it("fails a run whose one completed command does not outweigh the refusals", () => {
+    expect(detectHarnessEnvironmentFailure([okCommand, refusedCommand, answer].join("\n"), refusalLog)).toMatch(
+      /could not spawn any child process/,
+    );
+  });
+
+  it("still passes a run that completed many commands around an intermittent refusal", () => {
+    // The shape of the six healthy runs: dozens completed, a few refused, and
+    // the last command refused (which a "completions after the last refusal"
+    // rule would have failed).
+    const stream = [
+      ...Array.from({ length: 22 }, () => okCommand),
+      ...Array.from({ length: 9 }, () => refusedCommand),
+      answer,
+    ];
+    expect(detectHarnessEnvironmentFailure(stream.join("\n"), refusalLog)).toBeUndefined();
+  });
+
+  it("trips the route for half an hour, not as an ordinary failure", async () => {
+    mockFound();
+    scripted([
+      { stream: "stdout", chunk: [okCommand, refusedCommand, answer].join("\n") + "\n" },
+      { stream: "stderr", chunk: refusalLog },
+    ]);
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.environmentFault).toBe(true);
+    expect(res.retryAfter).toBe(30 * 60);
+    expect(res.rateLimited).toBeUndefined();
+  });
+
+  it("tells the agent what to do when the account cannot use the model it named", async () => {
+    // Verbatim from two real cursor_cli jobs on 2026-10-01.
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stderr:
+          "ActionRequiredError: Named models unavailable Free plans can only use Auto. Switch to Auto or upgrade plans to continue.",
+        exitCode: 1,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc({ args: ["{{prompt}}"], output: { mode: "text" } }));
+    const res = await d.dispatch("go", [], "/tmp", { modelOverride: "claude-sonnet-5-thinking-high" });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("Named models unavailable");
+    expect(res.error).toMatch(/Retry without hints\.model/);
+    expect(res.error).toMatch(/retry_job with service set to another route/);
+  });
+
+  it("reads is_error from a JSON body that follows a banner line (A1-3)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: 'Update available: 1.2.3\n{"is_error":true,"result":"API Error: 500 overloaded"}', exitCode: 0 }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        successRequiresOutput: false,
+        output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("API Error: 500 overloaded");
+  });
+
+  it("keeps stdout's is_error when the answer text came from stderr's JSON (A1-9)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({ stdout: '{"is_error":true,"result":""}', stderr: '{"result":"some text"}', exitCode: 0 }),
+    );
+    const d = new GenericCliDispatcher(
+      svc({
+        args: ["{{prompt}}"],
+        successRequiresOutput: false,
+        output: { mode: "json_field", fields: ["result"], error: { field: "is_error" } },
+      }),
+    );
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+  });
+
+  it("lets an answer that follows a recovered error frame stand (A1-4)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: [
+          '{"type":"error","message":"transient upstream error"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"All done."}}',
+        ].join("\n"),
+        exitCode: 0,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(true);
+    expect(res.output).toBe("All done.");
+  });
+
+  it("still fails when the error comes after the answer (A1-4)", async () => {
+    mockFound();
+    runSubprocessMock.mockResolvedValue(
+      ok({
+        stdout: [
+          '{"type":"item.completed","item":{"type":"agent_message","text":"Partial."}}',
+          '{"type":"turn.failed","error":{"message":"stream disconnected"}}',
+        ].join("\n"),
+        exitCode: 0,
+      }),
+    );
+    const d = new GenericCliDispatcher(svc(jsonlProtocol));
+    const res = await d.dispatch("go", [], "/tmp");
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("stream disconnected");
+  });
+});
+
+describe("the POSIX command-line budget is per argument (A1-5)", () => {
+  const realPlatform = process.platform;
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: realPlatform });
+  });
+
+  it("measures the longest argument, not the sum of all of them", async () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    const { __commandLineLengthForTest } = (await import("../../src/dispatchers/generic-cli.js")) as unknown as {
+      __commandLineLengthForTest: (c: string, a: string[]) => number;
+    };
+    // Three 60 KB arguments each fit MAX_ARG_STRLEN (128 KiB); their sum does not.
+    const arg = "x".repeat(60 * 1024);
+    expect(__commandLineLengthForTest("/usr/bin/agy", [arg, arg, arg])).toBe(60 * 1024);
+  });
+});

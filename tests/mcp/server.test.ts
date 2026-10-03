@@ -10,7 +10,6 @@ import { registerResources } from "../../src/mcp/resources.js";
 import { ConfigHotReloader, RuntimeHolder, type RuntimeState } from "../../src/mcp/config-hot-reload.js";
 import { Router } from "../../src/router.js";
 import { QuotaCache } from "../../src/quota.js";
-import { LeaderboardCache } from "../../src/leaderboard.js";
 import type { Dispatcher } from "../../src/dispatchers/base.js";
 import type {
   DispatcherEvent,
@@ -53,7 +52,7 @@ function makeSvc(name: string, harness: string): ServiceConfig {
     cliCapability: 1.0,
     capabilities: { execute: 1.0, plan: 1.0, review: 1.0 },
     escalateOn: [],
-    leaderboardModel: `${name}-model`,
+    model: `${name}-model`,
     maxOutputTokens: 64_000,
     maxInputTokens: 1_000_000,
     provider: "local",
@@ -63,15 +62,6 @@ function makeSvc(name: string, harness: string): ServiceConfig {
     paidUsagePossible: false,
     billingConfidence: "documented",
   };
-}
-
-function stubLeaderboard(): LeaderboardCache {
-  const lb = new LeaderboardCache();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (lb as any).fetchedAt = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (lb as any).data = { "a-model": 1400, "b-model": 1300 };
-  return lb;
 }
 
 function buildState(): RuntimeState {
@@ -85,9 +75,8 @@ function buildState(): RuntimeState {
   };
   const config: RouterConfig = { services };
   const quota = new QuotaCache(dispatchers);
-  const leaderboard = stubLeaderboard();
-  const router = new Router(config, quota, dispatchers, leaderboard);
-  return { config, dispatchers, quota, router, leaderboard, mtimeMs: 0 };
+  const router = new Router(config, quota, dispatchers);
+  return { config, dispatchers, quota, router, mtimeMs: 0 };
 }
 
 vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
@@ -136,6 +125,25 @@ describe("MCP server — public surface", () => {
       expect(hintKeys).toContain("safetyProfile");
       expect(hintKeys).not.toContain("service");
       expect(hintKeys).not.toContain("harness");
+    } finally {
+      await close();
+    }
+  });
+
+  it("annotates the tools so a client can tell polling from stopping work", async () => {
+    // No tool carried annotations, so a client that honours them could not
+    // auto-approve `job_status` or `usage`, nor warn on `workspace discard`.
+    const { client, close } = await startLinked();
+    try {
+      const byName = Object.fromEntries(
+        (await client.listTools()).tools.map((t) => [t.name, t.annotations]),
+      );
+      expect(byName["job_status"]?.readOnlyHint).toBe(true);
+      expect(byName["usage"]?.readOnlyHint).toBe(true);
+      expect(byName["cancel_job"]?.destructiveHint).toBe(true);
+      expect(byName["workspace"]?.destructiveHint).toBe(true);
+      // dispatch starts work that can edit files: never advertised read-only.
+      expect(byName["dispatch"]?.readOnlyHint).not.toBe(true);
     } finally {
       await close();
     }
@@ -404,6 +412,44 @@ describe("MCP server — operator instructions", () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+});
+
+describe("MCP server — who dispatched", () => {
+  // Every session on the machine writes one dispatch log and one jobs
+  // directory, so without the client and connection on each record the log
+  // could say how routes performed but not which agent or session used them.
+  it("records the connecting client and its session on the job and the log line", async () => {
+    const { getAsyncJob } = await import("../../src/jobs.js");
+    const { dispatchLogPath } = await import("../../src/dispatch-log.js");
+    const { readFileSync } = await import("node:fs");
+    const { client, close } = await startLinked();
+    try {
+      const resp = await client.callTool({
+        name: "dispatch",
+        arguments: { prompt: "say hi", workingDir: process.cwd(), hints: { taskType: "plan" } },
+      });
+      const content = resp.content as Array<{ type: string; text: string }>;
+      const { jobId } = JSON.parse(content[0]!.text) as { jobId: string };
+      const job = await getAsyncJob(jobId);
+      expect(job.manifest.caller?.client).toBe("test-client");
+      expect(job.manifest.caller?.clientVersion).toBe("test");
+      expect(job.manifest.caller?.session).toMatch(/^[0-9a-f-]{36}$/);
+
+      const line = readFileSync(dispatchLogPath(), "utf8")
+        .split("\n")
+        .filter((l) => l.includes(jobId))
+        .map((l) => JSON.parse(l) as Record<string, unknown>)[0];
+      expect(line, "no dispatch log line for the job").toBeDefined();
+      expect(line).toMatchObject({
+        client: "test-client",
+        clientVersion: "test",
+        session: job.manifest.caller?.session,
+        jobId,
+      });
+    } finally {
+      await close();
     }
   });
 });

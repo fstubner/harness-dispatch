@@ -30,8 +30,19 @@ caller -> mcp/server.ts (dispatch tool)
 
 The MCP call waits a grace window and returns either the finished result or a
 `jobId`. **The job directory on disk is the source of truth**, not process
-memory — which is what makes a dispatch survive an MCP timeout, a server
-restart, or a supervisor crash.
+memory — which is what makes a dispatch survive an MCP timeout or a server
+restart (the run is a detached process, not a child of the server), and what
+keeps the record of a run whose own process died, which is then reported
+`orphaned` rather than lost. On Windows a plain detached spawn is not enough: a
+launcher that puts its child in a job object that kills everything in it when
+the session ends (the nvx shim does) takes a detached run with it. The
+supervisor (the detached process that runs the jobs) is therefore launched through WMI
+(`Win32_Process.Create`, via PowerShell), which belongs to none of the
+caller's job objects (`src/jobs/detach.ts`); where WMI or PowerShell is
+unavailable it falls back to the plain spawn, notes that in the spawn log, and
+a run launched that way does not survive such a launcher. `doctor` runs a real
+probe through the same launch and fails if the probe dies with its parent.
+POSIX uses the plain detached spawn (setsid).
 
 ## Parts and boundaries
 
@@ -41,7 +52,8 @@ file in the codebase and the one where silently-dropped keys have hidden
 (`workspace_policy` on `clis:` was parsed for two of three route shapes).
 
 **`router.ts`** — scoring and selection. Score is
-`quality x cliCapability x capScore x quotaScore x weight`, filtered by
+`cliCapability x capScore x quotaScore x weight` within a tier (tier first, then
+score; there is no benchmark term), filtered by
 availability, breaker state, safety compatibility, and billing policy.
 Deliberately has no harness-specific branches; harness behaviour lives in
 config, not code.
@@ -97,10 +109,17 @@ What this system assumes, and what it refuses to assume:
 
 - `max_concurrent_runs` bounds agent CLIs machine-wide. The binding constraint
   is **memory, not cores** — agent CLIs are heavyweight processes.
-- Supervision is a pool of at most 4 processes, each running several jobs, so
-  wrapper memory is O(1) in job count rather than O(N).
+- Supervision is a pool of at most 4 supervisor processes. Each claims jobs up
+  to its share of `max_concurrent_runs` (`ceil(limit / 4)`), so at the default
+  of 4 each runs exactly one job and there is a supervisor per running job;
+  supervisors only run several jobs each once the limit exceeds the pool (for
+  example `max_concurrent_runs: 0`, which lifts the cap).
 - Cross-process coordination is on disk: job status files, breaker files,
-  workspace lock files, all with heartbeats and a shared staleness rule.
+  workspace lock files, supervisor registrations. They do **not** share one
+  liveness rule. Jobs and workspace locks use a heartbeat plus a pid check and
+  a 30-second observe window; supervisors use heartbeat age alone; the
+  `file-lock` guarding breaker, quota and log files uses lock age alone, with
+  no heartbeat.
 
 ## Deliberate choices worth knowing
 
@@ -108,7 +127,9 @@ What this system assumes, and what it refuses to assume:
 `config.ts` carries the complexity, and parsing bugs there are invisible ones.
 
 **Disk as IPC.** No daemon, no socket, no message bus. Slower and chattier than
-shared memory, but a dispatch survives every process in the system dying.
+shared memory, and a dispatch's record and queue position survive every process
+dying: the next process reports what happened to a run whose own process is gone
+(`orphaned`, retryable with `retry_job`) and does not resume it on its own.
 
 **Failing closed.** An unresolvable command, an unrecognised safety enum, a
 lock that cannot be acquired — each stops the route rather than proceeding

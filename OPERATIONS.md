@@ -39,15 +39,25 @@ harness-dispatch doctor --json
 
 It covers: the binary, config load, harness detection on PATH, auth, billing
 classification, route readiness, whether `git` is present, and whether any MCP
-client on this machine points at a path that no longer exists.
+client on this machine points at a path that no longer exists. Each row is `ok`,
+`warn` (passes, but wants something done, such as a client that is not registered
+yet) or `fail`; only `fail` makes the exit code non-zero. The last line is a
+one-line verdict, and `--json` carries it as `verdict`.
 
 **What it is doing and what it costs.** `harness-dispatch status` (route
 readiness, quota, circuit-breaker state) and `harness-dispatch usage`
-(per-route call counts, tokens, billing kind). Both take `--json`.
+(per-route call counts, tokens, billing kind). Both take `--json`. The call
+counts are lifetime totals, dated `since` the day they began where that is
+known; next to them each route shows how it has done over the **last 7 days**
+(`last 7d: 15/75 succeeded (20%), 43 rate-limited`), read from the dispatch log.
+That recent figure is the one to check before delegating: a route can be fine
+for life and failing this week. Counts are attempts, so a fallback is its own.
 
 **What it did.** `~/.harness-dispatch/logs/dispatches.jsonl`, one JSON object
 per dispatch: route, success, duration, tokens, task type, safety profile, the
-routing reason, and the candidates the winning route beat. This is the record
+routing reason, the candidates the winning route beat, and the config file in
+use (`config`), so a run against a throwaway config can be told from real use.
+This is the record
 to read when asking whether routing is choosing well, rather than whether it
 ran.
 
@@ -82,7 +92,7 @@ them.
 | A route's circuit breaker is tripped | `status` / `usage` show `breakerTripped` | Repeated failures on one route; it is being skipped until the deadline expires (max 24h) |
 | `doctor` exits non-zero | Exit code, and the failing check by name | Something in the chain is broken *now* — most often auth, a missing CLI, or a client entry pointing at a deleted path |
 | A route is `paid_blocked` | `status`, and a refused dispatch naming it | The route has no billing backstop and needs an explicit `allow_paid_usage: true` |
-| Jobs reported `orphaned` | `job_status` | The server that owned the run exited before it finished. The run is gone; the artifacts are not |
+| Jobs reported `orphaned` | `job_status` | The process running the job stopped reporting progress and is gone, or a job waiting for a slot lost its server. The run is gone; the artifacts are not |
 | Config warnings | `doctor` (fails), `status` (lists them) | A config entry had no effect — e.g. `services:` written as a list, which silently renames routes to array indices |
 
 If you want any of this to actually page someone, `doctor --json` and
@@ -125,12 +135,23 @@ after a directory rename. `doctor` fails on it now, and
 one.
 
 **A run outlives its server.** Jobs run in a detached process, so a client
-timeout or a server restart does not kill them. If the server dies while a job
-is *running*, the job dies with it and is reported `orphaned` within 90
-seconds. If it dies while a job is waiting for a concurrency slot, that job is
-reported `orphaned` at the next server start — deliberately reported rather
-than resumed, because silently running an abandoned job against your repository
-is not a decision a restart should make.
+timeout or a server restart does not kill them. On Windows that holds even
+behind a launcher that kills the whole process tree when the session ends (the
+nvx shim does): the supervisor that runs the job is started through WMI, outside the
+launcher's job object. If WMI cannot be used the runner falls back to a plain detached spawn,
+writes that to its spawn log, and a run started that way can be killed with the
+session. `doctor`'s `job-runner` check starts a real probe under the same
+launcher and fails when the probe is killed with its parent. If the process running the job
+itself dies (a crash, a kill, a reboot), the job is reported `orphaned` within
+90 seconds. If the server dies while a job is waiting for a concurrency slot and no
+supervisor is alive, that job is reported `orphaned` at the next server start —
+deliberately reported rather than resumed, because silently running an abandoned
+job against your repository is not a decision a restart should make. A job that
+is waiting while every supervisor has died, but that was not abandoned by a
+restart, is different: polling it with `job_status` starts a supervisor (when
+none is alive and nothing is running) so the queue drains under the usual
+`max_concurrent_runs` cap, and the job's reply says where it stands in the
+queue and what it is waiting on.
 
 **A streamed request is interrupted.** A `stream: true` request runs as a job
 like every other dispatch, and its id is in the `x-harness-dispatch-job-id`
@@ -141,7 +162,18 @@ timeout or a server restart.
 
 **Quota exhaustion on one route.** Repeated failures trip the breaker and
 routing moves on. Nothing is lost; the dispatch falls back unless
-`--no-fallback` was passed.
+`--no-fallback` was passed. When the provider's message states when the limit
+lifts (Codex's "try again at ...", Claude Code's "resets 1:30am (Europe/Dublin)"),
+the route is skipped until then, at most 24 hours at a time. A Codex run that
+fails because its Windows sandbox refused the repository commands skips the
+route for 30 minutes.
+
+**A harness goes silent.** A CLI route with an idle limit (`idle_timeout_ms`;
+shipped as 15 minutes for Codex and Antigravity, which print as they work) is
+stopped when it has printed nothing on either stream for that long, and the
+failure says so, instead of holding a concurrency slot until the 60-minute job
+ceiling. Claude Code and Cursor print only their final answer, so they ship
+without one; set it per route only where the harness streams.
 
 **A harness streams and then stops.** Some CLIs emit progress and exit without
 an answer. When that run fails (a non-zero exit, or a route that requires an
@@ -152,8 +184,12 @@ false`) a zero exit is still a success, and what it streamed is the output.
 
 ## Recovery
 
-**A tripped breaker.** Wait, or restart the server. Deadlines are capped at 24
-hours and a single success closes it. `status` shows the remaining time.
+**A tripped breaker.** Wait for the deadline, or close it now with
+`harness-dispatch breaker reset <route>`. Restarting the server does **not**
+clear it: breaker state is saved per route (`breaker_state/<route>.json` under
+the state directory) precisely so that a restart does not forget a cooldown.
+Deadlines are capped at 24 hours and a single success closes it. `status` shows
+the remaining time.
 
 **An orphaned or failed job.** `retry_job <jobId>` re-runs it from its own
 record — the frozen prompt, files, working directory and hints — optionally on
@@ -185,6 +221,10 @@ up the new value, and the old one stops working immediately. If the token comes
 from `HARNESS_DISPATCH_HTTP_TOKEN` instead of the token file, rotate refuses —
 rotating the file would change nothing — so change or unset the variable and
 restart `serve`.
+
+**File permissions on Windows.** The token file and the state directories are written owner-only
+(0600/0700) on Linux and macOS; on Windows those modes are no-ops, so they are
+protected by your user profile's default permissions, not by a mode.
 
 **A client entry pointing at a path that no longer exists.**
 `harness-dispatch connect` rewrites it; `connect --remove` takes it out. Both

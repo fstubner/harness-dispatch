@@ -26,12 +26,15 @@ it: `partialOutput` while running, the full `result` once done. Nothing is ever
 lost to a timeout.
 
 Use fanout mode when a plan, review, or architecture decision benefits from
-multiple model perspectives:
+multiple model perspectives. Name the routes in `models` (ids as `usage` lists
+them); without it every eligible route runs and consumes quota:
 
 ```json
 {
   "mode": "fanout",
   "prompt": "<task>",
+  "workingDir": "<absolute path to project>",
+  "models": ["<route id from usage>", "<route id from usage>"],
   "hints": {
     "taskType": "plan"
   }

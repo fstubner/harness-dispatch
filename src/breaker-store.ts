@@ -220,6 +220,29 @@ export class BreakerStore {
     return out;
   }
 
+  /** Every route with a record on disk, readable or not (as of a fresh read). */
+  savedRoutes(): string[] {
+    return [...new Set([...Object.keys(this.loadAll()), ...this.unreadable])].filter(
+      (name) => name !== LEGACY_BLOB_ROUTE,
+    );
+  }
+
+  /** Delete the record of every route not in `keep`; returns the names removed. */
+  prune(keep: Iterable<string>): string[] {
+    const wanted = new Set(keep);
+    const removed: string[] = [];
+    for (const name of this.savedRoutes()) {
+      if (wanted.has(name)) continue;
+      try {
+        rmSync(path.join(this.stateDir, fileNameFor(name)), { force: true });
+        removed.push(name);
+      } catch {
+        // Left in place; reported by the next savedRoutes().
+      }
+    }
+    return removed;
+  }
+
   /** Routes whose record was present but unparseable at the last loadAll(). */
   unreadableRoutes(): string[] {
     return this.unreadable.slice();
@@ -248,8 +271,17 @@ export class BreakerStore {
     if (snapshot.blockedUntilMs === null && snapshot.failures === 0) {
       try {
         rmSync(file, { force: true });
-      } catch {
-        // Best-effort — a stale healthy record is harmless on read.
+        // The directory is writable and the record is gone, so an earlier
+        // failed write is no longer true of this store. Healthy saves delete
+        // rather than write, so without this the error was only ever cleared by
+        // a later non-healthy write, and `status` kept reporting it.
+        this.writeError = undefined;
+      } catch (err) {
+        // Not harmless: a tripped record left behind is read back by the next
+        // process, and an expired one still carries its failure count, so the
+        // route re-trips on its next single failure. Reported like any other
+        // write that did not reach disk.
+        this.writeError = `cannot clear ${file}: ${err instanceof Error ? err.message : String(err)}`;
       }
       return;
     }
@@ -277,6 +309,13 @@ export class BreakerStore {
   update(
     service: string,
     mutate: (current: CircuitBreakerSnapshot | undefined) => CircuitBreakerSnapshot,
+    /**
+     * This process's own view of the route, used as `current` when the store
+     * cannot be written at all. Without it the event was applied to nothing, so
+     * eight failures in a row each counted as the first and the breaker never
+     * tripped.
+     */
+    fallback?: () => CircuitBreakerSnapshot | undefined,
   ): CircuitBreakerSnapshot {
     const file = path.join(this.stateDir, fileNameFor(service));
     try {
@@ -289,7 +328,7 @@ export class BreakerStore {
       // exited. Losing breaker state is survivable; losing the user's finished
       // work to report a false cause is not.
       this.writeError = `cannot create ${path.dirname(file)}`;
-      return mutate(undefined);
+      return mutate(fallback?.());
     }
     return withFileLock(file, () => {
       const merged = mutate(this.readOne(file));

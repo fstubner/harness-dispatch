@@ -353,7 +353,7 @@ describe("a child that exits without reading its stdin", () => {
     return stdout.trim();
   }
 
-  it.skipIf(!existsSync(DIST))("streamSubprocess ends normally instead of crashing", async () => {
+  it("streamSubprocess ends normally instead of crashing", async () => {
     const out = await survives(
       "stream-subprocess.js",
       `for await (const ev of m.streamSubprocess(process.execPath, quit, { stdin: big })) {
@@ -441,4 +441,73 @@ describe("a child that exits while a process it started still holds its output",
     }
     expect(end).toEqual({ exitCode: 0, timedOut: false });
   }, 20_000);
+});
+
+describe("a child that goes silent", () => {
+  // The wall clock alone cannot tell a hung run from a working one: silent
+  // runs held a concurrency slot until the 60-minute job ceiling, and four
+  // real Antigravity jobs were cancelled by hand after 31-35 minutes.
+  it("is stopped after idleTimeoutMs with nothing on either stream", async () => {
+    const script = `process.stdout.write('started\\n'); setInterval(() => {}, 10000);`;
+    let out = "";
+    let end: { timedOut: boolean; idleTimedOut: boolean } | undefined;
+    const started = Date.now();
+    for await (const evt of streamSubprocess(NODE, ["-e", script], { timeoutMs: 20_000, idleTimeoutMs: 1_500 })) {
+      if ("stream" in evt) out += evt.chunk;
+      else end = { timedOut: evt.timedOut, idleTimedOut: evt.idleTimedOut };
+    }
+    expect(end).toEqual({ timedOut: false, idleTimedOut: true });
+    expect(out).toBe("started\n");
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 30_000);
+
+  it("is left alone while it keeps printing, however long the whole run takes", async () => {
+    // 3 s of output every 200 ms against a 1.5 s idle limit.
+    const script = `
+      let i = 0;
+      const t = setInterval(() => {
+        process.stdout.write('tick ' + (++i) + '\\n');
+        if (i >= 15) { clearInterval(t); process.exit(0); }
+      }, 200);
+    `;
+    let end: { exitCode: number; idleTimedOut: boolean } | undefined;
+    for await (const evt of streamSubprocess(NODE, ["-e", script], { timeoutMs: 20_000, idleTimeoutMs: 1_500 })) {
+      if (!("stream" in evt)) end = { exitCode: evt.exitCode, idleTimedOut: evt.idleTimedOut };
+    }
+    expect(end).toEqual({ exitCode: 0, idleTimedOut: false });
+  }, 30_000);
+});
+
+describe("a child that prints faster than the consumer reads", () => {
+  // Measured in an audit: 60,000 lines in 366 ms overflowed the 1,000-chunk
+  // queue, the child was killed and the job failed with "could not run
+  // node.EXE: internal queue exceeded". The child is paused instead.
+  it("delivers every line and ends normally instead of killing the child", async () => {
+    const script = `
+      let i = 0;
+      function write() {
+        while (i < 20000) {
+          if (!process.stdout.write('line ' + (++i) + '\\n')) return process.stdout.once('drain', write);
+        }
+      }
+      write();
+    `;
+    let out = "";
+    let chunks = 0;
+    let end: { exitCode: number; truncated: boolean } | undefined;
+    for await (const evt of streamSubprocess(NODE, ["-e", script], { timeoutMs: 60_000, maxBufferedChunks: 8 })) {
+      if ("stream" in evt) {
+        out += evt.chunk;
+        // A consumer that is slower than the child: what the job runner's two
+        // appendFile calls per event are.
+        if (++chunks % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 2));
+      } else {
+        end = { exitCode: evt.exitCode, truncated: evt.truncated };
+      }
+    }
+    expect(end).toEqual({ exitCode: 0, truncated: false });
+    const lines = out.split("\n").filter(Boolean);
+    expect(lines.length).toBe(20000);
+    expect(lines[19999]).toBe("line 20000");
+  }, 90_000);
 });

@@ -39,19 +39,13 @@ const SERVER_INSTRUCTIONS =
   "call; omitting either degrades routing or runs the task in the wrong directory. " +
   "Also set hints.model on every dispatch, chosen for the task — a cheap model for " +
   "mechanical work, the strongest only for hard judgment — rather than leaving each " +
-  "route on its default. A model name belongs to one harness: name that route with " +
-  "`service` as well, because without it the first route picked is sent the name " +
-  "as-is even when it does not declare it. " +
-  "Check the `usage` tool before passing an unfamiliar model or route name — " +
-  "semantics differ per field: hints.model is forwarded to the picked harness as-is " +
-  "UNLESS it names a configured route, in which case it steers routing only and the " +
-  "route runs its own model — when you also name a route with `service`, only a " +
-  "value naming THAT route is dropped (routing.modelHintDropped reports it; " +
-  "routing.modelHintMatched reports whether the picked route declares it), fanout " +
-  "`models` only selects which routes run (it does not set their model), and forcing " +
-  "a specific backend is done with the top-level `service` param. Read " +
-  "harness-dispatch://status or harness-dispatch://status.json for route readiness, " +
-  "billing policy, and safety detail.";
+  "route on its default, and name the route it belongs to with `service`. Its " +
+  "full rules (what a route-named value does, the routing.* response fields) are in " +
+  "the hints.model schema description; check the `usage` tool before passing an " +
+  "unfamiliar model or route name. `service` forces one route; fanout `models` only " +
+  "selects which routes run, it does not set their model. Read harness-dispatch://status or " +
+  "harness-dispatch://status.json for route readiness, billing policy, and safety " +
+  "detail.";
 
 /**
  * What a connecting agent is told: the server's own instructions, then the

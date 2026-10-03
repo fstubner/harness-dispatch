@@ -82,7 +82,13 @@ In scope:
 - Background jobs that survive the MCP request timeout, with partial output
   while running — the durability criterion above is implemented here.
 - Fan-out to several routes for independent opinions.
-- Workspace isolation policies, so a delegate cannot damage the caller's tree.
+- Workspace isolation policies (`copy`, `git_worktree`), so a delegate works on
+  a separate copy of the project state and its changes reach the caller's tree
+  only through an explicit apply. They isolate project state and the process's
+  working directory, not the host: they are not an OS sandbox, a delegate with
+  shell can still reach anything the user can, and the default policy
+  (`shared`) isolates nothing. What limits a delegate beyond that is its
+  harness's own enforcement of the safety profile, which differs by harness.
 - Billing classification and opt-in gating for anything that can cost money.
 - Chaining: a dispatch can build on earlier jobs' results.
 - API endpoint routes as full members of the mix, within what they can

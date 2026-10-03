@@ -8,25 +8,24 @@
 # neither ever clobbers the other. The entries below are both the built-in
 # defaults and the worked examples of the pattern. With no config.yaml of
 # your own, the router uses this file directly, filtered by which CLIs are
-# actually installed. To customize, copy this file to config.yaml in your
-# own project and edit — or run `harness-dispatch configure` to generate a
-# starting point instead. Same schema, same parser, no special cases either
-# way. Add a new entry and it's a route.
+# actually installed. Do not copy this whole file: start from the short one
+# `harness-dispatch configure --print` shows and add entries to it. Same
+# schema, same parser, no special cases. Add a new entry and it's a route.
 #
-# A config that lists any `clis:` or `endpoints:` is AUTHORITATIVE: it gets
-# exactly the routes it names, and nothing is auto-detected alongside them.
-# So deleting an entry from your own config.yaml removes that route, full
-# stop — `disabled:` is not needed for it, and has no effect in such a file.
-# `disabled:` applies only to a config that names no routes of its own and is
-# therefore still relying on auto-detection. Add `detect: true` if you want
-# both: your entries AND whatever is installed.
+# Listing any `clis:` or `endpoints:` in your own config.yaml turns
+# auto-detection off — see docs/configuration.md#listing-a-route-turns-detection-off
+# (https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md).
+# Every key is in the reference at the bottom of that page.
 #
 # Route selection scores each entry by task fit:
-#   capabilities[task_type] x leaderboard ELO x cli_capability x quota x weight
+#   capabilities[task_type] x cli_capability x quota x weight
+# Routing is: tier first (lowest number wins), then that score, then fallback
+# to the next candidate if the pick fails.
 # Billing safety: routes that can cost money (metered api_key, unknown billing)
 # stay blocked until you set allow_paid_usage: true on them. Product-login CLIs
-# (Claude Code, Codex, Cursor) run by default — their providers hard-stop at
-# your plan's included usage.
+# (Claude Code, Codex, Cursor) run by default. They draw on your plan's included
+# usage; if paid overage is switched on at the provider (Cursor on-demand,
+# Claude usage credits, Codex flexible credits), that is spent too.
 #
 # ${ENV_VAR} anywhere in a string value is replaced from the environment.
 
@@ -42,7 +41,6 @@ clis:
       https://platform.claude.com/docs/en/docs/about-claude/models/overview
       (e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may
       lag behind what's newly listed there.
-    leaderboard_model: claude-opus-4-6
     cli_capability: 1.1
     tier: 1
     capabilities: { execute: 0.95, plan: 1.0, review: 1.0 }
@@ -73,9 +71,22 @@ clis:
       stdin: true
       args: ["-p", "--output-format", "json", "{{safety}}", "{{model}}"]
       model: { flag: "--model" }
+      # --allowedTools only ADDS auto-approvals on top of the user's own
+      # settings, so on its own "workspace_edit: no shell" meant "no shell
+      # beyond the user's allow rules" — 17 of them start with Bash on the
+      # maintainer's machine. --tools is the flag that sets which built-in
+      # tools exist at all, and --strict-mcp-config (with no --mcp-config)
+      # loads no MCP servers, so the user's servers — harness-dispatch itself
+      # among them — are not handed to a read_only or workspace_edit delegate.
+      # Each variadic list is followed by another option so it cannot swallow
+      # the next argument. Flags checked against `claude --help`, 2.1.278.
       safety:
-        read_only: ["--allowedTools", "Read", "--permission-mode", "plan"]
-        workspace_edit: ["--allowedTools", "Read,Edit,Write", "--permission-mode", "acceptEdits"]
+        read_only:
+          ["--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
+           "--strict-mcp-config", "--permission-mode", "plan"]
+        workspace_edit:
+          ["--tools", "Read,Grep,Glob,Edit,Write", "--allowedTools", "Read,Grep,Glob,Edit,Write",
+           "--strict-mcp-config", "--permission-mode", "acceptEdits"]
         full_auto: ["--allowedTools", "Bash,Read,Edit,Write", "--permission-mode", "acceptEdits"]
       # Claude Code reads ANTHROPIC_API_KEY itself to switch from
       # subscription/OAuth session auth to API-key billing — without this,
@@ -118,7 +129,6 @@ clis:
       https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol,
       gpt-5.6-terra) — the installed codex CLI may lag behind what's newly
       listed there.
-    leaderboard_model: gpt-5.4
     cli_capability: 1.08
     tier: 1
     capabilities: { execute: 1.0, plan: 0.83, review: 0.82 }
@@ -131,6 +141,14 @@ clis:
     # OpenAI hard-stops at the plan's included usage unless you enabled
     # flexible-credit overage on your account — set true here if you did.
     paid_usage_possible: false
+    # Stop a run that has printed nothing for 15 minutes as hung, instead of
+    # letting it hold a concurrency slot until the 60-minute job ceiling.
+    # Codex streams an event per step, so silence that long is not work: the
+    # longest gap between events in 236 real `codex exec` sessions
+    # (~/.codex/sessions, 2026-07 to 2026-10) was 123 s. Only for a harness
+    # that streams — claude_code_cli and cursor_cli print their answer only at
+    # the end, so an idle limit there would stop every long task.
+    idle_timeout_ms: 900000
     protocol:
       # "exec" is Codex's required subcommand; trailing "-" = read prompt from
       # stdin (stdin: true below).
@@ -138,10 +156,15 @@ clis:
       stdin: true
       working_dir: { flag: "--cd", extra_args_when_set: ["--skip-git-repo-check"] }
       model: { flag: "--model" }
+      # full_auto was `--full-auto`, which `codex exec --help` (0.146) no longer
+      # lists; it was still accepted and meant the workspace-write sandbox. It
+      # is spelled out here so a removal cannot change what runs. Codex's
+      # full_auto therefore still runs shell inside its sandbox — the safe
+      # direction; `danger-full-access` would be the unsandboxed reading.
       safety:
         read_only: ["--sandbox", "read-only"]
         workspace_edit: ["--sandbox", "workspace-write"]
-        full_auto: ["--full-auto"]
+        full_auto: ["--sandbox", "workspace-write"]
       api_key_env_var: OPENAI_API_KEY
       file_list_header: "Files to work with:"
       file_list_bullet: "  "
@@ -195,7 +218,6 @@ clis:
       Wide multi-vendor catalog. Current model ids and pricing:
       https://cursor.com/docs/models — or run `cursor-agent --list-models`
       for what's actually available on this install.
-    leaderboard_model: claude-sonnet-4-6
     cli_capability: 1.05
     tier: 1
     capabilities: { execute: 1.0, plan: 0.82, review: 0.9 }
@@ -288,7 +310,6 @@ clis:
       Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's
       portion: https://ai.google.dev/gemini-api/docs/models; check the agy
       CLI's own docs for the rest.
-    leaderboard_model: gemini-3.1-pro-preview # closest benchmarked model, for scoring
     cli_capability: 1.0
     tier: 1
     capabilities: { execute: 0.87, plan: 0.97, review: 0.95 }
@@ -299,8 +320,32 @@ clis:
     auth_source: product_login
     billing_kind: free_quota
     paid_usage_possible: false
+    # workspace_edit promises "no arbitrary shell", and the workspace_edit
+    # flags below auto-approve every tool request — shell included — with
+    # nothing restricting the terminal: it is --sandbox ("Run in a sandbox
+    # with terminal restrictions enabled", `agy --help`) that does that for
+    # read_only, and whether edits still work under it is not verified, nor
+    # whether it does anything on Windows (Cursor's equivalent does not). So
+    # this route declares what it can actually guarantee, the same way the
+    # cursor route does: a workspace_edit request is skipped unless full_auto
+    # is acceptable.
+    effective_safety:
+      read_only: read_only
+      workspace_edit: full_auto
+      full_auto: full_auto
+    # A wall clock of its own: the longest logged successful Antigravity run
+    # took 706 s (19 successes, dispatch log to 2026-10-01), while runs that
+    # hung were cancelled by hand after 31-35 minutes. Its own internal limit
+    # fired only twice. 25 minutes leaves twice the longest success.
+    timeout_ms: 1500000
+    # stream-json (below) prints a step event as each step starts and ends,
+    # so a long silence is a hang, as for codex_cli.
+    idle_timeout_ms: 900000
     protocol:
-      args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--print", "{{prompt}}"]
+      # --output-format stream-json: one JSON event per step, as it happens.
+      # In text mode agy printed nothing until it finished, so a slow job and
+      # a stuck one looked the same and a cancelled one left nothing behind.
+      args: ["{{model}}", "{{safety}}", "{{working_dir}}", "{{file_dirs}}", "--output-format", "stream-json", "--print", "{{prompt}}"]
       # --print is headless: agy cannot prompt for per-tool permissions, so
       # every profile needs auto-approval or tools are silently auto-denied
       # ("a tool required the read_file permission that headless mode cannot
@@ -315,9 +360,36 @@ clis:
         full_auto: ["--dangerously-skip-permissions"]
       file_list_header: "Files to work with:"
       file_list_bullet: "  "
+      # Event shapes captured from agy 2026-10-01 (`--mode plan --sandbox
+      # --output-format stream-json --print`):
+      #   {"event":"init","conversation_id":...,"init":{"cwd":...,"tools":[...]}}
+      #   {"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE",
+      #     "step_type":"tool","tool_name":"run_command","tool_info":{"name":...,
+      #     "parameters":{"CommandLine":"dir"}}}}
+      #   {"event":"result","result":{"status":"SUCCESS","response":"...",
+      #     "usage":{"input_tokens":17391,"output_tokens":698,...}}}
+      # The answer is result.response. That run's response was empty (its one
+      # tool call was denied), so a non-empty response was not observed; only
+      # SUCCESS was seen as a status, so no error rule is guessed at.
       output:
-        mode: text
-      success_requires_output: false
+        mode: jsonl_stream
+        event_rules:
+          - when: { event: "result" }
+            emit: text
+            text_field: result.response
+          - when: { event: "step_update", "step_update.step_type": "tool", "step_update.state": "ACTIVE" }
+            emit: tool_use
+            name_field: step_update.tool_name
+            input_field: step_update.tool_info.parameters
+          # From the result only: each step_update carries its own usage too,
+          # and counting both would double it.
+          - when: { event: "result" }
+            emit: usage
+            input_token_fields: [result.usage.input_tokens]
+            output_token_fields: [result.usage.output_tokens]
+      # Strict (success_requires_output omitted): in stream-json an exit 0
+      # with an empty response would otherwise return the raw event stream as
+      # the answer. An empty answer is a failure, with the events kept.
 
   # ── More routes from the same harnesses ─────────────────────────────────────
   # A route is (harness, model) — declare as many as you want. `harness:` picks
@@ -470,10 +542,14 @@ endpoints:
 #   Pick the cheapest model that can do the task; keep the strongest for hard
 #   judgment.
 
-# Per-route knobs worth knowing (all optional, all shown in the entries above
-# or README.md): enabled, weight, timeout_ms, safety_profile, effective_safety,
-# workspace_policy (shared | shared_locked | copy | git_worktree),
-# instructions, thinking_level, escalate_on, allow_paid_usage, billing_kind,
+# Per-route knobs worth knowing (all optional; every one is in the config
+# reference, docs/configuration.md#config-reference): enabled, weight,
+# timeout_ms, idle_timeout_ms, safety_profile, effective_safety, workspace_policy (shared |
+# shared_locked | copy | git_worktree), instructions, thinking_level,
+# escalate_model / escalate_on, resource_weight, allow_paid_usage, billing_kind,
 # paid_usage_possible.
 #
-# disabled: [route_name, ...] hides an entry without deleting it.
+# disabled: [route_name, ...] stops an auto-detected harness from being added. It
+# never affects routes you list under clis:/endpoints: (use `enabled: false` on
+# the entry for that), and does nothing at all in a file that lists any routes
+# unless it also says `detect: true`.

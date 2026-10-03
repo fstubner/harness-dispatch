@@ -20,7 +20,9 @@ import { redact } from "../redaction.js";
 import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { randomUUID } from "node:crypto";
 import type {
+  DispatchCaller,
   DispatchResult,
   DispatcherEvent,
   RoutePolicy,
@@ -34,7 +36,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { withMcpToolSpan } from "../observability/spans.js";
 import type { RuntimeHolder, ConfigHotReloader } from "./config-hot-reload.js";
-import { evaluateRoutePolicy } from "../route-policy.js";
+import { selectFanoutRoutes } from "../route-policy.js";
 import {
   cancelJob,
   getAsyncJob,
@@ -85,11 +87,9 @@ export interface RouteResponse {
   routing?: {
     tier: number;
     quotaScore: number;
-    qualityScore: number;
     cliCapability: number;
     capabilityScore: number;
     taskType: TaskType;
-    elo?: number;
     finalScore: number;
     reason: string;
     /**
@@ -122,7 +122,8 @@ export interface RouteResponse {
 
 export interface FanoutItem {
   route: string;
-  jobId: string;
+  /** Absent only for an arm that could not be started at all (see `error`). */
+  jobId?: string;
   /** false = still running past the grace window; poll its jobId. */
   completed: boolean;
   success?: boolean;
@@ -130,8 +131,6 @@ export interface FanoutItem {
   error?: string;
   durationMs?: number;
   capabilityScore: number;
-  qualityScore: number;
-  elo?: number;
   workspace?: WorkspaceRun;
   /** Tail of live output for a not-yet-completed item. */
   partialOutput?: string;
@@ -171,6 +170,22 @@ export interface DispatchPollResponse {
 export interface ToolDeps {
   holder: RuntimeHolder;
   reloader?: ConfigHotReloader;
+  /** Who is calling — see DispatchCaller. Set by registerTools for an MCP connection. */
+  caller?: () => DispatchCaller;
+}
+
+/**
+ * The connected client as it introduced itself, plus an id for this
+ * connection. One McpServer serves exactly one connection (a stdio process,
+ * or one HTTP MCP session), so an id minted per server is a session id.
+ */
+function connectionCaller(server: McpServer, session: string): DispatchCaller {
+  const info = server.server.getClientVersion();
+  return {
+    ...(info?.name ? { client: info.name } : {}),
+    ...(info?.version ? { clientVersion: info.version } : {}),
+    session,
+  };
 }
 
 export interface ToolExtra {
@@ -317,14 +332,12 @@ function routeResponse(
     response.routing = {
       tier: decision.tier,
       quotaScore: decision.quotaScore,
-      qualityScore: decision.qualityScore,
       cliCapability: decision.cliCapability,
       capabilityScore: decision.capabilityScore,
       taskType: decision.taskType,
       finalScore: decision.finalScore,
       reason: decision.reason,
     };
-    if (decision.elo !== undefined) response.routing.elo = decision.elo;
     if (decision.modelHintMatched !== undefined) {
       response.routing.modelHintMatched = decision.modelHintMatched;
     }
@@ -463,7 +476,7 @@ async function startSingle(
   const counter = { value: 0 };
   const onEvent = makeProgressTap(extra, live, counter, input.service);
 
-  const { status, completion } = await startAsyncJobTracked(
+  const { status, completion, stopWatching } = await startAsyncJobTracked(
     { holder: deps.holder },
     {
       prompt: input.prompt,
@@ -473,6 +486,7 @@ async function startSingle(
       hints,
       ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
       ...(input.service !== undefined ? { service: input.service } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
       ...(onEvent !== undefined ? { onEvent } : {}),
     },
   );
@@ -480,6 +494,8 @@ async function startSingle(
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(completion, graceMs);
   live.value = false;
+  // Nobody awaits the rest: the caller polls job_status from here on.
+  stopWatching();
 
   const job = await getAsyncJob(status.jobId);
   if (jobCompleted(job)) {
@@ -495,18 +511,6 @@ async function startSingle(
   if (job.status.instructions !== undefined) pending.instructions = job.status.instructions;
   if (job.status.warning !== undefined) pending.warning = job.status.warning;
   return pending;
-}
-
-function matchesRequestedModel(
-  routeName: string,
-  svc: { model?: string; leaderboardModel?: string },
-  requested: Set<string>,
-): boolean {
-  if (requested.size === 0) return true;
-  const lower = new Set([...requested].map((s) => s.toLowerCase()));
-  return [routeName, svc.model, svc.leaderboardModel]
-    .filter((v): v is string => typeof v === "string" && v.length > 0)
-    .some((v) => lower.has(v.toLowerCase()));
 }
 
 async function startFanout(
@@ -539,47 +543,25 @@ async function startFanout(
   // arm otherwise.
   delete hints.model;
   const taskType: TaskType = hints.taskType ?? "plan";
-  const requested = new Set(input.models ?? []);
   const counter = { value: 0 };
-  const skippedRoutes: RouteSkip[] = [];
 
-  // Every requested name must match SOMETHING, or it is silently dropped:
-  // one bad name out of two fans out to a single arm with no skippedRoutes
-  // entry and no error, and two bad names return
-  // `{ completed: true, results: [] }` — success-shaped, because `completed`
-  // is `every()` over an empty array. Single mode rejects an unknown
-  // `service` by name; fanout is not looser about the same mistake.
-  const matchedRequests = new Set<string>();
-  for (const [routeName, svc] of Object.entries(state.config.services)) {
-    for (const want of requested) {
-      if (matchesRequestedModel(routeName, svc, new Set([want]))) matchedRequests.add(want);
-    }
-  }
-  const unmatched = [...requested].filter((r) => !matchedRequests.has(r));
-  if (unmatched.length > 0) {
-    throw new Error(
-      `Unknown fanout target(s): ${unmatched.join(", ")}. ` +
-        `Valid route ids: ${Object.keys(state.config.services).join(", ")}. ` +
-        `models: accepts route ids or model names.`,
-    );
-  }
-
-  const candidates: string[] = [];
-  for (const [routeName, svc] of Object.entries(state.config.services)) {
-    if (!matchesRequestedModel(routeName, svc, requested)) continue;
-    const breaker = state.router.getBreaker(routeName);
-    const dispatcher = state.dispatchers[routeName];
-    const policy = evaluateRoutePolicy(routeName, svc, {
-      ...(dispatcher !== undefined ? { dispatcher } : {}),
-      circuitBroken: Boolean(breaker?.isTripped),
-      ...(hints.safetyProfile !== undefined ? { requestedSafetyProfile: hints.safetyProfile } : {}),
+  // Targets are matched and policy-checked by the one helper the HTTP surface
+  // uses too (see selectFanoutRoutes): an unknown name is refused by name, and a
+  // refusal must not be success-shaped — one bad name out of two used to fan out
+  // to a single arm, and two bad names answered `{ completed: true, results: [] }`.
+  const selected = selectFanoutRoutes({
+    services: state.config.services,
+    dispatchers: state.dispatchers,
+    breakerTripped: (route) => Boolean(state.router.getBreaker(route)?.isTripped),
+    requested: input.models ?? [],
+    hints: {
+      ...(hints.safetyProfile !== undefined ? { safetyProfile: hints.safetyProfile } : {}),
       ...(hints.routePolicy !== undefined ? { routePolicy: hints.routePolicy } : {}),
       taskType,
-    });
-    if (policy.skipped) skippedRoutes.push(policy.skipped);
-    if (policy.blocked) continue;
-    candidates.push(routeName);
-  }
+    },
+  });
+  const candidates = selected.routes;
+  const skippedRoutes: RouteSkip[] = selected.skippedRoutes;
 
   // Nothing can run. Same rule as the two refusals above — a refusal must not
   // be success-shaped — and `completed` is `every()` over an empty array, so
@@ -606,14 +588,14 @@ async function startFanout(
   // shared grace window for all of them — a route that beats the deadline
   // reports inline, the rest hand back their jobIds. Per-route job dirs also
   // give each fanout arm its own artifacts.
-  const started = await Promise.all(
+  //
+  // allSettled, not all: one arm failing to start (a disk error, a spawn
+  // failure) after others had started threw away the whole response — and
+  // with it the jobIds of arms already running, which then ran unattended.
+  const settled = await Promise.allSettled(
     candidates.map(async (routeName) => {
       const svc = state.config.services[routeName]!;
       const cap = svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0;
-      const quality = await state.leaderboard.getQualityScore(
-        svc.leaderboardModel,
-        svc.thinkingLevel,
-      );
       const onEvent = makeProgressTap(extra, live, counter, routeName);
       const job = await startAsyncJobTracked(
         { holder: deps.holder },
@@ -627,30 +609,39 @@ async function startFanout(
           ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
           hints,
           service: routeName,
+          ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
           ...(onEvent !== undefined ? { onEvent } : {}),
         },
       );
-      return { routeName, cap, quality, job };
+      return { routeName, cap, job };
     }),
   );
+  const started = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  const startFailures = settled.flatMap((s, i) =>
+    s.status === "rejected" ? [{ routeName: candidates[i]!, reason: s.reason as unknown }] : [],
+  );
+  // Nothing started: the same refusal a single dispatch gives, not a
+  // success-shaped list of failures.
+  if (started.length === 0) throw startFailures[0]!.reason;
 
   const graceMs = (input.graceSeconds ?? DEFAULT_GRACE_SECONDS) * 1000;
   await waitGrace(Promise.all(started.map((s) => s.job.completion)).then(() => undefined), graceMs);
   live.value = false;
+  for (const s of started) s.job.stopWatching();
 
-  let warning: string | undefined;
+  // Every distinct arm warning, not the last one to resolve: a single
+  // variable kept whichever arm's read finished last and dropped the rest.
+  const warnings: string[] = [];
   const results = await Promise.all(
-    started.map(async ({ routeName, cap, quality, job }): Promise<FanoutItem> => {
+    started.map(async ({ routeName, cap, job }): Promise<FanoutItem> => {
       const current = await getAsyncJob(job.status.jobId);
-      if (current.status.warning !== undefined) warning = current.status.warning;
+      if (current.status.warning !== undefined) warnings.push(current.status.warning);
       const item: FanoutItem = {
         route: routeName,
         jobId: job.status.jobId,
         completed: jobCompleted(current),
         capabilityScore: cap,
-        qualityScore: quality.qualityScore,
       };
-      if (quality.elo !== null) item.elo = quality.elo;
       if (item.completed) {
         const response = jobRouteResponse(current);
         item.success = response.success;
@@ -665,6 +656,17 @@ async function startFanout(
     }),
   );
 
+  for (const { routeName, reason } of startFailures) {
+    const svc = state.config.services[routeName]!;
+    results.push({
+      route: routeName,
+      completed: true,
+      success: false,
+      error: `This arm could not be started: ${reason instanceof Error ? reason.message : String(reason)}`,
+      capabilityScore: svc.capabilities[taskType as "execute" | "plan" | "review"] ?? 1.0,
+    });
+  }
+
   results.sort((a, b) => {
     if (a.completed !== b.completed) return a.completed ? -1 : 1;
     if (a.success !== b.success) return a.success ? -1 : 1;
@@ -676,7 +678,11 @@ async function startFanout(
     results,
   };
   if (skippedRoutes.length > 0) response.skippedRoutes = skippedRoutes;
-  if (warning !== undefined) response.warning = warning;
+  // One arm's warning often contains another's (the shared workingDir note,
+  // plus that arm's own), so only the ones no other warning already says.
+  const distinct = [...new Set(warnings)];
+  const kept = distinct.filter((w) => !distinct.some((other) => other !== w && other.includes(w)));
+  if (kept.length > 0) response.warning = kept.join(" ");
   return response;
 }
 
@@ -692,6 +698,20 @@ async function pollDispatch(jobId: string): Promise<DispatchPollResponse> {
   return response;
 }
 
+const TASK_TYPE_WARNING =
+  "hints.taskType was not provided — capability weighting and model escalation are " +
+  "off, so routing quality degrades. Pass hints.taskType (execute | plan | review | local).";
+
+/** Says so on the reply when `hints.taskType` is missing, as it does for `workingDir`. */
+function withTaskTypeWarning<T extends { warning?: string }>(
+  input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
+  response: T,
+): T {
+  if (input.hints?.taskType !== undefined) return response;
+  response.warning = [response.warning, TASK_TYPE_WARNING].filter(Boolean).join(" ");
+  return response;
+}
+
 export async function handleDispatch(
   deps: ToolDeps,
   input: z.infer<z.ZodObject<typeof dispatchInputShape>>,
@@ -704,7 +724,7 @@ export async function handleDispatch(
           "dispatch: `service` forces a single route and is incompatible with mode='fanout' — use `models` to select fanout routes",
         );
       }
-      return startFanout(deps, input, extra);
+      return withTaskTypeWarning(input, await startFanout(deps, input, extra));
     }
     // The mirror of the check above. Single mode never read `models`, so a
     // call that meant to fan out and forgot `mode` ran on whatever single
@@ -715,7 +735,7 @@ export async function handleDispatch(
           "add mode: 'fanout' to run on those routes, or use `service` to force one route",
       );
     }
-    return startSingle(deps, input, extra);
+    return withTaskTypeWarning(input, await startSingle(deps, input, extra));
   });
 }
 
@@ -723,15 +743,20 @@ export async function handleDispatch(
 const LIST_LIMIT = 20;
 
 export async function handleCancelJob(args: { jobId: string; reason?: string | undefined }) {
-  return cancelJob(args.jobId, args.reason);
+  return withMcpToolSpan({ "tool.name": "cancel_job" }, () => cancelJob(args.jobId, args.reason));
 }
 
 export async function handleRetryJob(
   deps: ToolDeps,
   args: { jobId: string; service?: string | undefined },
 ) {
-  await ensureFreshConfig(deps.reloader);
-  return retryJob(args.jobId, { holder: deps.holder }, args.service !== undefined ? { service: args.service } : {});
+  return withMcpToolSpan({ "tool.name": "retry_job" }, async () => {
+    await ensureFreshConfig(deps.reloader);
+    return retryJob(args.jobId, { holder: deps.holder }, {
+      ...(args.service !== undefined ? { service: args.service } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+    });
+  });
 }
 
 export async function handleWorkspace(args: {
@@ -739,7 +764,9 @@ export async function handleWorkspace(args: {
   action: "diff" | "apply" | "discard";
   force?: boolean | undefined;
 }) {
-  return resolveJobWorkspace(args.jobId, args.action, args.force !== undefined ? { force: args.force } : {});
+  return withMcpToolSpan({ "tool.name": "workspace" }, () =>
+    resolveJobWorkspace(args.jobId, args.action, args.force !== undefined ? { force: args.force } : {}),
+  );
 }
 
 export async function handleJobStatus(
@@ -839,24 +866,33 @@ async function fetchEndpointModels(
 }
 
 async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefined } = {}) {
-  await ensureFreshConfig(deps.reloader);
-  const state = deps.holder.state;
-  const status = await buildStatus(
-    state.config,
-    state.dispatchers,
-    state.quota,
-    state.router,
-    state.leaderboard,
-  );
-  const usage = buildUsage(status);
-  if (args.listModels) {
-    const svc = state.config.services[args.listModels];
-    return { ...usage, liveModels: await fetchEndpointModels(args.listModels, svc) };
-  }
-  return usage;
+  return withMcpToolSpan({ "tool.name": "usage" }, async () => {
+    await ensureFreshConfig(deps.reloader);
+    const state = deps.holder.state;
+    const status = await buildStatus(
+      state.config,
+      state.dispatchers,
+      state.quota,
+      state.router,
+    );
+    const usage = buildUsage(status);
+    // `!== undefined`, so an empty string is answered ("unknown route ''") instead of
+    // silently ignored; `hasOwn`, so `constructor` or `toString` is not a route.
+    if (args.listModels !== undefined) {
+      const svc = Object.hasOwn(state.config.services, args.listModels)
+        ? state.config.services[args.listModels]
+        : undefined;
+      return { ...usage, liveModels: await fetchEndpointModels(args.listModels, svc) };
+    }
+    return usage;
+  });
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): void {
+  if (deps.caller === undefined) {
+    const session = randomUUID();
+    deps = { ...deps, caller: () => connectionCaller(server, session) };
+  }
   server.registerTool(
     "dispatch",
     {
@@ -896,6 +932,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         + "Nothing is lost by " +
         "checking late; results persist on disk.",
       inputSchema: jobStatusInputShape,
+      annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleJobStatus(args)),
   );
@@ -915,6 +952,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "route nothing. Cancelling an already-finished job is a harmless no-op that " +
         "reports what it found.",
       inputSchema: cancelJobInputShape,
+      annotations: { destructiveHint: true, idempotentHint: true },
     },
     async (args) => jsonText(await handleCancelJob(args)),
   );
@@ -955,6 +993,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "written to the job directory, so `git apply` by hand is available even when " +
         "the automatic apply declines.",
       inputSchema: workspaceInputShape,
+      annotations: { destructiveHint: true },
     },
     async (args) => jsonText(await handleWorkspace(args)),
   );
@@ -967,9 +1006,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "Per-route call counts (success/failure), quota remaining, billing kind, and " +
         "circuit-breaker state for this session. Call this before using an unfamiliar " +
         "`hints.model`/`service`/`models` value to see valid route ids and their " +
-        "current models. `service` and `models` ARE validated — an unknown route id is " +
-        "rejected, naming the valid ones — while `hints.model` is forwarded to the picked " +
-        "harness as-is, so a wrong model name fails at the harness rather than here. " +
+        "current models. An unknown `service` or `models` route id is rejected, naming " +
+        "the valid ones; `hints.model` is not checked (see its description). " +
         "Each route also includes modelHint (where that harness's real model catalog " +
         "is documented or listed live) and, when the operator declared one, models: " +
         "a list of known-good ids, and instructions: the operator's policy for that " +
@@ -980,6 +1018,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "a real model up front or self-correct after a dispatch failure caused by an " +
         "unsupported model name.",
       inputSchema: usageInputShape,
+      annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleUsage(deps, args)),
   );
