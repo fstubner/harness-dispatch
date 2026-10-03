@@ -941,14 +941,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   its own MCP servers, or a shell, but any dispatch it makes is refused with an
   explanation and does not count against the route.
 
-- **`api_key_file:` keeps a route's key out of every process environment.**
-  The documented ways to hand the server a key were an environment variable,
+- **`api_key_file:` keeps a route's key out of the environment every process
+  inherits.** The documented ways to hand the server a key were an environment variable,
   which every process you start inherits, or an MCP client's `env` block, which
   is plaintext JSON in your home directory that any delegate able to read files
   there can read. `api_key_file: ~/.harness-dispatch/keys/groq` reads the key
   when the config loads; it is redacted like any other key, `configure` writes
   the file name back rather than the key, and an unreadable or empty file is an
   error naming the route. The setup command and plugin docs now recommend it.
+  Two limits: a CLI route still hands the key to its own harness through that
+  harness's environment, because that is how the harness reads it; and the key
+  file is plaintext, so a delegate that can read your home directory can read
+  it too.
 
 - **A key split across two output chunks no longer lands in the partial log.**
   `stdout.partial.log` was scrubbed chunk by chunk, so a key whose halves
