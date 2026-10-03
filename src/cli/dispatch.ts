@@ -1,6 +1,7 @@
 /** `dispatch`: one dispatch from the command line. */
 
 import type { RouteHints, SafetyProfile, TaskType } from "../types.js";
+import { assertMayDispatch } from "../nested-dispatch.js";
 import { UsageError, buildRuntime } from "./common.js";
 
 /**
@@ -26,6 +27,9 @@ export async function cmdDispatch(
         '[--task-type <type>] [--no-fallback] [--json] "<prompt>"',
     );
   }
+  // The CLI calls the router directly, not through a job, so it needs its own
+  // refusal: a delegate with a shell can run this command.
+  assertMayDispatch();
   const runtime = await buildRuntime(configPath);
   // Same remedy `usage` and `status` give. The router's own sentence for this
   // ("no routes are configured") says what happened and stops there.

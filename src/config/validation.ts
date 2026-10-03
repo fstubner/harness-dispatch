@@ -111,9 +111,27 @@ export const KNOWN_ROUTE_KEYS = new Set([
  * failure as a typo. They are reported on the legacy `services:` shape too,
  * which does not run the unknown-key check.
  */
+const REMOVED_ROUTE_KEY_PHRASE = "removed, has no effect";
+const REMOVED_TOP_LEVEL_STATUS = "REMOVED";
+
+/**
+ * Is this config warning about a key that was removed, as opposed to one that
+ * is misspelled or was never implemented? A removed key is harmless to leave
+ * behind (the file still loads and nothing changed under it), so `doctor`
+ * reports it as a warning. The others can leave a setting silently not in
+ * effect, and keep failing it. Built from the same constants the warnings are,
+ * so rewording one cannot silently turn this check off.
+ */
+export function isRemovedKeyWarning(warning: string): boolean {
+  return (
+    warning.includes(`: ${REMOVED_ROUTE_KEY_PHRASE} —`) ||
+    warning.includes(`recognised but ${REMOVED_TOP_LEVEL_STATUS} —`)
+  );
+}
+
 const REMOVED_ROUTE_KEYS: Record<string, string> = {
   leaderboard_model:
-    "removed, has no effect — the Arena-ELO leaderboard was cut. Routing is tier, then " +
+    `${REMOVED_ROUTE_KEY_PHRASE} — the Arena-ELO leaderboard was cut. Routing is tier, then ` +
     "weight x capability, then fallback, so `tier:` alone sets the order. Delete the line.",
 };
 
@@ -444,7 +462,7 @@ const ACCEPTED_BUT_IGNORED: Record<string, { status: string; instead: string }> 
       "Set `workspace_policy:` on each route, or pass `workspacePolicy` per dispatch.",
   },
   leaderboard: {
-    status: "REMOVED",
+    status: REMOVED_TOP_LEVEL_STATUS,
     instead:
       "The Arena-ELO leaderboard was cut. Routing is tier, then weight x capability, " +
       "then fallback. Delete the block.",

@@ -246,6 +246,54 @@ describe("CLI parser", () => {
     expect(result.stdout.trimEnd().split("\n").at(-1)).toMatch(/^NOT READY: \d+ problem\(s\) to fix \(.*routes/);
   });
 
+  describe("removed config keys", () => {
+    type DoctorJson = {
+      ok: boolean;
+      verdict: string;
+      checks: Array<{ name: string; ok: boolean; warn?: boolean; detail: string }>;
+    };
+
+    /** The healthy fixture config plus both removed leaderboard keys and any extra lines. */
+    async function configWithRemovedKeys(extra = ""): Promise<string> {
+      const file = await writeConfig();
+      const body = await fs.readFile(file, "utf-8");
+      await fs.writeFile(
+        file,
+        body.replace("    tier: 3\n", "    tier: 3\n    leaderboard_model: gpt-5\n") +
+          "leaderboard:\n  enabled: true\n" +
+          extra,
+        "utf-8",
+      );
+      return file;
+    }
+
+    it("warn in doctor and leave the exit code at 0, since the file still loads", async () => {
+      // The CHANGELOG says these keys "still load, with a warning". doctor
+      // failed the whole install over them: exit 1, "NOT READY ... (config-warnings)".
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      const config = await configWithRemovedKeys();
+      const result = await capture(() => main(["doctor", "--config", config, "--json"]));
+      const parsed = JSON.parse(result.stdout) as DoctorJson;
+      const row = parsed.checks.find((c) => c.name === "config-warnings");
+      expect(row?.detail).toContain("leaderboard_model");
+      expect(row?.detail).toContain("leaderboard: recognised but REMOVED");
+      expect(row?.ok).toBe(true);
+      expect(row?.warn).toBe(true);
+      expect(parsed.verdict).toMatch(/^OK, with \d+ thing\(s\) worth doing \(.*config-warnings/);
+      expect(result.code).toBe(0);
+    });
+
+    it("do not hide a genuine config problem sitting beside them", async () => {
+      vi.spyOn(QuotaCache.prototype, "saveLocalCountsSync").mockImplementation(() => undefined);
+      const config = await configWithRemovedKeys("overrides:\n  cursor:\n    weight: 5\n");
+      const result = await capture(() => main(["doctor", "--config", config, "--json"]));
+      const parsed = JSON.parse(result.stdout) as DoctorJson;
+      expect(parsed.checks.find((c) => c.name === "config-warnings")?.ok).toBe(false);
+      expect(parsed.verdict).toMatch(/^NOT READY.*config-warnings/);
+      expect(result.code).toBe(1);
+    });
+  });
+
   describe("--config at the boundary (twenty-fifth pass, finding 3)", () => {
     it("names the path when --config is a directory", async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hd-config-dir-"));

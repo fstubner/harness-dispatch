@@ -25,6 +25,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
+import { mergeEnv } from "./env-names.js";
 
 export interface SubprocessChunk {
   stream: "stdout" | "stderr";
@@ -212,7 +213,7 @@ export function streamSubprocess(
     // Windows keeps the default — taskkill /T handles the tree there, and
     // `detached` on Windows means a new console instead.
     detached: process.platform !== "win32",
-    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    env: opts.env ? mergeEnv(process.env, opts.env) : process.env,
   };
   if (opts.cwd !== undefined) spawnOpts.cwd = opts.cwd;
 

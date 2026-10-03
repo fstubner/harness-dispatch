@@ -35,13 +35,14 @@ const WATCHED = [
   "CLAUDE_CODE_USE_BEDROCK",
   "HARNESS_DISPATCH_HTTP_TOKEN",
   "GITHUB_TOKEN",
+  "GH_TOKEN",
   "HD_TEST_ENDPOINT_KEY",
   "HD_TEST_MODEL",
   "HARNESS_DISPATCH_DEPTH",
 ];
 
 /** A route whose child prints the watched variables as JSON, plus an endpoint keyed from env. */
-async function probe(): Promise<() => Promise<DispatchResult>> {
+async function probe(endpointKeyRef = "${HD_TEST_ENDPOINT_KEY}"): Promise<() => Promise<DispatchResult>> {
   const printer = path.join(dir, "printenv.cjs");
   await fs.writeFile(
     printer,
@@ -68,7 +69,7 @@ async function probe(): Promise<() => Promise<DispatchResult>> {
       "  - name: keyed",
       "    base_url: https://api.example.test/v1",
       "    model: m",
-      "    api_key: ${HD_TEST_ENDPOINT_KEY}",
+      `    api_key: ${endpointKeyRef}`,
       "",
     ].join("\n"),
     "utf8",
@@ -84,14 +85,27 @@ function seen(result: DispatchResult): Record<string, string | null> {
 }
 
 describe("a delegate's environment", () => {
-  it("does not receive billing switches, the HTTP token or GITHUB_TOKEN", async () => {
+  it("does not receive billing switches, the HTTP token, GITHUB_TOKEN or GH_TOKEN", async () => {
     // audit5 F5: all four were seen set in a delegate. CODEX_API_KEY and
     // ANTHROPIC_AUTH_TOKEN move a subscription route onto metered billing
-    // while it stays classified product_login.
-    for (const k of WATCHED.slice(0, 6)) vi.stubEnv(k, "value-that-must-not-arrive");
+    // while it stays classified product_login. `gh` prefers GH_TOKEN to
+    // GITHUB_TOKEN, so blanking only the second left the one it reads.
+    for (const k of WATCHED.slice(0, 7)) vi.stubEnv(k, "value-that-must-not-arrive");
     const out = seen(await (await probe())());
-    for (const k of WATCHED.slice(0, 6)) expect(out[k], k).toBe("");
+    for (const k of WATCHED.slice(0, 7)) expect(out[k], k).toBe("");
   });
+
+  it.skipIf(process.platform !== "win32")(
+    "blanks a credential whose ${VAR} is written in a different case (Windows)",
+    async () => {
+      // Windows variable names are case-insensitive, so `${hd_test_endpoint_key}`
+      // resolves the real HD_TEST_ENDPOINT_KEY at config load. The blank used
+      // to be added beside the real entry instead of replacing it.
+      vi.stubEnv("HD_TEST_ENDPOINT_KEY", "sk-endpoint-key-0123456789");
+      const out = seen(await (await probe("${hd_test_endpoint_key}"))());
+      expect(out["HD_TEST_ENDPOINT_KEY"]).toBe("");
+    },
+  );
 
   it("blanks a ${VAR} that holds a credential, and leaves any other ${VAR} alone", async () => {
     // audit4 A1-1: every ${VAR} named anywhere in config was blanked in every

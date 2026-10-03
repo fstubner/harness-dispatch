@@ -437,6 +437,28 @@ describe("HTTP server", () => {
     expect(res.status).toBe(413);
   }, 20000);
 
+  it("refuses a dispatch with 403 when this server was itself started by a dispatch", async () => {
+    // An agent a dispatch started may not dispatch, and the REST path used to
+    // be unguarded for endpoint routes. The upstream must never be reached.
+    const fake = await startFakeOpenAi();
+    fakes.push(fake);
+    const config = await writeConfig(`http://127.0.0.1:${fake.port}/v1`);
+    const handle = await startHttpServer({ configPath: config, token: "secret" });
+    handles.push(handle);
+    vi.stubEnv("HARNESS_DISPATCH_DEPTH", "1");
+    try {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: "Bearer secret", "content-type": "application/json" },
+        body: JSON.stringify({ model: "local", messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.text()).toMatch(/may not dispatch at all/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }, 20000);
+
   it("applies the same body limit to /mcp", async () => {
     // /mcp handed the raw request to the MCP library, which read any size:
     // measured, 40 MiB accepted there while REST answered 413. Found in an

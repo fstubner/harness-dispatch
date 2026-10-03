@@ -69,6 +69,13 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`doctor` no longer fails a config for the removed `leaderboard:` and
+  `leaderboard_model:` keys.** The file still loaded, as the entry above says,
+  but `doctor` counted the warning as a failure: exit 1, "NOT READY ...
+  (config-warnings)". Those two now show as a warning and `doctor` exits 0.
+  Every other config warning (a misspelled key, a setting that was never
+  implemented) still fails it.
+
 - **A background run that started through the fallback now says so.** On
   Windows a job's runner is started through WMI so it survives the session that
   dispatched it. When WMI is unavailable the runner still starts with a plain
@@ -642,7 +649,9 @@ pre-1.0, so minor versions can carry behaviour changes.
 - **`workspace discard` only deletes inside the workspaces directory.** It
   deleted whatever directory a job's result record named, so a record edited by
   hand — or by a delegated agent with shell access — could point it at any
-  folder. It now refuses anything outside, even with `force`.
+  folder. It now refuses anything outside, the workspaces directory itself,
+  which holds every project's workspaces, and a project's directory of
+  workspaces, which holds that project's other runs, even with `force`.
 
 - **`configure` no longer turns one route's address into another route's
   variable.** When two routes shared a base URL and one was written as
@@ -882,11 +891,23 @@ pre-1.0, so minor versions can carry behaviour changes.
   `core.fsmonitor`, and harness-dispatch's own `git add` / `git diff` at job
   end ran that command as you, outside any harness sandbox; an embedded
   repository in a subdirectory reached the same place through its fsmonitor
-  and clean filters. Post-run git now runs against the worktree's registration
-  in your repository, never discovers one from the worktree, overrides
-  `core.fsmonitor` and `core.hooksPath`, and does not look inside embedded
-  repositories. A worktree whose `.git` no longer points at its own
-  registration is refused with an explanation instead of diffed.
+  and clean filters, and so did a repository planted in a submodule's
+  directory, which a fresh worktree leaves empty: `git add` checked it by
+  running `git status` inside it. Post-run git now runs against the worktree's
+  registration in your repository, never discovers one from the worktree,
+  overrides `core.fsmonitor` and `core.hooksPath`, and does not look inside
+  embedded repositories or submodules. A worktree whose `.git` no longer points
+  at its own registration is refused with an explanation instead of diffed.
+
+- **Removing a workspace no longer deletes files outside it on Windows.** On
+  Windows, `git worktree remove --force` treats a directory junction as an
+  ordinary folder and deletes what it points at. A junction needs no special
+  rights to create, so an agent with a shell in its worktree could
+  empty any folder you can write to, and that happened on `workspace discard`,
+  on the retention clean-up of old workspaces, and on the clean-up of a failed
+  attempt. Every link inside a workspace is now removed as a link before
+  anything deletes the workspace; the folder it pointed at is left alone.
+  Removing a `copy` workspace was not affected.
 
 - **A `config.yaml` in the current directory is no longer loaded on its own.**
   It ranked above your own config, and the config decides which commands
@@ -925,30 +946,44 @@ pre-1.0, so minor versions can carry behaviour changes.
   this server.** `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, `ANTHROPIC_AUTH_TOKEN`,
   `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` are blanked for every
   agent CLI (each can move a subscription route onto metered billing without
-  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN` and
-  `GITHUB_TOKEN`. A route that names one of them as its own
-  `api_key_env_var` still receives it. A delegate that needs GitHub access uses
-  the `gh` login stored on the machine rather than the inherited token.
+  the `allow_paid_usage` opt-in), and so are `HARNESS_DISPATCH_HTTP_TOKEN`,
+  `GITHUB_TOKEN` and `GH_TOKEN` (`gh` prefers the latter). A route that names
+  one of them as its own `api_key_env_var` still receives it. A delegate that
+  needs GitHub access no longer gets the token this process was started with.
 
 - **Only `${VAR}`s that hold a credential are hidden from delegates.** Every
   variable named anywhere in `config.yaml` was blanked in every agent's
   environment, so `command: ${LOCALAPPDATA}\...` on one route emptied
   `LOCALAPPDATA` for all of them. Now a variable is blanked when it is a route's
-  `api_key`, or holds a value the config treats as a secret.
+  `api_key`, or holds a value the config treats as a secret. On Windows, where
+  variable names ignore case, this holds however the config spells the name:
+  `${groq_api_key}` blanks the real `GROQ_API_KEY`.
 
-- **A delegate cannot dispatch at all.** Every agent harness-dispatch starts
-  is marked with `HARNESS_DISPATCH_DEPTH`. A delegate may have this server among
-  its own MCP servers, or a shell, but any dispatch it makes is refused with an
-  explanation and does not count against the route.
+- **A delegate cannot dispatch at all, to any kind of route.** Every agent
+  harness-dispatch starts is marked with `HARNESS_DISPATCH_DEPTH`. A delegate may
+  have this server among its own MCP servers, or a shell, but a dispatch made
+  from a process carrying the marker is refused with an explanation, before any
+  job exists or any request is sent, and counts against no route. That covers
+  the `dispatch` and `retry_job` tools, fanout, the REST API (answered 403) and
+  `harness-dispatch dispatch`, and endpoint routes as well as agent CLIs. The
+  refusal is decided from the environment of the process that
+  accepts the dispatch, not of the shared background process that runs it. This
+  stops an agent that cooperates. An agent with a shell can unset the variable,
+  and a REST server reads its own environment, not the caller's, so neither is
+  stopped by it.
 
-- **`api_key_file:` keeps a route's key out of every process environment.**
-  The documented ways to hand the server a key were an environment variable,
+- **`api_key_file:` keeps a route's key out of the environment every process
+  inherits.** The documented ways to hand the server a key were an environment variable,
   which every process you start inherits, or an MCP client's `env` block, which
   is plaintext JSON in your home directory that any delegate able to read files
   there can read. `api_key_file: ~/.harness-dispatch/keys/groq` reads the key
   when the config loads; it is redacted like any other key, `configure` writes
   the file name back rather than the key, and an unreadable or empty file is an
   error naming the route. The setup command and plugin docs now recommend it.
+  Two limits: a CLI route still hands the key to its own harness through that
+  harness's environment, because that is how the harness reads it; and the key
+  file is plaintext, so a delegate that can read your home directory can read
+  it too.
 
 - **A key split across two output chunks no longer lands in the partial log.**
   `stdout.partial.log` was scrubbed chunk by chunk, so a key whose halves
