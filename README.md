@@ -5,7 +5,7 @@
 [![node](https://img.shields.io/node/v/harness-dispatch)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/harness-dispatch)](LICENSE)
 
-**Route whole coding tasks — not API requests — to the agent CLIs you already pay for.**
+**Route whole coding tasks, not API requests, to the agent CLIs you already pay for.**
 
 ```bash
 npm install -g harness-dispatch
@@ -25,8 +25,8 @@ proxy in between and nothing is re-implemented: Claude Code stays Claude Code. O
 orchestrating agent picks the right one per task and spends your flat-rate
 subscription quota before anything metered.
 
-It is a local MCP server, so the harnesses on your machine — Claude Code, Codex,
-Cursor Agent, Antigravity CLI, plus any local or remote OpenAI-compatible endpoint —
+It is a local MCP server, so the harnesses on your machine (Claude Code, Codex,
+Cursor Agent, Antigravity CLI, and any local or remote OpenAI-compatible endpoint)
 become tools any AI can call.
 
 Six tools: `dispatch` starts routed work, `job_status` checks or lists it,
@@ -37,7 +37,7 @@ state.
 ## Documentation
 
 <!-- Absolute links on purpose: `docs/` is not in package.json's `files`, so a
-     relative link is dead on npmjs.com — the same reason plugin/README.md is
+     relative link is dead on npmjs.com. It's the same reason plugin/README.md is
      linked absolutely below. CHANGELOG.md IS shipped, so it stays relative. -->
 
 | | |
@@ -85,7 +85,7 @@ Real agent work usually runs longer than that, so the reply you will see most is
 
 Carry on working, then call `job_status` with that id for a live output tail or the
 finished result. The run lives in a detached process, so **nothing is lost to a client
-timeout — or to the server itself restarting mid-run**. On Windows the process is
+timeout, or to the server itself restarting mid-run**. On Windows the process is
 started through WMI so that a launcher which kills its child processes when the
 session ends cannot take it along; if WMI is unavailable it falls back to a plain
 detached process, which does not survive such a launcher, and `doctor` says which
@@ -122,17 +122,17 @@ found one.
 
 `doctor` checks your install, config, auth and routes without contacting any
 provider. Add `--live` when you want it to prove a dispatch really works end to
-end — that one sends a real request through an eligible route and spends
+end. That one sends a real request through an eligible route and spends
 whatever quota that route bills against, so it is a deliberate step rather than
 part of setup. `configure` is optional for dispatching: the tool auto-detects
 installed harnesses and runs without a `config.yaml` at all. Write one when you
-want to pin routes, add an endpoint, or change a default — or to use `connect`,
+want to pin routes, add an endpoint, or change a default, or to use `connect`,
 which registers clients against a config file and refuses to point them at one
 that does not exist.
 
 `configure --yes` detects installed harnesses, writes `config.yaml` into the
-tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`)
-— unless `--config` names a file or `HARNESS_DISPATCH_CONFIG` is set, in which
+tool's own state directory (`~/.harness-dispatch/`, or `HARNESS_DISPATCH_STATE_DIR`),
+unless `--config` names a file or `HARNESS_DISPATCH_CONFIG` is set, in which
 case that file is the target. A `config.yaml` in the current directory is never
 picked up on its own: a repository can carry one, and the config decides what
 commands run, so a project config is opted into with `--config ./config.yaml`.
@@ -149,7 +149,7 @@ use), and `connect --remove` undoes it.
 
 **Re-running it.** A file `configure` wrote and you have not edited is
 regenerated, so installing a harness later is just `configure --yes` again. A
-file you have changed is refused without `--force` — and because such a file
+file you have changed is refused without `--force`. Because such a file
 lists its own routes, even `--force` regenerates it from the file rather than
 from a fresh detection. It says so when that happens; the rule behind it is
 [listing a route turns detection off](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
@@ -163,7 +163,7 @@ under), and for a Codex route it asks `codex login
 status` whether the CLI is logged in. The other harnesses have no equivalent
 this tool has verified, so their login state is not checked. `--live` goes
 further and routes one tiny real prompt through an eligible route, so you see a
-completion before wiring anything into your agent — that one spends quota, and
+completion before wiring anything into your agent. That one spends quota, and
 it never touches paid or unknown-billing routes unless you pass `--allow-paid`.
 
 Each row is `ok`, `warn` (passes, exit 0, but wants something done: a client not yet
@@ -178,7 +178,7 @@ No global install needed either: `npx harness-dispatch configure`.
 ### Plugin install (Claude Code / Claude Desktop / Codex)
 
 The `plugin/` directory packages the MCP server plus a delegation skill and
-`/setup`, `/route` and `/jobs` commands for one-step installs — see
+`/setup`, `/route` and `/jobs` commands for one-step installs. See
 [plugin/README.md](https://github.com/fstubner/harness-dispatch/blob/main/plugin/README.md)
 (absolute link on purpose: `plugin/` is not shipped in the npm tarball, so a
 relative link is dead on npmjs.com). Claude Code:
@@ -188,8 +188,8 @@ relative link is dead on npmjs.com). Claude Code:
 
 ### Where to put the instructions that tell an agent to delegate
 
-In your user-level file — `~/.claude/CLAUDE.md`, or the equivalent for your
-client — not in a project file that gets committed.
+In your user-level file (`~/.claude/CLAUDE.md`, or the equivalent for your
+client), not in a project file that gets committed.
 
 Two reasons, and the second bites even among people who all run this tool:
 
@@ -223,11 +223,11 @@ billing state. What it does is refuse routes where *no* provider-side ceiling ex
 at all.
 
 Run `status` (or `status --json`) for any route's billing classification. Where the
-classification needs explaining — Claude Code's surfaces, a local endpoint whose billing
-is unknown — a `note:` line under the route says why.
+classification needs explaining (Claude Code's surfaces, a local endpoint whose billing
+is unknown), a `note:` line under the route says why.
 
 <details>
-<summary>Renamed from <code>harness-router</code> — upgrade notes</summary>
+<summary>Renamed from <code>harness-router</code>: upgrade notes</summary>
 
 The npm package, CLI command, env var prefix (`HARNESS_DISPATCH_*`), and MCP resource
 URIs (`harness-dispatch://status`) all changed together. From an older install:
@@ -265,8 +265,8 @@ given more access than the caller requested.
   to create one file and overwrite another, it did neither).
 - `full_auto` uses print mode, which edits and runs shell.
 - `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
-  write and shell together. `--sandbox enabled` — the flag that would constrain
-  shell while allowing edits — exists only on macOS and Linux, so the shipped
+  write and shell together. `--sandbox enabled`, the flag that would constrain
+  shell while allowing edits, exists only on macOS and Linux, so the shipped
   route does not use it anywhere. There is no edit-without-shell mode to route
   to, and claiming that level would mean handing shell access to a caller who
   explicitly asked not to have it.
@@ -276,8 +276,8 @@ Cursor still edits code. Ask for `full_auto`.
 ### Overriding it
 
 If you accept that Cursor's editing mode carries shell access and you want it
-to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml` —
-your value replaces the shipped default:
+to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml`.
+Your value replaces the shipped default:
 
 ```yaml
 overrides:
@@ -296,7 +296,7 @@ would remove Claude Code, Codex and Antigravity from your routes. See
 That is a deliberate local decision, not a bug workaround: the shipped default
 is conservative because the tool cannot verify what a given `cursor-agent`
 build will do. On macOS and Linux the better route is `--sandbox enabled`,
-which constrains shell for real — untested here, so it is not shipped on by
+which constrains shell for real. It is untested here, so it is not shipped on by
 default.
 
 `antigravity_cli` declares the same floor, for the same reason: in headless
