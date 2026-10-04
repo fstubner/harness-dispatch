@@ -19,7 +19,7 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     # "/" is how the Actions ecosystem is addressed: it scans
-    # .github/workflows, so ci.yml, pages.yml and publish.yml are all covered
+    # .github/workflows, so ci.yml, publish.yml and weekly.yml are all covered
     # by this single entry.
     directory: "/"
     schedule:

@@ -7,7 +7,10 @@ This project has no application UI. Its interfaces are:
 1. **Terminal output** — `status`, `doctor` and `usage`. (`dashboard` and
    `list-services` survive as aliases of `status`; the separate
    `state -> ANSI string` renderer they once had no longer exists.)
-2. **A documentation site** — `site/`, Astro, published to GitHub Pages.
+2. **A documentation site** — removed from the repository on 2026-10-04 and
+   never published; it returns as part of a shared site for several products.
+   The last version is in git history (`site/`, Astro). The site guidance
+   below is kept for that.
 
 The primary consumer of the *product* is an agent reading JSON over MCP. Every
 human-facing surface here is secondary: something you look at when you want to

@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Only paths under a real top-level directory are checked. */
-const REPO_DIRS = ["src", "tests", "scripts", "site", "plugin", "docs", "acceptance", "data"];
+const REPO_DIRS = ["src", "tests", "scripts", "plugin", "docs", "acceptance", "data"];
 
 const SCANNED_EXTENSIONS = new Set([".ts", ".mjs", ".js", ".astro", ".css", ".md"]);
 
