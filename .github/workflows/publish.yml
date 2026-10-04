@@ -121,7 +121,12 @@ jobs:
           npm publish "./package/harness-dispatch-$VERSION.tgz" --access public --provenance
 
   # A DRAFT release, never a public one: the draft is the review gate, so the
-  # notes are there to read and the button stays with a person.
+  # button stays with a person. Its notes are written by hand before
+  # publishing. The CHANGELOG section is the complete record and runs to
+  # thousands of words; pasted into a release it read as a wall of text, and
+  # its hard wrapping broke every line, because a release body renders each
+  # newline as a line break. So the draft starts as a placeholder that says
+  # what to write and where the full list is.
   draft-release:
     name: Draft GitHub release
     needs: publish-npm
@@ -131,7 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Create the draft from the changelog section
+      - name: Create the draft with placeholder notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -140,5 +145,11 @@ jobs:
             echo "A release for $GITHUB_REF_NAME already exists — leaving it alone."
             exit 0
           fi
-          awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 { f = 1; next } /^## \[/ { f = 0 } f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          **Notes not written yet. Replace this before publishing.**
+
+          Say in a sentence or two what this release is for, then the changes a user will notice: what is new, what to know before upgrading, and the notable fixes. One line per paragraph or bullet.
+
+          Every change is in the [$VERSION] section of [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md).
+          NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
