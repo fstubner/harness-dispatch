@@ -8,7 +8,7 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [0.12.0] — 2026-10-04
 
-The fifth audit and the fixes it led to: delegates are boxed in
+Delegates are boxed in
 more tightly (no project hooks or arbitrary tools for Claude Code at
 `read_only` / `workspace_edit`, no inherited billing credentials, no nested
 dispatch, no files from outside the project sent to a remote endpoint),
