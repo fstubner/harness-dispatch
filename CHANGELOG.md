@@ -27,6 +27,15 @@ pre-1.0, so minor versions can carry behaviour changes.
   while a dispatch runs, now hold back the end of each piece until the next one
   arrives, as the partial log already did.
 
+- **On macOS and Linux, a remote endpoint no longer receives a file reached
+  through a symlink and then `..`.** `<project>/link/../secret`, with `link`
+  pointing to a directory outside the project, opens a file outside the
+  project, but the check applied `..` before following `link` and judged it
+  inside. Symlinks are now followed first, as the system does when it opens
+  the file, so that path is refused like any other outside the project.
+  Windows is unchanged: it applies `..` before following links, so there the
+  same path opens a file inside the project.
+
 ### Fixed
 
 - **A gitignored file could silently go missing from a `git_worktree` patch,

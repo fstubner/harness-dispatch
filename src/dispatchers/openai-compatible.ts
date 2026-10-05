@@ -22,7 +22,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, posix, relative, resolve } from "node:path";
 
 import type { DispatchResult, DispatcherEvent, QuotaInfo, ServiceConfig, WireProtocol } from "../types.js";
 import { BaseDispatcher, type DispatchOpts } from "./base.js";
@@ -995,8 +995,21 @@ function headersToObject(h: Headers): Record<string, string> {
   return out;
 }
 
-/** A path with symlinks resolved; the path as given when it does not exist. */
+/**
+ * The file a read of `p` would open, with symlinks resolved.
+ *
+ * On POSIX the kernel follows a symlink BEFORE applying a `..` after it:
+ * `<wd>/link/../x`, with `link` pointing to a directory outside, reads `x` next
+ * to that directory. Normalising `..` textually first (path.resolve) judged it
+ * `<wd>/x`, inside. So the path is handed to realpath as given, and when it does
+ * not exist, its longest existing prefix is resolved and the rest appended.
+ *
+ * Windows applies `..` textually before the filesystem sees a path (measured:
+ * `<wd>\junction\..\x` reads `<wd>\x`), so there the textual resolve IS what a
+ * read opens.
+ */
 function realOrResolved(p: string): string {
+  if (process.platform !== "win32") return realOfLongestPrefix(isAbsolute(p) ? p : `${process.cwd()}/${p}`);
   const resolved = resolve(p);
   let real: string;
   try {
@@ -1004,7 +1017,19 @@ function realOrResolved(p: string): string {
   } catch {
     real = resolved;
   }
-  return process.platform === "win32" ? real.toLowerCase() : real;
+  return real.toLowerCase();
+}
+
+/** POSIX: realpath of `p`, or of its longest existing prefix with the rest appended. */
+function realOfLongestPrefix(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    // Not there (or not reachable): resolve the parent, then append this part.
+  }
+  const parent = posix.dirname(p);
+  if (parent === p) return p;
+  return posix.join(realOfLongestPrefix(parent), posix.basename(p));
 }
 
 /**
