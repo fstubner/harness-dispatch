@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -1243,4 +1243,23 @@ describe("files outside the project are not sent to a remote endpoint", () => {
     expect((await d.dispatch("hi", [link], project)).inputRejected).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // POSIX only: Windows applies `..` textually before the filesystem sees the
+  // path, so there `<project>\junction\..\secrets.txt` reads a file INSIDE the
+  // project and nothing escapes.
+  it.skipIf(process.platform === "win32")(
+    "follows a directory symlink before the `..` after it, as the kernel does",
+    async () => {
+      // project/link -> root/elsewhere, so project/link/../secrets.txt is
+      // root/secrets.txt. Normalising `..` first judged it project/secrets.txt.
+      mkdirSync(path.join(root, "elsewhere"));
+      symlinkSync(path.join(root, "elsewhere"), path.join(project, "link"), "dir");
+      const viaLink = `${path.join(project, "link")}/../secrets.txt`;
+      expect(readFileSync(viaLink, "utf8"), "premise: the kernel reads the outside file").toBe("outside-content");
+
+      const d = new OpenAICompatibleDispatcher(baseSvc());
+      expect((await d.dispatch("hi", [viaLink], project)).inputRejected).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });
