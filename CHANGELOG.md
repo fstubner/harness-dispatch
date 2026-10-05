@@ -19,6 +19,14 @@ pre-1.0, so minor versions can carry behaviour changes.
   in PATH, which also means the current directory, is now skipped on every
   platform.
 
+- **A key printed in two pieces no longer reaches the job's event log or MCP
+  progress notifications whole.** Each piece of a route's output was checked
+  for keys on its own, so a configured key split across two pieces passed
+  through as two harmless-looking halves that read back as the whole key. The
+  event log that streaming callers replay, and the progress notifications sent
+  while a dispatch runs, now hold back the end of each piece until the next one
+  arrives, as the partial log already did.
+
 ### Fixed
 
 - **A gitignored file could silently go missing from a `git_worktree` patch,
