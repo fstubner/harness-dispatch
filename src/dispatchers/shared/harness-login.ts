@@ -20,6 +20,7 @@
 
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
+import { findOnPath } from "./which-available.js";
 
 /** Plenty for `codex login status`, whose answer is a single line. */
 const MAX_LOGIN_OUTPUT_CHARS = 64 * 1024;
@@ -39,9 +40,16 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
       clearTimeout(timer);
       resolve(state);
     };
+    // Resolved through PATH only: handed a bare name, cross-spawn looks in the
+    // current directory first on Windows (see which-available.ts).
+    const resolved = findOnPath(command);
+    if (resolved === undefined) {
+      finish("unknown");
+      return;
+    }
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, ["login", "status"], {
+      child = spawn(resolved, ["login", "status"], {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         // Own process group on POSIX, so the timeout below reaches the whole

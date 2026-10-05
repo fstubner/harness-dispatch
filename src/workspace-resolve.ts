@@ -17,6 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
+import { spawnablePath } from "./dispatchers/shared/which-available.js";
 import {
   eolDigest,
   GIT_ENV,
@@ -51,7 +52,7 @@ function describeGitSpawnFailure(err: unknown): Error | undefined {
 
 async function git(args: string[], cwd: string, maxBuffer = MAX_PATCH_BYTES): Promise<string> {
   try {
-    const { stdout } = await execFile("git", args, {
+    const { stdout } = await execFile(spawnablePath("git"), args, {
       cwd,
       windowsHide: true,
       env: GIT_ENV,
@@ -128,7 +129,7 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
  * says it did nothing.
  */
 async function gitBoth(args: string[], cwd: string): Promise<string> {
-  const { stdout, stderr } = await execFile("git", args, {
+  const { stdout, stderr } = await execFile(spawnablePath("git"), args, {
     cwd,
     windowsHide: true,
     env: GIT_ENV,
@@ -383,8 +384,15 @@ async function gitAddPathspecs(
   pathspecs: string[],
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    let exe: string;
+    try {
+      exe = spawnablePath("git");
+    } catch (err) {
+      reject(describeGitSpawnFailure(err) ?? err);
+      return;
+    }
     const child = execFileCb(
-      "git",
+      exe,
       [...pinned, "add", ...flags, "--pathspec-from-file=-", "--pathspec-file-nul"],
       { cwd: root, windowsHide: true, env: GIT_ENV, maxBuffer: MAX_PATCH_BYTES },
       (err) => (err ? reject(describeGitSpawnFailure(err) ?? err) : resolve()),

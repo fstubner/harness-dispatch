@@ -27,15 +27,12 @@ vi.mock("../../src/dispatchers/shared/stream-subprocess.js", async (importOrigin
 vi.mock("../../src/dispatchers/shared/windows-cmd.js", () => ({
   resolveCliCommand: vi.fn(),
 }));
-// `sync` is load-bearing: commandAvailable() uses which.sync(), and it now
-// fails CLOSED when that isn't a function. A bare vi.fn() with no .sync is
-// not what the real package looks like, and mocking it that way is what let
-// the fail-open branch sit unnoticed.
-vi.mock("which", () => {
-  const fn = vi.fn() as unknown as { sync: (cmd: string) => string | null };
-  fn.sync = () => "/usr/local/bin/stub";
-  return { default: fn };
-});
+// The PATH lookup a dispatch makes before it spawns anything; the rest of
+// the module stays real.
+vi.mock("../../src/dispatchers/shared/which-available.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/dispatchers/shared/which-available.js")>()),
+  findOnPath: vi.fn(),
+}));
 
 const runSubprocess = vi.fn();
 const { streamSubprocess } = await import(
@@ -47,7 +44,7 @@ const streamSubprocessMock = streamSubprocess as unknown as ReturnType<
 const { resolveCliCommand } = await import(
   "../../src/dispatchers/shared/windows-cmd.js"
 );
-const { default: which } = await import("which");
+const { findOnPath } = await import("../../src/dispatchers/shared/which-available.js");
 const { GenericCliDispatcher } = await import(
   "../../src/dispatchers/generic-cli.js"
 );
@@ -56,7 +53,7 @@ const runSubprocessMock = runSubprocess as unknown as ReturnType<typeof vi.fn>;
 const resolveCliCommandMock = resolveCliCommand as unknown as ReturnType<
   typeof vi.fn
 >;
-const whichMock = which as unknown as ReturnType<typeof vi.fn>;
+const findOnPathMock = findOnPath as unknown as ReturnType<typeof vi.fn>;
 
 function ok(overrides: Partial<SubprocessResult> = {}): SubprocessResult {
   return {
@@ -85,7 +82,7 @@ function captureSubprocessCall(index: number): {
 }
 
 function mockFound(commandPath = "/usr/local/bin/claude"): void {
-  whichMock.mockResolvedValue(commandPath);
+  findOnPathMock.mockReturnValue(commandPath);
   resolveCliCommandMock.mockResolvedValue({
     command: commandPath,
     prefixArgs: [],
@@ -113,7 +110,7 @@ beforeEach(() => {
   runSubprocessMock.mockReset();
   streamSubprocessMock.mockImplementation(streamFromBuffered(runSubprocessMock));
   resolveCliCommandMock.mockReset();
-  whichMock.mockReset();
+  findOnPathMock.mockReset();
 });
 
 describe("Claude Code (GenericCliDispatcher + CLAUDE_CODE_PROTOCOL)", () => {
