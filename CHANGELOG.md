@@ -6,6 +6,25 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A gitignored file could silently go missing from a `git_worktree` patch,
+  while `apply` still said it succeeded.** When the delegate had committed
+  inside a nested repository it created (say `sub/f.txt`), git rejected the whole
+  batch of recorded gitignored files, and the failure was swallowed. Files
+  inside such a repository are now left to the repository's own entry in the
+  patch, and any other path git still refuses fails the patch with a message
+  naming it, instead of dropping it.
+- **A background supervisor started by a delegate no longer refuses everyone
+  else's jobs.** `job_status` can start the shared supervisor, and one started
+  from inside a delegate carried `HARNESS_DISPATCH_DEPTH=1`, so it rejected a
+  later ordinary dispatch as nested. The supervisor now starts without that
+  variable.
+- **`workspace` names the right policy when workspace setup failed.** A
+  `git_worktree` or `copy` dispatch whose workspace could not be created was
+  reported as "no isolated workspace (workspace policy: shared)". It now says
+  which policy was asked for, that setting up the workspace failed, and why.
+
 ## [0.12.0] — 2026-10-04
 
 Delegates are boxed in

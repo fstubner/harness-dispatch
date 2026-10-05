@@ -18,6 +18,7 @@ import {
   workspaceDiff,
 } from "../workspace-resolve.js";
 import { acquireWorkspaceLock } from "../workspace-lock.js";
+import { isIsolatedWorkspacePolicy } from "../workspaces.js";
 import { killJobChildren } from "./children.js";
 import { logCancelledRun } from "./run.js";
 import {
@@ -196,7 +197,20 @@ export async function resolveJobWorkspace(
     // A separate binding: the type guard narrows `run` to never on this
     // branch, so the diagnostic could not name the policy the caller got.
     const raw = job.result?.result?.workspace;
-    const policy = raw?.policy ?? "shared";
+    // No workspace record at all means the run never got one. For a job that
+    // asked for an isolated workspace that is a failed setup, not a shared run:
+    // naming the default policy blamed a policy nobody requested.
+    const requested = job.manifest.workspacePolicy ?? job.manifest.hints?.workspacePolicy;
+    if (raw === undefined && requested !== undefined && isIsolatedWorkspacePolicy(requested)) {
+      const reason = job.result?.result?.error ?? job.status.error;
+      throw new Error(
+        `Job ${jobId} has no isolated workspace to ${action}: it asked for workspace policy ` +
+          `'${requested}' but setting the workspace up failed, so the agent never ran in one` +
+          `${reason !== undefined ? ` (${reason.trim()})` : ""}. There is nothing to inspect, ` +
+          `apply or throw away; fix the cause and dispatch again.`,
+      );
+    }
+    const policy = raw?.policy ?? requested ?? "shared";
     throw new Error(
       `Job ${jobId} has no isolated workspace to ${action} (workspace policy: ${policy}). ` +
         `Only 'copy' and 'git_worktree' dispatches produce one — a 'shared' or ` +
