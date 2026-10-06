@@ -197,15 +197,25 @@ export async function resolveJobWorkspace(
     // A separate binding: the type guard narrows `run` to never on this
     // branch, so the diagnostic could not name the policy the caller got.
     const raw = job.result?.result?.workspace;
-    // No workspace record at all means the run never got one. For a job that
-    // asked for an isolated workspace that is a failed setup, not a shared run:
-    // naming the default policy blamed a policy nobody requested.
+    // No workspace record at all, for a job that asked for an isolated
+    // workspace, is not a shared run: naming the default policy blamed a
+    // policy nobody requested.
     const requested = job.manifest.workspacePolicy ?? job.manifest.hints?.workspacePolicy;
     if (raw === undefined && requested !== undefined && isIsolatedWorkspacePolicy(requested)) {
+      // Still running: the workspace is recorded with the result, not before.
+      if (job.status.status === "queued" || job.status.status === "running") {
+        throw new Error(
+          `Job ${jobId} has not finished (${job.status.status}), so its '${requested}' workspace ` +
+            `is not available to ${action} yet. It is reported with the job's result; check ` +
+            `job_status and try again once the job is done.`,
+        );
+      }
+      // Finished without one. Setup may have failed, or the run may have
+      // stopped before setup (no usable route, for one): the reason says which.
       const reason = job.result?.result?.error ?? job.status.error;
       throw new Error(
         `Job ${jobId} has no isolated workspace to ${action}: it asked for workspace policy ` +
-          `'${requested}' but setting the workspace up failed, so the agent never ran in one` +
+          `'${requested}', but the run never got one` +
           `${reason !== undefined ? ` (${reason.trim()})` : ""}. There is nothing to inspect, ` +
           `apply or throw away; fix the cause and dispatch again.`,
       );

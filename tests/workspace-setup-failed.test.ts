@@ -33,7 +33,7 @@ afterEach(async () => {
 });
 
 /** Run a job under `policy` in `workDir`, with a route that would succeed if it were ever started. */
-async function runJobUnder(policy: string): Promise<string> {
+async function runJobUnder(policy: string, gate?: Promise<void>): Promise<string> {
   const { startAsyncJobTracked } = await import("../src/jobs.js");
   const { RuntimeHolder } = await import("../src/mcp/config-hot-reload.js");
   const { Router } = await import("../src/router.js");
@@ -52,6 +52,7 @@ async function runJobUnder(policy: string): Promise<string> {
           let done = false;
           return {
             next: async () => {
+              await gate;
               if (done) return { value: undefined, done: true as const };
               done = true;
               return {
@@ -88,12 +89,12 @@ async function runJobUnder(policy: string): Promise<string> {
     workspacePolicy: policy,
     hints: { safetyProfile: "full_auto" },
   } as never);
-  await completion;
+  if (gate === undefined) await completion;
   return status.jobId;
 }
 
 describe("a job whose isolated workspace could not be set up", () => {
-  it("names the policy that was requested and says setup failed", async () => {
+  it("names the policy that was requested and says the run never got one", async () => {
     // workDir is not a git repository, so a git_worktree workspace cannot exist.
     const jobId = await runJobUnder("git_worktree");
     const { getAsyncJob } = await import("../src/jobs.js");
@@ -106,7 +107,7 @@ describe("a job whose isolated workspace could not be set up", () => {
       (e: unknown) => e as Error,
     );
     expect(err?.message).toContain("workspace policy 'git_worktree'");
-    expect(err?.message).toContain("setting the workspace up failed");
+    expect(err?.message).toContain("the run never got one");
     expect(err?.message).not.toMatch(/policy: shared/);
   }, 60_000);
 
@@ -118,6 +119,28 @@ describe("a job whose isolated workspace could not be set up", () => {
       (e: unknown) => e as Error,
     );
     expect(err?.message).toMatch(/workspace policy: shared\)/);
-    expect(err?.message).not.toContain("setting the workspace up failed");
+    expect(err?.message).not.toContain("the run never got one");
+  }, 60_000);
+
+  it("says a job that is still running has not finished, not that setup failed", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const jobId = await runJobUnder("copy", gate);
+    const { resolveJobWorkspace } = await import("../src/jobs/lifecycle.js");
+    const { getAsyncJob } = await import("../src/jobs.js");
+    try {
+      // Wait until the run is under way, so the workspace exists but is not recorded yet.
+      for (let i = 0; i < 100 && (await getAsyncJob(jobId)).status.status !== "running"; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const err = await resolveJobWorkspace(jobId, "diff").then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toContain("has not finished");
+      expect(err?.message).not.toContain("never got one");
+    } finally {
+      release();
+    }
   }, 60_000);
 });

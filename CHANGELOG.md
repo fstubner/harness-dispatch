@@ -50,10 +50,11 @@ pre-1.0, so minor versions can carry behaviour changes.
   from inside a delegate carried `HARNESS_DISPATCH_DEPTH=1`, so it rejected a
   later ordinary dispatch as nested. The supervisor now starts without that
   variable.
-- **`workspace` names the right policy when workspace setup failed.** A
-  `git_worktree` or `copy` dispatch whose workspace could not be created was
-  reported as "no isolated workspace (workspace policy: shared)". It now says
-  which policy was asked for, that setting up the workspace failed, and why.
+- **`workspace` names the right policy for a job with no workspace.** A
+  `git_worktree` or `copy` dispatch that never got a workspace, because setup
+  failed or no route could run it, was reported as "no isolated workspace
+  (workspace policy: shared)". It now names the policy that was asked for and
+  the reason, and for a job still running says it has not finished yet.
 
 ## [0.12.0] — 2026-10-04
 

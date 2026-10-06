@@ -182,56 +182,61 @@ export async function runJob(
           // Best-effort, like the partial log; result.json still lands.
         }
       });
-      for (;;) {
-        pending ??= iterator.next() as Promise<
-          IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
-        >;
-        const winner = await Promise.race([
-          pending.then((r) => ({ kind: "event" as const, r })),
-          delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
-        ]);
-        if (winner.kind === "poll") {
-          if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
-          cancelled = true;
-          cancelController.abort();
-          // Not awaited: the generator is parked on an await that only settles
-          // once the abort above kills the child, so awaiting return() here
-          // would deadlock on the very thing it is trying to stop.
-          void iterator.return?.().catch(() => undefined);
-          break;
-        }
-        pending = undefined;
-        const next = winner.r;
-        if (next.done) break;
-        if (cancelRequested(jobDir)) {
-          cancelled = true;
-          cancelController.abort();
-          void iterator.return?.().catch(() => undefined);
-          break;
-        }
-        const { event, decision } = next.value;
-        if (decision) finalDecision = decision;
-        if (input.onEvent) await progressSink.push(event);
-        if (event.type === "stdout" || event.type === "stderr") {
-          try {
-            const text = partialRedactor.push(event.chunk);
-            if (text !== "") await appendFile(partialPath, text, { encoding: "utf8", mode: 0o600 });
-          } catch {
-            // Progress mirroring is best-effort; the final result still lands.
+      // Held-back text is flushed however the loop ends, a thrown iterator
+      // included; otherwise the tail of each stream would never be written.
+      try {
+        for (;;) {
+          pending ??= iterator.next() as Promise<
+            IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
+          >;
+          const winner = await Promise.race([
+            pending.then((r) => ({ kind: "event" as const, r })),
+            delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
+          ]);
+          if (winner.kind === "poll") {
+            if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
+            cancelled = true;
+            cancelController.abort();
+            // Not awaited: the generator is parked on an await that only settles
+            // once the abort above kills the child, so awaiting return() here
+            // would deadlock on the very thing it is trying to stop.
+            void iterator.return?.().catch(() => undefined);
+            break;
           }
-        } else if (event.type === "completion") {
-          // Fallback chains yield one completion per attempt; last one wins.
-          finalResult = event.result;
+          pending = undefined;
+          const next = winner.r;
+          if (next.done) break;
+          if (cancelRequested(jobDir)) {
+            cancelled = true;
+            cancelController.abort();
+            void iterator.return?.().catch(() => undefined);
+            break;
+          }
+          const { event, decision } = next.value;
+          if (decision) finalDecision = decision;
+          if (input.onEvent) await progressSink.push(event);
+          if (event.type === "stdout" || event.type === "stderr") {
+            try {
+              const text = partialRedactor.push(event.chunk);
+              if (text !== "") await appendFile(partialPath, text, { encoding: "utf8", mode: 0o600 });
+            } catch {
+              // Progress mirroring is best-effort; the final result still lands.
+            }
+          } else if (event.type === "completion") {
+            // Fallback chains yield one completion per attempt; last one wins.
+            finalResult = event.result;
+          }
+          if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
+            await eventsSink.push(event);
+          }
         }
-        if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
-          await eventsSink.push(event);
+      } finally {
+        await progressSink.flush();
+        await eventsSink.flush();
+        const tail = partialRedactor.flush();
+        if (tail !== "") {
+          await appendFile(partialPath, tail, { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
         }
-      }
-      await progressSink.flush();
-      await eventsSink.flush();
-      const tail = partialRedactor.flush();
-      if (tail !== "") {
-        await appendFile(partialPath, tail, { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
       }
       if (cancelled) {
         // Terminal, and deliberately NOT routed through the router's
