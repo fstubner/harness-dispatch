@@ -221,7 +221,13 @@ describe("isolated workspace lifecycle — every policy x location x change kind
     const otherDir = location === "repo root" ? path.join(repo, "pkg") : repo;
     const hereLabel = location === "repo root" ? ("ROOT" as const) : ("PKG" as const);
 
-    const prepared = await prepareWorkspace({ routeName: "matrix", policy, workingDir, files: [] });
+    const prepared = await prepareWorkspace({
+      routeName: "matrix",
+      policy,
+      workingDir,
+      files: [],
+      jobId: "job-1700000000060-aabbccdd",
+    });
     expect(prepared.isolated, `${policy} did not isolate`).toBe(true);
     await actAsAgent(prepared.effectiveWorkingDir, kind);
 

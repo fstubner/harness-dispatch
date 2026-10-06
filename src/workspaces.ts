@@ -469,6 +469,36 @@ const HEARTBEAT_FILE = ".alive";
 const HEARTBEAT_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * The id of the job that created a run directory, written when it is created.
+ *
+ * Discard deletes the directory a job's record names, and the record is a
+ * file on disk anyone with access to the state directory can edit. Pointed at
+ * another job's run directory, it passed every other check, so a forced
+ * discard deleted that job's unapplied work. This is what lets discard prove
+ * the directory is the asking job's own. Sits in the run directory beside the
+ * heartbeat, outside the workspace, so it is never copied or patched.
+ */
+const OWNER_FILE = ".owner";
+
+/**
+ * Record `jobId` as the creator of the new run directory `runDir`. Exported
+ * for tests that build run directories by hand, for the same reason as
+ * `workspaceRunId`.
+ */
+export async function recordWorkspaceOwner(runDir: string, jobId: string): Promise<void> {
+  await writeFile(path.join(runDir, OWNER_FILE), jobId, { encoding: "utf8", flag: "wx", mode: 0o600 });
+}
+
+/** The job recorded as having created `runDir`, or undefined when none is. */
+export async function workspaceOwner(runDir: string): Promise<string | undefined> {
+  try {
+    return (await readFile(path.join(runDir, OWNER_FILE), "utf8")).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Keep this run's heartbeat fresh until the returned function is called, which
  * also removes the file — leaving the directory's mtime at the finish time, so
  * retention counts from the end of the run.
@@ -630,7 +660,8 @@ async function pruneStaleRuns(root: string, gitRoot?: string): Promise<void> {
 async function secureRunDirectory(
   projectRoot: string,
   routeName: string,
-  gitRoot?: string,
+  gitRoot: string | undefined,
+  jobId: string | undefined,
 ): Promise<string> {
   // Everything below uses the verified path markProjectRoot returns, never the
   // string the caller computed.
@@ -651,6 +682,9 @@ async function secureRunDirectory(
     await mkdir(workspaceRoot, { recursive: false, mode: 0o700 });
   }
   await assertStillOurs(workspaceRoot);
+  // Without a job (direct library use) there is no owner to record, and
+  // discard, which is always asked about a job, refuses the directory.
+  if (jobId !== undefined) await recordWorkspaceOwner(workspaceRoot, jobId);
   return workspaceRoot;
 }
 
@@ -1241,13 +1275,14 @@ async function prepareCopyWorkspace(
   routeName: string,
   workingDir: string,
   files: string[],
+  jobId: string | undefined,
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
   const root = workspaceRootFor(originalWorkingDir);
   const projectGitRoot = await git(["rev-parse", "--show-toplevel"], originalWorkingDir)
     .then((out) => out || undefined)
     .catch(() => undefined);
-  const workspaceRoot = await secureRunDirectory(root, routeName, projectGitRoot);
+  const workspaceRoot = await secureRunDirectory(root, routeName, projectGitRoot, jobId);
   const effectiveWorkingDir = path.join(workspaceRoot, "workspace");
   const skippedLinks: string[] = [];
   const vanishedFiles: string[] = [];
@@ -1425,6 +1460,7 @@ async function prepareGitWorktreeWorkspace(
   routeName: string,
   workingDir: string,
   files: string[],
+  jobId: string | undefined,
 ): Promise<PreparedWorkspace> {
   const originalWorkingDir = resolveDir(workingDir);
   // Preconditions answered as themselves, not as whatever git printed. The
@@ -1450,7 +1486,7 @@ async function prepareGitWorktreeWorkspace(
   );
   const prefix = await git(["rev-parse", "--show-prefix"], originalWorkingDir);
   const gitWorkspaceRoot = workspaceRootFor(gitRoot);
-  const workspaceRoot = await secureRunDirectory(gitWorkspaceRoot, routeName, gitRoot);
+  const workspaceRoot = await secureRunDirectory(gitWorkspaceRoot, routeName, gitRoot, jobId);
   const worktreeRoot = path.join(workspaceRoot, "worktree");
   // A repository with no commits yet is an ordinary state, not a fault, and
   // `git worktree add` has nothing to branch from in it.
@@ -1583,14 +1619,16 @@ export async function prepareWorkspace(opts: {
   policy: WorkspacePolicy;
   workingDir: string;
   files: string[];
+  /** The job the run belongs to, recorded in an isolated run directory (see OWNER_FILE). */
+  jobId?: string;
 }): Promise<PreparedWorkspace> {
   switch (opts.policy) {
     case "shared":
     case "shared_locked":
       return prepareSharedWorkspace(opts.policy, opts.workingDir, opts.files);
     case "copy":
-      return prepareCopyWorkspace(opts.routeName, opts.workingDir, opts.files);
+      return prepareCopyWorkspace(opts.routeName, opts.workingDir, opts.files, opts.jobId);
     case "git_worktree":
-      return prepareGitWorktreeWorkspace(opts.routeName, opts.workingDir, opts.files);
+      return prepareGitWorktreeWorkspace(opts.routeName, opts.workingDir, opts.files, opts.jobId);
   }
 }

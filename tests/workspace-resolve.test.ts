@@ -30,7 +30,7 @@ import {
   persistWorkspacePatch,
   workspaceDiff,
 } from "../src/workspace-resolve.js";
-import { eolDigest } from "../src/workspaces.js";
+import { eolDigest, recordWorkspaceOwner } from "../src/workspaces.js";
 import type { WorkspaceRun } from "../src/types.js";
 
 // Real git and real detached processes: individual tests take 10 to 40 s under
@@ -281,6 +281,7 @@ describe("copy workspaces", () => {
     // discard destroying unapplied work finally runs, and refusing IS the
     // documented behaviour: `apply` can end with "Do NOT discard this job".
     const run = await copyRun();
+    await recordWorkspaceOwner(run.workspaceRoot!, "job-1700000000003-cccccccc");
     const refused = await discardWorkspace("job-1700000000003-cccccccc", run);
 
     expect(refused.discarded, refused.message).toBe(false);
@@ -301,6 +302,7 @@ describe("copy workspaces", () => {
     const applied = await applyWorkspace("job-1700000000004-dddddddd", jobDir, run);
     expect(applied.applied, applied.message).toBe(true);
 
+    await recordWorkspaceOwner(run.workspaceRoot!, "job-1700000000004-dddddddd");
     const out = await discardWorkspace("job-1700000000004-dddddddd", run);
     expect(out.discarded, out.message).toBe(true);
     expect(await fs.stat(run.workspaceRoot!).then(() => true).catch(() => false)).toBe(false);
@@ -525,12 +527,14 @@ describe("git_worktree workspaces", () => {
     // The assertion that catches "Skipped patch, exit 0, reported success".
     expect(await readNorm(path.join(sub, "a.txt"))).toBe("AGENT line\n");
 
+    await recordWorkspaceOwner(wsRoot, "job-1700000000024-aabbccdd");
     const out = await discardWorkspace("job-1700000000024-aabbccdd", run);
     expect(out.discarded, out.message).toBe(true);
   });
 
   it("discard removes the worktree through git, not just the directory", async () => {
     const run = await worktreeRun();
+    await recordWorkspaceOwner(run.workspaceRoot!, "job-1700000000006-ffffffff");
     const discarded = await discardWorkspace("job-1700000000006-ffffffff", run);
     // discard speaks only for ITSELF. "The original project was never
     // modified" was printed unconditionally, including immediately after an
