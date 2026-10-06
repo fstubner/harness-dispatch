@@ -19,6 +19,21 @@ pre-1.0, so minor versions can carry behaviour changes.
   in PATH, which also means the current directory, is now skipped on every
   platform.
 
+- **On Windows, a delegate's own shell no longer runs a program from its
+  current directory by bare name.** Every process harness-dispatch starts for
+  a route now has `NoDefaultCurrentDirectoryInExePath` set, as Claude Code
+  already does for its own children, and the delegate's own children inherit
+  it. Behaviour change: a hand-written `.cmd` route, or a
+  cmd.exe the delegate starts, that runs a program sitting in the working
+  directory by its bare name (`helper`) now finds the one on PATH or nothing;
+  write `.\helper` to run the local one.
+  Before, cmd.exe looked in the working directory first, so a `helper.cmd`
+  planted in the project ran instead of the real `helper`. A `.cmd` route is
+  also started through cmd.exe by its full path when COMSPEC is unset, where
+  a `cmd.exe` in the working directory ran instead, and `taskkill` and
+  `powershell` are now run from the Windows directory rather than whichever
+  copy comes first on PATH.
+
 - **A key printed in two pieces no longer reaches the job's event log or MCP
   progress notifications whole.** Each piece of a route's output was checked
   for keys on its own, so a configured key split across two pieces passed

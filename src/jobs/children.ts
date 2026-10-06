@@ -24,6 +24,7 @@ import path from "node:path";
 import { processAlive, timestamp } from "./store.js";
 import type { JobChild } from "./types.js";
 import { spawnablePath } from "../dispatchers/shared/which-available.js";
+import { system32, windowsPowerShell } from "../dispatchers/shared/windows-system.js";
 
 
 interface Scope {
@@ -122,7 +123,8 @@ async function processStartTimes(pids: number[]): Promise<Map<number, number>> {
   const out = new Map<number, number>();
   if (process.platform === "win32") {
     const filter = pids.map((p) => `ProcessId=${p}`).join(" OR ");
-    const text = await run("powershell.exe", [
+    // Windows' own PowerShell and taskkill, by absolute path (windows-system.ts).
+    const text = await run(windowsPowerShell(), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
@@ -149,7 +151,7 @@ async function processStartTimes(pids: number[]): Promise<Map<number, number>> {
 
 async function killTreeByPid(pid: number): Promise<void> {
   if (process.platform === "win32") {
-    await run("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    await run(system32("taskkill.exe"), ["/PID", String(pid), "/T", "/F"]);
     return;
   }
   // Agent CLIs are spawned as process-group leaders (stream-subprocess.ts), so

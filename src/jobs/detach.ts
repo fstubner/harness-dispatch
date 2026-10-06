@@ -31,6 +31,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { processAlive } from "./store.js";
+import { system32, windowsPowerShell } from "../dispatchers/shared/windows-system.js";
 
 export interface DetachedLaunch {
   execPath: string;
@@ -136,16 +137,13 @@ const WMI_SCRIPT = [
   "Write-Output \"$($r.ReturnValue) $($r.ProcessId)\"",
 ].join("; ");
 
-function windowsDir(): string {
-  return process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
-}
 
 async function launchViaWmi(spec: DetachedLaunch): Promise<LaunchOutcome> {
   const parts = [spec.execPath, ...spec.args, spec.logPath];
   if (parts.some((p) => CMD_UNSAFE.test(p))) {
     return { ok: false, error: "a path contains a character cmd.exe cannot quote" };
   }
-  const cmdExe = path.join(windowsDir(), "System32", "cmd.exe");
+  const cmdExe = system32("cmd.exe");
   const quoted = [spec.execPath, ...spec.args].map((p) => `"${p}"`).join(" ");
   // /s: strip the outer quotes and run the rest verbatim. /d: no AutoRun.
   const commandLine = `"${cmdExe}" /d /s /c "${quoted} >> "${spec.logPath}" 2>&1"`;
@@ -159,7 +157,7 @@ async function launchViaWmi(spec: DetachedLaunch): Promise<LaunchOutcome> {
     /[\u007f-\uffff]/g,
     (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
-  const powershell = path.join(windowsDir(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const powershell = windowsPowerShell();
   if (!existsSync(powershell)) return { ok: false, error: `${powershell} not found` };
 
   return new Promise((resolve) => {
