@@ -9,9 +9,9 @@ pre-1.0, so minor versions can carry behaviour changes.
 ### Security
 
 - **A program planted in the current directory is no longer run in place of
-  the real one.** Harness CLIs such as `codex` and `claude`, `git`, and the
-  tools used to find and stop a job's processes (`taskkill`, `powershell`,
-  `ps`) are now looked up only in the directories on PATH. Before, the
+  the real one.** Harness CLIs such as `codex` and `claude`, `git`, and `ps`
+  (used to find a job's processes on macOS and Linux) are now looked up only
+  in the directories on PATH. Before, the
   lookup on Windows tried the current directory first, so a server started
   inside a cloned repository that contained a `codex.cmd` or a `git.exe` ran
   that file instead: when it dispatched, in `doctor`'s Codex login check, and
