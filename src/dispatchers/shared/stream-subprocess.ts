@@ -205,6 +205,9 @@ export function streamSubprocess(
     }, killGraceMs).unref();
   }
 
+  // A .cmd/.bat command runs through cmd.exe, named by COMSPEC. Made absolute
+  // before the delegate's environment is copied, so the delegate gets it too.
+  ensureAbsoluteComspec();
   const spawnOpts: SpawnOptions = {
     stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -220,8 +223,6 @@ export function streamSubprocess(
   if (opts.cwd !== undefined) spawnOpts.cwd = opts.cwd;
 
   try {
-    // A .cmd/.bat command runs through cmd.exe, named by COMSPEC.
-    ensureAbsoluteComspec();
     child = spawn(command, args as readonly string[] as string[], spawnOpts);
   } catch (err) {
     const e = err instanceof Error ? err : new Error(String(err));

@@ -1252,8 +1252,8 @@ export async function discardWorkspace(
   // naming ANOTHER job's run directory passes both, and a forced discard then
   // deleted that job's unapplied work. The run directory records the job that
   // created it (workspaces.ts OWNER_FILE). One with no owner — created before
-  // owners were recorded, or by direct library use — cannot be proven to be
-  // this job's, so it is refused too; retention removes it in time.
+  // owners were recorded, or by direct library use — cannot be told apart from
+  // another job's, so it is refused too.
   const owner = await workspaceOwner(root);
   if (owner !== jobId) {
     return {
@@ -1262,9 +1262,9 @@ export async function discardWorkspace(
       message:
         owner === undefined
           ? `Refused: ${root} does not record which job created it (workspaces created before ` +
-            `this version do not), so discard cannot prove it is ${jobId}'s and will not delete ` +
-            `it. It is removed automatically once it is older than the workspace retention ` +
-            `period, or delete it by hand.`
+            `this version do not), so discard cannot tell it is ${jobId}'s and will not delete ` +
+            `it. A later copy or git_worktree dispatch in the same project removes it once it is ` +
+            `older than the workspace retention period; or delete it by hand.`
           : `Refused: ${root} belongs to job ${owner}, not ${jobId}. This job's record names ` +
             `another job's workspace, so discarding it would delete that job's work. Discard ` +
             `${owner} itself if that is what you want.`,

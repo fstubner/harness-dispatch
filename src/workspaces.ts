@@ -474,9 +474,11 @@ const HEARTBEAT_MAX_MS = 7 * 24 * 60 * 60 * 1000;
  * Discard deletes the directory a job's record names, and the record is a
  * file on disk anyone with access to the state directory can edit. Pointed at
  * another job's run directory, it passed every other check, so a forced
- * discard deleted that job's unapplied work. This is what lets discard prove
- * the directory is the asking job's own. Sits in the run directory beside the
- * heartbeat, outside the workspace, so it is never copied or patched.
+ * discard deleted that job's unapplied work. Discard checks this before
+ * deleting, which catches a record that names another job's workspace. It is
+ * not a security boundary: anyone who can edit job records can also edit this
+ * file. Sits in the run directory beside the heartbeat, outside the
+ * workspace, so it is never copied or patched.
  */
 const OWNER_FILE = ".owner";
 

@@ -39,9 +39,11 @@ pre-1.0, so minor versions can carry behaviour changes.
   another job's workspace was discarded with `force`, deleting that job's
   unapplied work. Each new workspace now records the job that created it, and
   discard deletes only a workspace recorded as the asking job's own, with or
-  without `force`. Workspaces created before this version record no job, so
-  discard refuses them; they are still removed automatically once older than
-  the retention period (24 hours by default), or can be deleted by hand.
+  without `force`. This catches a wrong record; it does not stop someone who
+  can edit job records, since they can edit the owner too. Workspaces created
+  before this version record no job, so discard refuses them; a later `copy`
+  or `git_worktree` dispatch in the same project removes them once older than
+  the retention period (24 hours by default), or they can be deleted by hand.
 
 - **A key printed in two pieces no longer reaches the job's event log or MCP
   progress notifications whole.** Each piece of a route's output was checked
