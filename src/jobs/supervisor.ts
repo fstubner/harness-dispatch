@@ -780,11 +780,19 @@ async function launchSupervisor(
 ): Promise<string | undefined> {
   const dir = path.join(jobsRoot(), ".supervisors");
   const logPath = path.join(dir, `spawn-${id}.log`);
+  // Without the launching process's nesting depth. A supervisor serves whoever
+  // dispatches next, but `job_status` (not gated by depth) can start one from a
+  // delegate, and a supervisor carrying HARNESS_DISPATCH_DEPTH=1 refuses every
+  // later user's CLI job as nested. Matched ignoring case: on Windows the
+  // variable's name arrives in whatever case the launcher set it.
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "HARNESS_DISPATCH_DEPTH"),
+  );
   const outcome = await launchDetached({
     execPath: process.execPath,
     args: [runnerPath, "--supervisor", id],
     env: {
-      ...process.env,
+      ...inherited,
       ...(configPath !== undefined ? { HARNESS_DISPATCH_CONFIG: configPath } : {}),
     },
     logPath,

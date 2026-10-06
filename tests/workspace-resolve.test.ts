@@ -1250,3 +1250,71 @@ describe("post-run git never honours config the agent could have written", () =>
     expect(patch).toContain("+export const n = 1;");
   });
 });
+
+describe("a gitignored file next to a nested repository the agent committed in", () => {
+  /**
+   * The forced add of recorded gitignored files runs in batches. git rejects a
+   * whole batch when ONE path in it is refused (`sub/f.txt`, inside a nested
+   * repository the delegate created and committed in, is refused with "is in
+   * submodule"), and that failure was swallowed: every gitignored file in the
+   * batch dropped out of the patch while `apply` reported success.
+   */
+  async function nestedRun(): Promise<WorkspaceRun> {
+    const repo = await makeRepo("nproj");
+    await fs.writeFile(path.join(repo, ".gitignore"), "*.env\n", "utf8");
+    await git(["add", "-A"], repo);
+    await git(["commit", "-qm", "ignore"], repo);
+    const base = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
+
+    const wsRoot = path.join(dir, "nws");
+    const worktree = path.join(wsRoot, "worktree");
+    await fs.mkdir(wsRoot, { recursive: true });
+    await git(["worktree", "add", "--detach", "-q", worktree, base], repo);
+
+    await fs.writeFile(path.join(worktree, "plain.env"), "TOKEN=abc\n", "utf8");
+    const sub = path.join(worktree, "sub");
+    await git(["init", "-q", sub], dir);
+    await git(["config", "user.email", "t@example.test"], sub);
+    await git(["config", "user.name", "Test"], sub);
+    await git(["config", "commit.gpgsign", "false"], sub);
+    await fs.writeFile(path.join(sub, "f.txt"), "inside\n", "utf8");
+    await git(["add", "-A"], sub);
+    await git(["commit", "-qm", "in sub"], sub);
+
+    return {
+      policy: "git_worktree",
+      originalWorkingDir: repo,
+      effectiveWorkingDir: worktree,
+      workspaceRoot: wsRoot,
+      baseCommit: base,
+      isolated: true,
+      securityBoundary: "project_state_and_process_cwd",
+      changedFiles: [
+        { path: "plain.env", kind: "added" },
+        { path: "sub/f.txt", kind: "added" },
+      ],
+    } as WorkspaceRun;
+  }
+
+  it("keeps the ignored file in the patch", async () => {
+    const patch = await buildWorkspacePatch(await nestedRun());
+    expect(patch).toContain("plain.env");
+    expect(patch).toContain("TOKEN=abc");
+  });
+
+  it("fails naming a path git refuses, rather than dropping it and its batch-mates", async () => {
+    // A recorded path that resolves outside the worktree is refused by git for
+    // reasons unrelated to nested repositories.
+    const run = await nestedRun();
+    await fs.writeFile(path.join(run.workspaceRoot!, "outside.env"), "x\n", "utf8");
+    const err = await buildWorkspacePatch({
+      ...run,
+      changedFiles: [...run.changedFiles!, { path: "../outside.env", kind: "added" }],
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toContain("../outside.env");
+    expect(err?.message).not.toContain("plain.env");
+  });
+});

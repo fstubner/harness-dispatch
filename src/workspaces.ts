@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from "node:child_process";
 import { dirFromEnv } from "./state-dir.js";
+import { spawnablePath } from "./dispatchers/shared/which-available.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
 import {
@@ -1332,7 +1333,7 @@ async function prepareCopyWorkspace(
 export const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
 
 async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFile("git", args, { cwd, windowsHide: true, env: GIT_ENV });
+  const { stdout } = await execFile(spawnablePath("git"), args, { cwd, windowsHide: true, env: GIT_ENV });
   return String(stdout).trim();
 }
 

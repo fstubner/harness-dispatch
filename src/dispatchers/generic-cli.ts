@@ -12,7 +12,6 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import which from "which";
 import type {
   CliEventRule,
   CliProtocolConfig,
@@ -26,7 +25,7 @@ import { BaseDispatcher, type DispatchOpts } from "./base.js";
 import { DEFAULT_MAX_OUTPUT_BYTES, streamSubprocess } from "./shared/stream-subprocess.js";
 import { redactSecretValue } from "../status.js";
 import { resolveCliCommand } from "./shared/windows-cmd.js";
-import { commandAvailable } from "./shared/which-available.js";
+import { commandAvailable, findOnPath } from "./shared/which-available.js";
 import { statedResetSeconds } from "./shared/rate-limit-reset.js";
 import { sameEnvName } from "./shared/env-names.js";
 import { dispatchDepth,nestedDispatchRefusal } from "../nested-dispatch.js";
@@ -254,7 +253,7 @@ const POSIX_ARG_MAX = 128 * 1024 - 2048;
  * One case that margin would NOT cover: cross-spawn keys its escaping on the
  * SHEBANG-RESOLVED file and unshifts the interpreter path as an extra
  * argument, ~60 characters this does not count. Unreachable through these
- * dispatchers — resolveCliCommand hands over a `which`-resolved path — but a
+ * dispatchers — resolveCliCommand hands over a PATH-resolved path — but a
  * future caller passing an unresolved command is the way in.
  */
 const WINDOWS_CMD_SHIM_MAX = 8_180;
@@ -891,7 +890,7 @@ export class GenericCliDispatcher extends BaseDispatcher {
       };
       return;
     }
-    const foundPath = await which(this.command, { nothrow: true });
+    const foundPath = findOnPath(this.command);
     if (!foundPath) {
       yield {
         type: "completion",

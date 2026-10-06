@@ -26,31 +26,20 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
-import which from "which";
+import { findAllOnPath, findOnPath } from "./which-available.js";
 
 export interface ResolvedCommand {
   command: string;
   prefixArgs: string[];
 }
 
-async function resolveWindowsCandidate(bin: string, first: string): Promise<string> {
-  try {
-    const all = (await which(bin, {
-      all: true,
-      nothrow: true,
-    } as Parameters<typeof which>[1] & { all: true })) as unknown;
-    if (Array.isArray(all)) {
-      const native = all.find(
-        (candidate) =>
-          path.extname(candidate).toLowerCase() === ".exe" &&
-          !candidate.toLowerCase().includes("\\windowsapps\\"),
-      );
-      if (native) return native;
-    }
-  } catch {
-    // Fall back to the first candidate resolved by which.
-  }
-  return first;
+function resolveWindowsCandidate(bin: string, first: string): string {
+  const native = findAllOnPath(bin).find(
+    (candidate) =>
+      path.extname(candidate).toLowerCase() === ".exe" &&
+      !candidate.toLowerCase().includes("\\windowsapps\\"),
+  );
+  return native ?? first;
 }
 
 async function resolveNpmCmdShim(cmdPath: string): Promise<ResolvedCommand | null> {
@@ -69,8 +58,12 @@ async function resolveNpmCmdShim(cmdPath: string): Promise<ResolvedCommand | nul
   }
 }
 
+/**
+ * Resolved through PATH only (findOnPath), never the current directory — see
+ * which-available.ts.
+ */
 export async function resolveCliCommand(bin: string): Promise<ResolvedCommand> {
-  const resolved = await which(bin, { nothrow: true });
+  const resolved = findOnPath(bin);
   if (!resolved) {
     // Let spawn surface the ENOENT — caller may be running in a sandbox where
     // PATH resolution is deliberately stubbed.
@@ -81,7 +74,7 @@ export async function resolveCliCommand(bin: string): Promise<ResolvedCommand> {
     return { command: resolved, prefixArgs: [] };
   }
 
-  const windowsResolved = await resolveWindowsCandidate(bin, resolved);
+  const windowsResolved = resolveWindowsCandidate(bin, resolved);
   const ext = path.extname(windowsResolved).toLowerCase();
   if (ext === ".cmd") {
     const npmShim = await resolveNpmCmdShim(windowsResolved);

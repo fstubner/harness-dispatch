@@ -6,6 +6,56 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Security
+
+- **A program planted in the current directory is no longer run in place of
+  the real one.** Harness CLIs such as `codex` and `claude`, `git`, and the
+  tools used to find and stop a job's processes (`taskkill`, `powershell`,
+  `ps`) are now looked up only in the directories on PATH. Before, the
+  lookup on Windows tried the current directory first, so a server started
+  inside a cloned repository that contained a `codex.cmd` or a `git.exe` ran
+  that file instead: when it dispatched, in `doctor`'s Codex login check, and
+  for every git command a `git_worktree` workspace runs. An empty or `.` entry
+  in PATH, which also means the current directory, is now skipped on every
+  platform.
+
+- **A key printed in two pieces no longer reaches the job's event log or MCP
+  progress notifications whole.** Each piece of a route's output was checked
+  for keys on its own, so a configured key split across two pieces passed
+  through as two harmless-looking halves that read back as the whole key. The
+  event log that streaming callers replay, and the progress notifications sent
+  while a dispatch runs, now hold back the end of each piece until the next one
+  arrives, as the partial log already did.
+
+- **On macOS and Linux, a remote endpoint no longer receives a file reached
+  through a symlink and then `..`.** `<project>/link/../secret`, with `link`
+  pointing to a directory outside the project, opens a file outside the
+  project, but the check applied `..` before following `link` and judged it
+  inside. Symlinks are now followed first, as the system does when it opens
+  the file, so that path is refused like any other outside the project.
+  Windows is unchanged: it applies `..` before following links, so there the
+  same path opens a file inside the project.
+
+### Fixed
+
+- **A gitignored file could silently go missing from a `git_worktree` patch,
+  while `apply` still said it succeeded.** When the delegate had committed
+  inside a nested repository it created (say `sub/f.txt`), git rejected the whole
+  batch of recorded gitignored files, and the failure was swallowed. Files
+  inside such a repository are now left to the repository's own entry in the
+  patch, and any other path git still refuses fails the patch with a message
+  naming it, instead of dropping it.
+- **A background supervisor started by a delegate no longer refuses everyone
+  else's jobs.** `job_status` can start the shared supervisor, and one started
+  from inside a delegate carried `HARNESS_DISPATCH_DEPTH=1`, so it rejected a
+  later ordinary dispatch as nested. The supervisor now starts without that
+  variable.
+- **`workspace` names the right policy for a job with no workspace.** A
+  `git_worktree` or `copy` dispatch that never got a workspace, because setup
+  failed or no route could run it, was reported as "no isolated workspace
+  (workspace policy: shared)". It now names the policy that was asked for and
+  the reason, and for a job still running says it has not finished yet.
+
 ## [0.12.0] — 2026-10-04
 
 Delegates are boxed in

@@ -3,22 +3,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// Mock `which` so we can control what the resolver sees without depending on
-// what's actually installed on the test machine.
-// `sync` is load-bearing: commandAvailable() uses which.sync(), and it now
-// fails CLOSED when that isn't a function. A bare vi.fn() with no .sync is
-// not what the real package looks like, and mocking it that way is what let
-// the fail-open branch sit unnoticed.
-vi.mock("which", () => {
-  const fn = vi.fn() as unknown as { sync: (cmd: string) => string | null };
-  fn.sync = () => "/usr/local/bin/stub";
-  return { default: fn };
-});
+// Mock the PATH lookup so we can control what the resolver sees without
+// depending on what's actually installed on the test machine.
+vi.mock("../src/dispatchers/shared/which-available.js", () => ({
+  findOnPath: vi.fn(),
+  findAllOnPath: vi.fn(),
+}));
 
-import which from "which";
+import { findAllOnPath, findOnPath } from "../src/dispatchers/shared/which-available.js";
 import { resolveCliCommand } from "../src/dispatchers/shared/windows-cmd.js";
 
-const mockedWhich = which as unknown as ReturnType<typeof vi.fn>;
+const mockedFind = findOnPath as unknown as ReturnType<typeof vi.fn>;
+const mockedFindAll = findAllOnPath as unknown as ReturnType<typeof vi.fn>;
 
 const originalPlatform = process.platform;
 
@@ -26,9 +22,14 @@ function setPlatform(p: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value: p, configurable: true });
 }
 
+beforeEach(() => {
+  mockedFindAll.mockReturnValue([]);
+});
+
 afterEach(() => {
   setPlatform(originalPlatform);
-  mockedWhich.mockReset();
+  mockedFind.mockReset();
+  mockedFindAll.mockReset();
 });
 
 describe("resolveCliCommand — non-Windows", () => {
@@ -37,19 +38,19 @@ describe("resolveCliCommand — non-Windows", () => {
   });
 
   it("returns the resolved absolute path with no prefix for a plain binary", async () => {
-    mockedWhich.mockResolvedValueOnce("/usr/local/bin/claude");
+    mockedFind.mockReturnValueOnce("/usr/local/bin/claude");
     const result = await resolveCliCommand("claude");
     expect(result).toEqual({ command: "/usr/local/bin/claude", prefixArgs: [] });
   });
 
   it("does not wrap .cmd files on non-Windows (the extension is just a name there)", async () => {
-    mockedWhich.mockResolvedValueOnce("/opt/bin/cursor.cmd");
+    mockedFind.mockReturnValueOnce("/opt/bin/cursor.cmd");
     const result = await resolveCliCommand("cursor");
     expect(result).toEqual({ command: "/opt/bin/cursor.cmd", prefixArgs: [] });
   });
 
-  it("falls back to the raw bin name if `which` returns null", async () => {
-    mockedWhich.mockResolvedValueOnce(null);
+  it("falls back to the raw bin name if nothing is found on PATH", async () => {
+    mockedFind.mockReturnValueOnce(undefined);
     const result = await resolveCliCommand("nonexistent");
     expect(result).toEqual({ command: "nonexistent", prefixArgs: [] });
   });
@@ -69,7 +70,7 @@ describe("resolveCliCommand — Windows", () => {
     // quoting and let a chained `&` command execute). cross-spawn (the
     // actual spawn() used downstream) detects .bat/.cmd targets itself and
     // escapes correctly, so this just needs to hand back the resolved path.
-    mockedWhich.mockResolvedValueOnce(
+    mockedFind.mockReturnValueOnce(
       "C:\\Users\\test\\AppData\\Roaming\\npm\\claude.cmd",
     );
     const result = await resolveCliCommand("claude");
@@ -104,7 +105,7 @@ describe("resolveCliCommand — Windows", () => {
       "utf8",
     );
 
-    mockedWhich.mockResolvedValueOnce(cmdPath);
+    mockedFind.mockReturnValueOnce(cmdPath);
     const result = await resolveCliCommand("gemini");
 
     expect(result).toEqual({
@@ -116,7 +117,7 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("resolves a plain .bat wrapper to its path with no prefix, for cross-spawn to handle safely", async () => {
-    mockedWhich.mockResolvedValueOnce("C:\\Tools\\gemini.bat");
+    mockedFind.mockReturnValueOnce("C:\\Tools\\gemini.bat");
     const result = await resolveCliCommand("gemini");
     expect(result).toEqual({
       command: "C:\\Tools\\gemini.bat",
@@ -125,14 +126,14 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("is case-insensitive on the extension (.CMD / .BAT)", async () => {
-    mockedWhich.mockResolvedValueOnce("C:\\Tools\\x.CMD");
+    mockedFind.mockReturnValueOnce("C:\\Tools\\x.CMD");
     const result = await resolveCliCommand("x");
     expect(result.command).toBe("C:\\Tools\\x.CMD");
     expect(result.prefixArgs).toEqual([]);
   });
 
   it("handles paths containing spaces correctly (path is passed through as a single element)", async () => {
-    mockedWhich.mockResolvedValueOnce(
+    mockedFind.mockReturnValueOnce(
       "C:\\Program Files\\My Tools\\codex.cmd",
     );
     const result = await resolveCliCommand("codex");
@@ -143,13 +144,12 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("skips WindowsApps .exe aliases because Node may not be allowed to spawn them directly", async () => {
-    mockedWhich
-      .mockResolvedValueOnce("C:\\Fake Node\\codex.cmd")
-      .mockResolvedValueOnce([
-        "C:\\Fake Node\\codex",
-        "C:\\Fake Node\\codex.cmd",
-        "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\codex.exe",
-      ]);
+    mockedFind.mockReturnValueOnce("C:\\Fake Node\\codex.cmd");
+    mockedFindAll.mockReturnValueOnce([
+      "C:\\Fake Node\\codex",
+      "C:\\Fake Node\\codex.cmd",
+      "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\codex.exe",
+    ]);
     const result = await resolveCliCommand("codex");
     expect(result).toEqual({
       command: "C:\\Fake Node\\codex.cmd",
@@ -158,13 +158,12 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("prefers a native .exe candidate over npm .cmd wrappers when it is directly spawnable", async () => {
-    mockedWhich
-      .mockResolvedValueOnce("C:\\Program Files\\nodejs\\tool.cmd")
-      .mockResolvedValueOnce([
-        "C:\\Program Files\\nodejs\\tool",
-        "C:\\Program Files\\nodejs\\tool.cmd",
-        "C:\\Tools\\tool.exe",
-      ]);
+    mockedFind.mockReturnValueOnce("C:\\Program Files\\nodejs\\tool.cmd");
+    mockedFindAll.mockReturnValueOnce([
+      "C:\\Program Files\\nodejs\\tool",
+      "C:\\Program Files\\nodejs\\tool.cmd",
+      "C:\\Tools\\tool.exe",
+    ]);
     const result = await resolveCliCommand("tool");
     expect(result).toEqual({
       command: "C:\\Tools\\tool.exe",
@@ -173,12 +172,11 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("falls back to the first wrapper when no native .exe candidate exists", async () => {
-    mockedWhich
-      .mockResolvedValueOnce("C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd")
-      .mockResolvedValueOnce([
-        "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini",
-        "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd",
-      ]);
+    mockedFind.mockReturnValueOnce("C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd");
+    mockedFindAll.mockReturnValueOnce([
+      "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini",
+      "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd",
+    ]);
     const result = await resolveCliCommand("gemini");
     expect(result).toEqual({
       command: "C:\\Users\\test\\AppData\\Roaming\\npm\\gemini.cmd",
@@ -187,7 +185,7 @@ describe("resolveCliCommand — Windows", () => {
   });
 
   it("does NOT wrap native .exe executables", async () => {
-    mockedWhich.mockResolvedValueOnce("C:\\Windows\\System32\\python.exe");
+    mockedFind.mockReturnValueOnce("C:\\Windows\\System32\\python.exe");
     const result = await resolveCliCommand("python");
     expect(result).toEqual({
       command: "C:\\Windows\\System32\\python.exe",
@@ -197,13 +195,13 @@ describe("resolveCliCommand — Windows", () => {
 
   it("does not wrap extensionless resolved paths", async () => {
     // Unusual on Windows but guard against it.
-    mockedWhich.mockResolvedValueOnce("C:\\tools\\weirdbin");
+    mockedFind.mockReturnValueOnce("C:\\tools\\weirdbin");
     const result = await resolveCliCommand("weirdbin");
     expect(result.prefixArgs).toEqual([]);
   });
 
-  it("returns raw bin name when `which` cannot resolve", async () => {
-    mockedWhich.mockResolvedValueOnce(null);
+  it("returns raw bin name when nothing on PATH resolves", async () => {
+    mockedFind.mockReturnValueOnce(undefined);
     const result = await resolveCliCommand("missing");
     expect(result).toEqual({ command: "missing", prefixArgs: [] });
   });

@@ -23,6 +23,7 @@ import { subscribe } from "node:diagnostics_channel";
 import path from "node:path";
 import { processAlive, timestamp } from "./store.js";
 import type { JobChild } from "./types.js";
+import { spawnablePath } from "../dispatchers/shared/which-available.js";
 
 
 interface Scope {
@@ -105,7 +106,14 @@ export async function killJobChildren(children: readonly JobChild[] | undefined)
 
 function run(file: string, args: string[]): Promise<string> {
   return new Promise((resolve) => {
-    execFile(file, args, { windowsHide: true, timeout: 20_000 }, (_err, stdout) => resolve(String(stdout ?? "")));
+    let exe: string;
+    try {
+      exe = spawnablePath(file);
+    } catch {
+      resolve(""); // Not on PATH: no answer, as when the spawn itself failed.
+      return;
+    }
+    execFile(exe, args, { windowsHide: true, timeout: 20_000 }, (_err, stdout) => resolve(String(stdout ?? "")));
   });
 }
 

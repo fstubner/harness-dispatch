@@ -157,74 +157,86 @@ export async function runJob(
       // finished run with no result.json, so the job never reaches a terminal
       // state and the caller polls a corpse.
       let pending: Promise<IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>> | undefined;
-      // A key split across two chunks would survive per-chunk redaction.
+      // A key split across two chunks would survive per-chunk redaction, so
+      // every sink fed chunk by chunk holds a tail across chunks.
       const partialRedactor = createStreamRedactor();
-      for (;;) {
-        pending ??= iterator.next() as Promise<
-          IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
-        >;
-        const winner = await Promise.race([
-          pending.then((r) => ({ kind: "event" as const, r })),
-          delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
-        ]);
-        if (winner.kind === "poll") {
-          if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
-          cancelled = true;
-          cancelController.abort();
-          // Not awaited: the generator is parked on an await that only settles
-          // once the abort above kills the child, so awaiting return() here
-          // would deadlock on the very thing it is trying to stop.
-          void iterator.return?.().catch(() => undefined);
-          break;
+      const progressSink = chunkRedactingSink((event) => {
+        try {
+          input.onEvent?.(event);
+        } catch {
+          // Progress forwarding is best-effort; the job itself must not fail.
         }
-        pending = undefined;
-        const next = winner.r;
-        if (next.done) break;
-        if (cancelRequested(jobDir)) {
-          cancelled = true;
-          cancelController.abort();
-          void iterator.return?.().catch(() => undefined);
-          break;
+      });
+      // The events a caller streaming this job needs, in order: answer text
+      // as it arrives, and each attempt's completion. A streaming HTTP request
+      // follows this file instead of the router, which is what gives it a job
+      // record — before, it was the one dispatch path with none, so a dropped
+      // connection or a restart lost work that had finished.
+      const eventsSink = chunkRedactingSink(async (event) => {
+        try {
+          await appendFile(eventsPath, `${redact(JSON.stringify(event))}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+        } catch {
+          // Best-effort, like the partial log; result.json still lands.
         }
-        const { event, decision } = next.value;
-        if (decision) finalDecision = decision;
-        if (input.onEvent) {
-          try {
-            input.onEvent(event);
-          } catch {
-            // Progress forwarding is best-effort; the job itself must not fail.
+      });
+      // Held-back text is flushed however the loop ends, a thrown iterator
+      // included; otherwise the tail of each stream would never be written.
+      try {
+        for (;;) {
+          pending ??= iterator.next() as Promise<
+            IteratorResult<{ event: DispatcherEvent; decision?: RoutingDecision | null }>
+          >;
+          const winner = await Promise.race([
+            pending.then((r) => ({ kind: "event" as const, r })),
+            delay(CANCEL_POLL_MS, { kind: "poll" as const }, { ref: false }),
+          ]);
+          if (winner.kind === "poll") {
+            if (!cancelRequested(jobDir)) continue; // `pending` deliberately kept
+            cancelled = true;
+            cancelController.abort();
+            // Not awaited: the generator is parked on an await that only settles
+            // once the abort above kills the child, so awaiting return() here
+            // would deadlock on the very thing it is trying to stop.
+            void iterator.return?.().catch(() => undefined);
+            break;
+          }
+          pending = undefined;
+          const next = winner.r;
+          if (next.done) break;
+          if (cancelRequested(jobDir)) {
+            cancelled = true;
+            cancelController.abort();
+            void iterator.return?.().catch(() => undefined);
+            break;
+          }
+          const { event, decision } = next.value;
+          if (decision) finalDecision = decision;
+          if (input.onEvent) await progressSink.push(event);
+          if (event.type === "stdout" || event.type === "stderr") {
+            try {
+              const text = partialRedactor.push(event.chunk);
+              if (text !== "") await appendFile(partialPath, text, { encoding: "utf8", mode: 0o600 });
+            } catch {
+              // Progress mirroring is best-effort; the final result still lands.
+            }
+          } else if (event.type === "completion") {
+            // Fallback chains yield one completion per attempt; last one wins.
+            finalResult = event.result;
+          }
+          if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
+            await eventsSink.push(event);
           }
         }
-        if (event.type === "stdout" || event.type === "stderr") {
-          try {
-            const text = partialRedactor.push(event.chunk);
-            if (text !== "") await appendFile(partialPath, text, { encoding: "utf8", mode: 0o600 });
-          } catch {
-            // Progress mirroring is best-effort; the final result still lands.
-          }
-        } else if (event.type === "completion") {
-          // Fallback chains yield one completion per attempt; last one wins.
-          finalResult = event.result;
+      } finally {
+        await progressSink.flush();
+        await eventsSink.flush();
+        const tail = partialRedactor.flush();
+        if (tail !== "") {
+          await appendFile(partialPath, tail, { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
         }
-        // The events a caller streaming this job needs, in order: answer text
-        // as it arrives, and each attempt's completion. A streaming HTTP request
-        // follows this file instead of the router, which is what gives it a job
-        // record — before, it was the one dispatch path with none, so a dropped
-        // connection or a restart lost work that had finished.
-        if ((event.type === "stdout" && event.text === true) || event.type === "completion") {
-          try {
-            await appendFile(eventsPath, `${redact(JSON.stringify(event))}\n`, {
-              encoding: "utf8",
-              mode: 0o600,
-            });
-          } catch {
-            // Best-effort, like the partial log; result.json still lands.
-          }
-        }
-      }
-      const tail = partialRedactor.flush();
-      if (tail !== "") {
-        await appendFile(partialPath, tail, { encoding: "utf8", mode: 0o600 }).catch(() => undefined);
       }
       if (cancelled) {
         // Terminal, and deliberately NOT routed through the router's
@@ -377,6 +389,48 @@ export async function runJob(
  * in the real log) were exactly the ones no latency or success figure could
  * see. `reason: "cancelled"` marks them; the breaker still never sees them.
  */
+/**
+ * A sink fed dispatcher events one at a time, redacted across chunk boundaries.
+ *
+ * Each chunk-carrying stream (stdout, stderr, thinking) gets its own
+ * createStreamRedactor, so a key split across two chunks of one stream is
+ * caught, and a chunk is passed on with only the text that is safe to release
+ * so far. The held tails are released before a completion — it ends an attempt,
+ * and a fallback chain starts another — and by `flush` at the end of the run.
+ * Other events pass straight through.
+ */
+function chunkRedactingSink(write: (event: DispatcherEvent) => void | Promise<void>): {
+  push(event: DispatcherEvent): Promise<void>;
+  flush(): Promise<void>;
+} {
+  type ChunkEvent = Extract<DispatcherEvent, { chunk: string }>;
+  const streams = new Map<ChunkEvent["type"], { redactor: ReturnType<typeof createStreamRedactor>; last: ChunkEvent }>();
+  const flush = async (): Promise<void> => {
+    for (const stream of streams.values()) {
+      const chunk = stream.redactor.flush();
+      if (chunk !== "") await write({ ...stream.last, chunk });
+    }
+  };
+  return {
+    async push(event) {
+      if (event.type === "stdout" || event.type === "stderr" || event.type === "thinking") {
+        let stream = streams.get(event.type);
+        if (stream === undefined) {
+          stream = { redactor: createStreamRedactor(), last: event };
+          streams.set(event.type, stream);
+        }
+        stream.last = event;
+        const chunk = stream.redactor.push(event.chunk);
+        if (chunk !== "") await write({ ...event, chunk });
+        return;
+      }
+      if (event.type === "completion") await flush();
+      await write(event);
+    },
+    flush,
+  };
+}
+
 export function logCancelledRun(
   route: string,
   error: string,

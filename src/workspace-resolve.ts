@@ -17,6 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import type { WorkspaceRun } from "./types.js";
+import { spawnablePath } from "./dispatchers/shared/which-available.js";
 import {
   eolDigest,
   GIT_ENV,
@@ -51,7 +52,7 @@ function describeGitSpawnFailure(err: unknown): Error | undefined {
 
 async function git(args: string[], cwd: string, maxBuffer = MAX_PATCH_BYTES): Promise<string> {
   try {
-    const { stdout } = await execFile("git", args, {
+    const { stdout } = await execFile(spawnablePath("git"), args, {
       cwd,
       windowsHide: true,
       env: GIT_ENV,
@@ -128,7 +129,7 @@ async function gitDiff(args: string[], cwd: string): Promise<string> {
  * says it did nothing.
  */
 async function gitBoth(args: string[], cwd: string): Promise<string> {
-  const { stdout, stderr } = await execFile("git", args, {
+  const { stdout, stderr } = await execFile(spawnablePath("git"), args, {
     cwd,
     windowsHide: true,
     env: GIT_ENV,
@@ -234,17 +235,46 @@ export async function buildWorkspacePatch(run: WorkspaceRun): Promise<string> {
     //
     // This also makes the two policies agree: a `copy` patch is built per file
     // from this same list and carries ignored files.
-    const ignoredCandidates = (run.changedFiles ?? [])
+    const recorded = (run.changedFiles ?? [])
       .filter((c) => c.kind !== "deleted")
       .map((c) => c.path);
     // Read again: the add above turns an embedded repository the agent
     // created into a new gitlink.
-    const exclusions =
-      ignoredCandidates.length > 0 ? await gitlinkExclusions(pinned, root) : [];
+    const exclusions = recorded.length > 0 ? await gitlinkExclusions(pinned, root) : [];
+    // A file inside a gitlink belongs to the nested repository, which the patch
+    // carries as that one gitlink. git refuses such a path ("is in submodule")
+    // and, worse, rejects the whole batch holding it.
+    const gitlinkDirs = exclusions.map((e) => e.slice(":(top,literal,exclude)".length));
+    const ignoredCandidates = recorded.filter(
+      (p) => !gitlinkDirs.some((dir) => p === dir || p.startsWith(`${dir}/`)),
+    );
+    // Not swallowed either: a rejected batch used to drop every gitignored file
+    // in it from the patch while `apply` reported success. Retry the rejected
+    // batch one path at a time, so the message names exactly the paths git
+    // refuses and the rest are still added.
+    const refused: string[] = [];
     for (let i = 0; i < ignoredCandidates.length; i += 100) {
       const batch = ignoredCandidates.slice(i, i + 100);
-      await gitAddPathspecs(pinned, root, ["-N", "--force"], [...batch, ...exclusions]).catch(
-        () => undefined,
+      try {
+        await gitAddPathspecs(pinned, root, ["-N", "--force"], [...batch, ...exclusions]);
+      } catch {
+        for (const p of batch) {
+          try {
+            await gitAddPathspecs(pinned, root, ["-N", "--force"], [p, ...exclusions]);
+          } catch (err) {
+            // A recorded file that is no longer in the workspace has nothing to
+            // carry, so git not finding it is no loss.
+            if (existsSync(path.join(root, p))) {
+              refused.push(`${p} (${err instanceof Error ? err.message.trim() : String(err)})`);
+            }
+          }
+        }
+      }
+    }
+    if (refused.length > 0) {
+      throw new Error(
+        `Could not add ${refused.length} file(s) the agent changed to the patch, so no ` +
+          `complete patch can be built: ${refused.join("; ")}`,
       );
     }
     return gitDiff(
@@ -354,8 +384,15 @@ async function gitAddPathspecs(
   pathspecs: string[],
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    let exe: string;
+    try {
+      exe = spawnablePath("git");
+    } catch (err) {
+      reject(describeGitSpawnFailure(err) ?? err);
+      return;
+    }
     const child = execFileCb(
-      "git",
+      exe,
       [...pinned, "add", ...flags, "--pathspec-from-file=-", "--pathspec-file-nul"],
       { cwd: root, windowsHide: true, env: GIT_ENV, maxBuffer: MAX_PATCH_BYTES },
       (err) => (err ? reject(describeGitSpawnFailure(err) ?? err) : resolve()),
