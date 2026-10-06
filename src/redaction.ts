@@ -165,6 +165,33 @@ export function redact(text: string): string {
 }
 
 /**
+ * The length of the longest suffix of `text` that is a proper prefix of a
+ * form `scrubSecrets` removes — the raw secret or its JSON-escaped form, kept
+ * in step with that function. 0 when the text cannot end partway into one.
+ *
+ * Proper prefix only: `text` has already been scrubbed, so a whole form is
+ * not in it, and a suffix equal to one would be a secret already complete.
+ */
+function heldSecretPrefixLength(text: string): number {
+  let keep = 0;
+  for (const secret of activeSecrets) {
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    for (const form of escaped === secret ? [secret] : [secret, escaped]) {
+      // Scan from the earliest start that could still be a proper prefix, so
+      // the first match is the longest one for this form. Only starts that
+      // would hold MORE than already found are worth testing.
+      for (let i = Math.max(0, text.length - (form.length - 1)); i < text.length - keep; i++) {
+        if (text.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(text.slice(i))) {
+          keep = text.length - i;
+          break;
+        }
+      }
+    }
+  }
+  return keep;
+}
+
+/**
  * `redact` for a sink written chunk by chunk, where a secret can arrive split
  * across two writes.
  *
@@ -172,20 +199,26 @@ export function redact(text: string): string {
  * second half starts the next — both halves land in the file and together they
  * are the key (audit5 F8: the one state file holding a full fake key was
  * `stdout.partial.log`). So each push scrubs what is held plus the new chunk,
- * and holds back the last (longest secret form − 1) characters: an incomplete
- * secret is shorter than that, so it starts inside the held tail and is
- * completed, then scrubbed, by a later push. `flush` releases the tail.
+ * and holds back only the longest suffix that could still be the START of a
+ * secret: a suffix that is a proper prefix of some form `scrubSecrets` removes
+ * (the raw value, or its JSON-escaped form). An incomplete secret is exactly
+ * such a suffix, so it stays held until a later push completes it — and it is
+ * scrubbed — or shows it was not one. Everything before it is released at
+ * once.
+ *
+ * Why not a fixed tail. Holding the last (longest secret − 1) characters
+ * regardless of content kept every short line in the buffer until the next
+ * chunk pushed it out: with one 38-character key configured, a dispatch
+ * printing a line every 2 s produced zero progress notifications in 9.4 s.
+ * Ordinary output almost never ends in the first characters of a key, so
+ * matching holds nothing in practice. `flush` releases what is held.
  */
 export function createStreamRedactor(): { push(chunk: string): string; flush(): string } {
   let held = "";
   return {
     push(chunk: string): string {
       const text = redact(held + chunk);
-      const longest = activeSecrets.reduce(
-        (max, s) => Math.max(max, s.length, JSON.stringify(s).length - 2),
-        0,
-      );
-      const keep = Math.min(text.length, Math.max(0, longest - 1));
+      const keep = heldSecretPrefixLength(text);
       held = text.slice(text.length - keep);
       return text.slice(0, text.length - keep);
     },

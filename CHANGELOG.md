@@ -24,8 +24,8 @@ pre-1.0, so minor versions can carry behaviour changes.
   for keys on its own, so a configured key split across two pieces passed
   through as two harmless-looking halves that read back as the whole key. The
   event log that streaming callers replay, and the progress notifications sent
-  while a dispatch runs, now hold back the end of each piece until the next one
-  arrives, as the partial log already did.
+  while a dispatch runs, now hold back the end of a piece that could be the
+  start of a key until the next one arrives, as the partial log already did.
 
 - **On macOS and Linux, a remote endpoint no longer receives a file reached
   through a symlink and then `..`.** `<project>/link/../secret`, with `link`
@@ -37,6 +37,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   same path opens a file inside the project.
 
 ### Fixed
+
+- **Progress notifications now arrive while a dispatch runs.** With any key
+  configured, output was held back by the length of the longest key, so short
+  lines waited for the next piece of output: a route printing one line every
+  2 s produced no progress at all before its response at 9.4 s. Only text
+  that could be the start of a key is held now. The last lines of a successful
+  run were also never sent, because its progress log was deleted before they
+  were read. Measured over the MCP server with one key configured: before, 0
+  of 4 lines arrived as progress; now all 4 do, at 3.3, 5.5, 7.4 and 9.5 s,
+  before the response.
 
 - **A gitignored file could silently go missing from a `git_worktree` patch,
   while `apply` still said it succeeded.** When the delegate had committed

@@ -596,9 +596,22 @@ export async function watchUntilTerminal(
 ): Promise<void> {
   const deadline = Date.now() + JOB_DEFAULT_TIMEOUT_MS + 10 * 60 * 1000;
   const tail = opts.onEvent !== undefined ? partialLogTail(jobDir, opts.onEvent) : undefined;
+  try {
+    await watchLoop(jobDir, deadline, tail, opts);
+  } finally {
+    await tail?.close();
+  }
+}
+
+async function watchLoop(
+  jobDir: string,
+  deadline: number,
+  tail: PartialLogTail | undefined,
+  opts: { signal?: AbortSignal; onWaiting?: () => Promise<unknown> },
+): Promise<void> {
   let lastNudge = Date.now();
   while (Date.now() < deadline && opts.signal?.aborted !== true) {
-    await tail?.();
+    await tail?.read();
     // Waits for a terminal STATUS, deliberately not for result.json: runJob
     // writes result.json and then updates the status, so returning on
     // result.json alone resolves in the window between the two and a caller
@@ -616,7 +629,10 @@ export async function watchUntilTerminal(
         status.status === "orphaned" ||
         status.status === "cancelled"
       ) {
-        await tail?.(); // Output written just before the terminal status.
+        // Output written just before the terminal status. A successful run
+        // has deleted the log by now; the handle held open since the first
+        // read still reaches its last bytes.
+        await tail?.read();
         return;
       }
       if (
@@ -635,38 +651,50 @@ export async function watchUntilTerminal(
   }
 }
 
+interface PartialLogTail {
+  read(): Promise<void>;
+  close(): Promise<void>;
+}
+
 /**
- * A reader that hands each call's new bytes of stdout.partial.log to `onEvent`
+ * A reader that hands each read's new bytes of stdout.partial.log to `onEvent`
  * as one stdout event. Decoded across reads, so a multi-byte character split
  * between two appends is not mangled.
+ *
+ * The file is opened once and held until `close`, not reopened per read: a
+ * successful run deletes the log before it writes its terminal status, so a
+ * reopen at that point found nothing and the run's last lines never reached
+ * progress. An open handle still reads a deleted file's bytes (POSIX unlink;
+ * on Windows Node opens with FILE_SHARE_DELETE).
  */
-function partialLogTail(
-  jobDir: string,
-  onEvent: (event: DispatcherEvent) => void,
-): () => Promise<void> {
+function partialLogTail(jobDir: string, onEvent: (event: DispatcherEvent) => void): PartialLogTail {
   const file = path.join(jobDir, "output", "stdout.partial.log");
   const decoder = new StringDecoder("utf8");
   let offset = 0;
-  return async () => {
-    let handle: FileHandle | undefined;
-    try {
-      handle = await open(file, "r");
-      const { size } = await handle.stat();
-      if (size <= offset) return;
-      const buf = Buffer.alloc(size - offset);
-      const { bytesRead } = await handle.read(buf, 0, buf.length, offset);
-      offset += bytesRead;
-      const chunk = decoder.write(buf.subarray(0, bytesRead));
-      if (chunk === "") return;
+  let handle: FileHandle | undefined;
+  return {
+    async read() {
       try {
-        onEvent({ type: "stdout", chunk });
+        handle ??= await open(file, "r");
+        const { size } = await handle.stat();
+        if (size <= offset) return;
+        const buf = Buffer.alloc(size - offset);
+        const { bytesRead } = await handle.read(buf, 0, buf.length, offset);
+        offset += bytesRead;
+        const chunk = decoder.write(buf.subarray(0, bytesRead));
+        if (chunk === "") return;
+        try {
+          onEvent({ type: "stdout", chunk });
+        } catch {
+          // Progress forwarding is best-effort; the watch must go on.
+        }
       } catch {
-        // Progress forwarding is best-effort; the watch must go on.
+        // Not written yet: the next tick reads it.
       }
-    } catch {
-      // Not written yet: the next tick reads it.
-    } finally {
+    },
+    async close() {
       await handle?.close().catch(() => undefined);
-    }
+      handle = undefined;
+    },
   };
 }
