@@ -9,6 +9,11 @@
  * another job's unapplied work. The run directory now records the job that
  * created it, and discard compares that with the job it was asked about.
  *
+ * Diff and apply read the same recorded root, so the same edited record made
+ * `apply` land ANOTHER job's changes in this job's project. They refuse a
+ * workspace owned by another job; unlike discard they allow one with no owner,
+ * since refusing would strand pre-upgrade work and apply deletes nothing.
+ *
  * Drives the real prepareWorkspace/finish path, as workspace-matrix does, so
  * the owner is recorded the way a dispatch records it.
  */
@@ -21,7 +26,7 @@ import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { discardWorkspace } from "../src/workspace-resolve.js";
+import { applyWorkspace, discardWorkspace, workspaceDiff } from "../src/workspace-resolve.js";
 import { prepareWorkspace } from "../src/workspaces.js";
 import type { WorkspacePolicy, WorkspaceRun } from "../src/types.js";
 
@@ -106,3 +111,49 @@ describe.each(["copy", "git_worktree"] as const)("%s: discard and the job that o
     expect(existsSync(own.workspaceRoot!)).toBe(false);
   });
 });
+
+describe.each(["copy", "git_worktree"] as const)("%s: diff and apply and the job that owns the workspace", (policy) => {
+  let jobDir: string;
+  beforeEach(async () => {
+    jobDir = path.join(root, "job-dir");
+    await fs.mkdir(jobDir, { recursive: true });
+  });
+
+  const projectFile = async () => (await fs.readFile(path.join(repo, "app.js"), "utf8")).replace(/\r\n/g, "\n");
+
+  it("refuses a record naming another job's workspace for diff and apply, with and without force", async () => {
+    const theirs = await finishedRun(policy, OWNER, true);
+    // OTHER's record, edited to name OWNER's run directory.
+    const tampered: WorkspaceRun = { ...theirs };
+
+    await expect(workspaceDiff(OTHER, jobDir, tampered)).rejects.toThrow(OWNER);
+    await expect(applyWorkspace(OTHER, jobDir, tampered)).rejects.toThrow(OWNER);
+    await expect(applyWorkspace(OTHER, jobDir, tampered, { force: true })).rejects.toThrow(OWNER);
+
+    expect(await projectFile(), "the other job's changes landed in the project").toBe("const a = 1;\n");
+  });
+
+  it("applies the job's own workspace", async () => {
+    const own = await finishedRun(policy, OWNER, true);
+    const diff = await workspaceDiff(OWNER, jobDir, own);
+    expect(diff.patch).toContain("app.js");
+    const out = await applyWorkspace(OWNER, jobDir, own);
+    expect(out.applied, out.message).toBe(true);
+    expect(await projectFile()).toBe("const a = 2;\n");
+  });
+
+  it("still diffs and applies a workspace that records no owner", async () => {
+    // Created before owners were recorded. Discard refuses these; apply must
+    // not, or work from before the upgrade could never be landed.
+    const prepared = await prepareWorkspace({ routeName: "r", policy, workingDir: repo, files: [] });
+    await fs.writeFile(path.join(prepared.effectiveWorkingDir, "app.js"), "const a = 2;\n", "utf8");
+    const unowned = (await prepared.finish({ output: "", service: "r", success: true })).workspace!;
+
+    const diff = await workspaceDiff(OWNER, jobDir, unowned);
+    expect(diff.patch).toContain("app.js");
+    const out = await applyWorkspace(OWNER, jobDir, unowned);
+    expect(out.applied, out.message).toBe(true);
+    expect(await projectFile()).toBe("const a = 2;\n");
+  });
+});
+

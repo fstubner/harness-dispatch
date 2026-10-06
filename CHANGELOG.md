@@ -45,6 +45,15 @@ pre-1.0, so minor versions can carry behaviour changes.
   or `git_worktree` dispatch in the same project removes them once older than
   the retention period (24 hours by default), or they can be deleted by hand.
 
+- **Applying or diffing one job no longer uses another job's workspace.** The same
+  edited record that made discard delete another job's workspace made `apply`
+  put that job's changes into this job's project, and `diff` show them. Both now
+  refuse a workspace recorded as another job's, naming that job, with or without
+  `force`. A workspace that records no job (created before this version) is
+  still applied and diffed, unlike discard: refusing would strand that work, and
+  apply deletes nothing. This catches a wrong record; it does not stop someone
+  who can edit job records, since they can edit the owner too.
+
 - **A key printed in two pieces no longer reaches the job's event log or MCP
   progress notifications whole.** Each piece of a route's output was checked
   for keys on its own, so a configured key split across two pieces passed
