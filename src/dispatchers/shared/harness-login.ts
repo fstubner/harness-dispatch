@@ -21,6 +21,7 @@
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
 import { findOnPath } from "./which-available.js";
+import { delegateEnv, ensureAbsoluteComspec } from "./windows-system.js";
 
 /** Plenty for `codex login status`, whose answer is a single line. */
 const MAX_LOGIN_OUTPUT_CHARS = 64 * 1024;
@@ -49,9 +50,13 @@ export function codexLoginState(command: string, timeoutMs = 15_000): Promise<Lo
     }
     let child: ReturnType<typeof spawn>;
     try {
+      // Started like a dispatch: through an absolute cmd.exe when it is a
+      // .cmd, and without the current-directory search (windows-system.ts).
+      ensureAbsoluteComspec();
       child = spawn(resolved, ["login", "status"], {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        env: delegateEnv(),
         // Own process group on POSIX, so the timeout below reaches the whole
         // tree, as for a dispatch.
         detached: process.platform !== "win32",

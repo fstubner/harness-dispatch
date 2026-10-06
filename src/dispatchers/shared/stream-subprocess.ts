@@ -25,7 +25,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import spawn from "cross-spawn";
 import { killTree } from "./kill-tree.js";
-import { mergeEnv } from "./env-names.js";
+import { delegateEnv, ensureAbsoluteComspec } from "./windows-system.js";
 
 export interface SubprocessChunk {
   stream: "stdout" | "stderr";
@@ -205,6 +205,9 @@ export function streamSubprocess(
     }, killGraceMs).unref();
   }
 
+  // A .cmd/.bat command runs through cmd.exe, named by COMSPEC. Made absolute
+  // before the delegate's environment is copied, so the delegate gets it too.
+  ensureAbsoluteComspec();
   const spawnOpts: SpawnOptions = {
     stdio: [opts.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -213,7 +216,9 @@ export function streamSubprocess(
     // Windows keeps the default — taskkill /T handles the tree there, and
     // `detached` on Windows means a new console instead.
     detached: process.platform !== "win32",
-    env: opts.env ? mergeEnv(process.env, opts.env) : process.env,
+    // On Windows, also with the current-directory program search turned off
+    // for the delegate's own shell (windows-system.ts).
+    env: delegateEnv(opts.env),
   };
   if (opts.cwd !== undefined) spawnOpts.cwd = opts.cwd;
 

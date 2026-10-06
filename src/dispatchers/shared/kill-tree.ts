@@ -17,17 +17,13 @@
  * process-group leader, and the group is signalled as a whole.
  */
 import { execFile, type ChildProcess } from "node:child_process";
-import { spawnablePath } from "./which-available.js";
+import { system32 } from "./windows-system.js";
 
 export function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (process.platform === "win32" && child.pid !== undefined) {
-    let taskkill: string;
-    try {
-      taskkill = spawnablePath("taskkill");
-    } catch {
-      return; // Not on PATH: nothing to run, as when the spawn failed below.
-    }
-    execFile(taskkill, ["/PID", String(child.pid), "/T", "/F"], () => {
+    // Windows' own taskkill, by absolute path: not whatever answers to the
+    // name first on PATH (windows-system.ts).
+    execFile(system32("taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], () => {
       // Best effort. A non-zero exit here just means the process (or its
       // whole tree) was already gone — nothing further to do either way.
     });

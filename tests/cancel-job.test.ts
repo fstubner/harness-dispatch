@@ -471,6 +471,11 @@ describe("a cancelled isolated run keeps its work reachable", () => {
       expect((await fs.readFile(path.join(workDir, "app.js"), "utf8")).replace(/\r\n/g, "\n")).toBe(
         "const a = 2;\n",
       );
+
+      // A job's own workspace records the job as its owner, which discard
+      // requires; a run that did not record it would be refused here.
+      const discarded = (await resolveJobWorkspace(status.jobId, "discard")) as { discarded: boolean; message: string };
+      expect(discarded.discarded, discarded.message).toBe(true);
     } finally {
       await fs.rm(workDir, { recursive: true, force: true, maxRetries: 3 });
     }

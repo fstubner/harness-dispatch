@@ -73,7 +73,13 @@ const result = (success: boolean): DispatchResult => ({ output: "", service: "t"
 describe("removing a workspace leaves the target of a link inside it alone", () => {
   it("discard", async () => {
     const repo = await makeRepo();
-    const ws = await prepareWorkspace({ routeName: "d", policy: "git_worktree", workingDir: repo, files: [] });
+    const ws = await prepareWorkspace({
+      routeName: "d",
+      policy: "git_worktree",
+      workingDir: repo,
+      files: [],
+      jobId: "job-1700000000001-aaaaaaaa",
+    });
     plantLink(ws.effectiveWorkingDir);
     const run = (await ws.finish(result(true))).workspace!;
 

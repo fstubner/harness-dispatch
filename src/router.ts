@@ -392,7 +392,9 @@ async function* streamWithWorkspacePolicy<T>(
   workingDir: string,
   files: string[],
   makeStream: (effectiveWorkingDir: string, effectiveFiles: string[]) => AsyncIterable<T>,
-  onWorkspace?: (workspace: PreparedWorkspace) => void,
+  onWorkspace: ((workspace: PreparedWorkspace) => void) | undefined,
+  /** The job this runs under, recorded as the owner of an isolated workspace. */
+  jobId: string | undefined,
 ): AsyncGenerator<T> {
   const policy = workspacePolicyFor(svc, safetyProfile, requestedPolicy);
   if (policy === "shared_locked") {
@@ -424,6 +426,7 @@ async function* streamWithWorkspacePolicy<T>(
         policy,
         workingDir,
         files,
+        ...(jobId !== undefined ? { jobId } : {}),
       }),
     );
   } finally {
@@ -993,6 +996,7 @@ export class Router {
         (effectiveWorkingDir, effectiveFiles) =>
           invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
         opts.onWorkspace,
+        opts.logContext?.jobId,
       )) {
         yield { event, decision };
         if (event.type === "completion") {
@@ -1167,6 +1171,7 @@ export class Router {
       (effectiveWorkingDir, effectiveFiles) =>
         invoke(dispatcher, prompt, effectiveFiles, effectiveWorkingDir, dispatchOpts),
       opts.onWorkspace,
+      opts.logContext?.jobId,
     )) {
       yield { event, decision };
       if (event.type === "completion") finalResult = event.result;

@@ -9,9 +9,9 @@ pre-1.0, so minor versions can carry behaviour changes.
 ### Security
 
 - **A program planted in the current directory is no longer run in place of
-  the real one.** Harness CLIs such as `codex` and `claude`, `git`, and the
-  tools used to find and stop a job's processes (`taskkill`, `powershell`,
-  `ps`) are now looked up only in the directories on PATH. Before, the
+  the real one.** Harness CLIs such as `codex` and `claude`, `git`, and `ps`
+  (used to find a job's processes on macOS and Linux) are now looked up only
+  in the directories on PATH. Before, the
   lookup on Windows tried the current directory first, so a server started
   inside a cloned repository that contained a `codex.cmd` or a `git.exe` ran
   that file instead: when it dispatched, in `doctor`'s Codex login check, and
@@ -19,13 +19,39 @@ pre-1.0, so minor versions can carry behaviour changes.
   in PATH, which also means the current directory, is now skipped on every
   platform.
 
+- **On Windows, a delegate's own shell no longer runs a program from its
+  current directory by bare name.** Every process harness-dispatch starts for
+  a route now has `NoDefaultCurrentDirectoryInExePath` set, as Claude Code
+  already does for its own children, and the delegate's own children inherit
+  it. Behaviour change: a hand-written `.cmd` route, or a
+  cmd.exe the delegate starts, that runs a program sitting in the working
+  directory by its bare name (`helper`) now finds the one on PATH or nothing;
+  write `.\helper` to run the local one.
+  Before, cmd.exe looked in the working directory first, so a `helper.cmd`
+  planted in the project ran instead of the real `helper`. A `.cmd` route is
+  also started through cmd.exe by its full path when COMSPEC is unset, where
+  a `cmd.exe` in the working directory ran instead, and `taskkill` and
+  `powershell` are now run from the Windows directory rather than whichever
+  copy comes first on PATH.
+
+- **Discarding one job no longer deletes another job's workspace.** A job's
+  record names the workspace discard deletes, and a record edited to name
+  another job's workspace was discarded with `force`, deleting that job's
+  unapplied work. Each new workspace now records the job that created it, and
+  discard deletes only a workspace recorded as the asking job's own, with or
+  without `force`. This catches a wrong record; it does not stop someone who
+  can edit job records, since they can edit the owner too. Workspaces created
+  before this version record no job, so discard refuses them; a later `copy`
+  or `git_worktree` dispatch in the same project removes them once older than
+  the retention period (24 hours by default), or they can be deleted by hand.
+
 - **A key printed in two pieces no longer reaches the job's event log or MCP
   progress notifications whole.** Each piece of a route's output was checked
   for keys on its own, so a configured key split across two pieces passed
   through as two harmless-looking halves that read back as the whole key. The
   event log that streaming callers replay, and the progress notifications sent
-  while a dispatch runs, now hold back the end of each piece until the next one
-  arrives, as the partial log already did.
+  while a dispatch runs, now hold back the end of a piece that could be the
+  start of a key until the next one arrives, as the partial log already did.
 
 - **On macOS and Linux, a remote endpoint no longer receives a file reached
   through a symlink and then `..`.** `<project>/link/../secret`, with `link`
@@ -37,6 +63,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   same path opens a file inside the project.
 
 ### Fixed
+
+- **Progress notifications now arrive while a dispatch runs.** With any key
+  configured, output was held back by the length of the longest key, so short
+  lines waited for the next piece of output: a route printing one line every
+  2 s produced no progress at all before its response at 9.4 s. Only text
+  that could be the start of a key is held now. The last lines of a successful
+  run were also never sent, because its progress log was deleted before they
+  were read. Measured over the MCP server with one key configured: before, 0
+  of 4 lines arrived as progress; now all 4 do, at 3.3, 5.5, 7.4 and 9.5 s,
+  before the response.
 
 - **A gitignored file could silently go missing from a `git_worktree` patch,
   while `apply` still said it succeeded.** When the delegate had committed
