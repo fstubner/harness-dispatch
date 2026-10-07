@@ -73,6 +73,13 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A client that names itself on each request is recorded.** MCP 2026-07-28
+  drops the connection handshake that the dispatch log and job records took
+  the client's name and version from, and has clients send them in each
+  request's `_meta` instead. A client speaking only that revision was recorded
+  with no name; the name is now read from the request first and from the
+  handshake otherwise.
+
 - **Progress notifications now arrive while a dispatch runs.** With any key
   configured, output was held back by the length of the longest key, so short
   lines waited for the next piece of output: a route printing one line every

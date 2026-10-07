@@ -452,4 +452,40 @@ describe("MCP server — who dispatched", () => {
       await close();
     }
   });
+
+  it("records a client that names itself per request and never sends initialize", async () => {
+    // MCP 2026-07-28 drops the initialize handshake; a client speaking only
+    // that revision names itself in each request's _meta instead.
+    const { getAsyncJob } = await import("../../src/jobs.js");
+    const server = new McpServer({ name: "harness-dispatch-test", version: "test" });
+    registerTools(server, { holder: new RuntimeHolder(buildState()) });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverT);
+    const reply = new Promise<{ result?: { content: Array<{ text: string }> }; error?: unknown }>((resolve) => {
+      clientT.onmessage = (m) => {
+        if ((m as { id?: unknown }).id === 1) resolve(m as never);
+      };
+    });
+    await clientT.start();
+    try {
+      await clientT.send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "dispatch",
+          arguments: { prompt: "say hi", workingDir: process.cwd(), hints: { taskType: "plan" } },
+          _meta: { "io.modelcontextprotocol/clientInfo": { name: "per-request-client", version: "9.9" } },
+        },
+      });
+      const msg = await reply;
+      expect(msg.error, JSON.stringify(msg.error)).toBeUndefined();
+      const { jobId } = JSON.parse(msg.result!.content[0]!.text) as { jobId: string };
+      const job = await getAsyncJob(jobId);
+      expect(job.manifest.caller?.client).toBe("per-request-client");
+      expect(job.manifest.caller?.clientVersion).toBe("9.9");
+    } finally {
+      await server.close();
+    }
+  });
 });
