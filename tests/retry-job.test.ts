@@ -291,7 +291,7 @@ describe("retrying a derived orphan", () => {
    * not, so that fix stopped one square short. Marking the original cancelled
    * is what closes it — claimNextJob refuses a marked job.
    */
-  it("marks the original cancelled so nothing can reclaim it", async () => {
+  it("records the original as orphaned so nothing can reclaim it (running, claimant dead)", async () => {
     const jobId = "job-1700000000901-aaaaaaaa";
     const dir = path.join(jobsDir, jobId);
     await fs.mkdir(path.join(dir, "output"), { recursive: true });
@@ -304,14 +304,49 @@ describe("retrying a derived orphan", () => {
       }),
       "utf8",
     );
-    // Raw status `running`, heartbeat stale, claimant dead: derived orphan,
-    // and still reclaimable once that claim is judged stale. (A `queued` job
-    // nobody claimed is no longer a derived orphan at all — it is waiting, and
-    // retry refuses it like any queued job.)
+    // Raw status `running`, heartbeat stale, claimant dead. Reading it writes
+    // `orphaned` to the file, which claimNextJob (queued jobs only) never takes.
+    // (A `queued` job nobody claimed is not an orphan at all — it is waiting,
+    // and retry refuses it like any queued job.)
     await fs.writeFile(
       path.join(dir, "status.json"),
       JSON.stringify({
         jobId, status: "running", jobDir: dir,
+        createdAt: new Date(Date.now() - 600_000).toISOString(),
+        updatedAt: new Date(Date.now() - 600_000).toISOString(),
+      }),
+      "utf8",
+    );
+    await fs.writeFile(path.join(dir, "claim.json"), JSON.stringify({ pid: 0x7ffffffe, at: "x" }), "utf8");
+
+    const { getAsyncJob } = await import("../src/jobs.js");
+    expect((await getAsyncJob(jobId)).status.status).toBe("orphaned");
+
+    await retryJob(jobId, await buildDeps());
+
+    const raw = JSON.parse(await fs.readFile(path.join(dir, "status.json"), "utf8"));
+    expect(raw.status, "the original stayed claimable while a retry ran").toBe("orphaned");
+  });
+
+  it("marks the original cancelled so nothing can reclaim it (released, claimant dead)", async () => {
+    const jobId = "job-1700000000902-bbbbbbbb";
+    const dir = path.join(jobsDir, jobId);
+    await fs.mkdir(path.join(dir, "output"), { recursive: true });
+    await fs.writeFile(path.join(dir, "prompt.md"), "do a thing", "utf8");
+    await fs.writeFile(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({
+        jobId, createdAt: new Date().toISOString(), workingDir: dir,
+        promptPath: path.join(dir, "prompt.md"), files: [], service: "fake",
+      }),
+      "utf8",
+    );
+    // Raw status `queued`, claimed by a supervisor that died: a derived orphan
+    // that claimNextJob would reclaim and run once the claim is judged stale.
+    await fs.writeFile(
+      path.join(dir, "status.json"),
+      JSON.stringify({
+        jobId, status: "queued", jobDir: dir,
         createdAt: new Date(Date.now() - 600_000).toISOString(),
         updatedAt: new Date(Date.now() - 600_000).toISOString(),
       }),

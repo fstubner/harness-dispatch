@@ -69,20 +69,22 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
 
   // There are TWO kinds of orphaned job and they need opposite answers.
   //
-  //   WRITTEN — a slot-queued job the server exited on is genuinely terminal:
-  //     its own error text says to use retry_job. Cancelling it would leave a
-  //     marker nothing reads.
+  //   WRITTEN — a slot-queued job the server exited on, or a run found dead
+  //     (see checkOrphan), is terminal: its own error text says to use
+  //     retry_job. Cancelling it would leave a marker nothing reads. A dead
+  //     run may still have left agent processes behind, though, and those are
+  //     what a cancel still has to stop.
   //   DERIVED — `withOrphanCheck` reports a job orphaned when its heartbeat
-  //     goes stale while the FILE still says `queued` or `running`. Once the
-  //     dead owner's claim ages out claimNextJob picks it up and runs it, so
-  //     it is still cancellable.
+  //     goes stale while the FILE still says `queued` (or `running`, for a
+  //     live claimant). Once the dead owner's claim ages out claimNextJob picks
+  //     a `queued` one up and runs it, so it is still cancellable.
   //
   // So the raw status decides, not the derived one — and `getAsyncJob` has
   // already applied the orphan check, hence the re-read.
   const rawStatus = await readJson<JobStatus>(
     path.join(jobsRoot(), jobId, "status.json"),
   ).catch(() => undefined);
-  const terminalOnDisk = rawStatus?.status === "orphaned";
+  const terminalOnDisk = rawStatus?.status === "orphaned" && (rawStatus.children ?? []).length === 0;
   if (
     current === "completed" ||
     current === "failed" ||
@@ -138,7 +140,7 @@ export async function cancelJob(jobId: string, reason?: string): Promise<CancelO
     await clearPending(jobId);
     // A run that had started and lost its supervisor is a dispatch attempt the
     // router never logged; one that never started is not an attempt at all.
-    if (rawStatus?.status === "running") {
+    if (rawStatus?.status === "running" || (rawStatus?.status === "orphaned" && !terminalOnDisk)) {
       logCancelledRun(
         rawStatus.route ?? rawStatus.service ?? job.manifest.service ?? "none",
         error,
@@ -334,7 +336,11 @@ export async function retryJob(
     const rawStatus = await readJson<JobStatus>(
       path.join(jobsRoot(), jobId, "status.json"),
     ).catch(() => undefined);
-    if (rawStatus?.status === "queued" || rawStatus?.status === "running") {
+    if (
+      rawStatus?.status === "queued" ||
+      rawStatus?.status === "running" ||
+      (rawStatus?.status === "orphaned" && (rawStatus.children ?? []).length > 0)
+    ) {
       await cancelJob(jobId, `superseded by a retry`);
     }
   }

@@ -21,7 +21,7 @@ import {
   pollInstructions,
   readJson,
   SUGGESTED_POLL_SECONDS,
-  withOrphanCheck,
+  checkOrphan,
 } from "./store.js";
 import type { JobManifest, JobResultPayload, JobStatus } from "./types.js";
 import type { DispatcherEvent } from "../types.js";
@@ -65,7 +65,7 @@ export async function getAsyncJob(
     status = await readJson<JobStatus>(path.join(jobDir, "status.json"));
     const newer = newerFormatError(manifest, jobId) ?? newerFormatError(status, jobId);
     if (newer !== undefined) throw new Error(newer);
-    status = withOrphanCheck(status);
+    status = await checkOrphan(jobDir, status);
     const resultPath = path.join(jobDir, "output", "result.json");
     result = existsSync(resultPath) ? await readJson<JobResultPayload>(resultPath) : undefined;
   } catch (err) {
@@ -167,7 +167,7 @@ export async function listAsyncJobs(): Promise<JobStatus[]> {
   const names = entries.filter((e) => e.isDirectory() && JOB_ID_RE.test(e.name)).map((e) => e.name);
   const read = await mapBounded(names, async (name) => {
     try {
-      return withOrphanCheck(await readJson<JobStatus>(path.join(root, name, "status.json")));
+      return await checkOrphan(path.join(root, name), await readJson<JobStatus>(path.join(root, name, "status.json")));
     } catch {
       return undefined; // Ignore incomplete or manually edited job directories.
     }

@@ -387,9 +387,9 @@ export async function runSupervisor(deps: JobDeps, supervisorId?: string): Promi
  * up to `full_auto`, with nobody watching. The job keeps its id and artifacts,
  * so `retry_job` re-runs it as a decision rather than a side effect.
  *
- * The one status this writes back. Orphan detection elsewhere is
- * compute-on-read and never persists its verdict, because the owner might
- * still be alive; here the owner is definitionally gone.
+ * Orphan detection elsewhere (checkOrphan) writes its verdict only for a
+ * `running` job whose claimant is gone, because the owner might still be
+ * alive; here the owner is definitionally gone.
  */
 /**
  * Still waiting for a slot, as the job's status file says NOW.

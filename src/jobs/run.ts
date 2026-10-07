@@ -17,7 +17,7 @@ import {
   readJson,
   timestamp,
   updateStatus,
-  withOrphanCheck,
+  checkOrphan,
   writeJson,
 } from "./store.js";
 import { isResolvable, persistWorkspacePatch } from "../workspace-resolve.js";
@@ -620,7 +620,8 @@ async function watchLoop(
     // implies the result is already on disk. A runner that dies between the
     // two writes is covered by withOrphanCheck below.
     try {
-      const status = withOrphanCheck(
+      const status = await checkOrphan(
+        jobDir,
         await readJson<JobStatus>(path.join(jobDir, "status.json")),
       );
       if (
@@ -633,6 +634,7 @@ async function watchLoop(
         // has deleted the log by now; the handle held open since the first
         // read still reaches its last bytes.
         await tail?.read();
+        await tail?.relayResult();
         return;
       }
       if (
@@ -653,6 +655,11 @@ async function watchLoop(
 
 interface PartialLogTail {
   read(): Promise<void>;
+  /**
+   * For a job that finished before `read` got any of its output: relay the
+   * answer from stdout.log instead. A no-op once anything has been relayed.
+   */
+  relayResult(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -672,7 +679,27 @@ function partialLogTail(jobDir: string, onEvent: (event: DispatcherEvent) => voi
   const decoder = new StringDecoder("utf8");
   let offset = 0;
   let handle: FileHandle | undefined;
+  const emit = (chunk: string): void => {
+    try {
+      onEvent({ type: "stdout", chunk });
+    } catch {
+      // Progress forwarding is best-effort; the watch must go on.
+    }
+  };
   return {
+    async relayResult() {
+      // A job that wrote and finished inside one watch tick (or before the watch
+      // began) was never opened: a successful run deletes the partial log, so
+      // its lines would reach the caller only in the result. Anything already
+      // relayed means the held handle covered the run, so nothing is repeated.
+      if (offset > 0) return;
+      try {
+        const text = redact(await readFile(path.join(jobDir, "output", "stdout.log"), "utf8"));
+        if (text !== "") emit(text);
+      } catch {
+        // No result file (a failed or cancelled run): nothing more to relay.
+      }
+    },
     async read() {
       try {
         handle ??= await open(file, "r");
@@ -683,11 +710,7 @@ function partialLogTail(jobDir: string, onEvent: (event: DispatcherEvent) => voi
         offset += bytesRead;
         const chunk = decoder.write(buf.subarray(0, bytesRead));
         if (chunk === "") return;
-        try {
-          onEvent({ type: "stdout", chunk });
-        } catch {
-          // Progress forwarding is best-effort; the watch must go on.
-        }
+        emit(chunk);
       } catch {
         // Not written yet: the next tick reads it.
       }
