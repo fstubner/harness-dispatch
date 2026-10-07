@@ -338,8 +338,9 @@ describe("MCP server — near-miss top-level keys", () => {
   });
 
   it("still delivers progress notifications through the wrapper", async () => {
-    // The guard wraps the SDK's CallTool handler and forwards `extra`, which
-    // is what carries `sendNotification` and the progress token. Dropping it
+    // The guard wraps the SDK's tools/call handler and forwards the handler
+    // context, which is what carries `notify` and the progress token (on SDK
+    // v1 it was `extra` and `sendNotification`). Dropping it
     // would silence progress for EVERY tool call — and an acceptance pass
     // changed `handler(request, extra)` to `handler(request, undefined)` and
     // watched the full suite pass, 1041 tests, zero failures. The one thing
