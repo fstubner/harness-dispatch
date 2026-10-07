@@ -5,6 +5,7 @@ import path from "node:path";
 import { loadConfig } from "../config.js";
 import { billingIsBlocked, buildRouteBilling } from "../billing.js";
 import { effectiveSafetyProfile } from "../safety.js";
+import { offByDefaultNote } from "../status.js";
 import { configToYaml, isUneditedGenerated, stampGenerated } from "../configure-yaml.js";
 import { desiredEntry, launchCommand } from "../client-register.js";
 import { userConfigPath } from "../state-dir.js";
@@ -96,6 +97,12 @@ export async function cmdConfigure(
         svc.model ?? "unknown"
       }\n`,
     );
+  }
+
+  for (const [name, svc] of Object.entries(config.services)) {
+    if (svc.offByDefault === true) {
+      process.stdout.write(`\n${name} is installed but ${offByDefaultNote(name)}\n`);
+    }
   }
 
   const blocked = Object.entries(config.services)

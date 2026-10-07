@@ -26,7 +26,7 @@ orchestrating agent picks the right one per task and spends your flat-rate
 subscription quota before anything metered.
 
 It is a local MCP server, so the harnesses on your machine (Claude Code, Codex,
-Cursor Agent, Antigravity CLI, and any local or remote OpenAI-compatible endpoint)
+Cursor Agent, Antigravity CLI (opt-in, see [vendor terms](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#vendor-terms)), and any local or remote OpenAI-compatible endpoint)
 become tools any AI can call. It speaks MCP 2026-07-28 and the 2025-era
 revisions (2025-11-25 back to 2024-10-07) that clients using the `initialize`
 handshake still ask for.

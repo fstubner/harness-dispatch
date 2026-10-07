@@ -66,6 +66,13 @@ export interface CliDefaults {
   idleTimeoutMs?: number;
   /** Default dispatch protocol for this harness — see the shipped config.default.yaml. */
   protocol?: CliProtocolConfig;
+  /**
+   * The shipped entry says `enabled: false`: auto-detection still finds the
+   * binary but adds the route switched off, until the operator turns it on
+   * (`overrides.<id>.enabled: true`). An explicit `clis:` entry is unaffected:
+   * writing it is already the operator's decision.
+   */
+  offByDefault?: boolean;
 }
 
 /**
@@ -140,6 +147,7 @@ function cliDefaultsFrom(raw: Record<string, unknown>, warnings: string[]): [str
       ...(billingKind !== undefined ? { billingKind } : {}),
       ...(typeof raw.paid_usage_possible === "boolean" ? { paidUsagePossible: raw.paid_usage_possible } : {}),
       ...(protocol !== undefined ? { protocol } : {}),
+      ...(raw.enabled === false ? { offByDefault: true } : {}),
     },
   ];
 }

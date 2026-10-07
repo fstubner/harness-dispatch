@@ -13,7 +13,7 @@ import { clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
 import { resolveRunnerPath } from "../jobs.js";
 import { probeDetachedSurvival } from "../jobs/detach.js";
 import { NEVER_SUCCEEDED_MIN_CALLS } from "../route-policy.js";
-import { buildStatus } from "../status.js";
+import { buildStatus, offByDefaultNote } from "../status.js";
 import { stateRoot } from "../state-dir.js";
 import { buildRuntime } from "./common.js";
 
@@ -239,6 +239,10 @@ export async function cmdDoctor(
         // A config that lists its own routes is authoritative, so a harness
         // installed later is simply absent. The PATH hint above only fires at
         // zero routes, which would leave that case unexplained.
+        status.routes
+          .filter((route) => route.offByDefault === true)
+          .map((route) => ` ${route.id} is installed but ${offByDefaultNote(route.id)}`)
+          .join("") +
         (unconfiguredHarnesses.length > 0
           ? ` Installed but not in this config: ${unconfiguredHarnesses.join(", ")} — add ` +
             `\`detect: true\` to ${configPath !== undefined ? path.resolve(configPath) : "the config"} ` +

@@ -67,6 +67,18 @@ pre-1.0, so minor versions can carry behaviour changes.
   draft-07, and tools no longer list `execution.taskSupport`. The fields,
   types, required keys and descriptions in each schema are unchanged.
 
+- **The Antigravity route is now off until you turn it on.** Google's
+  Antigravity terms object to third-party tools using the service, so finding
+  `agy` on your PATH no longer makes `antigravity_cli` routable. It still
+  appears, switched off: `status` shows it as `off` with the reason, and
+  `doctor` and `configure` say how to enable it
+  (`overrides: { antigravity_cli: { enabled: true } }`). A config that
+  already lists an Antigravity route under `clis:` or `services:` is
+  unchanged. The docs now also say that the Cursor route signs in with your
+  Cursor login and sends `CURSOR_API_KEY` only if you give the route its own
+  `api_key:`, and `PRODUCT.md` lists each vendor's current terms with sources
+  and dates.
+
 ### Security
 
 - **A program planted in the current directory is no longer run in place of

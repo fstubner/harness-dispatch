@@ -146,15 +146,21 @@ Each verified 2026-08-31 rather than carried forward; method in brackets.
 
 The largest is not technical, and it partially materialised in 2026. The value
 proposition depends on providers permitting programmatic use of flat-rate
-plans, and Anthropic moved against that ground twice this year: February
-(subscription OAuth banned in third-party tools), April (tightened to prohibit
-subscriptions powering non-Anthropic agents), then a May 14 plan to split
-`claude -p` into a separate credit pool — **paused on June 15 before taking
-effect**. OpenAI went the opposite direction in the same window. Quota levels
-are equally volatile: Anthropic changed Claude Code limits four times between
-March and June 2026 with little notice.
+plans, and the vendors' terms disagree with each other and with themselves.
+Quota levels are equally volatile: Anthropic changed Claude Code limits four
+times between March and June 2026 with little notice. Terms below were read on
+2026-10-08; they change without notice, so re-read before relying on them.
+
+| Vendor | What the terms and docs say | Posture here |
+|---|---|---|
+| **Anthropic** | February 2026: subscription OAuth banned in third-party tools; April: tightened to prohibit subscriptions powering non-Anthropic agents. The Consumer Terms (effective 2025-10-08, anthropic.com/legal/consumer-terms) prohibit automated access "through a bot, script, or otherwise" except by API key "or where we otherwise explicitly permit it". The Claude Code legal page (code.claude.com/docs/en/legal-and-compliance) says limits "assume ordinary, individual usage" and that enforcement may come "without prior notice". The Help Center update of **2026-10-07** (support.claude.com/en/articles/15036540) says Max and Team plans now include monthly API credits, and that the Agent SDK, `claude -p` and third-party apps still run "with your subscription limits". The May 2026 plan to move `claude -p` onto a separate credit pool was paused on 2026-06-15 | Drive the unmodified `claude` binary as the logged-in user; never touch its tokens. Fine for one person on their own machine; heavy fanout may not count as "ordinary, individual usage", and a hosted or shared setup is outside what the terms allow |
+| **Cursor** | The Acceptable Use Policy (updated 2026-08-11, cursor.com/acceptable-use-policy) prohibits access "through a bot, script, or otherwise". The headless docs (cursor.com/docs/cli/headless) say to "Use Cursor CLI in scripts and automation workflows" and show `CURSOR_API_KEY`; a Cursor staff post of 2026-08-17 on forum.cursor.com says the same. The two documents contradict each other | `cursor_cli` authenticates with the interactive Cursor login (`auth_source: product_login`, `config.default.yaml`). It sends `CURSOR_API_KEY` only when the route has its own `api_key:`, and blanks an ambient one (`src/dispatchers/generic-cli.ts`, where the child environment is built). So by default it automates an interactive login, which the AUP wording covers and the headless docs do not address; setting `api_key: ${CURSOR_API_KEY}` moves it to the documented path and to metered billing. See [docs/configuration.md](docs/configuration.md#vendor-terms) |
+| **Google (Antigravity)** | The terms (antigravity.google/terms, no date shown) call using "third party software, tools, or services to access the Service" a breach, which may lead to suspension or termination, and restrict use alongside products Google does not provide. Reports of paying subscribers banned in February 2026 are secondary, not confirmed here | The highest risk of the four. `antigravity_cli` is **opt-in**: auto-detection adds it switched off and the operator enables it explicitly (`overrides.antigravity_cli.enabled: true`) |
+| **OpenAI** | Welcomes outside tools: "Sign in with ChatGPT" (announced 2026-09-29, secondary sources) lets plan allowance be spent in partner tools, and OpenAI ships its own Codex plugin for Claude Code (github.com/openai/codex-plugin-cc) | Low terms risk. The risk is competitive (that plugin covers the commonest pair) and in quota changes: secondary reports say the top plan's allowance was reduced on 2026-09-29 |
 
 The mitigation is the products-not-credentials constraint above, which keeps
-this tool on the defended side of the line — but high-frequency orchestration
-through official CLIs remains grey, and a terms change can still remove the
-reason this exists, with no notice. Worth knowing; not mitigable in code.
+this tool on the defended side of the line for Anthropic and OpenAI. It does
+not cover Antigravity, whose wording objects to any third-party product, which
+is why that route is opt-in. High-frequency orchestration through official CLIs
+remains grey, and a terms change can still remove the reason this exists, with
+no notice. Worth knowing; not mitigable in code.

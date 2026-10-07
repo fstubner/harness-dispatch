@@ -373,6 +373,12 @@ export interface CliProtocolConfig {
 export interface ServiceConfig {
   name: string;
   enabled: boolean;
+  /**
+   * Auto-detection added this route switched off because the shipped config
+   * marks its harness opt-in (`enabled: false`) and the operator has not said
+   * otherwise. Never set on an explicit `clis:` entry.
+   */
+  offByDefault?: boolean;
   type: "cli" | "openai_compatible";
   harness?: string;
   command?: string;

@@ -208,6 +208,8 @@ export interface RouteStatus {
   modelHint?: string;
   /** Operator instructions for this route (`instructions:` in config). */
   instructions?: string;
+  /** Auto-detection found this harness but added it switched off: it is opt-in. */
+  offByDefault?: true;
   tier: number;
   weight: number;
   cliCapability: number;
@@ -379,6 +381,7 @@ export async function buildStatus(
     if (svc.modelTiers !== undefined) route.modelTiers = svc.modelTiers;
     if (svc.modelHint !== undefined) route.modelHint = svc.modelHint;
     if (svc.instructions !== undefined) route.instructions = svc.instructions;
+    if (svc.offByDefault === true) route.offByDefault = true;
     if (svc.maxInputTokens !== undefined) route.maxInputTokens = svc.maxInputTokens;
     if (svc.maxOutputTokens !== undefined) route.maxOutputTokens = svc.maxOutputTokens;
     if (q?.remaining !== undefined) route.quota.remaining = q.remaining;
@@ -672,6 +675,15 @@ function fmtTokens(n: number | undefined): string {
   return `${n}`;
 }
 
+/** Why an auto-detected, shipped-opt-in route is off, and how to turn it on. Shared with doctor. */
+export function offByDefaultNote(id: string): string {
+  return (
+    "off by default: the vendor's terms may not allow a third-party tool to drive this CLI " +
+    "(docs/configuration.md#vendor-terms). To opt in, put " +
+    `\`overrides: { ${id}: { enabled: true } }\` in config.yaml.`
+  );
+}
+
 export function renderStatusText(status: HarnessDispatchStatus): string {
   const lines: string[] = [];
   lines.push("harness-dispatch status", "");
@@ -722,6 +734,7 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
     if (route.workspacePolicy) lines.push(`  workspace=${route.workspacePolicy}`);
     if (route.billing.notes) lines.push(`  note: ${route.billing.notes}`);
     if (route.skipped) lines.push(`  skipped=${route.skipped.code}: ${route.skipped.message}`);
+    if (route.offByDefault) lines.push(`  ${offByDefaultNote(route.id)}`);
     lines.push("");
   }
   if (status.configWarnings && status.configWarnings.length > 0) {
