@@ -6,6 +6,46 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Clients speaking MCP 2026-07-28 are served, and older clients still
+  are.** The newest MCP revision drops the `initialize` handshake: a client
+  asks `server/discover` and names itself on every request instead. Over
+  stdio and on `/mcp`, the server now answers both kinds. A client that opens
+  with `initialize` (Codex, Cursor, older Claude Code) is served as before at
+  2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 or 2024-10-07, whichever it asks for. A
+  2026-07-28 client gets the same six tools, both status resources, the
+  server's instructions (in the `server/discover` answer), progress while a
+  dispatch waits, the near-miss refusal, and its name on the job record and
+  dispatch log. Built on version 2 of the MCP TypeScript SDK, which replaces
+  version 1.
+
+### Changed
+
+- **A 2026-07-28 request to `/mcp` is recorded without a session id.** That
+  revision has no sessions, and the server builds a fresh MCP server for
+  each request, so an id would be new on every dispatch and group nothing.
+  The client's name and version are still recorded. Over stdio, and for an
+  HTTP client that opens with `initialize`, every dispatch on one connection
+  still shares one id.
+
+- **Two MCP errors changed shape with the SDK.** Calling a tool name that does
+  not exist is now a protocol error (-32602, "Tool … not found") instead of a
+  tool result marked as an error. The near-miss and argument-validation
+  refusals keep code -32602 but lose the "MCP error -32602:" prefix in their
+  text; clients built on the MCP SDK add it back themselves.
+- **Tool input schemas declare JSON Schema 2020-12** instead of draft-07, and
+  no longer carry `execution.taskSupport` (version 2 of the SDK removed
+  tasks). Codex and Claude Code load all six tools unchanged.
+
+- **A client's name and version are capped and cleaned before they are
+  recorded.** Both are whatever the client claims, and they are written to
+  the shared dispatch log and shown in every session's job list. Control
+  characters are removed and each is cut to 200 characters.
+- **Tool input schemas declare JSON Schema 2020-12** (`$schema`) instead of
+  draft-07, and tools no longer list `execution.taskSupport`. The fields,
+  types, required keys and descriptions in each schema are unchanged.
+
 ### Security
 
 - **A program planted in the current directory is no longer run in place of

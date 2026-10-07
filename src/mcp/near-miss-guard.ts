@@ -18,25 +18,39 @@
  * plain typo is not enumerable — generating every one-edit spelling of every
  * hint name would put dozens of `z.never()` fields into the advertised schema.
  *
- * WHY WRAPPING setRequestHandler RATHER THAN REPLACING THE ROUTE. Registering
- * our own `CallToolRequestSchema` handler means reimplementing the SDK's
- * routing: tool lookup, enable checks, task support, input and OUTPUT schema
- * validation, and the `extra` argument that carries the progress token the
- * fanout tap writes to. This wraps the handler the SDK installs, inspects the
- * raw arguments, and delegates: routing is untouched.
+ * A loose (passthrough) input schema would let a handler see the extra key,
+ * but it changes the schema every client is shown and turns the refusal into
+ * a tool result instead of a protocol error, so it is not used either.
  *
- * Ordering matters. `McpServer` installs its CallTool handler lazily on the
- * first `registerTool`, and calls `assertCanSetRequestHandler` first — so a
- * handler registered ahead of it would make that assertion throw. This must be
- * installed BEFORE `registerTools`, and it is a no-op until the SDK registers.
+ * WHY WRAPPING setRequestHandler RATHER THAN REPLACING THE ROUTE. Registering
+ * our own `tools/call` handler means reimplementing the SDK's routing: tool
+ * lookup, enable checks, input and OUTPUT schema validation, the per-protocol
+ * result projection, and the context argument that carries the progress token
+ * and `notify` the progress tap writes to. This wraps the handler the SDK
+ * installs, inspects the raw arguments, and delegates: routing is untouched.
+ *
+ * SDK v2 (2.3.1) has no public hook that sees a request before schema
+ * validation: no middleware, and `Server._wrapHandler` is protected on a
+ * `Server` that `McpServer` constructs itself. `setRequestHandler(method,
+ * handler)` and `assertCanSetRequestHandler(method)` ARE public, so this wraps
+ * the public method on this one instance. `installNearMissGuard` returns a
+ * check that throws unless the wrap actually caught the `tools/call`
+ * registration, and `buildMcpServerInstance` runs it after registering tools:
+ * an SDK change that installs the handler some other way becomes a startup
+ * failure instead of a silently absent safety check.
+ *
+ * Ordering matters. `McpServer` installs its `tools/call` handler lazily on
+ * the first `registerTool`, and calls `assertCanSetRequestHandler` first — so
+ * a handler registered ahead of it would make that assertion throw. This must
+ * be installed BEFORE `registerTools`, and it is a no-op until the SDK
+ * registers.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CallToolRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { ProtocolError, ProtocolErrorCode, type McpServer } from "@modelcontextprotocol/server";
 
 import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 
-/** The method string the SDK keys its CallTool handler by. */
+/** The method the SDK registers its tool-call handler under. */
 const CALL_TOOL_METHOD = "tools/call";
 
 interface RawCallToolRequest {
@@ -143,32 +157,35 @@ export function nearMissInArguments(args: unknown, toolName?: string): string | 
 }
 
 /**
- * Wrap the CallTool handler the SDK is about to install.
+ * Wrap the `tools/call` handler the SDK is about to install.
  *
- * Call BEFORE `registerTools`. Returns nothing; the server is patched in place.
+ * Call BEFORE `registerTools`. The server is patched in place. The returned
+ * function throws unless a `tools/call` handler went through the wrapper;
+ * call it once the tools are registered.
  */
-export function installNearMissGuard(server: McpServer): void {
+export function installNearMissGuard(server: McpServer): () => void {
   const inner = server.server;
   // Installing after `registerTools` is inert — the SDK's handler is already
   // in place and this would wrap nothing — and the failure mode of getting the
   // order wrong is a SILENT safety hole rather than an error. One line turns
   // "safety check quietly absent" into a startup failure.
-  if (inner.assertCanSetRequestHandler !== undefined) {
-    inner.assertCanSetRequestHandler(CALL_TOOL_METHOD);
-  }
-  const original = inner.setRequestHandler.bind(inner);
-  // The cast is confined to this one line. The SDK types `setRequestHandler`
-  // against the specific schema it is given, and this wrapper is deliberately
-  // schema-agnostic: everything other than CallTool is passed straight through.
-  (inner as unknown as { setRequestHandler: unknown }).setRequestHandler = ((
-    schema: unknown,
-    handler: (request: unknown, extra: unknown) => unknown,
-    ...rest: unknown[]
-  ) => {
-    if (schema !== CallToolRequestSchema) {
-      return (original as unknown as (...a: unknown[]) => unknown)(schema, handler, ...rest);
+  inner.assertCanSetRequestHandler(CALL_TOOL_METHOD);
+  let wrapped = false;
+  const original = inner.setRequestHandler.bind(inner) as (...args: unknown[]) => void;
+  // The cast is confined to this assignment. The SDK types `setRequestHandler`
+  // as an overload set keyed by method, and this wrapper is deliberately
+  // method-agnostic: everything other than the two-argument `tools/call`
+  // registration is passed straight through.
+  (inner as unknown as { setRequestHandler: (...args: unknown[]) => void }).setRequestHandler = (
+    ...args: unknown[]
+  ): void => {
+    const [method, handler] = args;
+    if (method !== CALL_TOOL_METHOD || args.length !== 2 || typeof handler !== "function") {
+      original(...args);
+      return;
     }
-    const guarded = async (request: unknown, extra: unknown): Promise<unknown> => {
+    const delegate = handler as (request: unknown, ctx: unknown) => unknown;
+    const guarded = async (request: unknown, ctx: unknown): Promise<unknown> => {
       const params = (request as RawCallToolRequest)?.params;
       const message = nearMissInArguments(
         params?.arguments,
@@ -177,9 +194,20 @@ export function installNearMissGuard(server: McpServer): void {
       // InvalidParams, so it reaches the caller as a protocol error naming the
       // key rather than as a tool result they might not read. The HTTP surface
       // answers 400 for the same input.
-      if (message !== undefined) throw new McpError(ErrorCode.InvalidParams, message);
-      return handler(request, extra);
+      if (message !== undefined) throw new ProtocolError(ProtocolErrorCode.InvalidParams, message);
+      // The context is forwarded untouched: it carries the progress token and
+      // `notify`, so dropping it would silence progress for every tool call.
+      return delegate(request, ctx);
     };
-    return (original as unknown as (...a: unknown[]) => unknown)(schema, guarded, ...rest);
-  }) as unknown;
+    wrapped = true;
+    original(method, guarded);
+  };
+  return () => {
+    if (!wrapped) {
+      throw new Error(
+        "near-miss guard did not wrap the SDK's tools/call handler: the SDK installs it some " +
+          "other way now, and dispatch would silently drop misspelled safety settings",
+      );
+    }
+  };
 }

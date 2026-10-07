@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 import { redact } from "../redaction.js";
 import { createServer, type IncomingMessage, type Server as NodeHttpServer, type ServerResponse } from "node:http";
 
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  createMcpHandler,
+  isLegacyRequest,
+  WebStandardStreamableHTTPServerTransport,
+  type McpServer,
+} from "@modelcontextprotocol/server";
 
 import { ensureHttpToken, httpTokenMtimeMs, isAuthorized, readHttpTokenSync } from "../auth.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  buildMcpServer,
+  bootstrapMcpRuntime,
   buildMcpServerInstance,
   type BuildMcpOptions,
   type McpHandle,
@@ -81,6 +84,65 @@ function sendText(res: ServerResponse, statusCode: number, body: string): void {
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+/** Hop-by-hop or body-framing headers that describe the Node request, not the rebuilt one. */
+const DROPPED_REQUEST_HEADERS = new Set(["content-length", "transfer-encoding", "connection"]);
+
+/**
+ * The web `Request` the SDK's HTTP serving takes, built from a Node request
+ * whose body this server has already read (under its own size limit) and
+ * parsed. The SDK is always handed that parsed body as well, so it never
+ * reads a body of its own.
+ */
+function toWebRequest(req: IncomingMessage, url: URL, body: unknown, signal: AbortSignal): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined || DROPPED_REQUEST_HEADERS.has(name)) continue;
+    for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v);
+  }
+  const method = req.method ?? "GET";
+  return new Request(url, {
+    method,
+    headers,
+    signal,
+    ...(body !== undefined && method !== "GET" && method !== "HEAD" ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+/**
+ * Write a web `Response` from the SDK onto the Node response, streaming the
+ * body so SSE frames (progress notifications, the standalone GET stream)
+ * reach the client as they are produced. A client that goes away cancels the
+ * stream, which is how the SDK learns to drop it.
+ */
+async function sendWebResponse(res: ServerResponse, response: Response): Promise<void> {
+  const headers: Record<string, string | string[]> = {};
+  response.headers.forEach((value, name) => {
+    const prior = headers[name];
+    headers[name] = prior === undefined ? value : [...(Array.isArray(prior) ? prior : [prior]), value];
+  });
+  res.writeHead(response.status, headers);
+  if (response.body === null) {
+    res.end();
+    return;
+  }
+  res.flushHeaders();
+  const reader = response.body.getReader();
+  const cancel = (): void => void reader.cancel().catch(() => undefined);
+  res.once("close", cancel);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+  } catch {
+    // Cancelled because the client left; nothing more to send it.
+  } finally {
+    res.off("close", cancel);
+    res.end();
+  }
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -624,11 +686,10 @@ function writeSse(res: ServerResponse, payload: unknown): void {
 }
 
 export async function startHttpServer(opts: StartHttpOptions = {}): Promise<HttpServerHandle> {
-  // buildMcpServer's own `server` is only used for the stdio (one transport,
-  // one session, ever) case. HTTP MCP needs a fresh McpServer per session —
-  // Protocol.connect() throws if called twice on the same instance — so
-  // reuse just the shared runtime state (holder/reloader) here.
-  const { holder, reloader } = await buildMcpServer(opts);
+  // HTTP MCP needs a fresh McpServer per legacy session and per 2026-07-28
+  // request — an SDK server serves one connection at a time — so only the
+  // shared runtime state (holder/reloader) is built here.
+  const { holder, reloader } = await bootstrapMcpRuntime(opts);
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 0;
   const mcpRoute = opts.mcpRoute ?? "/mcp";
@@ -651,7 +712,20 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
   };
   const token = diskToken;
 
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  /**
+   * MCP 2026-07-28 requests on `/mcp`. That revision has no handshake and no
+   * sessions: every request names its protocol version and client in `_meta`,
+   * and the SDK answers it from a server built for that one request. No
+   * connection id is minted for these (see McpInstanceOptions), since one per
+   * request would group nothing. `legacy: "reject"` because 2025-era traffic
+   * never reaches this handler: it is routed to the sessionful wiring below.
+   */
+  const modernMcp = createMcpHandler(
+    () => buildMcpServerInstance(holder, reloader, { connection: false }),
+    { legacy: "reject" },
+  );
+
+  const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const sessionServers = new Set<McpServer>();
   /** Last time each live session was used, for the idle sweep below. */
   const sessionLastSeen = new Map<string, number>();
@@ -819,17 +893,32 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         // throws, and thrown after, it skipped that server's cleanup — one
         // leaked server per bad request (2,000 requests, +104 MiB).
         const body = req.method === "POST" ? await readJson(req) : undefined;
+        // Aborted if the client goes away before the answer is complete.
+        const gone = new AbortController();
+        res.once("close", () => {
+          if (!res.writableFinished) gone.abort();
+        });
+        const webReq = toWebRequest(req, url, body, gone.signal);
+        // The SDK's own classification: a request carrying the 2026-07-28
+        // `_meta` envelope (or its protocol-version header) is modern;
+        // `initialize`, session GET/DELETE and other claim-less traffic is
+        // 2025-era and keeps the sessionful wiring below.
+        if (!(await isLegacyRequest(webReq, body))) {
+          await sendWebResponse(res, await modernMcp.fetch(webReq, body === undefined ? {} : { parsedBody: body }));
+          return;
+        }
         sweepIdleSessions();
         const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
-        let transport: StreamableHTTPServerTransport;
+        let transport: WebStandardStreamableHTTPServerTransport;
         // Held so the post-request check below can dispose of a server whose
         // session never came into existence.
         let freshServer: McpServer | undefined;
         // A session id this server does not hold — swept idle, or from before a
         // restart — is a 404, which the MCP spec says tells the client to start
-        // a new session. The SDK's own answer for it (400 "Server not
-        // initialized") reads as a malformed request, so a client that follows
-        // the spec never re-initialises.
+        // a new session. Answered here, before a server is built for it: SDK
+        // v1 answered it 400 "Server not initialized", which reads as a
+        // malformed request, so a client that follows the spec never
+        // re-initialised.
         if (sessionId && !transports.has(sessionId)) {
           sendJson(res, 404, {
             jsonrpc: "2.0",
@@ -845,7 +934,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
           const sessionServer = buildMcpServerInstance(holder, reloader);
           freshServer = sessionServer;
           sessionServers.add(sessionServer);
-          transport = new StreamableHTTPServerTransport({
+          transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sid: string) => {
               transports.set(sid, transport);
@@ -865,9 +954,12 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
             }
             sessionServers.delete(sessionServer);
           };
-          await sessionServer.connect(transport as unknown as Transport);
+          await sessionServer.connect(transport);
         }
-        await transport.handleRequest(req, res, body);
+        await sendWebResponse(
+          res,
+          await transport.handleRequest(webReq, body === undefined ? {} : { parsedBody: body }),
+        );
         // Dispose of a server whose session never came into existence.
         //
         // The McpServer and transport are built BEFORE it is known whether
@@ -1002,6 +1094,7 @@ export async function startHttpServer(opts: StartHttpOptions = {}): Promise<Http
         }
       }
       sessionServers.clear();
+      await modernMcp.close().catch(() => undefined);
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },
   };

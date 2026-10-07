@@ -48,6 +48,22 @@ without a major version bump.
 
 ## MCP Surface
 
+### Protocol revisions
+
+The server speaks MCP **2026-07-28** and the 2025-era revisions older clients
+use, over stdio and on `/mcp`:
+
+| A client that... | Gets |
+| --- | --- |
+| opens with `initialize` (Codex, Cursor, older Claude Code) | the revision it asks for, if it is 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 or 2024-10-07; otherwise 2025-11-25. The instructions arrive in the `initialize` result. |
+| opens with `server/discover`, or sends requests carrying the 2026-07-28 `_meta` envelope with no handshake | 2026-07-28. The instructions arrive in the `server/discover` result. |
+
+Both get the same tools, resources, progress notifications and refusals. The
+client's name is recorded on each dispatch either way: from the request's
+`_meta` (2026-07-28) or from the `initialize` handshake. On stdio the first
+message decides, for the life of the process. A client that probes with
+`server/discover` and then falls back to `initialize` is served as 2025-era.
+
 `tools/list` returns six tools:
 
 | Tool | Purpose |
@@ -145,7 +161,12 @@ Endpoints:
   deploy gate or container probe can ask without being handed a credential. It
   answers `{"status","service","version"}` and nothing else: no routes, no
   endpoints, no quota, no config.
-- `POST /mcp` for streamable HTTP MCP
+- `/mcp` for streamable HTTP MCP, both revisions (see
+  [Protocol revisions](#protocol-revisions)). A 2025-era client gets a session
+  (`mcp-session-id`) and the `GET` and `DELETE` session operations. A
+  2026-07-28 request is answered on its own, with no session: it is recorded
+  with its client's name and no session id. The bearer token and the 10 MiB
+  body limit apply to both.
 - `POST /v1/chat/completions` with `stream: true` sends the answer as SSE
   deltas. An endpoint route streams its text as it arrives; a CLI harness emits
   protocol on stdout, so its answer is sent once, at completion — the deltas
@@ -159,8 +180,8 @@ Endpoints:
   502. On a single-route stream the final frame carries the routed `model` and a
   `harness_dispatch` member with the `jobId` and any `warning`.
 - `/mcp` answers 404 for an `mcp-session-id` the server does not hold (idle for
-  30 minutes, or from before a restart), which tells an MCP client to initialise a
-  new session.
+  30 minutes, or from before a restart), which tells a 2025-era MCP client to
+  initialise a new session.
 - `GET /v1/status` — full route/quota/billing/breaker detail (same shape as
   `harness-dispatch://status.json`). Authenticated, because that answer is not
   for strangers.

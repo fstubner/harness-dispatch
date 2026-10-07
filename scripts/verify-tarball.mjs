@@ -33,6 +33,13 @@ function run(cmd, args, opts = {}) {
     ? execFileSync([cmd, ...args.map(q)].join(" "), { shell: true, encoding: "utf8", ...opts })
     : execFileSync(cmd, args, { encoding: "utf8", ...opts });
 }
+/** The per-request `_meta` a 2026-07-28 client sends instead of a handshake. */
+const MODERN_META = {
+  "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+  "io.modelcontextprotocol/clientCapabilities": {},
+  "io.modelcontextprotocol/clientInfo": { name: "verify-tarball", version: "0" },
+};
+
 function fail(message) {
   console.error(`verify-tarball: ${message}`);
   process.exitCode = 1;
@@ -92,16 +99,22 @@ try {
   run("harness-dispatch", ["doctor"], { env, stdio: ["ignore", "pipe", "inherit"] });
   console.log("doctor ok");
 
-  await mcpHandshake(env);
+  await mcpHandshake(env, "legacy");
   console.log("mcp initialize + tools/list ok");
+  await mcpHandshake(env, "modern");
+  console.log("mcp 2026-07-28 server/discover + tools/list ok");
 } catch (err) {
   fail(err instanceof Error ? err.message : String(err));
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-/** Spawn `harness-dispatch mcp`, initialize, list tools, then close stdin. */
-async function mcpHandshake(env) {
+/**
+ * Spawn `harness-dispatch mcp`, open it the way one protocol revision's client
+ * does (`initialize`, or `server/discover` with no handshake), list tools,
+ * then close stdin.
+ */
+async function mcpHandshake(env, era) {
   const child = win
     ? spawn(["harness-dispatch", "mcp"].join(" "), { shell: true, env, stdio: ["pipe", "pipe", "inherit"] })
     : spawn("harness-dispatch", ["mcp"], { env, stdio: ["pipe", "pipe", "inherit"] });
@@ -132,14 +145,21 @@ async function mcpHandshake(env) {
       send({ jsonrpc: "2.0", id, method, params });
     });
   try {
-    const init = await request(1, "initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "verify-tarball", version: "0" },
-    });
-    if (init.result?.serverInfo?.name === undefined) throw new Error(`initialize returned ${JSON.stringify(init)}`);
-    send({ jsonrpc: "2.0", method: "notifications/initialized" });
-    const tools = await request(2, "tools/list", {});
+    if (era === "legacy") {
+      const init = await request(1, "initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "verify-tarball", version: "0" },
+      });
+      if (init.result?.serverInfo?.name === undefined) throw new Error(`initialize returned ${JSON.stringify(init)}`);
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    } else {
+      const discover = await request(1, "server/discover", { _meta: MODERN_META });
+      if (!discover.result?.supportedVersions?.includes("2026-07-28")) {
+        throw new Error(`server/discover returned ${JSON.stringify(discover)}`);
+      }
+    }
+    const tools = await request(2, "tools/list", era === "modern" ? { _meta: MODERN_META } : {});
     const names = (tools.result?.tools ?? []).map((t) => t.name);
     if (!names.includes("dispatch")) throw new Error(`tools/list returned ${JSON.stringify(names)}`);
   } finally {

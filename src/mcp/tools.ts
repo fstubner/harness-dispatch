@@ -15,9 +15,9 @@
  * a tool call.
  */
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { CLIENT_INFO_META_KEY } from "@modelcontextprotocol/server";
+import type { CallToolResult, McpServer, ServerContext } from "@modelcontextprotocol/server";
 import { redact } from "../redaction.js";
-import type { CallToolResult, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { randomUUID } from "node:crypto";
@@ -172,44 +172,69 @@ export interface ToolDeps {
   reloader?: ConfigHotReloader;
   /**
    * Who is calling — see DispatchCaller. Set by registerTools for an MCP
-   * connection; given the request's `extra` so a client that names itself per
+   * connection; given the request's SDK context so a client that names itself per
    * request is recorded too.
    */
   caller?: (extra?: ToolExtra) => DispatchCaller;
 }
 
-/** Where MCP 2026-07-28 puts the client's name and version on each request. */
-const CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo";
+/**
+ * A client-claimed label as it may be recorded. The name and version are
+ * whatever the client says, and they land in the shared dispatch log and every
+ * session's job list, so control characters are removed and length is capped.
+ */
+export function clientLabel(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  // eslint-disable-next-line no-control-regex
+  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 200);
+  return clean === "" ? undefined : clean;
+}
 
 /**
- * The calling client, plus an id for this connection. One McpServer serves
- * exactly one connection (a stdio process, or one HTTP MCP session), so an id
- * minted per server is a session id.
+ * The calling client, plus an id for this connection when there is one.
  *
  * The client's name comes from the request first, then from the connection's
  * handshake. MCP 2026-07-28 drops the `initialize` handshake and has clients
- * name themselves in each request's `_meta` instead; a client speaking only
- * that revision would otherwise be recorded with no name at all.
+ * name themselves in each request's `_meta` instead (the SDK lifts that into
+ * `ctx.mcpReq.envelope`); a client speaking only that revision would otherwise
+ * be recorded with no name at all. Measured on SDK 2.3.1: inside a stdio tool
+ * handler serving such a client, `getClientVersion()` is null, so the
+ * handshake value alone is not enough.
+ *
+ * `session` names the CONNECTION: one McpServer serves exactly one stdio
+ * process or one legacy HTTP MCP session, so an id minted per server is a
+ * connection id. A 2026-07-28 HTTP request has no connection — the SDK builds
+ * a server per request — so `session` is undefined there and none is recorded,
+ * rather than a fresh id per request that would group nothing.
  */
-function connectionCaller(server: McpServer, session: string, extra?: ToolExtra): DispatchCaller {
-  const fromRequest = extra?._meta?.[CLIENT_INFO_META];
+function connectionCaller(server: McpServer, session: string | undefined, extra?: ToolExtra): DispatchCaller {
+  const envelope = extra?.mcpReq.envelope as Record<string, unknown> | undefined;
+  const fromRequest = envelope?.[CLIENT_INFO_META_KEY] ?? extra?.mcpReq._meta?.[CLIENT_INFO_META_KEY];
   const declared =
     fromRequest !== null && typeof fromRequest === "object"
       ? (fromRequest as { name?: unknown; version?: unknown })
       : undefined;
+  // Deprecated in SDK v2 in favour of the envelope, and still the only source
+  // for a client that named itself in `initialize`.
   const handshake = server.server.getClientVersion();
-  const name = typeof declared?.name === "string" ? declared.name : handshake?.name;
-  const version = typeof declared?.version === "string" ? declared.version : handshake?.version;
+  const name = clientLabel(typeof declared?.name === "string" ? declared.name : handshake?.name);
+  const version = clientLabel(
+    typeof declared?.version === "string" ? declared.version : handshake?.version,
+  );
   return {
     ...(name ? { client: name } : {}),
     ...(version ? { clientVersion: version } : {}),
-    session,
+    ...(session !== undefined ? { session } : {}),
   };
 }
 
+/**
+ * The part of the SDK's handler context the tools read: the request's `_meta`
+ * (progress token), its 2026-07-28 envelope (client name), and `notify`, which
+ * sends a notification tied to this request (progress).
+ */
 export interface ToolExtra {
-  _meta?: { progressToken?: string | number } & Record<string, unknown>;
-  sendNotification?: (notification: ServerNotification) => Promise<void>;
+  mcpReq: Partial<Pick<ServerContext["mcpReq"], "_meta" | "envelope" | "notify">>;
 }
 
 /**
@@ -278,7 +303,8 @@ async function emitProgress(
   event: DispatcherEvent,
   route?: string,
 ): Promise<void> {
-  if (!extra?.sendNotification || progressToken === undefined) return;
+  const notify = extra?.mcpReq.notify;
+  if (notify === undefined || progressToken === undefined) return;
   counter.value += 1;
   try {
     // Sink. `_meta.event` carries the RAW dispatcher event — full stdout and
@@ -294,7 +320,7 @@ async function emitProgress(
       event: DispatcherEvent;
       route?: string;
     };
-    await extra.sendNotification({
+    await notify({
       method: "notifications/progress",
       params: {
         progressToken,
@@ -457,8 +483,8 @@ function makeProgressTap(
   counter: { value: number },
   route?: string,
 ): ((event: DispatcherEvent) => void) | undefined {
-  const progressToken = extra?._meta?.progressToken;
-  if (progressToken === undefined || !extra?.sendNotification) return undefined;
+  const progressToken = extra?.mcpReq._meta?.progressToken;
+  if (progressToken === undefined || extra?.mcpReq.notify === undefined) return undefined;
   return (event: DispatcherEvent): void => {
     if (!live.value) return;
     void emitProgress(extra, progressToken, counter, event, route);
@@ -908,9 +934,18 @@ async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefin
   });
 }
 
-export function registerTools(server: McpServer, deps: ToolDeps): void {
+export interface RegisterToolsOptions {
+  /**
+   * Whether this server instance stands for a connection, so its dispatches
+   * share a minted connection id. True for stdio and legacy HTTP sessions;
+   * false for a 2026-07-28 HTTP request, which gets a server of its own.
+   */
+  connection?: boolean;
+}
+
+export function registerTools(server: McpServer, deps: ToolDeps, opts: RegisterToolsOptions = {}): void {
   if (deps.caller === undefined) {
-    const session = randomUUID();
+    const session = (opts.connection ?? true) ? randomUUID() : undefined;
     deps = { ...deps, caller: (extra) => connectionCaller(server, session, extra) };
   }
   server.registerTool(
@@ -935,9 +970,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "same list, so the newest entry may not be. Keep graceSeconds under your MCP client's own request " +
         "timeout, or skip the inline wait entirely with graceSeconds: 0. Always pass " +
         "`workingDir` (the caller's project root) and `hints.taskType`.",
-      inputSchema: dispatchInputShape,
+      inputSchema: z.object(dispatchInputShape),
     },
-    async (args, extra) => jsonText(await handleDispatch(deps, args, extra as ToolExtra)),
+    async (args, ctx) => jsonText(await handleDispatch(deps, args, ctx)),
   );
 
   server.registerTool(
@@ -951,7 +986,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "`jobId` to list recent background dispatches instead (compact, newest first). "
         + "Nothing is lost by " +
         "checking late; results persist on disk.",
-      inputSchema: jobStatusInputShape,
+      inputSchema: z.object(jobStatusInputShape),
       annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleJobStatus(args)),
@@ -971,7 +1006,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "a cancelled run is not counted as a route failure, so cancelling costs the " +
         "route nothing. Cancelling an already-finished job is a harmless no-op that " +
         "reports what it found.",
-      inputSchema: cancelJobInputShape,
+      inputSchema: z.object(cancelJobInputShape),
       annotations: { destructiveHint: true, idempotentHint: true },
     },
     async (args) => jsonText(await handleCancelJob(args)),
@@ -990,9 +1025,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "limit, a harness that got stuck). Returns a NEW jobId; the original job and " +
         "its workspace are left untouched. Refuses while the original is still " +
         "running — cancel it first, or two attempts race on one directory.",
-      inputSchema: retryJobInputShape,
+      inputSchema: z.object(retryJobInputShape),
     },
-    async (args, extra) => jsonText(await handleRetryJob(deps, args, extra as ToolExtra)),
+    async (args, ctx) => jsonText(await handleRetryJob(deps, args, ctx)),
   );
 
   server.registerTool(
@@ -1012,7 +1047,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "the workspace and leaves the project untouched. The full patch is always " +
         "written to the job directory, so `git apply` by hand is available even when " +
         "the automatic apply declines.",
-      inputSchema: workspaceInputShape,
+      inputSchema: z.object(workspaceInputShape),
       annotations: { destructiveHint: true },
     },
     async (args) => jsonText(await handleWorkspace(args)),
@@ -1037,7 +1072,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "server-side and get the real ids back under liveModels — use these to pick " +
         "a real model up front or self-correct after a dispatch failure caused by an " +
         "unsupported model name.",
-      inputSchema: usageInputShape,
+      inputSchema: z.object(usageInputShape),
       annotations: { readOnlyHint: true },
     },
     async (args) => jsonText(await handleUsage(deps, args)),
@@ -1062,7 +1097,7 @@ export type InvokeResult = { kind: "json"; data: unknown };
  * refuses the same input.
  *
  * The guard wraps the CallTool handler the SDK installs and inspects the raw
- * arguments before delegating, so the SDK's routing, validation and `extra`
+ * arguments before delegating, so the SDK's routing, validation and handler-context
  * plumbing are untouched. Both surfaces run the same check from
  * `near-miss.ts`, and `surface-parity.test.ts` asserts it on both.
  */
