@@ -67,10 +67,12 @@ async function dispatchAndReadSinks(configYaml: string, service: string): Promis
     { holder },
     { prompt: "go", mode: "single", service, workingDir: tmpDir, hints: { taskType: "plan" }, graceSeconds: 30 },
     {
-      _meta: { progressToken: "p" },
-      sendNotification: async (n) => {
-        const event = (n.params as { _meta?: { event?: DispatcherEvent } })._meta?.event;
-        if (event !== undefined) progress.push(event);
+      mcpReq: {
+        _meta: { progressToken: "p" },
+        notify: async (n) => {
+          const event = (n.params as { _meta?: { event?: DispatcherEvent } })._meta?.event;
+          if (event !== undefined) progress.push(event);
+        },
       },
     },
   )) as { completed: boolean };

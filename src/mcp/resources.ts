@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { redact } from "../redaction.js";
 
 import { buildStatus, renderStatusText } from "../status.js";

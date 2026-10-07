@@ -70,9 +70,11 @@ describe.skipIf(!existsSync(RUNNER))("progress notifications for a detached job"
       { holder },
       { prompt: "hi", mode: "single", workingDir: tmpDir, hints: { taskType: "plan" }, graceSeconds: 40 },
       {
-        _meta: { progressToken: "t1" },
-        sendNotification: async (n) => {
-          messages.push(String((n.params as { message?: unknown }).message));
+        mcpReq: {
+          _meta: { progressToken: "t1" },
+          notify: async (n) => {
+            messages.push(String((n.params as { message?: unknown }).message));
+          },
         },
       },
     )) as { completed: boolean; output?: string };

@@ -7,8 +7,8 @@
  * OpenAI-compatible REST API share one authenticated server.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { bootstrapRuntime, ConfigHotReloader, RuntimeHolder } from "./config-hot-reload.js";
 import { orphanStrandedSlotQueue } from "../jobs.js";
@@ -87,34 +87,52 @@ export interface BuiltMcp {
   reloader: ConfigHotReloader;
 }
 
+export interface McpInstanceOptions {
+  /**
+   * Whether the instance stands for a connection (stdio, or a legacy HTTP
+   * session) and so mints a connection id its dispatches are recorded under.
+   * False for a 2026-07-28 HTTP request, which gets an instance of its own.
+   * Defaults to true.
+   */
+  connection?: boolean;
+}
+
 /**
  * Build a fresh `McpServer` with all tools/resources registered against
- * existing runtime state. The SDK's Protocol.connect() throws if called
- * twice on the same Server instance ("use a separate Protocol instance per
- * connection") — so any transport that needs its own connect() call (e.g.
- * one StreamableHTTPServerTransport per HTTP MCP session) needs its own
- * McpServer instance too. holder/reloader are cheap to share; the McpServer
- * wrapper is not.
+ * existing runtime state. An SDK server serves one connection at a time
+ * (`connect()` rejects while it is connected elsewhere), and the SDK's serving
+ * entries take a factory for exactly that reason: `serveStdio` calls it once
+ * per connection, `createMcpHandler` once per 2026-07-28 HTTP request, and the
+ * legacy HTTP leg once per session. holder/reloader are cheap to share; the
+ * McpServer wrapper is not.
+ *
+ * The instructions are passed to the SDK, which answers them in the
+ * `initialize` result for a 2025-era client and in the `server/discover`
+ * result for a 2026-07-28 one.
  */
 export function buildMcpServerInstance(
   holder: RuntimeHolder,
   reloader: ConfigHotReloader,
+  opts: McpInstanceOptions = {},
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { instructions: serverInstructions(holder.state.config) },
   );
-  // BEFORE registerTools: the SDK installs its CallTool handler on the first
+  // BEFORE registerTools: the SDK installs its tools/call handler on the first
   // tool registration, and this wraps that handler as it goes in. See
   // near-miss-guard.ts for why the check cannot live in the schema.
-  installNearMissGuard(server);
-  registerTools(server, { holder, reloader });
+  const assertGuarded = installNearMissGuard(server);
+  registerTools(server, { holder, reloader }, opts.connection === false ? { connection: false } : {});
+  assertGuarded();
   registerResources(server, { holder, reloader });
   return server;
 }
 
-/** Bootstrap runtime state + build an `McpServer` with all tools registered. */
-export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltMcp> {
+/** Load config and build the runtime state every MCP instance shares. */
+export async function bootstrapMcpRuntime(
+  opts: BuildMcpOptions = {},
+): Promise<{ holder: RuntimeHolder; reloader: ConfigHotReloader }> {
   const stateOpts: { configPath?: string } = {};
   if (opts.configPath !== undefined) stateOpts.configPath = opts.configPath;
   const state = await bootstrapRuntime(stateOpts);
@@ -127,7 +145,12 @@ export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltM
   }
   const holder = new RuntimeHolder(state);
   const reloader = new ConfigHotReloader(holder, opts.configPath);
+  return { holder, reloader };
+}
 
+/** Bootstrap runtime state + build an `McpServer` with all tools registered. */
+export async function buildMcpServer(opts: BuildMcpOptions = {}): Promise<BuiltMcp> {
+  const { holder, reloader } = await bootstrapMcpRuntime(opts);
   const server = buildMcpServerInstance(holder, reloader);
   return { server, holder, reloader };
 }
@@ -169,14 +192,28 @@ function reportStrandedQueue(): void {
   void orphanStrandedSlotQueue().catch(() => undefined);
 }
 
+/**
+ * Serve MCP over this process's stdin/stdout.
+ *
+ * `serveStdio` decides the protocol revision from the client's first message:
+ * an `initialize` pins the connection to a 2025-era instance (Codex, Cursor,
+ * older Claude Code), and a `server/discover` or any request carrying the
+ * 2026-07-28 `_meta` envelope pins it to a 2026-07-28 one. Either way the
+ * factory runs once for the connection, so the connection id minted in
+ * registerTools is shared by every dispatch on it. A client that probes with
+ * `server/discover` and then falls back to `initialize` costs one extra,
+ * discarded instance.
+ *
+ * Output still goes through `process.stdout.write`, so the process-wide
+ * redaction installed by bin.ts covers every frame.
+ */
 export async function startMcpServer(opts: BuildMcpOptions = {}): Promise<McpHandle> {
-  const { server } = await buildMcpServer(opts);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const { holder, reloader } = await bootstrapMcpRuntime(opts);
+  const handle = serveStdio(() => buildMcpServerInstance(holder, reloader));
   reportStrandedQueue();
   return {
     async close() {
-      await server.close();
+      await handle.close();
     },
   };
 }

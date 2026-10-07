@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 
 import { registerTools, TOOL_NAMES } from "../../src/mcp/tools.js";
 import { buildMcpServerInstance } from "../../src/mcp/server.js";
@@ -357,7 +356,6 @@ describe("MCP server — near-miss top-level keys", () => {
             hints: { taskType: "plan" },
           },
         },
-        undefined,
         {
           onprogress: (p: { progress: number }) => {
             seen.push(p.progress);
