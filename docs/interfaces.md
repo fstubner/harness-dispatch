@@ -55,7 +55,7 @@ use, over stdio and on `/mcp`:
 
 | A client that... | Gets |
 | --- | --- |
-| opens with `initialize` (Codex, Cursor, older Claude Code) | the revision it asks for, if it is 2025-11-25, 2025-06-18, 2025-03-26 or 2024-11-05; otherwise 2025-11-25. The instructions arrive in the `initialize` result. |
+| opens with `initialize` (Codex, Cursor, older Claude Code) | the revision it asks for, if it is 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 or 2024-10-07; otherwise 2025-11-25. The instructions arrive in the `initialize` result. |
 | opens with `server/discover`, or sends requests carrying the 2026-07-28 `_meta` envelope with no handshake | 2026-07-28. The instructions arrive in the `server/discover` result. |
 
 Both get the same tools, resources, progress notifications and refusals. The

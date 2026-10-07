@@ -179,6 +179,18 @@ export interface ToolDeps {
 }
 
 /**
+ * A client-claimed label as it may be recorded. The name and version are
+ * whatever the client says, and they land in the shared dispatch log and every
+ * session's job list, so control characters are removed and length is capped.
+ */
+export function clientLabel(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  // eslint-disable-next-line no-control-regex
+  const clean = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 200);
+  return clean === "" ? undefined : clean;
+}
+
+/**
  * The calling client, plus an id for this connection when there is one.
  *
  * The client's name comes from the request first, then from the connection's
@@ -205,8 +217,10 @@ function connectionCaller(server: McpServer, session: string | undefined, extra?
   // Deprecated in SDK v2 in favour of the envelope, and still the only source
   // for a client that named itself in `initialize`.
   const handshake = server.server.getClientVersion();
-  const name = typeof declared?.name === "string" ? declared.name : handshake?.name;
-  const version = typeof declared?.version === "string" ? declared.version : handshake?.version;
+  const name = clientLabel(typeof declared?.name === "string" ? declared.name : handshake?.name);
+  const version = clientLabel(
+    typeof declared?.version === "string" ? declared.version : handshake?.version,
+  );
   return {
     ...(name ? { client: name } : {}),
     ...(version ? { clientVersion: version } : {}),

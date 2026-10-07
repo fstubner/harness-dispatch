@@ -5,7 +5,7 @@ available. The public MCP surface is intentionally small:
 
 - Tools: `dispatch`, `job_status`, `cancel_job`, `retry_job`, `workspace`, `usage`
 - Resources: `harness-dispatch://status`, `harness-dispatch://status.json`
-- Protocol: MCP 2026-07-28, and 2025-11-25 back to 2024-11-05 for clients that
+- Protocol: MCP 2026-07-28, and 2025-11-25 back to 2024-10-07 for clients that
   open with `initialize`; the same surface either way.
 
 ## Routing

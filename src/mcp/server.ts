@@ -145,6 +145,11 @@ export async function bootstrapMcpRuntime(
   }
   const holder = new RuntimeHolder(state);
   const reloader = new ConfigHotReloader(holder, opts.configPath);
+  // Every serving entry builds its instances lazily, on a connection's first
+  // message, so a build that throws (the near-miss guard's check, say) would
+  // otherwise surface only as "Internal server error" on every request. One
+  // throwaway build here makes it a startup failure with its own message.
+  await buildMcpServerInstance(holder, reloader).close();
   return { holder, reloader };
 }
 
@@ -209,7 +214,11 @@ function reportStrandedQueue(): void {
  */
 export async function startMcpServer(opts: BuildMcpOptions = {}): Promise<McpHandle> {
   const { holder, reloader } = await bootstrapMcpRuntime(opts);
-  const handle = serveStdio(() => buildMcpServerInstance(holder, reloader));
+  const handle = serveStdio(() => buildMcpServerInstance(holder, reloader), {
+    // The SDK drops these otherwise. stderr only: stdout is the protocol.
+    onerror: (err) => process.stderr.write(`harness-dispatch: ${err.message}
+`),
+  });
   reportStrandedQueue();
   return {
     async close() {

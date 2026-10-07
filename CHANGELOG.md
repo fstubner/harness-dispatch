@@ -13,7 +13,7 @@ pre-1.0, so minor versions can carry behaviour changes.
   asks `server/discover` and names itself on every request instead. Over
   stdio and on `/mcp`, the server now answers both kinds. A client that opens
   with `initialize` (Codex, Cursor, older Claude Code) is served as before at
-  2025-11-25, 2025-06-18, 2025-03-26 or 2024-11-05, whichever it asks for. A
+  2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05 or 2024-10-07, whichever it asks for. A
   2026-07-28 client gets the same six tools, both status resources, the
   server's instructions (in the `server/discover` answer), progress while a
   dispatch waits, the near-miss refusal, and its name on the job record and
@@ -28,6 +28,20 @@ pre-1.0, so minor versions can carry behaviour changes.
   The client's name and version are still recorded. Over stdio, and for an
   HTTP client that opens with `initialize`, every dispatch on one connection
   still shares one id.
+
+- **Two MCP errors changed shape with the SDK.** Calling a tool name that does
+  not exist is now a protocol error (-32602, "Tool … not found") instead of a
+  tool result marked as an error. The near-miss and argument-validation
+  refusals keep code -32602 but lose the "MCP error -32602:" prefix in their
+  text; clients built on the MCP SDK add it back themselves.
+- **Tool input schemas declare JSON Schema 2020-12** instead of draft-07, and
+  no longer carry `execution.taskSupport` (version 2 of the SDK removed
+  tasks). Codex and Claude Code load all six tools unchanged.
+
+- **A client's name and version are capped and cleaned before they are
+  recorded.** Both are whatever the client claims, and they are written to
+  the shared dispatch log and shown in every session's job list. Control
+  characters are removed and each is cut to 200 characters.
 - **Tool input schemas declare JSON Schema 2020-12** (`$schema`) instead of
   draft-07, and tools no longer list `execution.taskSupport`. The fields,
   types, required keys and descriptions in each schema are unchanged.
