@@ -91,8 +91,9 @@ Every dispatch also appends one JSONL line to a local
 dispatch log at `~/.harness-dispatch/logs/dispatches.jsonl` (override the
 directory with `HARNESS_DISPATCH_LOG_DIR`) — route, success, duration, token
 counts, a capped error string, which config file was loaded (`config`), and who
-asked: the MCP client's name and version, a per-connection session id, and the
-job id (`http` or `cli` for the other surfaces). `status` and `usage` read the
+asked: the MCP client's name and version, a session id for the connection
+(one per stdio process or per HTTP MCP session; none for a 2026-07-28 HTTP
+request, which has no connection), and the job id (`http` or `cli` for the other surfaces). `status` and `usage` read the
 last 7 days of it to show each route's recent success rate. For post-hoc debugging and for seeing which agents use which
 routes. It's local-only,
 size-capped via single-file rotation, and never sent anywhere. Job artifacts

@@ -6,6 +6,32 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Clients speaking MCP 2026-07-28 are served, and older clients still
+  are.** The newest MCP revision drops the `initialize` handshake: a client
+  asks `server/discover` and names itself on every request instead. Over
+  stdio and on `/mcp`, the server now answers both kinds. A client that opens
+  with `initialize` (Codex, Cursor, older Claude Code) is served as before at
+  2025-11-25, 2025-06-18, 2025-03-26 or 2024-11-05, whichever it asks for. A
+  2026-07-28 client gets the same six tools, both status resources, the
+  server's instructions (in the `server/discover` answer), progress while a
+  dispatch waits, the near-miss refusal, and its name on the job record and
+  dispatch log. Built on version 2 of the MCP TypeScript SDK, which replaces
+  version 1.
+
+### Changed
+
+- **A 2026-07-28 request to `/mcp` is recorded without a session id.** That
+  revision has no sessions, and the server builds a fresh MCP server for
+  each request, so an id would be new on every dispatch and group nothing.
+  The client's name and version are still recorded. Over stdio, and for an
+  HTTP client that opens with `initialize`, every dispatch on one connection
+  still shares one id.
+- **Tool input schemas declare JSON Schema 2020-12** (`$schema`) instead of
+  draft-07, and tools no longer list `execution.taskSupport`. The fields,
+  types, required keys and descriptions in each schema are unchanged.
+
 ### Security
 
 - **A program planted in the current directory is no longer run in place of

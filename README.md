@@ -27,7 +27,9 @@ subscription quota before anything metered.
 
 It is a local MCP server, so the harnesses on your machine (Claude Code, Codex,
 Cursor Agent, Antigravity CLI, and any local or remote OpenAI-compatible endpoint)
-become tools any AI can call.
+become tools any AI can call. It speaks MCP 2026-07-28 and the 2025-era
+revisions (2025-11-25 back to 2024-11-05) that clients using the `initialize`
+handshake still ask for.
 
 Six tools: `dispatch` starts routed work, `job_status` checks or lists it,
 `cancel_job` stops one, `retry_job` runs a finished one again, `workspace`
