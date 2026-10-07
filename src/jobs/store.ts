@@ -47,9 +47,9 @@ export const SUGGESTED_POLL_SECONDS = 300;
 export const ORPHAN_THRESHOLD_MS = 90_000;
 
 /**
- * Compute-on-read orphan detection. Never writes the verdict back — the
- * status file stays whatever the (dead) owner last wrote, so a future
- * attach/recovery feature keeps its evidence intact.
+ * Compute-on-read orphan detection. This function itself writes nothing; the
+ * readers go through `checkOrphan`, which records the verdict for a dead
+ * `running` job.
  */
 export function withOrphanCheck(status: JobStatus): JobStatus {
   // Waiting for a concurrency slot is not death: nothing is heartbeating for
@@ -106,6 +106,44 @@ export function withOrphanCheck(status: JobStatus): JobStatus {
             .join(", ")}); \`cancel_job\` stops them, and \`retry_job\` does before re-running.`
         : ""),
   };
+}
+
+/**
+ * `withOrphanCheck`, and the first time it finds a RUNNING job dead, the
+ * verdict is written to status.json too.
+ *
+ * Left unwritten, a dead run read `running` on disk for as long as retention
+ * kept it. Nothing inside this program was fooled (the supervisor's counts and
+ * retention both apply the staleness rule themselves), but anything reading the
+ * file directly was.
+ *
+ * Only a `running` status, and only when no live process holds the claim:
+ *   - `queued` stays as written. A released job whose claimant died is
+ *     reclaimed and run by claimNextJob, which filters on the file.
+ *   - A live claimant with a stale beat is a stall or a sleeping machine, not a
+ *     death; the verdict then stays derived, as it was.
+ * The file is read again right before the write and must still hold the
+ * heartbeat the verdict came from, so a runner that beat or finished in
+ * between is not overwritten. A runner that wakes later writes over the
+ * verdict with its own state, as every status write does.
+ *
+ * `children` is kept in the written record: cancel_job and retry_job use it to
+ * stop agent processes the dead supervisor left behind.
+ */
+export async function checkOrphan(jobDir: string, raw: JobStatus): Promise<JobStatus> {
+  const verdict = withOrphanCheck(raw);
+  if (verdict.status !== "orphaned" || raw.status !== "running") return verdict;
+  try {
+    const now = await readJson<JobStatus>(path.join(jobDir, "status.json"));
+    if (now.status !== "running" || now.updatedAt !== raw.updatedAt) return verdict;
+    if (newerFormatError(now, now.jobId) !== undefined) return verdict;
+    const holder = claimHolder(jobDir);
+    if (holder !== undefined && processAlive(holder)) return verdict;
+    await updateStatus(jobDir, verdict);
+  } catch {
+    // Best effort: the verdict is still returned, and the next read tries again.
+  }
+  return verdict;
 }
 
 /** How long a live claimant's stale heartbeat is watched before "orphaned". */

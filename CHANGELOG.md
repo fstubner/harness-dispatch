@@ -73,6 +73,24 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A job that finishes within a fraction of a second now sends its output as
+  progress.** The server tails a job's progress log while `dispatch` waits, but
+  a successful job deletes that log when it ends, so a job that printed two
+  short lines and exited before the first look sent nothing; the lines were
+  only in the result. In the real server, a job printing two lines sent no
+  progress notification in 8 of 10 dispatches. It now sends one in 10 of 10,
+  carrying both lines, and a job whose output was already relayed is not
+  repeated.
+- **A job that died while running is now recorded as `orphaned` in its
+  `status.json`.** `job_status` and the job list already reported a run whose
+  heartbeat stopped and whose process is gone as `orphaned`, but the file went
+  on saying `running`, so anything reading it directly saw a live job that was
+  not there. The first read that finds such a job dead now writes `orphaned`.
+  Nothing is written for a job with a fresh heartbeat, a stale one whose
+  supervisor is still alive, or a released job a supervisor will still claim and
+  run. `cancel_job` and `retry_job` still stop agent processes a dead run left
+  behind, and a dead run with none recorded now answers `cancel_job` with
+  "already finished" instead of "cancelled".
 - **A client that names itself on each request is recorded.** MCP 2026-07-28
   drops the connection handshake that the dispatch log and job records took
   the client's name and version from, and has clients send them in each
