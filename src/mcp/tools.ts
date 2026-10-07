@@ -170,20 +170,39 @@ export interface DispatchPollResponse {
 export interface ToolDeps {
   holder: RuntimeHolder;
   reloader?: ConfigHotReloader;
-  /** Who is calling — see DispatchCaller. Set by registerTools for an MCP connection. */
-  caller?: () => DispatchCaller;
+  /**
+   * Who is calling — see DispatchCaller. Set by registerTools for an MCP
+   * connection; given the request's `extra` so a client that names itself per
+   * request is recorded too.
+   */
+  caller?: (extra?: ToolExtra) => DispatchCaller;
 }
 
+/** Where MCP 2026-07-28 puts the client's name and version on each request. */
+const CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo";
+
 /**
- * The connected client as it introduced itself, plus an id for this
- * connection. One McpServer serves exactly one connection (a stdio process,
- * or one HTTP MCP session), so an id minted per server is a session id.
+ * The calling client, plus an id for this connection. One McpServer serves
+ * exactly one connection (a stdio process, or one HTTP MCP session), so an id
+ * minted per server is a session id.
+ *
+ * The client's name comes from the request first, then from the connection's
+ * handshake. MCP 2026-07-28 drops the `initialize` handshake and has clients
+ * name themselves in each request's `_meta` instead; a client speaking only
+ * that revision would otherwise be recorded with no name at all.
  */
-function connectionCaller(server: McpServer, session: string): DispatchCaller {
-  const info = server.server.getClientVersion();
+function connectionCaller(server: McpServer, session: string, extra?: ToolExtra): DispatchCaller {
+  const fromRequest = extra?._meta?.[CLIENT_INFO_META];
+  const declared =
+    fromRequest !== null && typeof fromRequest === "object"
+      ? (fromRequest as { name?: unknown; version?: unknown })
+      : undefined;
+  const handshake = server.server.getClientVersion();
+  const name = typeof declared?.name === "string" ? declared.name : handshake?.name;
+  const version = typeof declared?.version === "string" ? declared.version : handshake?.version;
   return {
-    ...(info?.name ? { client: info.name } : {}),
-    ...(info?.version ? { clientVersion: info.version } : {}),
+    ...(name ? { client: name } : {}),
+    ...(version ? { clientVersion: version } : {}),
     session,
   };
 }
@@ -486,7 +505,7 @@ async function startSingle(
       hints,
       ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
       ...(input.service !== undefined ? { service: input.service } : {}),
-      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller(extra) } : {}),
       ...(onEvent !== undefined ? { onEvent } : {}),
     },
   );
@@ -609,7 +628,7 @@ async function startFanout(
           ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
           hints,
           service: routeName,
-          ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+          ...(deps.caller !== undefined ? { caller: deps.caller(extra) } : {}),
           ...(onEvent !== undefined ? { onEvent } : {}),
         },
       );
@@ -749,12 +768,13 @@ export async function handleCancelJob(args: { jobId: string; reason?: string | u
 export async function handleRetryJob(
   deps: ToolDeps,
   args: { jobId: string; service?: string | undefined },
+  extra?: ToolExtra,
 ) {
   return withMcpToolSpan({ "tool.name": "retry_job" }, async () => {
     await ensureFreshConfig(deps.reloader);
     return retryJob(args.jobId, { holder: deps.holder }, {
       ...(args.service !== undefined ? { service: args.service } : {}),
-      ...(deps.caller !== undefined ? { caller: deps.caller() } : {}),
+      ...(deps.caller !== undefined ? { caller: deps.caller(extra) } : {}),
     });
   });
 }
@@ -891,7 +911,7 @@ async function handleUsage(deps: ToolDeps, args: { listModels?: string | undefin
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   if (deps.caller === undefined) {
     const session = randomUUID();
-    deps = { ...deps, caller: () => connectionCaller(server, session) };
+    deps = { ...deps, caller: (extra) => connectionCaller(server, session, extra) };
   }
   server.registerTool(
     "dispatch",
@@ -972,7 +992,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         "running — cancel it first, or two attempts race on one directory.",
       inputSchema: retryJobInputShape,
     },
-    async (args) => jsonText(await handleRetryJob(deps, args)),
+    async (args, extra) => jsonText(await handleRetryJob(deps, args, extra as ToolExtra)),
   );
 
   server.registerTool(
