@@ -692,12 +692,40 @@ export interface PatchResult {
   note?: string;
 }
 
+/**
+ * Refuse a workspace that another job created.
+ *
+ * The workspace diff and apply read is named by the job's own record on disk.
+ * A record edited to name ANOTHER job's run directory made `apply` land that
+ * job's changes in this job's project. The run directory records the job that
+ * created it (workspaces.ts OWNER_FILE); a different owner is refused.
+ *
+ * A workspace with NO recorded owner is allowed, unlike in discard: it was
+ * created before owners were recorded, and refusing would strand work the user
+ * wants. Diff and apply delete nothing, so there is no destructive step here
+ * that an unknown owner could make worse.
+ *
+ * Diff and apply both come through workspaceDiff, the one place this runs;
+ * applyWorkspace calls it before anything else.
+ */
+async function assertWorkspaceOwnedBy(jobId: string, run: WorkspaceRun): Promise<void> {
+  if (run.workspaceRoot === undefined) return;
+  const owner = await workspaceOwner(run.workspaceRoot);
+  if (owner === undefined || owner === jobId) return;
+  throw new Error(
+    `Refused: ${run.workspaceRoot} belongs to job ${owner}, not ${jobId}. This job's record names ` +
+      `another job's workspace, so its changes are neither shown nor applied here. Use ${owner} ` +
+      `itself if that is what you want.`,
+  );
+}
+
 /** Build the patch, cache it next to the job, and return it (bounded). */
 export async function workspaceDiff(
   jobId: string,
   jobDir: string,
   run: WorkspaceRun,
 ): Promise<PatchResult> {
+  await assertWorkspaceOwnedBy(jobId, run);
   const patchPath = path.join(jobDir, "output", "workspace.patch");
 
   // The workspace is gone, but the patch outlives it.
@@ -911,6 +939,7 @@ export async function applyWorkspace(
   run: WorkspaceRun,
   opts: { force?: boolean } = {},
 ): Promise<ApplyResult> {
+  // Also where the workspace owner is checked (see assertWorkspaceOwnedBy).
   const diff = await workspaceDiff(jobId, jobDir, run);
   if (
     diff.fromCache === true &&
