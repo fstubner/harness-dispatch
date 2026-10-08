@@ -14,7 +14,7 @@ import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 
 import { MODEL_TIERS, type RouteHints } from "../types.js";
-import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
+import { HINTS_WORKSPACE_POLICY_MESSAGE, nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { MAX_CONTEXT_FILES, MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
 
@@ -229,11 +229,10 @@ function enumField<T extends string>(
  * placement rule diverges from MCP deliberately; the guarantee does not — on
  * both surfaces a hint you set either takes effect or you are told.
  *
- * When BOTH placements are given, nested wins — the more specific one — with
- * one exception: `workspacePolicy` takes the top-level value, because there it
- * is a real MCP parameter rather than a trap and `workspacePolicyFromInput`
- * resolves it that way. The exception is pinned by a test so it stays a
- * decision.
+ * When BOTH placements are given, nested wins — the more specific one.
+ * `workspacePolicy` is the exception in the other direction: it is not a hint
+ * at all, on either surface, so it is read from the top level only and
+ * refused inside `hints`.
  */
 function parseHints(body: ChatRequest): RouteHints {
   const hints: RouteHints = {};
@@ -389,12 +388,8 @@ function parseHints(body: ChatRequest): RouteHints {
     }
     const safetyProfile = enumField(raw.safetyProfile, SAFETY_PROFILES, "hints.safetyProfile");
     if (safetyProfile !== undefined) hints.safetyProfile = safetyProfile;
-    const workspacePolicy = enumField(
-      raw.workspacePolicy,
-      WORKSPACE_POLICIES,
-      "hints.workspacePolicy",
-    );
-    if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+    // A top-level field on both surfaces; same refusal as MCP's.
+    if (raw.workspacePolicy !== undefined) throw new BadRequestError(HINTS_WORKSPACE_POLICY_MESSAGE);
     // evaluateRoutePolicy implements local_only, approval_required and blocked
     // in full, so this surface has to read the hint or those guarantees are
     // wired to nothing here — PRODUCT.md names CI and cron as its consumers.
@@ -416,7 +411,6 @@ function parseHints(body: ChatRequest): RouteHints {
       "taskType",
       "preferLargeContext",
       "safetyProfile",
-      "workspacePolicy",
       "routePolicy",
       "timeoutMs",
     ]);

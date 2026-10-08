@@ -92,9 +92,18 @@ message decides, for the life of the process. A client that probes with
 | `workspace` | For a job that ran with `workspacePolicy: "copy"` or `"git_worktree"`, the agent's changes live in an isolated workspace and were **never** applied to your project. `action: "diff"` returns the real patch; `"apply"` applies it (refusing when your project has uncommitted changes, since the patch was built against a clean base — `force: true` overrides); `"discard"` deletes the workspace. The full patch is always written to the job directory, so `git apply` by hand is available either way. |
 | `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value. `service` and `models` are validated — an unknown route id is rejected, naming the valid ones — while `hints.model` is forwarded to the picked harness as-is, so a wrong model name fails at the harness instead. Pass `listModels: <route id>` to get that `openai_compatible` route's model catalog instead of (or alongside) the summary: the route's declared `models:` list when it has one, otherwise a live `GET /models` from the endpoint. |
 
-`workingDir` is effectively required when starting work: if you omit it, the task runs
-in harness-dispatch's own process directory instead of your project, and the response
-carries a `warning` field saying so.
+`workingDir` is required on `dispatch`: an absolute path to your project. The server's
+own directory is wherever the client happened to start it, so it is never used as a
+default here. (The HTTP chat endpoint does fall back to the server's directory, with a
+`warning` in the reply, because OpenAI-shaped clients cannot send the field; the CLI
+`dispatch` runs in the shell's current directory.)
+
+`workspacePolicy` is a top-level field, not a hint, and is refused inside `hints` on
+both MCP and HTTP. It decides where the delegate runs: `shared` (in `workingDir`),
+`shared_locked` (in `workingDir`, one write-capable dispatch per directory at a time),
+`copy` or `git_worktree` (in an isolated copy, applied with the `workspace` tool). When
+omitted, the route's `workspace_policy` applies, else `shared` for `read_only` work and
+`shared_locked` otherwise. See [operations](operations.md) for the details of each.
 
 **How the grace window works.** `dispatch` starts the task as a background job
 immediately, then waits up to `graceSeconds` (default 25) for it to finish. Within the

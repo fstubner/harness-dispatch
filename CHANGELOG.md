@@ -32,6 +32,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Changed
 
+- **`dispatch` now requires `workingDir`.** Leaving it out used to run the task
+  in whatever directory the client had started the server from, with only a
+  warning on the reply. MCP clients now get an error naming the field before
+  anything runs. The HTTP chat endpoint still falls back to the server's
+  directory with a warning, because OpenAI-style clients cannot send the
+  field, and the CLI keeps using the shell's directory.
+- **`workspacePolicy` is a top-level field only.** It used to be accepted both
+  at the top level and inside `hints`, and the tool schema listed it twice as
+  "Workspace execution policy." Inside `hints` it is now refused, on MCP and
+  HTTP alike, with a message saying where it goes. The schema describes it
+  once, with what `shared`, `shared_locked`, `copy` and `git_worktree` each do
+  and what happens when it is left out.
 - **The built-in guidance stops telling agents to name a route on every
   dispatch.** The server's instructions, the tool descriptions, the plugin
   skill and the docs now say: pass `hints.taskType` and `hints.modelTier`,

@@ -144,7 +144,7 @@ describe("MCP tools — dispatch", () => {
       },
     );
 
-    const r = await invokeTool("dispatch", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
+    const r = await invokeTool("dispatch", { workingDir: workDir, prompt: "hi", hints: { taskType: "plan" } }, { holder });
     expect(r.kind).toBe("json");
     const data = r.data as {
       mode: "single";
@@ -174,7 +174,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", hints: { model: "preferred-model", taskType: "plan" } },
+      { workingDir: workDir, prompt: "hi", hints: { model: "preferred-model", taskType: "plan" } },
       { holder },
     );
     const data = r.data as { route: string; model?: string; routing?: { modelHintMatched?: boolean } };
@@ -191,7 +191,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", hints: { model: "totally-unrecognized-model", taskType: "plan" } },
+      { workingDir: workDir, prompt: "hi", hints: { model: "totally-unrecognized-model", taskType: "plan" } },
       { holder },
     );
     const data = r.data as { route: string; model?: string; routing?: { modelHintMatched?: boolean } };
@@ -219,7 +219,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", hints: { model: "a", taskType: "plan" } },
+      { workingDir: workDir, prompt: "hi", hints: { model: "a", taskType: "plan" } },
       { holder },
     );
     const data = r.data as {
@@ -248,7 +248,7 @@ describe("MCP tools — dispatch", () => {
     // Names its own route: dropped, and reported.
     const selfNamed = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", hints: { model: "a", taskType: "plan" } },
+      { workingDir: workDir, prompt: "hi", service: "a", hints: { model: "a", taskType: "plan" } },
       { holder },
     );
     const dropped = selfNamed.data as {
@@ -262,7 +262,7 @@ describe("MCP tools — dispatch", () => {
     // Collides with a DIFFERENT route's id: still a real model request.
     const collides = await invokeTool(
       "dispatch",
-      { prompt: "hi", service: "a", hints: { model: "b", taskType: "plan" } },
+      { workingDir: workDir, prompt: "hi", service: "a", hints: { model: "b", taskType: "plan" } },
       { holder },
     );
     const forwarded = collides.data as {
@@ -283,13 +283,13 @@ describe("MCP tools — dispatch", () => {
     );
 
     await expect(
-      invokeTool("dispatch", { prompt: "hi", hints: { model: "" } }, { holder }),
+      invokeTool("dispatch", { workingDir: workDir, prompt: "hi", hints: { model: "" } }, { holder }),
     ).rejects.toThrow(/must not be empty/i);
 
     // Whitespace does the same thing AND reaches the harness as a real
     // argument, so it cannot be waved through as "close enough to empty".
     await expect(
-      invokeTool("dispatch", { prompt: "hi", hints: { model: "   " } }, { holder }),
+      invokeTool("dispatch", { workingDir: workDir, prompt: "hi", hints: { model: "   " } }, { holder }),
     ).rejects.toThrow(/must not be empty/i);
   });
 
@@ -420,7 +420,7 @@ describe("MCP tools — dispatch", () => {
       },
     );
 
-    const r = await invokeTool("dispatch", { prompt: "hi", hints: { taskType: "plan" } }, { holder });
+    const r = await invokeTool("dispatch", { workingDir: workDir, prompt: "hi", hints: { taskType: "plan" } }, { holder });
     const data = r.data as { route: string; skippedRoutes?: Array<{ route: string; code: string }> };
     expect(data.route).toBe("local");
     expect(data.skippedRoutes).toEqual([
@@ -449,7 +449,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", hints: { taskType: "plan", routePolicy: "local_only" } },
+      { workingDir: workDir, prompt: "hi", hints: { taskType: "plan", routePolicy: "local_only" } },
       { holder },
     );
     const data = r.data as { route: string; skippedRoutes?: Array<{ route: string; code: string }> };
@@ -477,7 +477,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { prompt: "hi", hints: { routePolicy: "approval_required" } },
+      { workingDir: workDir, prompt: "hi", hints: { routePolicy: "approval_required" } },
       { holder },
     );
     const data = r.data as { success: boolean; skippedRoutes?: Array<{ route: string; code: string }> };
@@ -501,7 +501,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      { mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
+      { workingDir: workDir, mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
       { holder },
     );
     const data = r.data as {
@@ -573,7 +573,7 @@ describe("MCP tools — dispatch", () => {
     for (let i = 0; i < 3; i += 1) {
       const r = await invokeTool(
         "dispatch",
-        { mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
+        { workingDir: workDir, mode: "fanout", prompt: "hi", hints: { taskType: "plan" } },
         { holder },
       );
       const data = r.data as { warning?: string };
@@ -652,7 +652,7 @@ describe("MCP tools — dispatch", () => {
 
     await invokeTool(
       "dispatch",
-      { mode: "fanout", prompt: "step 2", contextJobs: [prior], hints: { taskType: "plan" } },
+      { workingDir: workDir, mode: "fanout", prompt: "step 2", contextJobs: [prior], hints: { taskType: "plan" } },
       { holder },
     );
 
@@ -678,7 +678,7 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool(
         "dispatch",
-        {
+        { workingDir: workDir,
           mode: "fanout",
           prompt: "edit files",
           hints: { safetyProfile: "workspace_edit" },
@@ -706,7 +706,7 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool(
         "dispatch",
-        { mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
+        { workingDir: workDir, mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
         { holder },
       ),
     ).rejects.toThrow(/No fanout route can run/);
@@ -724,7 +724,7 @@ describe("MCP tools — dispatch", () => {
     await expect(
       invokeTool(
         "dispatch",
-        { mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
+        { workingDir: workDir, mode: "fanout", prompt: "hi", models: ["off"], hints: { taskType: "plan" } },
         { holder },
       ),
     ).rejects.toThrow(/off: /);
@@ -786,7 +786,7 @@ describe("MCP tools — dispatch", () => {
       },
     );
 
-    const r = await invokeTool("dispatch", { mode: "fanout", prompt: "hi" }, { holder });
+    const r = await invokeTool("dispatch", { workingDir: workDir, mode: "fanout", prompt: "hi" }, { holder });
     const data = r.data as {
       results: Array<{ route: string }>;
       skippedRoutes?: Array<{ route: string; code: string }>;
@@ -818,7 +818,7 @@ describe("MCP tools — dispatch", () => {
 
     const r = await invokeTool(
       "dispatch",
-      {
+      { workingDir: workDir,
         mode: "fanout",
         prompt: "hi",
         hints: { routePolicy: "standard" },
@@ -845,7 +845,7 @@ describe("MCP tools — dispatch", () => {
       },
     );
 
-    const r = await invokeTool("dispatch", { mode: "fanout", prompt: "hi", models: ["b-model"] }, { holder });
+    const r = await invokeTool("dispatch", { workingDir: workDir, mode: "fanout", prompt: "hi", models: ["b-model"] }, { holder });
     const data = r.data as { results: Array<{ route: string }> };
     expect(data.results).toHaveLength(1);
     expect(data.results[0]!.route).toBe("b");
@@ -867,7 +867,7 @@ describe("MCP tools — dispatch", () => {
     // is given — fanout must still hit every eligible route, not just "b".
     const r = await invokeTool(
       "dispatch",
-      { mode: "fanout", prompt: "hi", hints: { model: "b-model" } },
+      { workingDir: workDir, mode: "fanout", prompt: "hi", hints: { model: "b-model" } },
       { holder },
     );
     const data = r.data as { results: Array<{ route: string }> };
@@ -979,9 +979,9 @@ describe("MCP tools — dispatch", () => {
       { a: new FakeDispatcher("a") },
     );
 
-    await expect(invokeTool("dispatch", {}, { holder })).rejects.toThrow(/prompt/);
+    await expect(invokeTool("dispatch", { workingDir: workDir }, { holder })).rejects.toThrow(/prompt/);
     await expect(
-      invokeTool("dispatch", { prompt: "hi", mode: "fanout", service: "a" }, { holder }),
+      invokeTool("dispatch", { workingDir: workDir, prompt: "hi", mode: "fanout", service: "a" }, { holder }),
     ).rejects.toThrow(/incompatible/);
   });
 
@@ -1131,15 +1131,17 @@ describe("MCP tools — dispatch", () => {
     expect((withIt.data as { warning?: string }).warning).toBeUndefined();
   });
 
-  it("warns when workingDir is omitted and defaults to the router's own cwd", async () => {
-    const holder = buildHolder(
-      { a: makeService("a", { model: "a-model" }) },
-      { a: new FakeDispatcher("a", { output: "hi", service: "a", success: true }) },
-    );
+  it("refuses a dispatch without workingDir rather than running in the server's own directory", async () => {
+    // It used to default to the server's cwd with a warning on a success-
+    // shaped reply — wherever the client happened to launch the server.
+    const dispatcher = new FakeDispatcher("a", { output: "hi", service: "a", success: true });
+    const holder = buildHolder({ a: makeService("a", { model: "a-model" }) }, { a: dispatcher });
 
-    const withoutWorkingDir = await invokeTool("dispatch", { prompt: "hi" }, { holder });
-    const withoutData = withoutWorkingDir.data as { warning?: string };
-    expect(withoutData.warning).toMatch(/workingDir was not provided/);
+    await expect(invokeTool("dispatch", { prompt: "hi" }, { holder })).rejects.toThrow(/workingDir/);
+    await expect(invokeTool("dispatch", { prompt: "hi", workingDir: "" }, { holder })).rejects.toThrow(
+      /workingDir must not be empty/,
+    );
+    expect(dispatcher.lastPrompt).toBeUndefined();
 
     const withWorkingDir = await invokeTool(
       "dispatch",

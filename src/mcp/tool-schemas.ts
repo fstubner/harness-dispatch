@@ -116,7 +116,6 @@ export const publicHintsSchema = z
           "permission rules for Claude Code and Cursor); it is a limit passed to the " +
           "harness, not a sandbox harness-dispatch imposes.",
       ),
-    workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
     routePolicy: routePolicySchema
       .optional()
       .describe(
@@ -149,10 +148,26 @@ export const publicHintsSchema = z
   .strict()
   .describe("Public routing hints.");
 
+/**
+ * REQUIRED here. The server's own working directory is wherever the client
+ * happened to launch it, so "omitted means the server's cwd" ran tasks in the
+ * wrong project behind a success-shaped reply. The HTTP chat endpoint keeps
+ * that default with a warning, because OpenAI-shaped clients cannot send the
+ * field; the CLI uses the shell's directory, which is the caller's own.
+ */
 export const workingDirDescription =
-  "Absolute path to the project the task is about. EFFECTIVELY REQUIRED: when omitted, " +
-  "the task runs in the router server's own working directory — almost never the " +
-  "project you mean. Always pass the caller's project root.";
+  "Absolute path to the project the task is about — the caller's project root. The " +
+  "delegate runs there (or in an isolated copy of it, per workspacePolicy).";
+
+export const workspacePolicyDescription =
+  "Where the delegate runs. 'shared': directly in workingDir. 'shared_locked': " +
+  "directly in workingDir, one write-capable dispatch per directory at a time across " +
+  "every process. 'copy': in a copy of the project outside it; your tree is untouched " +
+  "until you apply the result with the `workspace` tool. 'git_worktree': in a detached " +
+  "git worktree from HEAD (uncommitted changes are not included), applied the same way. " +
+  "Omitted: the route's configured workspace_policy, else 'shared' for read_only work " +
+  "and 'shared_locked' otherwise. Write-capable fanout needs 'copy' or 'git_worktree'. " +
+  "A top-level field, not a hint.";
 
 /** Inline grace window: how long `dispatch` waits for the background run before returning a pollable jobId instead of the full result. */
 export const DEFAULT_GRACE_SECONDS = 25;
@@ -231,8 +246,11 @@ export const dispatchInputShape = {
         `--add-dir, so it escapes an isolated workspace — the response carries ` +
         `a warning naming the directories when that happens.`,
     ),
-  workingDir: z.string().optional().describe(workingDirDescription),
-  workspacePolicy: workspacePolicySchema.optional().describe("Workspace execution policy."),
+  workingDir: z
+    .string()
+    .min(1, "workingDir must not be empty — pass the absolute path of your project")
+    .describe(workingDirDescription),
+  workspacePolicy: workspacePolicySchema.optional().describe(workspacePolicyDescription),
   hints: publicHintsSchema.optional(),
   models: z
     .array(z.string().refine(noNul, NO_NUL_MESSAGE))
