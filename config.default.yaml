@@ -41,6 +41,9 @@ clis:
       https://platform.claude.com/docs/en/docs/about-claude/models/overview
       (e.g. claude-opus-4-8, claude-sonnet-5) — the installed claude CLI may
       lag behind what's newly listed there.
+    # What hints.modelTier runs on this route: family aliases the claude CLI
+    # accepts for --model, so each tracks that family's current model.
+    model_tiers: { cheap: haiku, standard: sonnet, strong: opus }
     cli_capability: 1.1
     tier: 1
     capabilities: { execute: 0.95, plan: 1.0, review: 1.0 }
@@ -134,6 +137,8 @@ clis:
       https://developers.openai.com/api/docs/models (e.g. gpt-5.6-sol,
       gpt-5.6-terra) — the installed codex CLI may lag behind what's newly
       listed there.
+    # No cheap entry: a cheap request runs the CLI's own default model.
+    model_tiers: { standard: gpt-5.6-terra, strong: gpt-5.6-sol }
     cli_capability: 1.08
     tier: 1
     capabilities: { execute: 1.0, plan: 0.83, review: 0.82 }

@@ -77,6 +77,11 @@ const SHARED_FIELDS: Array<{
   { yaml: "resource_weight: 0.25", field: "resourceWeight", expected: 0.25 },
   { yaml: "billing_confidence: documented", field: "billingConfidence", expected: "documented" },
   { yaml: 'models: ["m-one", "m-two"]', field: "models", expected: ["m-one", "m-two"] },
+  {
+    yaml: "model_tiers: { cheap: m-small, strong: m-big }",
+    field: "modelTiers",
+    expected: { cheap: "m-small", strong: "m-big" },
+  },
 ];
 
 type Shape = "clis" | "endpoints" | "services";
@@ -154,6 +159,39 @@ describe("shared route keys are honoured by every entry shape", () => {
     expect(svc!.maxOutputTokens, "max_output_tokens was not inherited").toBe(64000);
     expect(svc!.maxInputTokens, "max_input_tokens was not inherited").toBe(1000000);
     expect(svc!.modelHint, "model_hint was not inherited").toMatch(/cursor\.com\/docs\/models/);
+  });
+
+  it("inherits the shipped model_tiers only when the entry names no model of its own", async () => {
+    // A route that declares `model:` IS that model: handing it the harness's
+    // tier map would turn "codex with some-model" into "codex with whatever
+    // the tier says", and two routes the operator kept apart would run alike.
+    const file = path.join(dir, "tiers.yaml");
+    await fs.writeFile(
+      file,
+      [
+        "clis:",
+        "  - name: plain",
+        "    harness: codex",
+        "  - name: pinned",
+        "    harness: codex",
+        "    model: some-model",
+        "  - name: typo",
+        "    harness: codex",
+        "    model_tiers: { strongest: m-big }",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const cfg = await loadConfig(file, { whichFn: async () => null });
+    expect(cfg.services["plain"]!.modelTiers).toEqual({
+      standard: "gpt-5.6-terra",
+      strong: "gpt-5.6-sol",
+    });
+    expect(cfg.services["pinned"]!.modelTiers).toBeUndefined();
+    expect(
+      (cfg.configWarnings ?? []).some((w) => w.includes("typo") && w.includes("strongest")),
+      "a misspelled tier name was ignored without a word",
+    ).toBe(true);
   });
 
   it("every shared key under test is in KNOWN_ROUTE_KEYS", async () => {

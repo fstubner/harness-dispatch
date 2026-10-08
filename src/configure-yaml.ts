@@ -68,6 +68,8 @@ function commonEntryFields(svc: ServiceConfig, config: RouterConfig): Record<str
     workspace_policy: svc.workspacePolicy,
     models: own("models", svc.models && svc.models.length > 0 ? svc.models : undefined),
     model_hint: own("model_hint", svc.modelHint),
+    // Shipped for the built-in harnesses, so only the user's own.
+    model_tiers: own("model_tiers", svc.modelTiers),
     // No default exists, so the loaded value is always the user's own.
     instructions: svc.instructions,
     // No default exists, so the loaded value is always the user's own.

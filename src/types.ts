@@ -9,6 +9,15 @@ export type TaskType = "execute" | "plan" | "review" | "local" | "";
 
 export type ThinkingLevel = "low" | "medium" | "high";
 
+/**
+ * How strong a model a dispatch wants, without naming one. Each route maps it
+ * to its own model id (`model_tiers:` in config), so the router can pick any
+ * route and still honour the request — a raw model name belongs to one
+ * harness and only means something on the route that runs it.
+ */
+export const MODEL_TIERS = ["cheap", "standard", "strong"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+
 export type SafetyProfile = "read_only" | "workspace_edit" | "full_auto";
 
 export type RoutePolicy = "standard" | "local_only" | "approval_required" | "blocked";
@@ -426,6 +435,12 @@ export interface ServiceConfig {
    */
   models?: string[];
   /**
+   * This route's model for each strength a caller can ask for with
+   * `hints.modelTier` (`model_tiers:` in config). A tier with no entry runs
+   * the route's default model, and the decision says so.
+   */
+  modelTiers?: Partial<Record<ModelTier, string>>;
+  /**
    * Free-text pointer to where this route's REAL model catalog lives
    * (`model_hint:` in config) — a docs URL, a CLI command like
    * `cursor-agent --list-models`, or "GET {base_url}/models". Surfaced in
@@ -622,6 +637,16 @@ export interface RoutingDecision {
    * model was discarded would read the opposite of what happened.
    */
   modelHintDropped?: boolean;
+  /**
+   * The `hints.modelTier` this decision applied — set only when one was asked
+   * for and no `hints.model` overrode it.
+   */
+  modelTier?: ModelTier;
+  /**
+   * With `modelTier`: true when this route has a model for that tier, false
+   * when it has none and ran its default model instead.
+   */
+  modelTierMatched?: boolean;
   finalScore: number;
   reason: string;
   /**
@@ -643,6 +668,8 @@ export interface RoutingDecision {
 
 export interface RouteHints {
   model?: string;
+  /** Strength of model wanted; each route runs its own model for it. `model` wins. */
+  modelTier?: ModelTier;
   service?: string;
   preferLargeContext?: boolean;
   taskType?: TaskType;

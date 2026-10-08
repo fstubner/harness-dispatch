@@ -2264,3 +2264,85 @@ describe("a rejected input is not charged to the route", () => {
     expect(router.circuitBreakerStatus()["alpha"]?.failures).toBeGreaterThan(0);
   });
 });
+
+// A model tier names a STRENGTH, not a model: each route turns it into its own
+// model id. Before this, the only way to choose a model per task was a raw
+// hints.model, which belongs to one harness and so had to be pinned to that
+// route with `service` — and a pinned route has no fallback.
+describe("hints.modelTier picks each route's own model for that strength", () => {
+  let quota: QuotaCache;
+
+  beforeEach(() => {
+    quota = new QuotaCache({});
+  });
+
+  it("runs the picked route's model for the requested tier", async () => {
+    const a = makeService({
+      name: "alpha",
+      model: "alpha-default",
+      modelTiers: { cheap: "alpha-small", standard: "alpha-mid", strong: "alpha-big" },
+    });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
+
+    const { result, decision } = await router.route("hi", [], "/tmp", {
+      hints: { taskType: "execute", modelTier: "cheap" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(alphaD.calls[0]?.model).toBe("alpha-small");
+    expect(decision?.model).toBe("alpha-small");
+    expect(decision?.modelTier).toBe("cheap");
+    expect(decision?.modelTierMatched).toBe(true);
+  });
+
+  it("gives a fallback route ITS OWN model for the tier, not the first route's", async () => {
+    const a = makeService({ name: "alpha", weight: 0.9, modelTiers: { strong: "alpha-big" } });
+    const b = makeService({ name: "beta", weight: 0.8, modelTiers: { strong: "beta-big" } });
+    const alphaD = new StubDispatcher("alpha");
+    alphaD.setResult({ success: false, error: "You've hit your usage limit" });
+    const betaD = new StubDispatcher("beta");
+    const router = new Router(makeConfig([a, b]), quota, { alpha: alphaD, beta: betaD });
+
+    const { result, decision } = await router.route("hi", [], "/tmp", {
+      hints: { taskType: "review", modelTier: "strong" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(decision?.service).toBe("beta");
+    expect(decision?.reason).toMatch(/fallback #1/);
+    expect(alphaD.calls[0]?.model).toBe("alpha-big");
+    expect(betaD.calls[0]?.model, "the fallback ran the first route's model").toBe("beta-big");
+  });
+
+  it("runs a route's default model when it has none for the tier, and says so", async () => {
+    const a = makeService({ name: "alpha", model: "alpha-default", modelTiers: { strong: "alpha-big" } });
+    const alphaD = new StubDispatcher("alpha");
+    const router = new Router(makeConfig([a]), quota, { alpha: alphaD });
+
+    const { decision } = await router.route("hi", [], "/tmp", {
+      hints: { taskType: "execute", modelTier: "cheap" },
+    });
+
+    expect(alphaD.calls[0]?.model).toBe("alpha-default");
+    expect(decision?.modelTier).toBe("cheap");
+    expect(decision?.modelTierMatched).toBe(false);
+  });
+
+  it("still runs a named service, with that route's tier model", async () => {
+    const a = makeService({ name: "alpha", model: "alpha-default", modelTiers: { cheap: "alpha-small" } });
+    const b = makeService({ name: "beta", modelTiers: { cheap: "beta-small" } });
+    const alphaD = new StubDispatcher("alpha");
+    const betaD = new StubDispatcher("beta");
+    const router = new Router(makeConfig([a, b]), quota, { alpha: alphaD, beta: betaD });
+
+    const pinned = await router.routeTo("beta", "hi", [], "/tmp", { modelTier: "cheap" });
+    expect(pinned.result.success).toBe(true);
+    expect(betaD.calls[0]?.model).toBe("beta-small");
+    expect(pinned.decision?.modelTier).toBe("cheap");
+
+    const plain = await router.routeTo("alpha", "hi", [], "/tmp");
+    expect(plain.result.success).toBe(true);
+    expect(alphaD.calls[0]?.model).toBe("alpha-default");
+  });
+});

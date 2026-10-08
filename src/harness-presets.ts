@@ -58,6 +58,8 @@ export interface CliDefaults {
   models?: string[];
   /** Where this harness's real model catalog lives — see ServiceConfig.modelHint. */
   modelHint?: string;
+  /** Shipped model per tier — see ServiceConfig.modelTiers. */
+  modelTiers?: Partial<Record<import("./types.js").ModelTier, string>>;
   /** Shipped wall-clock limit per attempt — see ServiceConfig.timeoutMs. */
   timeoutMs?: number;
   /** Shipped no-output limit — see ServiceConfig.idleTimeoutMs. */

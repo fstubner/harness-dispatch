@@ -19,8 +19,29 @@ pre-1.0, so minor versions can carry behaviour changes.
   dispatch waits, the near-miss refusal, and its name on the job record and
   dispatch log. Built on version 2 of the MCP TypeScript SDK, which replaces
   version 1.
+- **Ask for a model's strength without naming a route.** `hints.modelTier`
+  (`cheap`, `standard` or `strong`) lets the router pick the route as usual,
+  and that route runs its own model for the tier. If it fails or is
+  rate-limited, the next route runs *its* model for the tier, so choosing a
+  model per task no longer means pinning a route and losing the fallback.
+  Each route's models come from a new `model_tiers:` key; Claude Code ships
+  with `haiku`, `sonnet` and `opus`, and Codex with `gpt-5.6-terra` and
+  `gpt-5.6-sol` for standard and strong. A route with no model for the tier
+  runs its default, and the reply says so (`routing.modelTierMatched:
+  false`). `usage` shows each route's tiers. Works on MCP and HTTP.
 
 ### Changed
+
+- **The built-in guidance stops telling agents to name a route on every
+  dispatch.** The server's instructions, the tool descriptions, the plugin
+  skill and the docs now say: pass `hints.taskType` and `hints.modelTier`,
+  leave `service` unset unless the task needs that exact route (a named route
+  gets no fallback), and use `hints.model` only together with `service`.
+- **A running job's suggested wait now starts short.** `nextPollSeconds` was
+  always 300, so a job that took four seconds was collected five minutes
+  later. It is now about as long as the job has already run: 15 seconds for a
+  job that has just started, growing with each check, up to 5 minutes. The
+  advice in `instructions` no longer says to sleep for 5 minutes.
 
 - **A 2026-07-28 request to `/mcp` is recorded without a session id.** That
   revision has no sessions, and the server builds a fresh MCP server for

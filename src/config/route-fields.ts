@@ -37,7 +37,7 @@
  */
 
 import { normalizeSafetyProfile } from "../safety.js";
-import type { SafetyProfile, ServiceConfig } from "../types.js";
+import { MODEL_TIERS, type ModelTier, type SafetyProfile, type ServiceConfig } from "../types.js";
 import {
   boolOrUndefined,
   confidenceFrom,
@@ -63,6 +63,7 @@ export type RouteFieldDefaults = Partial<
     | "effectiveSafety"
     | "models"
     | "modelHint"
+    | "modelTiers"
     | "timeoutMs"
     | "idleTimeoutMs"
   >
@@ -79,7 +80,7 @@ interface RouteFieldSpec {
    * Fallback when the entry does not declare the key. Omitted for fields
    * with no harness-level default (nothing ships an `escalate_model`).
    */
-  fromDefaults?: (d: RouteFieldDefaults) => unknown;
+  fromDefaults?: (d: RouteFieldDefaults, raw: Record<string, unknown>) => unknown;
 }
 
 /** A number only when it really is one — `int()`/`num()` coerce, and these must not. */
@@ -102,6 +103,21 @@ export function effectiveSafetyFrom(
     const requested = normalizeSafetyProfile(key);
     const floor = normalizeSafetyProfile(value);
     if (requested !== undefined && floor !== undefined) out[requested] = floor;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * `model_tiers:` — tier name to model id. An unknown tier name or a non-string
+ * model is dropped here; validation.ts warns about it, so a misspelled tier is
+ * said out loud rather than silently unused.
+ */
+export function modelTiersFrom(raw: unknown): Partial<Record<ModelTier, string>> | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Partial<Record<ModelTier, string>> = {};
+  for (const tier of MODEL_TIERS) {
+    const model = str((raw as Record<string, unknown>)[tier]);
+    if (model !== undefined) out[tier] = model;
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -136,6 +152,15 @@ const SHARED_ROUTE_FIELDS: RouteFieldSpec[] = [
   { key: "billing_notes", field: "billingNotes", parse: str },
   { key: "models", field: "models", parse: stringArrayFrom, fromDefaults: (d) => d.models },
   { key: "model_hint", field: "modelHint", parse: str, fromDefaults: (d) => d.modelHint },
+  // The harness's shipped tier map, but only for an entry that names no model
+  // of its own: a route declaring `model:` IS that model, and inheriting the
+  // map would make it run whatever the tier says instead.
+  {
+    key: "model_tiers",
+    field: "modelTiers",
+    parse: modelTiersFrom,
+    fromDefaults: (d, raw) => (raw.model === undefined ? d.modelTiers : undefined),
+  },
   // Operator policy for this route, delivered to connecting agents.
   { key: "instructions", field: "instructions", parse: instructionsFrom },
 ];
@@ -162,7 +187,7 @@ export function resolveSharedRouteFields(
   const out: Record<string, unknown> = {};
   for (const spec of SHARED_ROUTE_FIELDS) {
     const declared = spec.parse(raw[spec.key]);
-    const value = declared ?? (defaults !== undefined ? spec.fromDefaults?.(defaults) : undefined);
+    const value = declared ?? (defaults !== undefined ? spec.fromDefaults?.(defaults, raw) : undefined);
     if (value !== undefined) out[spec.field] = value;
   }
   return out as Partial<ServiceConfig>;

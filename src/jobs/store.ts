@@ -34,8 +34,26 @@ const MAX_JSON_ERROR_CHARS = 4000;
  */
 export const JOB_EVENTS_LOG = "events.jsonl";
 
-/** Suggested delay before an agent checks `job_status` again. */
-export const SUGGESTED_POLL_SECONDS = 300;
+/** Bounds on the suggested delay before an agent checks `job_status` again. */
+export const MIN_POLL_SECONDS = 15;
+export const MAX_POLL_SECONDS = 300;
+
+/**
+ * How long to wait before checking a job again: about as long as it has
+ * already been running, between 15 seconds and 5 minutes.
+ *
+ * A flat 300 s told an agent to wait five minutes for a job whose median real
+ * run finished in under 15 s. Waiting as long as the job's age doubles the
+ * interval at each check, so a quick job is picked up quickly and a long one
+ * costs a handful of checks, never a poll every few seconds. It needs nothing
+ * but the job's own start time, so every surface that reports a job agrees.
+ */
+export function suggestedPollSeconds(createdAt: string, now: number = Date.now()): number {
+  const ageSeconds = (now - Date.parse(createdAt)) / 1000;
+  if (!Number.isFinite(ageSeconds)) return MIN_POLL_SECONDS;
+  const rounded = Math.round(ageSeconds / 5) * 5;
+  return Math.min(MAX_POLL_SECONDS, Math.max(MIN_POLL_SECONDS, rounded));
+}
 
 /**
  * A "running" status whose updatedAt is older than this is a lie — the process
@@ -182,13 +200,14 @@ export function boundedError(error: string | undefined): string | undefined {
   );
 }
 
-export function pollInstructions(jobId: string): string {
+export function pollInstructions(jobId: string, nextPollSeconds: number): string {
   return (
-    `Job runs in the background; CLI harnesses typically take 3-15 minutes. ` +
-    `Wait ~${Math.round(SUGGESTED_POLL_SECONDS / 60)} minutes (e.g. sleep), then call ` +
-    `job_status with jobId=${jobId}. While status is "running", partialOutput shows ` +
-    `progress; check again until status is "completed" or "failed". Results persist ` +
-    `on disk, so checking late loses nothing.`
+    `Job runs in the background. Call job_status with jobId=${jobId} in about ` +
+    `${nextPollSeconds} seconds; do other work meanwhile if you have any. While status ` +
+    `is "running", partialOutput shows progress and nextPollSeconds says when to check ` +
+    `next (it grows with the job's age, up to ${MAX_POLL_SECONDS} seconds); stop when ` +
+    `status is "completed" or "failed". Results persist on disk, so checking late ` +
+    `loses nothing.`
   );
 }
 

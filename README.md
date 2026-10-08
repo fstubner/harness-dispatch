@@ -58,9 +58,12 @@ Your agent calls one tool:
 {
   "prompt": "Rename the retry helper in src/net/ to withBackoff.",
   "workingDir": "/path/to/project",
-  "hints": { "taskType": "execute" }
+  "hints": { "taskType": "execute", "modelTier": "cheap" }
 }
 ```
+
+`modelTier` (`cheap`, `standard` or `strong`) asks for a strength of model, not a
+named one: the router picks the route, and that route runs its own model for the tier.
 
 A task that finishes within the wait (25 seconds by default, `graceSeconds`) comes
 straight back:

@@ -110,6 +110,10 @@ export interface RouteResponse {
      * "forwarded blind" — the opposite of what happened.
      */
     modelHintDropped?: boolean;
+    /** The hints.modelTier applied; `model` above is the id it became on this route. */
+    modelTier?: import("../types.js").ModelTier;
+    /** false: this route has no model for that tier and ran its default instead. */
+    modelTierMatched?: boolean;
     /**
      * What the picked route beat, best first, winner included — present only
      * when the router chose. `reason` counts the candidates ("tier 1 best (3
@@ -272,6 +276,7 @@ function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
   if (!h) return {};
   const out: RouteHints = {};
   if (h.model !== undefined) out.model = h.model;
+  if (h.modelTier !== undefined) out.modelTier = h.modelTier;
   if (h.taskType !== undefined) out.taskType = h.taskType;
   if (h.preferLargeContext !== undefined) out.preferLargeContext = h.preferLargeContext;
   if (h.safetyProfile !== undefined) out.safetyProfile = h.safetyProfile;
@@ -388,6 +393,10 @@ function routeResponse(
     }
     if (decision.modelHintDropped !== undefined) {
       response.routing.modelHintDropped = decision.modelHintDropped;
+    }
+    if (decision.modelTier !== undefined) response.routing.modelTier = decision.modelTier;
+    if (decision.modelTierMatched !== undefined) {
+      response.routing.modelTierMatched = decision.modelTierMatched;
     }
     if (decision.candidates !== undefined && decision.candidates.length > 0) {
       response.routing.candidates = decision.candidates;

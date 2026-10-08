@@ -29,6 +29,7 @@ import {
   jobsRoot,
   ORPHAN_THRESHOLD_MS,
   pollInstructions,
+  suggestedPollSeconds,
   processAlive,
   readJson,
   timestamp,
@@ -568,7 +569,7 @@ async function drainSlotQueueLocked(
     await updateStatus(jobDir, {
       ...cleared,
       updatedAt: timestamp(),
-      instructions: pollInstructions(status.jobId),
+      instructions: pollInstructions(status.jobId, suggestedPollSeconds(now.createdAt)),
     });
     active += weight;
     activeJobs += 1;

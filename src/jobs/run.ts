@@ -119,6 +119,7 @@ export async function runJob(
               ? { routePolicy: hints.routePolicy }
               : {}),
             ...(hints.model !== undefined ? { model: hints.model } : {}),
+            ...(hints.modelTier !== undefined ? { modelTier: hints.modelTier } : {}),
             ...(hints.taskType !== undefined ? { taskType: hints.taskType } : {}),
             ...(hints.timeoutMs !== undefined ? { timeoutMs: hints.timeoutMs } : {}),
             defaultTimeoutMs: JOB_DEFAULT_TIMEOUT_MS,

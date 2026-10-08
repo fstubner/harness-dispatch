@@ -13,7 +13,7 @@
 import type { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 
-import type { RouteHints } from "../types.js";
+import { MODEL_TIERS, type RouteHints } from "../types.js";
 import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
 import { resolveWorkingDir, validateWorkingDir, workingDirWarning } from "../working-dir.js";
 import { MAX_CONTEXT_FILES, MAX_TIMEOUT_MS } from "../mcp/tool-schemas.js";
@@ -41,6 +41,7 @@ export interface ChatRequest {
   safetyProfile?: unknown;
   workspacePolicy?: unknown;
   taskType?: unknown;
+  modelTier?: unknown;
   routePolicy?: unknown;
   preferLargeContext?: unknown;
   timeoutMs?: unknown;
@@ -261,6 +262,7 @@ function parseHints(body: ChatRequest): RouteHints {
     ["safety_profile", "this API spells it safetyProfile"],
     ["route_policy", "this API spells it routePolicy"],
     ["task_type", "this API spells it taskType"],
+    ["model_tier", "this API spells it modelTier"],
     ["workspace_policy", "this API spells it workspacePolicy"],
     ["prefer_large_context", "this API spells it preferLargeContext"],
     ["timeout_ms", "this API spells it timeoutMs"],
@@ -317,6 +319,8 @@ function parseHints(body: ChatRequest): RouteHints {
   }
   const topTaskType = enumField(body.taskType, TASK_TYPES, "taskType");
   if (topTaskType !== undefined) hints.taskType = topTaskType;
+  const topModelTier = enumField(body.modelTier, MODEL_TIERS, "modelTier");
+  if (topModelTier !== undefined) hints.modelTier = topModelTier;
   const topRoutePolicy = enumField(body.routePolicy, ROUTE_POLICIES, "routePolicy");
   if (topRoutePolicy !== undefined) hints.routePolicy = topRoutePolicy;
   if (body.preferLargeContext !== undefined) {
@@ -378,6 +382,8 @@ function parseHints(body: ChatRequest): RouteHints {
     }
     const taskType = enumField(raw.taskType, TASK_TYPES, "hints.taskType");
     if (taskType !== undefined) hints.taskType = taskType;
+    const modelTier = enumField(raw.modelTier, MODEL_TIERS, "hints.modelTier");
+    if (modelTier !== undefined) hints.modelTier = modelTier;
     if (typeof raw.preferLargeContext === "boolean") {
       hints.preferLargeContext = raw.preferLargeContext;
     }
@@ -406,6 +412,7 @@ function parseHints(body: ChatRequest): RouteHints {
     // limit.
     const known = new Set([
       "model",
+      "modelTier",
       "taskType",
       "preferLargeContext",
       "safetyProfile",

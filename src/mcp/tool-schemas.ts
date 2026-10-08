@@ -16,6 +16,8 @@
 
 import { z } from "zod";
 
+import { MODEL_TIERS } from "../types.js";
+
 /**
  * setTimeout's real ceiling. Above it Node emits TimeoutOverflowWarning and
  * CLAMPS TO 1ms, so the longest timeout a caller can ask for becomes the
@@ -35,6 +37,7 @@ const noNul = (v: string) => !v.includes("\u0000");
 const NO_NUL_MESSAGE = "must not contain NUL bytes";
 
 export const taskTypeSchema = z.enum(["execute", "plan", "review", "local"]);
+export const modelTierSchema = z.enum(MODEL_TIERS);
 export const safetyProfileSchema = z.enum(["read_only", "workspace_edit", "full_auto"]);
 export const workspacePolicySchema = z.enum(["shared", "shared_locked", "copy", "git_worktree"]);
 export const routePolicySchema = z.enum(["standard", "local_only", "approval_required", "blocked"]);
@@ -62,10 +65,12 @@ export const publicHintsSchema = z
       .refine(noNul, `hints.model ${NO_NUL_MESSAGE}`)
       .optional()
       .describe(
-        "Preferred model name, e.g. 'gpt-5.6-sol' (`usage` lists each route's models). " +
-          "Routes that declare it get a scoring boost; anything else goes to the harness " +
-          "as an override, unvalidated, so an unknown name can fail at dispatch. Pair it " +
-          "with `service` for the route it belongs to. A value that names a configured " +
+        "An exact model id, e.g. 'gpt-5.6-sol' (`usage` lists each route's models). " +
+          "To choose a model's strength, use `modelTier` instead — it works on every " +
+          "route. A model id belongs to one harness, so use this only together with " +
+          "`service`, the route that has it. Wins over `modelTier`. Without `service`, " +
+          "routes that declare it get a scoring boost and anything else goes to the " +
+          "harness unvalidated, so an unknown name can fail at dispatch. A value that names a configured " +
           "route id steers routing instead of being sent as a model: that route runs its " +
           "own default model, wherever it sits in the tiers, and routing falls back if it " +
           "cannot run (`service` is how you force one route with no fallback). With " +
@@ -74,6 +79,16 @@ export const publicHintsSchema = z
           "it was used for routing only, and routing.modelHintMatched: false means the " +
           "picked route does not declare it, so it was forwarded blind. Ignored in " +
           "fanout — use `models`.",
+      ),
+    modelTier: modelTierSchema
+      .optional()
+      .describe(
+        "How strong a model the task needs: 'cheap' (mechanical sweeps, lookups), " +
+          "'standard' (ordinary coding, reading, most reviews), 'strong' (hard " +
+          "judgment only). The router still picks the route, and that route runs " +
+          "its own model for this tier — on a fallback too. A route with no model " +
+          "for the tier runs its default; routing.modelTierMatched: false says so. " +
+          "Ignored when `hints.model` is set.",
       ),
     taskType: taskTypeSchema
       .optional()
@@ -247,8 +262,10 @@ export const dispatchInputShape = {
     .optional()
     .describe(
       "Route id to run, exactly as `usage` lists it (e.g. 'codex_cli'; ids differ per " +
-        "machine). Omit to let the router pick. Single mode only — incompatible with " +
-        "mode='fanout' (use `models` there).",
+        "machine). Runs ONLY that route: no fallback if it is rate-limited or fails. " +
+        "Omit it (the normal case) and the router picks, falling back to another route " +
+        "on failure; set it only when the task needs that exact route. Single mode " +
+        "only — incompatible with mode='fanout' (use `models` there).",
     ),
   graceSeconds: z
     .number()

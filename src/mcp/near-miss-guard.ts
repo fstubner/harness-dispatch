@@ -103,6 +103,7 @@ export const MISPLACED_TOP_LEVEL_KEYS: Readonly<Record<string, string>> = {
   safety_profile: snakeCaseMessage("safety_profile", "safetyProfile", IN_HINTS),
   route_policy: snakeCaseMessage("route_policy", "routePolicy", IN_HINTS),
   task_type: snakeCaseMessage("task_type", "taskType", IN_HINTS),
+  model_tier: snakeCaseMessage("model_tier", "modelTier", IN_HINTS),
   prefer_large_context: snakeCaseMessage("prefer_large_context", "preferLargeContext", IN_HINTS),
   timeout_ms: snakeCaseMessage("timeout_ms", "timeoutMs", IN_HINTS),
   // Accepted in BOTH placements — a real top-level parameter as well as a
@@ -117,6 +118,7 @@ export const MISPLACED_TOP_LEVEL_KEYS: Readonly<Record<string, string>> = {
   safetyProfile: hintKeyMessage("safetyProfile"),
   routePolicy: hintKeyMessage("routePolicy"),
   taskType: hintKeyMessage("taskType"),
+  modelTier: hintKeyMessage("modelTier"),
   preferLargeContext: hintKeyMessage("preferLargeContext"),
   timeoutMs: hintKeyMessage("timeoutMs"),
   model:

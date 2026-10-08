@@ -15,7 +15,7 @@ import {
   pruneStaleJobs,
   readJson,
   snapshotFiles,
-  SUGGESTED_POLL_SECONDS,
+  suggestedPollSeconds,
   timestamp,
   updateStatus,
   writeJson,
@@ -111,8 +111,8 @@ export async function startAsyncJobTracked(deps: JobDeps, input: StartJobInput):
     updatedAt: createdAt,
     jobDir,
     ...(input.service !== undefined ? { service: input.service } : {}),
-    nextPollSeconds: SUGGESTED_POLL_SECONDS,
-    instructions: pollInstructions(jobId),
+    nextPollSeconds: suggestedPollSeconds(createdAt),
+    instructions: pollInstructions(jobId, suggestedPollSeconds(createdAt)),
     ...(warning !== undefined ? { warning } : {}),
   };
   await updateStatus(jobDir, status);

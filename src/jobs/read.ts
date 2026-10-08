@@ -20,7 +20,7 @@ import {
   newerFormatError,
   pollInstructions,
   readJson,
-  SUGGESTED_POLL_SECONDS,
+  suggestedPollSeconds,
   checkOrphan,
 } from "./store.js";
 import type { JobManifest, JobResultPayload, JobStatus } from "./types.js";
@@ -119,9 +119,10 @@ async function withProgressGuidance(
 ): Promise<JobStatus> {
   const { nextPollSeconds: _n, instructions: _i, ...bare } = status;
   if (status.status !== "queued" && status.status !== "running") return bare;
-  const poll = pollInstructions(status.jobId);
+  const nextPollSeconds = suggestedPollSeconds(status.createdAt);
+  const poll = pollInstructions(status.jobId, nextPollSeconds);
   if (status.status !== "queued" || claimHolder(jobDir) !== undefined) {
-    return { ...bare, nextPollSeconds: SUGGESTED_POLL_SECONDS, instructions: poll };
+    return { ...bare, nextPollSeconds, instructions: poll };
   }
   const launchError = recover ? await startSupervisorIfNoneAlive(manifest.configPath) : undefined;
   const { queuePosition, waitingOn } = await queueStanding(status.jobId);
@@ -140,7 +141,7 @@ async function withProgressGuidance(
     ...bare,
     ...(queuePosition !== undefined ? { queuePosition } : {}),
     waitingOn,
-    nextPollSeconds: SUGGESTED_POLL_SECONDS,
+    nextPollSeconds,
     instructions: where + failed + poll,
   };
 }

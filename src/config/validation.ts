@@ -13,6 +13,7 @@
  */
 
 import { warnInstructions } from "./instructions.js";
+import { MODEL_TIERS } from "../types.js";
 
 /**
  * Warn on any unrecognised value for an enum that FAILS OPEN.
@@ -91,7 +92,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
  * drift, each missing something the other has.
  */
 export const KNOWN_ROUTE_KEYS = new Set([
-  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint", "api_key_file",
+  "name", "harness", "type", "command", "enabled", "model", "models", "model_hint", "model_tiers", "api_key_file",
   "instructions",
   "tier", "weight", "cli_capability", "capabilities", "timeout_ms", "idle_timeout_ms",
   "max_input_tokens", "max_output_tokens", "thinking_level",
@@ -300,6 +301,31 @@ export function warnMistypedRouteValues(
               (bad.length === value.length
                 ? `Nothing valid is left, so this route never escalates to its escalate_model.`
                 : `The valid ones still apply.`),
+          );
+        }
+      }
+      continue;
+    }
+    if (key === "model_tiers") {
+      // A misspelled tier (`strongest:`) is otherwise dropped by the parser,
+      // and a dispatch asking for that tier quietly runs the route's default.
+      if (typeof value !== "object" || Array.isArray(value)) {
+        warnings.push(
+          `${label}: model_tiers is ${describeValue(value)}, which is not a map of ` +
+            `tier to model id — IGNORED.`,
+        );
+        continue;
+      }
+      for (const [tier, model] of Object.entries(value as Record<string, unknown>)) {
+        if (!(MODEL_TIERS as readonly string[]).includes(tier)) {
+          warnings.push(
+            `${label}: model_tiers has "${tier}", which is not a tier ` +
+              `(${MODEL_TIERS.join(", ")}) — IGNORED.`,
+          );
+        } else if (typeof model !== "string" || model === "") {
+          warnings.push(
+            `${label}: model_tiers.${tier} is ${describeValue(model)}, which is not a ` +
+              `model id — IGNORED, and this route runs its default model for that tier.`,
           );
         }
       }
