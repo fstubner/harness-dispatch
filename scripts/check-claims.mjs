@@ -148,7 +148,6 @@ const USER_FACING = new Set([
   "src/cli/serve.ts",
   "README.md",
   "CHANGELOG.md",
-  "OPERATIONS.md",
   "PRODUCT.md",
 ]);
 

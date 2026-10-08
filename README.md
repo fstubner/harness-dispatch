@@ -70,8 +70,7 @@ keeps an isolated run's changes, and `usage` reads route and quota state. It spe
 |---|---|
 | [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md) | Adding a harness, endpoint modes, what `configure` writes |
 | [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) | The six tools, the REST endpoints, chaining delegated work |
-| [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | The status model, quota, and what leaves your machine |
-| [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md) | Failure modes, recovery, and what to run when something is wrong |
+| [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | Failure modes and recovery, the status model, and what leaves your machine |
 | [CHANGELOG](CHANGELOG.md) | What changed, and what each fix missed |
 
 ## What it looks like
@@ -278,7 +277,7 @@ Every command, its flags, and the hidden compatibility aliases are in
 Route ids, protocol blocks and per-harness overrides live in
 [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md). The tool and endpoint reference is in
 [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md). Quota, breaker state and telemetry
-are in [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
+are in [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
 
 ## Contributing and security
 

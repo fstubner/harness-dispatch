@@ -473,7 +473,7 @@ is missing from these tables.
 | `api_keys` | map of route id to key | none | A credential by route id. Write `${ENV_VAR}`, not the secret. For the four auto-detected ids, `<route_id>_api_key: ...` at the top level is shorthand. |
 | `max_concurrent_runs` | integer >= 0 | `4` | Agent CLIs running at once, machine-wide; more queue. `0` lifts the cap. A value that is not a non-negative number is ignored with a warning. |
 | `retention` | `{ jobs_days: N }` | `7` | Days a job's files are kept after it last changed. `0` keeps them forever. |
-| `telemetry` | `{ enabled: true or false }` | `false` | OpenTelemetry tracing. See [Status and observability](operations.md#observability--privacy). |
+| `telemetry` | `{ enabled: true or false }` | `false` | OpenTelemetry tracing. See [Observability and privacy](operations.md#observability-and-privacy). |
 | `leaderboard` | anything | none | **Removed.** Accepted so an old config keeps loading, reported as removed by `doctor` and `status`, and has no effect. Routing is tier, then weight x capability. |
 | `instructions` | text, at most 1,000 characters | none | Policy told to every connecting agent. See [Instructions for connecting agents](#instructions-for-connecting-agents). |
 | `services` | map of route id to route keys | none | The older route format. A file that uses it has `clis:`, `endpoints:` and `overrides:` ignored with a warning; do not mix them. |
@@ -524,7 +524,7 @@ These work on `clis:` and `endpoints:` entries, on `overrides:` entries, and on 
 | `allow_paid_usage` | boolean | `false` | Opt in to a route that can cost money or whose billing is unknown. Without it such a route is skipped. |
 | `safety_profile` | `read_only`, `workspace_edit`, `full_auto` | `workspace_edit` | The profile requested for this route when the caller names none. |
 | `effective_safety` | one profile, or a map of requested profile to floor | harness default | What the route really runs at. A route is skipped when its floor exceeds what was requested. |
-| `workspace_policy` | `shared`, `shared_locked`, `copy`, `git_worktree` | `shared` for `read_only`, else `shared_locked` | Where the run happens. A caller's `workspacePolicy` wins over it. See [Status and observability](operations.md#status-model). |
+| `workspace_policy` | `shared`, `shared_locked`, `copy`, `git_worktree` | `shared` for `read_only`, else `shared_locked` | Where the run happens. A caller's `workspacePolicy` wins over it. See [Operating it](operations.md#status-model). |
 | `endpoint_mode` | `direct_openai_compatible`, `harness_native_endpoint` | `direct_openai_compatible` for an endpoint | See [Endpoint modes](#endpoint-modes). |
 | `endpoint_provider` | text, such as `ollama` or `lmstudio` | inferred from `base_url` | Which local provider a harness-native endpoint points at. |
 | `wire_protocol` | `openai_chat_completions` | `openai_chat_completions` with an endpoint mode | The wire format. |
