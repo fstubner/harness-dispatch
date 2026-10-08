@@ -10,7 +10,8 @@ optional — harness-dispatch auto-detects installed CLIs and runs without one.
 harness-dispatch ships with its own [`config.default.yaml`](../config.default.yaml), the
 same shape you'd write yourself, and reads it as its built-in config. With no
 `config.yaml` of your own, the shipped one is filtered down to whichever of `claude`,
-`codex`, `agy` (Antigravity), and `cursor-agent` are on your PATH:
+`codex`, `agy` (Antigravity; found but left off until you opt in, see
+[vendor terms](#vendor-terms)), and `cursor-agent` are on your PATH:
 
 ```yaml
 # config.yaml can be empty, or not exist at all.
@@ -57,7 +58,7 @@ Which one you want depends on the goal:
 
 Every key is listed in the [config reference](#config-reference) below. The shipped
 [`config.default.yaml`](../config.default.yaml) is worked examples of the four built-in
-harnesses, not a template: do not copy it (it is 479 lines of rationale). Start from
+harnesses, not a template: do not copy it (most of it is rationale). Start from
 the short file `harness-dispatch configure --print` shows and add entries to it.
 
 **A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
@@ -306,6 +307,36 @@ clis:
   only at the end, so they ship neither. A value in your own entry replaces
   the shipped one.
 
+## Vendor terms
+
+Each subscription route drives a vendor's own CLI as the logged-in user. The vendors'
+terms differ on whether that is allowed; the sources, dates and short quotes are in
+[PRODUCT.md, Risks](../PRODUCT.md#risks). What that means for the shipped routes:
+
+- **`antigravity_cli` is opt-in.** Google's Antigravity terms object to third-party
+  tools using the service, so auto-detection finds `agy` but adds the route switched
+  off. `status` shows it as `off` with the reason, and `doctor` repeats it. To turn it
+  on, say so in your `config.yaml`:
+
+  ```yaml
+  overrides:
+    antigravity_cli:
+      enabled: true
+  ```
+
+  A `clis:` entry with `harness: antigravity_cli` is already that decision and is
+  never switched off. `configure` writes a detected opt-in route as an entry with
+  `enabled: false`; change that to `true` to opt in.
+- **`cursor_cli` uses your interactive Cursor login, not an API key.** The shipped
+  entry declares `auth_source: product_login` and sends no key. `CURSOR_API_KEY` is
+  passed to the child only when the route has an `api_key:` of its own, which also
+  reclassifies the route as metered. If the variable is set in the environment of the
+  server and the route has no `api_key:`, it is blanked for the child, so an ambient
+  key cannot move a login route onto metered billing. To use the key path Cursor's
+  headless documentation shows, set `api_key: ${CURSOR_API_KEY}` on the route.
+- **`claude_code_cli` and `codex_cli`** run the unmodified `claude` and `codex`
+  binaries under your own login; harness-dispatch never reads their login tokens.
+
 ## Endpoint Modes
 
 harness-dispatch supports two local/custom endpoint patterns:
@@ -345,9 +376,7 @@ clis:
     tier: 3
     weight: 0.75
     cli_capability: 1.0
-    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`). An endpoint route's HTTP request gets the same budget when this is unset: 60 minutes on MCP and HTTP dispatches (shared across fallbacks), 120 s only on the CLI `dispatch` command and `doctor --live`
-
-    timeout_ms: 900000  # optional; see "Time limits" below. An endpoint route's own HTTP request timeout defaults to 120 s when unset
+    timeout_ms: 900000  # optional; see "Time limits" above
     capabilities:
       execute: 0.8
       plan: 0.7
@@ -396,7 +425,7 @@ These work on `clis:` and `endpoints:` entries, on `overrides:` entries, and on 
 | `harness` | `claude_code`, `codex`, `cursor`, `antigravity_cli`, `generic` | none for a new entry | Which built-in protocol the route uses; `generic` needs a `protocol:` block. |
 | `type` | `cli` or `openai_compatible` | `cli` | Legacy `services:` entries only. `clis:` entries are always CLI routes and `endpoints:` entries always HTTP. |
 | `command` | text | the harness's binary (`claude`, `codex`, `cursor-agent`, `agy`) | The executable, resolved on PATH. |
-| `enabled` | boolean | `true` | `false` keeps the entry but takes the route out of routing. |
+| `enabled` | boolean | `true`; auto-detected `antigravity_cli` ships `false` | `false` keeps the entry but takes the route out of routing. Turn the opt-in Antigravity route on with `overrides: { antigravity_cli: { enabled: true } }`; see [vendor terms](#vendor-terms). |
 | `model` | text | none (required for an endpoint) | The model passed to the harness or endpoint. Unset on a CLI route, the harness runs its own default. |
 | `models` | list of text | harness default | Operator-curated model ids. `usage` lists them, and `listModels` returns them instead of querying the endpoint. |
 | `model_hint` | text | harness default | Where this harness's real model catalog is documented; shown by `usage`. |

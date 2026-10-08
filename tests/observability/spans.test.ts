@@ -102,17 +102,23 @@ class StubTracerProvider {
 
 trace.setGlobalTracerProvider(new StubTracerProvider() as never);
 
+import * as otelApi from "@opentelemetry/api";
 import {
+  useOtelApi,
   withDispatcherSpan,
   withRouterSpan,
   withMcpToolSpan,
 } from "../../src/observability/spans.js";
+
+// The helpers only record once telemetry has handed them the API; initObservability does that in production.
+useOtelApi(otelApi);
 
 beforeEach(() => {
   recordedSpans.length = 0;
 });
 
 afterAll(() => {
+  useOtelApi(undefined);
   trace.disable();
 });
 

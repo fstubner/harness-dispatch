@@ -313,8 +313,20 @@ clis:
   # Google's successor to Gemini CLI (shut down 2026-06-18). Best for plan +
   # review — 1M+ context holds whole codebases; free_quota billing. Model
   # selection lives in the agy CLI's own config, not per route.
+  #
+  # OPT-IN. Auto-detection finds `agy` but adds this route switched off
+  # (`enabled: false` here). Google's Antigravity terms, read 2026-10-08, call
+  # using "third party software, tools, or services to access the Service" a
+  # breach and allow suspension, so driving agy from an orchestrator is the
+  # operator's decision, not a default. Turn it on with
+  #   overrides:
+  #     antigravity_cli: { enabled: true }
+  # or write a `clis:` entry with `harness: antigravity_cli`, which is already
+  # that decision and is never switched off by this line. Details:
+  # docs/configuration.md#vendor-terms
   - name: antigravity_cli
     harness: antigravity_cli
+    enabled: false
     command: agy
     model_hint: >-
       Cross-vendor catalog (Gemini plus some Claude/GPT-OSS models). Gemini's

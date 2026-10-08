@@ -24,10 +24,16 @@
  * surface; fs covers config/job-file reads. Subprocess spawns are covered by
  * our own manual dispatcher/router/MCP spans (see spans.ts) — no
  * `child_process` instrumentation package exists in the OTel JS ecosystem.
+ *
+ * THE OPENTELEMETRY PACKAGES ARE OPTIONAL (`peerDependenciesMeta` in
+ * package.json): a default install does not carry them, and nothing imports
+ * one unless telemetry is enabled. Enabled without them, `initObservability`
+ * throws a message naming the packages to install.
  */
 
 import type { Span } from "@opentelemetry/api";
 import { VERSION } from "../version.js";
+import { useOtelApi } from "./spans.js";
 
 const SERVICE_NAME_DEFAULT = "harness-dispatch";
 const SERVICE_VERSION = VERSION;
@@ -45,6 +51,54 @@ export interface InitObservabilityOpts {
   serviceName?: string;
   /** Inject instrumentations for tests; otherwise http + fs are used. */
   instrumentations?: unknown[];
+}
+
+/**
+ * The packages telemetry needs, which a default install does not have, with the
+ * ranges harness-dispatch is built against: the `peerDependencies` in
+ * package.json (a test keeps the two equal). The ranges are part of the
+ * install command because the 0.x packages are matched to one minor version, so
+ * a bare `npm install @opentelemetry/instrumentation` takes a newer one and
+ * npm refuses it as a peer conflict.
+ */
+export const TELEMETRY_PACKAGES = {
+  "@opentelemetry/api": "^1.9.1",
+  "@opentelemetry/sdk-trace-node": "^2.10.0",
+  "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+  "@opentelemetry/resources": "^2.10.0",
+  "@opentelemetry/instrumentation": "^0.221.0",
+  "@opentelemetry/instrumentation-http": "^0.221.0",
+  "@opentelemetry/instrumentation-fs": "^0.40.0",
+} as const;
+
+/** The install command that makes telemetry available. */
+export const TELEMETRY_INSTALL_COMMAND = `npm install ${Object.entries(TELEMETRY_PACKAGES)
+  .map(([name, range]) => `${name}@${range}`)
+  .join(" ")}`;
+
+/** Why telemetry could not start: the message says what to install. */
+export class TelemetryUnavailableError extends Error {
+  constructor(pkg: string, cause: unknown) {
+    const reason = (cause instanceof Error ? cause.message : String(cause)).split("\n")[0];
+    super(
+      `telemetry is enabled but ${pkg} could not be loaded (${reason}). ` +
+        `Install the OpenTelemetry packages next to harness-dispatch to enable telemetry: ` +
+        `${TELEMETRY_INSTALL_COMMAND} ` +
+        `(into the same node_modules that holds harness-dispatch). ` +
+        `Or turn telemetry off: \`telemetry: { enabled: false }\` in config.yaml, and unset HARNESS_DISPATCH_TELEMETRY.`,
+      { cause },
+    );
+    this.name = "TelemetryUnavailableError";
+  }
+}
+
+/** Import one optional package, turning any failure into a TelemetryUnavailableError. */
+async function load<T>(pkg: string, importer: () => Promise<T>): Promise<T> {
+  try {
+    return await importer();
+  } catch (err) {
+    throw new TelemetryUnavailableError(pkg, err);
+  }
 }
 
 let initialized = false;
@@ -75,12 +129,19 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
   // gRPC/protobuf/Prometheus/Zipkin exporters and the metrics and logs SDKs,
   // none of which this code path loads — about half of what every install
   // downloaded, for a feature that is off by default.
-  const [{ NodeTracerProvider, BatchSpanProcessor }, { OTLPTraceExporter }, resources] =
+  //
+  // Optional packages: a missing one stops here with the install instruction
+  // rather than being swallowed, because the operator asked for telemetry.
+  const [api, { NodeTracerProvider, BatchSpanProcessor }, { OTLPTraceExporter }, resources] =
     await Promise.all([
-      import("@opentelemetry/sdk-trace-node"),
-      import("@opentelemetry/exporter-trace-otlp-http"),
-      import("@opentelemetry/resources"),
+      load("@opentelemetry/api", () => import("@opentelemetry/api")),
+      load("@opentelemetry/sdk-trace-node", () => import("@opentelemetry/sdk-trace-node")),
+      load("@opentelemetry/exporter-trace-otlp-http", () => import("@opentelemetry/exporter-trace-otlp-http")),
+      load("@opentelemetry/resources", () => import("@opentelemetry/resources")),
     ]);
+  const { registerInstrumentations } = await load("@opentelemetry/instrumentation", () =>
+    import("@opentelemetry/instrumentation"),
+  );
 
   const otlpEndpoint =
     opts.otlpUrl ??
@@ -95,15 +156,11 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
   // cold-start cheap when tests bring their own (empty) instrumentation set.
   let instrumentations = opts.instrumentations;
   if (instrumentations === undefined) {
-    try {
-      const [{ HttpInstrumentation }, { FsInstrumentation }] = await Promise.all([
-        import("@opentelemetry/instrumentation-http"),
-        import("@opentelemetry/instrumentation-fs"),
-      ]);
-      instrumentations = [new HttpInstrumentation(), new FsInstrumentation()];
-    } catch {
-      instrumentations = [];
-    }
+    const [{ HttpInstrumentation }, { FsInstrumentation }] = await Promise.all([
+      load("@opentelemetry/instrumentation-http", () => import("@opentelemetry/instrumentation-http")),
+      load("@opentelemetry/instrumentation-fs", () => import("@opentelemetry/instrumentation-fs")),
+    ]);
+    instrumentations = [new HttpInstrumentation(), new FsInstrumentation()];
   }
 
   const serviceName = opts.serviceName ?? SERVICE_NAME_DEFAULT;
@@ -116,7 +173,6 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
   const detectors = resourceDetectors(resources);
 
   try {
-    const { registerInstrumentations } = await import("@opentelemetry/instrumentation");
     registerInstrumentations({ instrumentations: instrumentations as never });
     const resource = resources
       .defaultResource()
@@ -134,6 +190,7 @@ export async function initObservability(opts: InitObservabilityOpts = {}): Promi
     // Also installs the async-local-storage context manager and the W3C
     // propagators, which is what makes spans nest.
     provider.register();
+    useOtelApi(api);
     sdkRef = { shutdown: () => provider.shutdown() };
     initialized = true;
     return true;
@@ -176,12 +233,14 @@ export async function shutdownObservability(): Promise<void> {
   }
   sdkRef = null;
   initialized = false;
+  useOtelApi(undefined);
 }
 
 /** Reset internal state — tests only. */
 export function _resetObservabilityForTests(): void {
   initialized = false;
   sdkRef = null;
+  useOtelApi(undefined);
 }
 
 export { withDispatcherSpan, withRouterSpan, withMcpToolSpan } from "./spans.js";

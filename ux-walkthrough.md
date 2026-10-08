@@ -184,7 +184,7 @@ Every surface has to be right in these, not just the happy one:
 
 ## Known gaps
 
-- Cursor cannot serve `workspace_edit` on Windows; `status` says so and the
+- Cursor cannot serve `workspace_edit` on any platform; `status` says so and the
   README documents the override.
 - The live dashboard is a compatibility alias and is not part of the primary
   flow.

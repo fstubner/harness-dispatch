@@ -428,7 +428,19 @@ async function detectServices(
   for (const c of found) {
     if (!c) continue;
     const override = overrides[c.name] ?? {};
-    services[c.name] = buildCliServiceConfig(c.name, c.defaults, override, apiKeys);
+    // A harness the shipped config marks `enabled: false` is detected but
+    // added switched off, unless the operator's `overrides:` entry says
+    // `enabled` either way.
+    const offByDefault = c.defaults.offByDefault === true && override.enabled === undefined;
+    services[c.name] = {
+      ...buildCliServiceConfig(
+        c.name,
+        c.defaults,
+        offByDefault ? { ...override, enabled: false } : override,
+        apiKeys,
+      ),
+      ...(offByDefault ? { offByDefault: true } : {}),
+    };
   }
   return services;
 }

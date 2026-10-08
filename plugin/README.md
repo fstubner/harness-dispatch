@@ -34,7 +34,8 @@ Verify with `codex mcp list`.
 
 Run the `/harness-dispatch:setup` command (Claude Code) after installing — it
 interviews you and writes `~/.harness-dispatch/config.yaml`. Or write the file
-by hand; see the main README for the schema. Secrets are never stored in the
+by hand; the schema is the
+[config reference](../docs/configuration.md#config-reference). Secrets are never stored in the
 plugin or config: `config.yaml` references `${ENV_VAR}` names and the values
 come from the environment the host app runs in.
 
@@ -59,9 +60,11 @@ the server's built-in CLI auto-detection. A `config.yaml` in the directory the
 server was launched from is not read: a cloned repository can carry one, and
 the config decides which commands run and what every connecting agent is told.
 Point `HARNESS_DISPATCH_CONFIG` at a project config to use one. The user file moves with
-`HARNESS_DISPATCH_STATE_DIR` when that is set; note that this plugin's launcher
-does not forward that variable, so a client started through the plugin reads the
-default location.
+`HARNESS_DISPATCH_STATE_DIR` when that is set, and the launcher passes that variable
+through. The launcher itself, though, looks for the user file at the default
+`~/.harness-dispatch/config.yaml` whatever `HARNESS_DISPATCH_STATE_DIR` says, and
+hands it over with `--config` when it exists, which wins over the state-directory
+file. To use a config elsewhere, set `HARNESS_DISPATCH_CONFIG`.
 
 Endpoint API keys are best kept in files the server reads at load time
 (`api_key_file: ~/.harness-dispatch/keys/groq`), so they never enter any

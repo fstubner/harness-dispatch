@@ -57,15 +57,35 @@ pre-1.0, so minor versions can carry behaviour changes.
   text; clients built on the MCP SDK add it back themselves.
 - **Tool input schemas declare JSON Schema 2020-12** instead of draft-07, and
   no longer carry `execution.taskSupport` (version 2 of the SDK removed
-  tasks). Codex and Claude Code load all six tools unchanged.
+  tasks). Codex and Claude Code load all six tools unchanged, and the fields,
+  types, required keys and descriptions in each schema are unchanged.
 
 - **A client's name and version are capped and cleaned before they are
   recorded.** Both are whatever the client claims, and they are written to
   the shared dispatch log and shown in every session's job list. Control
   characters are removed and each is cut to 200 characters.
-- **Tool input schemas declare JSON Schema 2020-12** (`$schema`) instead of
-  draft-07, and tools no longer list `execution.taskSupport`. The fields,
-  types, required keys and descriptions in each schema are unchanged.
+
+- **The Antigravity route is now off until you turn it on.** Google's
+  Antigravity terms object to third-party tools using the service, so finding
+  `agy` on your PATH no longer makes `antigravity_cli` routable. It still
+  appears, switched off: `status` shows it as `off` with the reason, and
+  `doctor` and `configure` say how to enable it
+  (`overrides: { antigravity_cli: { enabled: true } }`). A config that
+  already lists an Antigravity route under `clis:` or `services:` is
+  unchanged. The docs now also say that the Cursor route signs in with your
+  Cursor login and sends `CURSOR_API_KEY` only if you give the route its own
+  `api_key:`, and `PRODUCT.md` lists each vendor's current terms with sources
+  and dates.
+
+- **A default install is much smaller: tracing packages are now optional.**
+  The OpenTelemetry packages are only used when telemetry is switched on, which
+  it is not by default, yet they were most of what `npm install` fetched.
+  Installing the package from a tarball took 50 packages and 43.9 MB; it now
+  takes 14 packages and 16.9 MB. Nothing changes if you leave telemetry off.
+  To use it, install the packages listed in `docs/operations.md` next to
+  harness-dispatch. If telemetry is on and they are missing, the server and
+  one-shot commands stop and print that install command (a job already
+  running logs it and carries on without traces).
 
 ### Security
 
@@ -186,6 +206,13 @@ pre-1.0, so minor versions can carry behaviour changes.
   failed or no route could run it, was reported as "no isolated workspace
   (workspace policy: shared)". It now names the policy that was asked for and
   the reason, and for a job still running says it has not finished yet.
+- **Documentation corrections.** The `codex_ollama` example in
+  `docs/configuration.md` set `timeout_ms` twice, so copying it gave invalid
+  YAML. Two pages said Cursor cannot serve `workspace_edit` on Windows only;
+  it is every platform, as the README and the code say. The plugin README
+  wrongly said its launcher does not pass `HARNESS_DISPATCH_STATE_DIR` on, and
+  pointed at a schema in the main README that is in the configuration page.
+  This changelog listed one change twice and had two `Fixed` headings in 0.10.0.
 
 ## [0.12.0] — 2026-10-04
 
@@ -1440,8 +1467,6 @@ Acceptance: `acceptance/0.12.0.md`.
   The `configure` section was one 180-word block covering four separate
   concerns; it is split under headings, and `configure` is now described as
   optional where someone deciding whether to run it will see it.
-
-### Fixed
 
 - The "already applied" answer is given from one place. Both branches that
   can reach it built the message separately and had to say the same thing by
