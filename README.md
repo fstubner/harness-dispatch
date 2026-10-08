@@ -341,57 +341,9 @@ Route ids, protocol blocks and per-harness overrides live in
 [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md). Quota, breaker state and telemetry
 are in [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
 
-## Development
+## Contributing and security
 
-```bash
-npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run smoke
-npm audit --omit=dev
-npm pack --dry-run
-```
-
-Live agent workflow smoke tests are opt-in because they call real harnesses and
-can consume quota or product-plan usage. They create a disposable tiny Node
-project under `.harness-dispatch/smoke-workspaces`, write the detailed task into a
-workspace-local `.harness-dispatch/agent-task.md`, send the harness a short prompt
-pointing at that brief, then verify `node test.mjs` passes.
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run build
-npm run smoke:agents -- --config config.yaml
-```
-
-To temporarily include routes that can incur paid usage:
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run smoke:agents -- --config config.yaml --allow-paid
-```
-
-To include Cursor's full-auto print-mode route:
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run smoke:agents -- --config config.yaml --allow-paid --safety full_auto
-```
-
-Release gates:
-
-```bash
-npm run check
-npm run build
-npm run test:coverage
-npm run smoke
-npm audit --omit=dev
-npm pack --dry-run
-```
-
-Before publishing, also run `smoke:agents` with the installed harnesses you want
-to claim as validated, and record which routes passed, failed, or were skipped.
-Set `HARNESS_DISPATCH_AGENT_SMOKE_ROOT` only when you need the disposable
-workspaces somewhere other than the repo-local shared smoke cache.
+Build, test and pull request notes are in
+[CONTRIBUTING.md](https://github.com/fstubner/harness-dispatch/blob/main/CONTRIBUTING.md).
+To report a vulnerability, use the private route in
+[SECURITY.md](https://github.com/fstubner/harness-dispatch/blob/main/SECURITY.md).
