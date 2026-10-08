@@ -39,19 +39,20 @@ afterEach(async () => {
 
 async function plant(
   status: "queued" | "running",
-  opts: { slotQueued?: boolean; claimPid?: number } = {},
+  opts: { slotQueued?: boolean; claimPid?: number; ageMs?: number } = {},
 ): Promise<string> {
   seq += 1;
   const jobId = `job-17000000002${String(seq).padStart(2, "0")}-aaaaaaaa`;
   const jobDir = path.join(jobsDir, jobId);
   await fs.mkdir(path.join(jobDir, "output"), { recursive: true });
   const now = new Date().toISOString();
+  const createdAt = new Date(Date.now() - (opts.ageMs ?? 0)).toISOString();
   await fs.writeFile(
     path.join(jobDir, "status.json"),
     JSON.stringify({
       jobId,
       status,
-      createdAt: now,
+      createdAt,
       updatedAt: now,
       jobDir,
       ...(opts.slotQueued ? { slotQueued: true } : {}),
@@ -91,6 +92,31 @@ describe("a job waiting for a slot", () => {
     await getAsyncJob(jobId);
     expect(launched, "a poll of a stranded job started nothing").toHaveLength(1);
     expect(launched[0]!.args).toContain("--supervisor");
+  });
+});
+
+// The advice was a flat 300 s whatever the job, while the median real dispatch
+// finished in under 15 s: an agent that followed it picked up a 4 s result
+// five minutes late. It now grows with the job's age.
+describe("poll advice for a running job", () => {
+  it("is short for a fresh job and grows with its age, capped at five minutes", async () => {
+    const { getAsyncJob } = await import("../src/jobs.js");
+    const fresh = await getAsyncJob(await plant("running", { claimPid: process.pid }), { recover: false });
+    expect(fresh.status.nextPollSeconds).toBe(15);
+    expect(fresh.status.instructions).toMatch(/about 15 seconds/);
+    expect(fresh.status.instructions).not.toMatch(/5 minutes|sleep/);
+
+    const older = await getAsyncJob(
+      await plant("running", { claimPid: process.pid, ageMs: 100_000 }),
+      { recover: false },
+    );
+    expect(older.status.nextPollSeconds).toBe(100);
+
+    const old = await getAsyncJob(
+      await plant("running", { claimPid: process.pid, ageMs: 2 * 60 * 60 * 1000 }),
+      { recover: false },
+    );
+    expect(old.status.nextPollSeconds).toBe(300);
   });
 });
 

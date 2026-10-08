@@ -941,7 +941,9 @@ describe("MCP tools — dispatch", () => {
     };
     expect(startData.completed).toBe(false);
     expect(startData.jobId).toMatch(/^job-/);
-    expect(startData.nextPollSeconds).toBeGreaterThan(0);
+    // Short for a job that has only just started: a flat five minutes made an
+    // agent that followed the advice pick up a seconds-long run minutes late.
+    expect(startData.nextPollSeconds).toBe(15);
     expect(startData.instructions).toMatch(/job_status/);
     // workingDir was provided explicitly, so no defaulted-cwd warning.
     expect(startData.warning).toBeUndefined();
