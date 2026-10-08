@@ -61,10 +61,10 @@ Every key is listed in the [config reference](#config-reference) below. The ship
 harnesses, not a template: do not copy it (most of it is rationale). Start from
 the short file `harness-dispatch configure --print` shows and add entries to it.
 
-**A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
+**A wholly new CLI harness (one of the 4 built in isn't it) needs no new code
 either.** `harness: generic` takes a `protocol:` block instead of reusing one of the
 4 built-in harnesses' flag/output conventions. `protocol.args` is a literal
-command-line argument list, written the same way you'd type it by hand — a handful of
+command-line argument list, written the same way you'd type it by hand. A handful of
 reserved `{{name}}` tokens are substituted (or expanded to zero or more real tokens) at
 dispatch time; everything else passes through verbatim:
 
@@ -132,13 +132,13 @@ preset name or `extends:` too — it's parsed through the exact same code path a
 other route.
 
 The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
-either — there is no per-harness dispatcher class or hardcoded TypeScript data for any
+either: there is no per-harness dispatcher class or hardcoded TypeScript data for any
 of them in this codebase. All 4 are ordinary `clis:` entries in the shipped
-[`config.default.yaml`](../config.default.yaml) — not a separate "defaults registry" in
+[`config.default.yaml`](../config.default.yaml), not a separate "defaults registry" in
 some other format, loaded through the exact same parser as your own `config.yaml`,
 covering each CLI's real flags including Codex's mid-run tool_use/thinking/usage
-streaming events via `event_rules` (see below). Every CLI-type route — built-in or
-user-added — runs through the one `GenericCliDispatcher` interpreter. Copy an entry
+streaming events via `event_rules` (see below). Every CLI-type route, built-in or
+user-added, runs through the one `GenericCliDispatcher` interpreter. Copy an entry
 from the shipped file into your own `config.yaml` and edit it directly (or add a
 `protocol:` block under `overrides.claude_code_cli`, etc.) and it replaces the default
 entirely — nothing about the 4 built-ins is more hardcoded than a route you add
@@ -280,6 +280,74 @@ endpoints:
   hide the client config file.
 - A literal `api_key:` works and is not recommended.
 
+## Safety profiles and Cursor
+
+A caller asks for one of three profiles, and each is a limit rather than a
+capability:
+
+| Profile | Means |
+|---|---|
+| `read_only` | Look, don't touch |
+| `workspace_edit` | Edit files in the workspace, no arbitrary shell |
+| `full_auto` | Edit files and run shell |
+
+A route declares the floor it actually runs at (`effective_safety`), and is
+skipped when that floor exceeds what was asked for. A route is never quietly
+given more access than the caller requested.
+
+`cursor_cli` is the interesting case, because its capability differs by mode:
+
+- `read_only` uses `--mode plan`, which is genuinely read-only (verified: asked
+  to create one file and overwrite another, it did neither).
+- `full_auto` uses print mode, which edits and runs shell.
+- `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
+  write and shell together. `--sandbox enabled`, the flag that would constrain
+  shell while allowing edits, exists only on macOS and Linux, so the shipped
+  route does not use it anywhere. There is no edit-without-shell mode to route
+  to, and claiming that level would mean handing shell access to a caller who
+  explicitly asked not to have it.
+
+Cursor still edits code. Ask for `full_auto`.
+
+### Overriding the Cursor floor
+
+If you accept that Cursor's editing mode carries shell access and you want it
+to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml`.
+Your value replaces the shipped default:
+
+```yaml
+overrides:
+  cursor_cli:
+    effective_safety:
+      read_only: read_only
+      workspace_edit: workspace_edit   # you are accepting shell access here
+      full_auto: full_auto
+```
+
+Use `overrides:`, not a `clis:` entry: a config that lists any `clis:` entry is
+authoritative and drops every harness it does not name, so a lone `cursor_cli` entry
+would remove Claude Code, Codex and Antigravity from your routes. See
+[listing a route turns detection off](#listing-a-route-turns-detection-off).
+
+That is a deliberate local decision, not a bug workaround: the shipped default
+is conservative because the tool cannot verify what a given `cursor-agent`
+build will do. On macOS and Linux the better route is `--sandbox enabled`,
+which constrains shell for real. It is untested here, so it is not shipped on by
+default.
+
+`antigravity_cli` declares the same floor, for the same reason: in headless
+mode every profile has to auto-approve tool requests, and its edit mode does
+that with nothing restricting the terminal. It serves `read_only` (`--mode plan
+--sandbox`) and `full_auto`, and the same override applies.
+
+Each profile is enforced by the harness itself, and the strength differs: Codex
+runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
+permission rules, and Antigravity's `full_auto` approves everything. A Claude
+Code delegate at `read_only` or `workspace_edit` gets only the file tools
+(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
+Claude Code login, user settings, user-level hooks and `CLAUDE.md` files, but not
+the project's own settings or hooks (`--setting-sources user`).
+
 ## Time limits
 
 Two per-route limits, both optional, both in milliseconds:
@@ -405,7 +473,7 @@ is missing from these tables.
 | `api_keys` | map of route id to key | none | A credential by route id. Write `${ENV_VAR}`, not the secret. For the four auto-detected ids, `<route_id>_api_key: ...` at the top level is shorthand. |
 | `max_concurrent_runs` | integer >= 0 | `4` | Agent CLIs running at once, machine-wide; more queue. `0` lifts the cap. A value that is not a non-negative number is ignored with a warning. |
 | `retention` | `{ jobs_days: N }` | `7` | Days a job's files are kept after it last changed. `0` keeps them forever. |
-| `telemetry` | `{ enabled: true or false }` | `false` | OpenTelemetry tracing. See [Status and observability](operations.md#observability--privacy). |
+| `telemetry` | `{ enabled: true or false }` | `false` | OpenTelemetry tracing. See [Observability and privacy](operations.md#observability-and-privacy). |
 | `leaderboard` | anything | none | **Removed.** Accepted so an old config keeps loading, reported as removed by `doctor` and `status`, and has no effect. Routing is tier, then weight x capability. |
 | `instructions` | text, at most 1,000 characters | none | Policy told to every connecting agent. See [Instructions for connecting agents](#instructions-for-connecting-agents). |
 | `services` | map of route id to route keys | none | The older route format. A file that uses it has `clis:`, `endpoints:` and `overrides:` ignored with a warning; do not mix them. |
@@ -456,7 +524,7 @@ These work on `clis:` and `endpoints:` entries, on `overrides:` entries, and on 
 | `allow_paid_usage` | boolean | `false` | Opt in to a route that can cost money or whose billing is unknown. Without it such a route is skipped. |
 | `safety_profile` | `read_only`, `workspace_edit`, `full_auto` | `workspace_edit` | The profile requested for this route when the caller names none. |
 | `effective_safety` | one profile, or a map of requested profile to floor | harness default | What the route really runs at. A route is skipped when its floor exceeds what was requested. |
-| `workspace_policy` | `shared`, `shared_locked`, `copy`, `git_worktree` | `shared` for `read_only`, else `shared_locked` | Where the run happens. A caller's `workspacePolicy` wins over it. See [Status and observability](operations.md#status-model). |
+| `workspace_policy` | `shared`, `shared_locked`, `copy`, `git_worktree` | `shared` for `read_only`, else `shared_locked` | Where the run happens. A caller's `workspacePolicy` wins over it. See [Operating it](operations.md#status-model). |
 | `endpoint_mode` | `direct_openai_compatible`, `harness_native_endpoint` | `direct_openai_compatible` for an endpoint | See [Endpoint modes](#endpoint-modes). |
 | `endpoint_provider` | text, such as `ollama` or `lmstudio` | inferred from `base_url` | Which local provider a harness-native endpoint points at. |
 | `wire_protocol` | `openai_chat_completions` | `openai_chat_completions` with an endpoint mode | The wire format. |

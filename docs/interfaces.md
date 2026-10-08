@@ -39,7 +39,8 @@ runners the MCP and HTTP dispatch paths start. A shell loop of `dispatch`
 commands is not queued; it is as parallel as you make it.
 
 `mcp` is supported: it is what the plugin launcher and some client entries run,
-and `mcp --http <port>` is the same as `serve --port <port>`.
+and `mcp --http <port>` is the same as `serve --port <port>`. `serve` picks a free
+port unless you pass `--port`, and prints the one it chose on startup.
 
 Hidden compatibility aliases map old alpha commands to the new surface:
 `dashboard` and `list-services` map to `status`, and `route <prompt>` is an alias
@@ -76,7 +77,7 @@ message decides, for the life of the process. A client that probes with
 | `usage` | Per-route call counts, quota, billing kind, and breaker state — check this before passing an unfamiliar `hints.model`/`service`/`models` value. `service` and `models` are validated — an unknown route id is rejected, naming the valid ones — while `hints.model` is forwarded to the picked harness as-is, so a wrong model name fails at the harness instead. Pass `listModels: <route id>` to get that `openai_compatible` route's model catalog instead of (or alongside) the summary: the route's declared `models:` list when it has one, otherwise a live `GET /models` from the endpoint. |
 
 `workingDir` is effectively required when starting work: if you omit it, the task runs
-in the router server's own process directory instead of your project, and the response
+in harness-dispatch's own process directory instead of your project, and the response
 carries a `warning` field saying so.
 
 **How the grace window works.** `dispatch` starts the task as a background job
@@ -84,22 +85,15 @@ immediately, then waits up to `graceSeconds` (default 25) for it to finish. With
 window you get the complete result inline, exactly as if the call had blocked. Past it
 you get the `jobId` — call `job_status` with that `jobId` to see a `partialOutput` tail
 while it runs and the full `result` once `completed`. Expect the `jobId` path to be
-ordinary rather than exceptional: real agent-CLI work regularly runs for minutes. On
-the maintainer's install in October 2026, 200 of the 292 CLI runs in the dispatch log
-that succeeded took longer than 25 seconds (68 percent), and the median retained job
-took about 6.5 minutes (386 seconds, over 69 jobs). Most CLI runs therefore outlive
-the default window; endpoint routes mostly do not. Treat a `completed: false` as the
-normal shape of a substantial task, not as a sign anything went wrong; if you would
-rather not wait inline at all, pass `graceSeconds: 0`. Because the run never depends on
-the MCP call staying open, a client-side timeout costs you the inline reply, never the
-work. Background runs default to a generous 60-minute ceiling meant only to catch a
-genuinely hung process (stuck waiting on input, a stalled network call), not to cap
-normal work — raise it per call with `hints.timeoutMs` (milliseconds), or set a
-permanent per-route default with `timeout_ms:` in that service's config entry.
-Precedence is `hints.timeoutMs` > the service's `timeout_ms` > the 60-minute default.
-Antigravity ships its own 25-minute `timeout_ms`, and Codex and Antigravity stop a run
-that has printed nothing for 15 minutes (`idle_timeout_ms`); see
-[configuration](configuration.md#time-limits).
+ordinary rather than exceptional: real agent-CLI work regularly runs for minutes, so
+most CLI runs outlive the default window; endpoint routes mostly do not. Treat a
+`completed: false` as the normal shape of a substantial task, not as a sign anything
+went wrong; if you would rather not wait inline at all, pass `graceSeconds: 0`. Because
+the run never depends on the MCP call staying open, a client-side timeout costs you the
+inline reply, never the work. Background runs have a wall-clock ceiling meant only to
+catch a genuinely hung process; raise it per call with `hints.timeoutMs`
+(milliseconds). The default, the per-route `timeout_ms` and `idle_timeout_ms`, and the
+order they apply in are in [Time limits](configuration.md#time-limits).
 
 Starting a task:
 
@@ -154,9 +148,8 @@ needs `workspacePolicy: "copy"` or `"git_worktree"`:
 
 Checking and listing (`job_status`): `{"jobId": "job-..."}` returns status plus
 `partialOutput` or the final `result`; `{}` (no `jobId`) returns the 20 most recent
-background dispatches, newest first, plus an `omitted` count when there are more. On `dispatch`, force pure async with `"graceSeconds": 0`, or force a specific
-backend with a top-level `"service"` (single mode only). Nothing is lost by checking
-late — everything persists under `~/.harness-dispatch/jobs/<jobId>/`.
+background dispatches, newest first, plus an `omitted` count when there are more.
+Nothing is lost by checking late; everything persists under `~/.harness-dispatch/jobs/<jobId>/`.
 
 Status is exposed as resources:
 
@@ -219,7 +212,7 @@ curl http://127.0.0.1:3333/v1/chat/completions \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "codex_cli",
     "messages": [{"role": "user", "content": "Fix the failing tests."}],
     "workingDir": "/path/to/project",
     "safetyProfile": "workspace_edit",

@@ -5,7 +5,29 @@
 [![node](https://img.shields.io/node/v/harness-dispatch)](https://nodejs.org)
 [![license](https://img.shields.io/npm/l/harness-dispatch)](LICENSE)
 
-**Route whole coding tasks, not API requests, to the agent CLIs you already pay for.**
+**Let your AI coding agent hand bounded tasks to the other agent CLIs you already have.**
+
+harness-dispatch is a local MCP server. Your main agent (Claude Code, Cursor, Codex,
+or any MCP client) calls one tool, `dispatch`, and the task runs in another coding
+agent: Claude Code, Codex, Cursor Agent, Antigravity (opt-in, see
+[vendor terms](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#vendor-terms)),
+or a local model. It runs as a background job, so a long task does not time out and
+survives a client restart. If the route that would run it is rate-limited or busy,
+the task goes to the next one.
+
+It is for a developer who uses one AI coding agent and wants it to hand off reviews,
+refactors, second opinions and parallel work to the others, without pasting prompts
+between tools.
+
+A **harness** here is a coding-agent command-line tool such as `claude`, `codex`,
+`cursor-agent` or `agy`. harness-dispatch runs the real tool under your own login;
+it does not re-implement it, proxy its API or read its credentials.
+
+## Install
+
+You need Node.js `>=22.22.2` and at least one harness installed and logged in. An
+OpenAI-compatible endpoint (a local model, say) also works, but it can only plan and
+review: it has no file access.
 
 ```bash
 npm install -g harness-dispatch
@@ -14,27 +36,29 @@ harness-dispatch connect
 harness-dispatch doctor
 ```
 
-`connect` is the step that makes your agent see the tools: it registers the server
-with Claude Code and/or Cursor. Restart the client afterwards. `doctor` ends with a
-one-line verdict, and a `warn` row names what is still worth doing.
+`connect` registers the server with Claude Code and/or Cursor; restart the client
+afterwards. `doctor` ends with a one-line verdict, and a `warn` row names what is
+still worth doing. No global install needed either: `npx harness-dispatch configure`.
 
-Before running that: [what it does on your machine](#what-it-does-on-your-machine).
+## What it does on your machine
 
-Each harness keeps its own scaffolding, test loop, and codebase index. There is no
-proxy in between and nothing is re-implemented: Claude Code stays Claude Code. One
-orchestrating agent picks the right one per task and spends your flat-rate
-subscription quota before anything metered.
+- It **spawns the harnesses as subprocesses** with your prompts.
+- Those harnesses **read and write files** under the `workingDir` you pass (that is the
+  point of the tool) and **run shell commands**, depending on the safety and workspace
+  policy in effect.
+- At most **4 agent CLIs run at once** (`max_concurrent_runs`); extra dispatches queue
+  ([concurrency](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md#concurrency)).
+- `serve` additionally binds a local HTTP port: loopback only by default, bearer-token
+  gated. Read [the HTTP surface docs](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) before pointing `--host`
+  anywhere else.
+- The default install makes no network call of its own. Prompts go only to the harnesses
+  and endpoints you configured.
 
-It is a local MCP server, so the harnesses on your machine (Claude Code, Codex,
-Cursor Agent, Antigravity CLI (opt-in, see [vendor terms](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#vendor-terms)), and any local or remote OpenAI-compatible endpoint)
-become tools any AI can call. It speaks MCP 2026-07-28 and the 2025-era
-revisions (2025-11-25 back to 2024-10-07) that clients using the `initialize`
-handshake still ask for.
-
-Six tools: `dispatch` starts routed work, `job_status` checks or lists it,
-`cancel_job` stops one, `retry_job` runs a finished one again, `workspace`
-inspects or keeps an isolated run's changes, and `usage` reads route and quota
-state.
+Six MCP tools: `dispatch` starts routed work, `job_status` checks or lists it,
+`cancel_job` stops one, `retry_job` runs a finished one again, `workspace` inspects or
+keeps an isolated run's changes, and `usage` reads route and quota state. It speaks MCP
+2026-07-28 and the older revisions clients still ask for
+([protocol revisions](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md#protocol-revisions)).
 
 ## Documentation
 
@@ -46,8 +70,7 @@ state.
 |---|---|
 | [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md) | Adding a harness, endpoint modes, what `configure` writes |
 | [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) | The six tools, the REST endpoints, chaining delegated work |
-| [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | The status model, quota, and what leaves your machine |
-| [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md) | Failure modes, recovery, and what to run when something is wrong |
+| [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md) | Failure modes and recovery, the status model, and what leaves your machine |
 | [CHANGELOG](CHANGELOG.md) | What changed, and what each fix missed |
 
 ## What it looks like
@@ -90,35 +113,12 @@ Real agent work usually runs longer than that, so the reply you will see most is
 
 Carry on working, then call `job_status` with that id for a live output tail or the
 finished result. The run lives in a detached process, so **nothing is lost to a client
-timeout, or to the server itself restarting mid-run**. On Windows the process is
-started through WMI so that a launcher which kills its child processes when the
-session ends cannot take it along; if WMI is unavailable it falls back to a plain
-detached process, which does not survive such a launcher, and `doctor` says which
-you have (see
-[Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md#failure-modes)
-for the cases where a job is reported `orphaned` instead).
+timeout, or to the server itself restarting mid-run**. If the process running a job
+dies, the job is reported `orphaned` rather than lost. On Windows, `doctor` checks
+that the run really outlives a launcher that kills its children; see
+[A run outlives its server](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md#a-run-outlives-its-server).
 
-## What it does on your machine
-
-Stated plainly, up front, rather than left to be inferred:
-
-- It **spawns the CLIs above as subprocesses** with your prompts.
-- Those CLIs **read and write files** under the `workingDir` you pass (that's the
-  point of the tool) and **run shell commands**, depending on the workspace and
-  safety policy in effect.
-- At most **4 agent CLIs run at once**; extra dispatches queue and start as slots
-  free. Tune with `max_concurrent_runs`.
-- `serve` additionally binds a local HTTP port: loopback only by default,
-  bearer-token gated. Read [the HTTP surface docs](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) before pointing `--host`
-  anywhere else.
-
-None of this is unusual for a coding-agent tool. It's here in one place so you can
-decide before installing rather than after.
-
-
-## Install
-
-Needs Node.js `>=22.22.2` (so current LTS works) and at least one harness or endpoint.
+## Setup details
 
 `git` is optional but recommended: dispatch works without it, but the
 `workspace` tool shells out to git to diff and apply an isolated run's changes,
@@ -178,8 +178,6 @@ last line is the verdict.
 Your Claude Code / Codex / Cursor subscriptions run by default with no opt-in;
 `configure` tells you if anything is blocked and why.
 
-No global install needed either: `npx harness-dispatch configure`.
-
 ### Plugin install (Claude Code / Claude Desktop / Codex)
 
 The `plugin/` directory packages the MCP server plus a delegation skill and
@@ -202,7 +200,9 @@ Two reasons, and the second bites even among people who all run this tool:
 - **Route ids do not travel.** `codex_cli`, `local_inference` and the rest are
   whatever *your* config declares. Someone else's install has different ones, so
   a committed `service:` or model name is wrong for them rather than merely
-  unused.
+  unused. Ask for a strength of model instead with `hints.modelTier` (`cheap`,
+  `standard` or `strong`): any install can resolve that, and the router still
+  picks the route and falls back when one is busy.
 
 A project's checked-in `CLAUDE.md` is for the codebase: how it builds, how it is
 tested, its conventions. Personal-but-project-specific notes go in
@@ -249,73 +249,14 @@ is currently on the npm registry, which can lag a local clone's `dist/`. Check w
 
 </details>
 
-## Safety profiles, and Cursor
+## Safety profiles
 
-A caller asks for one of three profiles, and each is a limit rather than a
-capability:
-
-| Profile | Means |
-|---|---|
-| `read_only` | Look, don't touch |
-| `workspace_edit` | Edit files in the workspace, no arbitrary shell |
-| `full_auto` | Edit files and run shell |
-
-A route declares the floor it actually runs at (`effective_safety`), and is
-skipped when that floor exceeds what was asked for. A route is never quietly
-given more access than the caller requested.
-
-`cursor_cli` is the interesting case, because its capability differs by mode:
-
-- `read_only` uses `--mode plan`, which is genuinely read-only (verified: asked
-  to create one file and overwrite another, it did neither).
-- `full_auto` uses print mode, which edits and runs shell.
-- `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
-  write and shell together. `--sandbox enabled`, the flag that would constrain
-  shell while allowing edits, exists only on macOS and Linux, so the shipped
-  route does not use it anywhere. There is no edit-without-shell mode to route
-  to, and claiming that level would mean handing shell access to a caller who
-  explicitly asked not to have it.
-
-Cursor still edits code. Ask for `full_auto`.
-
-### Overriding it
-
-If you accept that Cursor's editing mode carries shell access and you want it
-to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml`.
-Your value replaces the shipped default:
-
-```yaml
-overrides:
-  cursor_cli:
-    effective_safety:
-      read_only: read_only
-      workspace_edit: workspace_edit   # you are accepting shell access here
-      full_auto: full_auto
-```
-
-Use `overrides:`, not a `clis:` entry: a config that lists any `clis:` entry is
-authoritative and drops every harness it does not name, so a lone `cursor_cli` entry
-would remove Claude Code, Codex and Antigravity from your routes. See
-[listing a route turns detection off](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
-
-That is a deliberate local decision, not a bug workaround: the shipped default
-is conservative because the tool cannot verify what a given `cursor-agent`
-build will do. On macOS and Linux the better route is `--sandbox enabled`,
-which constrains shell for real. It is untested here, so it is not shipped on by
-default.
-
-`antigravity_cli` declares the same floor, for the same reason: in headless
-mode every profile has to auto-approve tool requests, and its edit mode does
-that with nothing restricting the terminal. It serves `read_only` (`--mode plan
---sandbox`) and `full_auto`, and the same override applies.
-
-Each profile is enforced by the harness itself, and the strength differs: Codex
-runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
-permission rules, and Antigravity's `full_auto` approves everything. A Claude
-Code delegate at `read_only` or `workspace_edit` gets only the file tools
-(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
-Claude Code login, user settings, user-level hooks and `CLAUDE.md` files, but not
-the project's own settings or hooks (`--setting-sources user`).
+A caller asks for one of three profiles: `read_only`, `workspace_edit` (the default)
+or `full_auto`. Each is a limit, not a capability: a route is skipped rather than
+given more access than was asked for. Cursor and Antigravity cannot offer
+`workspace_edit`, so ask for `full_auto` there. What each profile means, how each
+harness enforces it, and how to override the floor are in the
+[configuration guide](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#safety-profiles-and-cursor).
 
 ## CLI
 
@@ -336,59 +277,11 @@ Every command, its flags, and the hidden compatibility aliases are in
 Route ids, protocol blocks and per-harness overrides live in
 [Configuration](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md). The tool and endpoint reference is in
 [MCP and HTTP surfaces](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md). Quota, breaker state and telemetry
-are in [Status and observability](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
+are in [Operating it](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md).
 
-## Development
+## Contributing and security
 
-```bash
-npm ci
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run smoke
-npm audit --omit=dev
-npm pack --dry-run
-```
-
-Live agent workflow smoke tests are opt-in because they call real harnesses and
-can consume quota or product-plan usage. They create a disposable tiny Node
-project under `.harness-dispatch/smoke-workspaces`, write the detailed task into a
-workspace-local `.harness-dispatch/agent-task.md`, send the harness a short prompt
-pointing at that brief, then verify `node test.mjs` passes.
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run build
-npm run smoke:agents -- --config config.yaml
-```
-
-To temporarily include routes that can incur paid usage:
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run smoke:agents -- --config config.yaml --allow-paid
-```
-
-To include Cursor's full-auto print-mode route:
-
-```powershell
-$env:HARNESS_DISPATCH_LIVE_AGENT_SMOKE = '1'
-npm run smoke:agents -- --config config.yaml --allow-paid --safety full_auto
-```
-
-Release gates:
-
-```bash
-npm run check
-npm run build
-npm run test:coverage
-npm run smoke
-npm audit --omit=dev
-npm pack --dry-run
-```
-
-Before publishing, also run `smoke:agents` with the installed harnesses you want
-to claim as validated, and record which routes passed, failed, or were skipped.
-Set `HARNESS_DISPATCH_AGENT_SMOKE_ROOT` only when you need the disposable
-workspaces somewhere other than the repo-local shared smoke cache.
+Build, test and pull request notes are in
+[CONTRIBUTING.md](https://github.com/fstubner/harness-dispatch/blob/main/CONTRIBUTING.md).
+To report a vulnerability, use the private route in
+[SECURITY.md](https://github.com/fstubner/harness-dispatch/blob/main/SECURITY.md).
