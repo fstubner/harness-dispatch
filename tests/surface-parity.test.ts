@@ -26,7 +26,6 @@ import { z } from "zod";
 
 import { buildMcpServer } from "../src/mcp/server.js";
 import { dispatchInputShape } from "../src/mcp/tool-schemas.js";
-import { workspacePolicyFromInput } from "../src/mcp/tools.js";
 import { BadRequestError, parseChatRequest } from "../src/http/parse.js";
 import type { RouteHints } from "../src/types.js";
 
@@ -149,7 +148,7 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     ["task_type", /task_type is not a field — this tool spells it taskType, inside `hints`/],
     ["prefer_large_context", /prefer_large_context is not a field — this tool spells it preferLargeContext, inside `hints`/],
     ["timeout_ms", /timeout_ms is not a field — this tool spells it timeoutMs, inside `hints`/],
-    ["workspace_policy", /workspace_policy is not a field — this tool spells it workspacePolicy, at the top level or inside `hints`/],
+    ["workspace_policy", /workspace_policy is not a field — this tool spells it workspacePolicy, at the top level/],
     ["working_dir", /working_dir is not a field — this tool spells it workingDir, at the top level/],
     ["context_jobs", /context_jobs is not a field — this tool spells it contextJobs, at the top level/],
     ["safetyProfile", /safetyProfile belongs inside `hints`, not at the top level/],
@@ -206,6 +205,7 @@ describe("misplaced hint keys are rejected by the registered dispatch tool", () 
     // jobs dir under it — an unhandled rejection on the POSIX CI legs.
     const err = await dispatchError({
       prompt: "hi",
+      workingDir: dir,
       hints: { safetyProfile: "read_only" },
     });
     expect(err ?? "").not.toMatch(/belongs inside `hints`/);
@@ -260,6 +260,9 @@ describe("both surfaces answer the same input the same way", () => {
     ["a typo'd hints.taskType", { prompt: "hi", hints: { taskType: "excute" } }],
     ["a typo'd hints.routePolicy", { prompt: "hi", hints: { routePolicy: "bloked" } }],
     ["a typo'd hints.workspacePolicy", { prompt: "hi", hints: { workspacePolicy: "copyy" } }],
+    // A top-level field on both surfaces. It was accepted in both places, with
+    // two copies in the schema described only as "Workspace execution policy."
+    ["workspacePolicy inside hints", { prompt: "hi", hints: { workspacePolicy: "copy" } }],
     // Moved here from a "deliberate asymmetry" block on 2026-08-31, which is
     // what that block's own comment asked for once MCP started rejecting them.
     ["a near-miss top-level safetyProfile", { prompt: "hi", safteyProfile: "read_only" }],
@@ -382,26 +385,49 @@ describe("both surfaces answer the same input the same way", () => {
     expect(parseChatRequest(body).hints.taskType).toBe("review");
   });
 
-  it("takes workspacePolicy from the TOP level when both are given, on both surfaces", () => {
-    // The one exception to "nested wins", and the source claimed otherwise
-    // for a release. `workspacePolicy` is a real top-level MCP parameter
-    // rather than a trap, and workspacePolicyFromInput has always resolved it
-    // top-level-first — so both surfaces agree, and only the comment was
-    // wrong. Pinned so it stays a decision rather than the next divergence.
-    const body = {
-      prompt: "hi",
-      workingDir: dir,
-      workspacePolicy: "shared",
-      hints: { workspacePolicy: "git_worktree" },
+  it("refuses workspacePolicy inside hints with the same sentence on both surfaces", async () => {
+    // One field, one place. Both surfaces used to take it in either place,
+    // top level winning, and the schema carried two copies of it. The
+    // refusal names where it goes rather than "Unrecognized key".
+    const body = { prompt: "hi", workingDir: dir, hints: { workspacePolicy: "copy" } };
+    const mcpError = await dispatchError(body);
+    expect(mcpError).toMatch(/workspacePolicy is a top-level field, not a hint/);
+    let httpError = "";
+    try {
+      parseChatRequest(body);
+    } catch (err) {
+      httpError = (err as Error).message;
+    }
+    expect(httpError).toMatch(/workspacePolicy is a top-level field, not a hint/);
+    expect(mcpError).toContain(httpError);
+  });
+
+  it("advertises workspacePolicy once, at the top level, with what each value does", async () => {
+    const tools = await client.listTools();
+    const schema = tools.tools.find((t) => t.name === "dispatch")?.inputSchema as {
+      properties: Record<string, { description?: string; properties?: Record<string, unknown> }>;
     };
-    // Through the REAL resolver, not a copy of its rule. Asserting
-    // `mcp.workspacePolicy ?? mcp.hints?.workspacePolicy` here re-derived the
-    // very thing under test, so flipping tools.ts to nested-first would have
-    // left this row green — the same shape that let a fanout fail-open ship
-    // under two passing rows.
-    const mcp = z.object(dispatchInputShape).parse(body);
-    expect(workspacePolicyFromInput(mcp)).toBe("shared");
-    expect(parseChatRequest(body).hints.workspacePolicy).toBe("shared");
+    expect(schema.properties["hints"]?.properties?.["workspacePolicy"]).toBeUndefined();
+    const description = schema.properties["workspacePolicy"]?.description ?? "";
+    for (const value of ["shared", "shared_locked", "copy", "git_worktree"]) {
+      expect(description).toContain(`'${value}'`);
+    }
+  });
+
+  /**
+   * workingDir is REQUIRED on MCP and defaulted (with a warning) on HTTP.
+   *
+   * A deliberate difference, listed here so it reads as one. An MCP caller is
+   * an agent that always knows its project; omitting the field ran the task
+   * in whatever directory the client launched the server from. The HTTP
+   * endpoint is OpenAI-shaped, and those clients cannot send the field.
+   */
+  it("requires workingDir on MCP, and defaults it with a warning on HTTP", async () => {
+    const tools = await client.listTools();
+    const schema = tools.tools.find((t) => t.name === "dispatch")?.inputSchema as { required?: string[] };
+    expect(schema.required).toContain("workingDir");
+    expect(await dispatchError({ prompt: "hi", hints: { taskType: "plan" } })).toMatch(/workingDir/);
+    expect(parseChatRequest({ prompt: "hi" }).workingDirWarning).toMatch(/workingDir was not provided/);
   });
 
   /**

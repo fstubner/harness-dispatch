@@ -22,7 +22,6 @@ describe("HTTP hint values are rejected, not dropped", () => {
   it.each([
     ["hints.safetyProfile", { hints: { safetyProfile: "read_onlyy" } }],
     ["hints.routePolicy", { hints: { routePolicy: "bloked" } }],
-    ["hints.workspacePolicy", { hints: { workspacePolicy: "copyy" } }],
     ["hints.taskType", { hints: { taskType: "excute" } }],
     ["hints.modelTier", { hints: { modelTier: "strongest" } }],
     ["safetyProfile", { safetyProfile: "read_onlyy" }],
@@ -39,10 +38,10 @@ describe("HTTP hint values are rejected, not dropped", () => {
       hints: {
         safetyProfile: "workspace_edit",
         routePolicy: "local_only",
-        workspacePolicy: "git_worktree",
         taskType: "review",
         modelTier: "cheap",
       },
+      workspacePolicy: "git_worktree",
     });
     expect(parsed.hints.safetyProfile).toBe("workspace_edit");
     expect(parsed.hints.routePolicy).toBe("local_only");

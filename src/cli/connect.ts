@@ -64,7 +64,19 @@ export async function cmdConnect(
     return 1;
   }
 
-  const installed = plans.filter((p) => p.state !== "absent");
+  // A client the Claude Code plugin already registers this server with is
+  // left alone: a second entry starts a second server with the same tools.
+  // --force writes it anyway; --remove still takes out an entry of ours, which
+  // is how a doubled registration is undone.
+  const viaPlugin = opts.remove || opts.force ? [] : plans.filter((p) => p.plugin !== undefined);
+  for (const p of viaPlugin) {
+    process.stdout.write(
+      `${p.client}: skipped — already registered via the Claude Code plugin (${p.plugin}). ` +
+        "A second entry would start a second server with the same tools; pass --force to " +
+        "write one anyway.\n",
+    );
+  }
+  const installed = plans.filter((p) => p.state !== "absent" && !viaPlugin.includes(p));
   // A client named with --clients but not on this machine: said, and a
   // failure. It used to be filtered out silently, so `--clients cursor`
   // without Cursor wrote nothing and exited 0.
@@ -75,6 +87,10 @@ export async function cmdConnect(
         `installed here (no ${missing.map((p) => p.file).join(", ")}), so nothing was written.\n`,
     );
     return 1;
+  }
+  if (installed.length === 0 && viaPlugin.length > 0) {
+    process.stdout.write("Nothing else to register.\n");
+    return 0;
   }
   if (installed.length === 0) {
     process.stdout.write(

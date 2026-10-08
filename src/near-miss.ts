@@ -89,6 +89,19 @@ function isAdjacentSwap(a: string, b: string): boolean {
  */
 const MCP_TOP_LEVEL_NAMES = new Set(["workingDir", "workspacePolicy"]);
 
+/**
+ * `hints.workspacePolicy`, refused on both surfaces with the same sentence.
+ *
+ * It used to be accepted in both places, with the top-level value winning,
+ * and the schema described both copies as "Workspace execution policy." One
+ * field, one place: the top level, where it is a real dispatch parameter. A
+ * refusal rather than a quiet lift, because the caller asking for an
+ * isolated workspace must not be left guessing whether they got one.
+ */
+export const HINTS_WORKSPACE_POLICY_MESSAGE =
+  "workspacePolicy is a top-level field, not a hint — move it out of `hints`: " +
+  '{ "workspacePolicy": "copy", "hints": { ... } }. Nothing was run.';
+
 export type NearMissSurface = "mcp" | "http";
 
 /**

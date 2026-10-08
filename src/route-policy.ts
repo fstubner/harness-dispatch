@@ -1,6 +1,6 @@
 import { billingIsBlocked, billingIsUnknown, buildRouteBilling } from "./billing.js";
 import type { Dispatcher } from "./dispatchers/base.js";
-import { effectiveSafetyProfile, safetyProfileCompatible } from "./safety.js";
+import { effectiveSafetyProfile, requestedSafetyProfile, safetyProfileCompatible } from "./safety.js";
 import type {
   RouteBilling,
   RoutePolicy,
@@ -212,13 +212,23 @@ export function evaluateRoutePolicy(
   }
 
   if (!safetyProfileCompatible(svc, opts.requestedSafetyProfile)) {
+    // Names whose request it is. `status` and `usage` evaluate this with no
+    // request at all, and "exceeds requested safety" there read as a fault
+    // in the route rather than a mismatch with the default.
+    const effective = effectiveSafetyProfile(svc, opts.requestedSafetyProfile);
+    const requested = requestedSafetyProfile(svc, opts.requestedSafetyProfile);
+    const source =
+      opts.requestedSafetyProfile !== undefined
+        ? ""
+        : svc.safetyProfile !== undefined
+          ? " (this route's safety_profile, used when a dispatch sets no hints.safetyProfile)"
+          : " (the default when a dispatch sets no hints.safetyProfile)";
     return skip(
       route,
       "safety_incompatible",
-      `effective safety ${effectiveSafetyProfile(
-        svc,
-        opts.requestedSafetyProfile,
-      )} exceeds requested safety`,
+      `effective safety ${effective} exceeds the requested safety ${requested}${source}; ` +
+        `only a dispatch with hints.safetyProfile '${effective}'` +
+        `${effective === "full_auto" ? "" : " or higher"} can use this route`,
     );
   }
 

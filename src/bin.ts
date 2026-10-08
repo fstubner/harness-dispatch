@@ -35,7 +35,7 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  harness-dispatch status --watch          Re-render status every --interval ms.",
       "  harness-dispatch usage [--json]          Show per-route call counts, quota, and billing kind.",
       "  harness-dispatch breaker reset <route>   Close a route's circuit breaker now (it persists across restarts).",
-      "  harness-dispatch serve [--port 3333]     Serve MCP at /mcp and REST at /v1/*.",
+      "  harness-dispatch serve [--port <n>]      Serve MCP at /mcp and REST at /v1/* (random free port unless --port).",
       "  harness-dispatch mcp [--http <port>]     The same as no command (stdio MCP); with --http, as serve.",
       '  harness-dispatch dispatch "<prompt>"     Route one task and print the result (not counted against max_concurrent_runs).',
       "  harness-dispatch auth show               Print the HTTP bearer token.",
@@ -43,7 +43,7 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "",
       "Options:",
       "  --config <path>       Path to config.yaml.",
-      "  --port <number>       HTTP port for serve (default: random free port).",
+      "  --port <number>       HTTP port for serve (default: a random free port, printed on start).",
       "  --host <host>         HTTP host for serve (default: 127.0.0.1).",
       "  --interval <ms>       Watch refresh interval (default: 1000).",
       "  --json                Print JSON where supported.",
@@ -61,11 +61,151 @@ function printUsage(stream: NodeJS.WriteStream = process.stdout): void {
       "  --safety <profile>    dispatch: read_only | workspace_edit | full_auto.",
       "  --task-type <type>    dispatch: execute | plan | review | local.",
       "  --no-fallback         dispatch: do not retry on another route if the first fails.",
-      "  -h, --help            Show help.",
+      "  -h, --help            Show help; after a command, that command's help.",
       "  -v, --version         Print the version and exit.",
       "",
     ].join("\n"),
   );
+}
+
+/**
+ * `harness-dispatch <command> --help`: that command's usage, its flags, and
+ * one example. Every command used to print the same global block, so the
+ * flags a command takes had to be picked out of a list covering all of them.
+ */
+const COMMAND_HELP: Record<string, string[]> = {
+  configure: [
+    "Usage: harness-dispatch configure [--yes] [--print] [--force] [--no-clients] [--clients <ids>] [--config <path>]",
+    "",
+    "Detect the harness CLIs on PATH and prepare config.yaml. Without --yes it only",
+    "previews; nothing is written.",
+    "",
+    "  --yes             Write config.yaml (default location: ~/.harness-dispatch/config.yaml).",
+    "  --print           Print the generated YAML and write nothing.",
+    "  --force           Overwrite an existing config file.",
+    "  --no-clients      Skip the offer to register with MCP clients afterwards.",
+    "  --clients <ids>   Register with these clients afterwards, without prompting.",
+    "  --config <path>   Write here instead of the default location.",
+    "",
+    "Example: harness-dispatch configure --yes",
+  ],
+  connect: [
+    "Usage: harness-dispatch connect [--yes] [--clients <ids>] [--force] [--remove] [--dev] [--config <path>]",
+    "",
+    "Register this server with the MCP clients on this machine (Claude Code, Cursor).",
+    "Claude Code is skipped while the harness-dispatch Claude Code plugin is enabled.",
+    "",
+    "  --yes             Do not prompt. Never replaces an entry you edited by hand.",
+    "  --clients <ids>   Comma-separated client ids: claude-code, cursor.",
+    "  --force           Replace a hand-edited entry; write Claude Code even with the plugin.",
+    "  --remove          Take the entry out instead of writing it.",
+    "  --dev             Point clients at this checkout's build, not the package.",
+    "  --config <path>   The config the entry points at.",
+    "",
+    "Example: harness-dispatch connect --clients cursor --yes",
+  ],
+  doctor: [
+    "Usage: harness-dispatch doctor [--json] [--live [--allow-paid]] [--prune-state] [--config <path>]",
+    "",
+    "Check the install, config, client registration, auth and every route. Exits",
+    "non-zero when a check fails.",
+    "",
+    "  --json            Print the checks as JSON.",
+    "  --live            Run one real routed probe, if billing policy allows (uses quota).",
+    "  --allow-paid      With --live: allow paid or unknown-billing routes.",
+    "  --prune-state     Also delete saved breaker/usage state for routes this config does not name.",
+    "  --config <path>   Check this config instead of the default one.",
+    "",
+    "Example: harness-dispatch doctor --json",
+  ],
+  status: [
+    "Usage: harness-dispatch status [--json] [--watch [--interval <ms>]] [--config <path>]",
+    "",
+    "Show each route as ready or skipped (with the reason), plus quota and breaker state.",
+    "",
+    "  --json            Print structured status.",
+    "  --watch           Re-render until interrupted.",
+    "  --interval <ms>   Refresh interval for --watch (default: 1000).",
+    "  --config <path>   Use this config.",
+    "",
+    "Example: harness-dispatch status --watch --interval 5000",
+  ],
+  usage: [
+    "Usage: harness-dispatch usage [--json] [--config <path>]",
+    "",
+    "Per-route call counts, quota and billing kind.",
+    "",
+    "  --json            Print structured usage.",
+    "  --config <path>   Use this config.",
+    "",
+    "Example: harness-dispatch usage --json",
+  ],
+  breaker: [
+    "Usage: harness-dispatch breaker reset <route> [--config <path>]",
+    "",
+    "Close a route's circuit breaker now. Breaker state persists across restarts, so",
+    "a tripped route otherwise waits out its cooldown.",
+    "",
+    "Example: harness-dispatch breaker reset codex_cli",
+  ],
+  serve: [
+    "Usage: harness-dispatch serve [--port <n>] [--host <host>] [--config <path>]",
+    "",
+    "Serve MCP at /mcp and REST at /v1/* over HTTP, with a bearer token",
+    "(see `harness-dispatch auth show`). The address is printed on start.",
+    "",
+    "  --port <n>        Port to bind. Without it, a random free port is chosen.",
+    "  --host <host>     Host to bind (default: 127.0.0.1).",
+    "  --config <path>   Use this config.",
+    "",
+    "Example: harness-dispatch serve --port 3333",
+  ],
+  mcp: [
+    "Usage: harness-dispatch mcp [--http <port>] [--config <path>]",
+    "",
+    "Start the MCP server on stdio, the same as running harness-dispatch with no",
+    "command. This is what MCP clients and the plugin launcher run.",
+    "",
+    "  --http <port>     Serve over HTTP on this port instead, as `serve --port`.",
+    "  --config <path>   Use this config.",
+    "",
+    "Example: harness-dispatch mcp --config ~/.harness-dispatch/config.yaml",
+  ],
+  dispatch: [
+    'Usage: harness-dispatch dispatch "<prompt>" [--service <id>] [--task-type <type>] [--safety <profile>] [--no-fallback] [--json] [--config <path>]',
+    "",
+    "Route one task, run it in the current directory, and print the result. Runs in",
+    "this process, so it is not counted against max_concurrent_runs.",
+    "",
+    "  --service <id>        Run exactly this route, with no fallback to others.",
+    "  --task-type <type>    execute | plan | review | local.",
+    "  --safety <profile>    read_only | workspace_edit | full_auto.",
+    "  --no-fallback         Do not retry on another route if the first fails.",
+    "  --json                Print the result as JSON.",
+    "  --config <path>       Use this config.",
+    "",
+    'Example: harness-dispatch dispatch "review src/ for bugs" --task-type review --safety read_only',
+  ],
+  auth: [
+    "Usage: harness-dispatch auth show | rotate",
+    "",
+    "show prints the HTTP bearer token for `serve`, creating it on first use.",
+    "rotate replaces it; clients holding the old token stop working.",
+    "",
+    "Example: harness-dispatch auth show",
+  ],
+};
+
+/** Hidden aliases share their command's help. */
+const HELP_ALIASES: Record<string, string> = { dashboard: "status", "list-services": "status", route: "dispatch" };
+
+export function commandHelp(command: string | undefined): string | undefined {
+  if (command === undefined) return undefined;
+  // Own keys only: `constructor` is not a command.
+  const name = Object.hasOwn(HELP_ALIASES, command) ? HELP_ALIASES[command]! : command;
+  if (!Object.hasOwn(COMMAND_HELP, name)) return undefined;
+  const lines = COMMAND_HELP[name]!;
+  return [...lines, "", "Run harness-dispatch --help for every command.", ""].join("\n");
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -132,7 +272,9 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (values.help) {
-    printUsage();
+    const specific = commandHelp(positionals[0]);
+    if (specific !== undefined) process.stdout.write(specific);
+    else printUsage();
     return 0;
   }
 

@@ -153,7 +153,7 @@ describe("MCP server — public surface", () => {
     try {
       const resp = await client.callTool({
         name: "dispatch",
-        arguments: { prompt: "say hi", hints: { taskType: "plan" } },
+        arguments: { prompt: "say hi", workingDir: process.cwd(), hints: { taskType: "plan" } },
       });
       expect(resp.isError).not.toBe(true);
       const content = resp.content as Array<{ type: string; text: string }>;

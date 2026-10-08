@@ -383,7 +383,7 @@ terms differ on whether that is allowed; the sources, dates and short quotes are
 
 - **`antigravity_cli` is opt-in.** Google's Antigravity terms object to third-party
   tools using the service, so auto-detection finds `agy` but adds the route switched
-  off. `status` shows it as `off` with the reason, and `doctor` repeats it. To turn it
+  off. `status` shows it as `skipped (disabled)` with the reason, and `doctor` repeats it. To turn it
   on, say so in your `config.yaml`:
 
   ```yaml

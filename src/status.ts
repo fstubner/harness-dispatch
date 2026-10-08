@@ -582,36 +582,26 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
 }
 
 /**
- * Skips that hold whatever the next call asks for.
+ * The verdict at the start of a route's line: `ready`, or `skipped (<code>)`.
  *
- * The listing surfaces have no request in hand, so they evaluate policy with no
- * safety profile, task type or route policy — and several skip codes answer a
- * question that was never asked. `safety_incompatible` is the one that bites:
- * cursor_cli declares full_auto, which exceeds the DEFAULT requested profile,
- * so marking it skipped would call a route broken that a full_auto dispatch
- * uses successfully. The mark therefore reflects only codes that are a property
- * of the route or its environment; every skip still prints its reason on the
- * line below — the reason is information, the mark is a verdict.
+ * Computed from the same thing as `Ready to route:` — the router's own skip
+ * verdict for a dispatch that asks for nothing special (the default safety
+ * profile, no task type, no route policy) — so the mark and the summary line
+ * cannot disagree. A route skipped only for that default request, such as one
+ * whose effective safety is full_auto, says so in its reason line: the reason
+ * names the request it fails and the one that would use it. It used to print
+ * `ok` while being absent from `Ready to route:`, which read as healthy.
  */
-const UNCONDITIONAL_SKIPS: ReadonlySet<RouteSkip["code"]> = new Set([
-  "disabled",
-  "no_dispatcher",
-  "unavailable",
-  "circuit_broken",
-  "credential_unset",
-  "never_succeeded",
-  "unknown_billing",
-  "paid_blocked",
-]);
-
-function routeMark(route: {
-  enabled: boolean;
-  available: boolean;
-  skipped?: RouteSkip;
-}): "ok" | "off" | "skip" {
-  if (!route.enabled || !route.available) return "off";
-  if (route.skipped && UNCONDITIONAL_SKIPS.has(route.skipped.code)) return "skip";
-  return "ok";
+function routeMark(
+  route: { enabled: boolean; available: boolean; skipped?: RouteSkip },
+  ready: boolean,
+  breakerTripped: boolean,
+): string {
+  if (ready) return "ready";
+  const code =
+    route.skipped?.code ??
+    (!route.enabled ? "disabled" : !route.available ? "unavailable" : breakerTripped ? "circuit_broken" : undefined);
+  return code === undefined ? "skipped" : `skipped (${code})`;
 }
 
 export function renderUsageText(usage: HarnessDispatchUsage): string {
@@ -634,7 +624,7 @@ export function renderUsageText(usage: HarnessDispatchUsage): string {
     return lines.join("\n");
   }
   for (const route of usage.routes) {
-    const mark = routeMark(route);
+    const mark = routeMark(route, route.ready, route.breakerTripped);
     const quota =
       route.quotaRemaining !== undefined && route.quotaLimit !== undefined
         ? `${route.quotaRemaining}/${route.quotaLimit}`
@@ -688,7 +678,7 @@ export function renderStatusText(status: HarnessDispatchStatus): string {
   const lines: string[] = [];
   lines.push("harness-dispatch status", "");
   for (const route of status.routes) {
-    const mark = routeMark(route);
+    const mark = routeMark(route, status.ready.includes(route.id), route.breaker.tripped);
     const model = route.model ?? "not set";
     lines.push(`${mark} ${route.id} / ${route.harness}`);
     lines.push(

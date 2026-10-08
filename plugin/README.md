@@ -11,12 +11,34 @@ One plugin directory serving both ecosystems (the SKILL.md format is shared):
 
 ## Install — Claude Code / Claude Desktop
 
-From a clone of this repo (or the published git URL):
+This repository is its own plugin marketplace (its manifest is in the
+`.claude-plugin` folder at the repository root, per the
+[Claude Code marketplace docs](https://code.claude.com/docs/en/plugin-marketplaces)).
+In a Claude Code session:
 
 ```
-/plugin marketplace add H:/path/to/harness-dispatch
+/plugin marketplace add fstubner/harness-dispatch
 /plugin install harness-dispatch@harness-dispatch
 ```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add fstubner/harness-dispatch
+claude plugin install harness-dispatch@harness-dispatch
+```
+
+The `owner/repo` form clones over SSH. Without an SSH key for GitHub it fails
+with "SSH authentication failed"; use the HTTPS URL instead:
+`claude plugin marketplace add https://github.com/fstubner/harness-dispatch.git`.
+From a local clone, pass its path: `/plugin marketplace add /path/to/harness-dispatch`.
+
+The plugin registers the MCP server with Claude Code itself, so do **not** also
+run `harness-dispatch connect` for Claude Code: that adds a second server with
+the same tools. `connect` skips Claude Code when the plugin is enabled (and still
+registers Cursor), and `harness-dispatch doctor` reports "registered via the Claude
+Code plugin". If you registered with `connect` before installing the plugin,
+`harness-dispatch connect --remove --clients claude-code` takes the old entry out.
 
 ## Install — Codex CLI / Codex desktop
 

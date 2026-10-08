@@ -9,13 +9,105 @@ import { AUTO_DETECT_COMMANDS } from "../config.js";
 import { isRemovedKeyWarning } from "../config/validation.js";
 import { commandAvailable } from "../dispatchers/shared/which-available.js";
 import { codexLoginState } from "../dispatchers/shared/harness-login.js";
-import { clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
+import { claudeCodePluginInstall, clientConfigLocations, inspectClientEntries } from "../mcp-clients.js";
 import { resolveRunnerPath } from "../jobs.js";
 import { probeDetachedSurvival } from "../jobs/detach.js";
 import { NEVER_SUCCEEDED_MIN_CALLS } from "../route-policy.js";
 import { buildStatus, offByDefaultNote } from "../status.js";
 import { stateRoot } from "../state-dir.js";
 import { buildRuntime } from "./common.js";
+
+/**
+ * Is this server registered with the MCP clients here, and does each entry
+ * still point at something that exists?
+ *
+ * This one DOES fail, unlike the advisory git check: a client entry naming a
+ * path that is not there is intended by no setup, and is invisible from the
+ * client side — a client that cannot spawn its server simply has no tools,
+ * which looks identical to never having installed anything. Not-configured is
+ * NOT a failure; only a broken entry is.
+ *
+ * The Claude Code plugin counts as registered. Its server is declared by the
+ * plugin rather than in `~/.claude.json`, so without this a plugin user was
+ * told to run `connect`, and doing so gave Claude Code two servers.
+ *
+ * `home` and `installed` are injectable so tests use fixture homes and never
+ * depend on what is on this machine's PATH.
+ */
+export function mcpClientsCheck(
+  home?: string,
+  installed: (commands: string[]) => boolean = (commands) => commands.some((cmd) => commandAvailable(cmd)),
+): { name: string; ok: boolean; warn?: boolean; detail: string } {
+  const name = "mcp-clients";
+  const entries = inspectClientEntries(home);
+  const plugin = claudeCodePluginInstall(home);
+  const broken = entries.filter((e) => e.missingPaths.length > 0);
+  if (broken.length > 0) {
+    return {
+      name,
+      ok: false,
+      detail: broken
+        .map(
+          (e) =>
+            // "references", not "launches ... from": missingPaths holds any
+            // path the entry names that is not there, and that is routinely
+            // the `--config` argument rather than the launch binary.
+            `${e.client} (${e.file}) references a path that does not exist: ` +
+            `${e.missingPaths.join(", ")} (entry: ${e.entry}) — that client has been ` +
+            "getting NO tools from this server, silently. `harness-dispatch connect` " +
+            "rewrites the entry.",
+        )
+        .join(" | "),
+    };
+  }
+  const parts = entries.map((e) => `${e.client}: ${e.entry} resolves`);
+  if (plugin?.enabled === true) {
+    const doubled = entries.filter((e) => e.client === "Claude Code");
+    if (doubled.length > 0) {
+      return {
+        name,
+        ok: true,
+        warn: true,
+        detail:
+          `Claude Code is registered twice: via the Claude Code plugin (${plugin.id}) and by ` +
+          `the ${doubled.map((e) => e.entry).join(", ")} entry in ${doubled[0]!.file}, so it ` +
+          "starts two servers with the same tools. Keep the plugin and run " +
+          "`harness-dispatch connect --remove --clients claude-code`.",
+      };
+    }
+    return { name, ok: true, detail: [`Claude Code: registered via the Claude Code plugin (${plugin.id})`, ...parts].join("; ") };
+  }
+  if (entries.length > 0) return { name, ok: true, detail: parts.join("; ") };
+  if (plugin !== undefined) {
+    return {
+      name,
+      ok: true,
+      warn: true,
+      detail:
+        `the Claude Code plugin (${plugin.id}) is installed but disabled, so Claude Code starts ` +
+        "no harness-dispatch server — enable it in Claude Code's /plugin menu rather than running " +
+        "`harness-dispatch connect`, which would add a second registration",
+    };
+  }
+  // Name the client that IS here, so "not registered" reads as the next step
+  // rather than as "nothing to register with".
+  const present = clientConfigLocations(home)
+    .filter((c) => installed(c.commands))
+    .map((c) => c.client);
+  return {
+    name,
+    ok: true,
+    warn: true,
+    detail:
+      present.length > 0
+        ? `${present.join(", ")} ${present.length > 1 ? "are" : "is"} installed but harness-dispatch is not ` +
+          `registered with ${present.length > 1 ? "them" : "it"} — run \`harness-dispatch connect\`, ` +
+          "or install the Claude Code plugin (plugin/README.md)"
+        : "not registered with any MCP client this tool knows how to read " +
+          "(Claude Code, Cursor), and none is installed — run `harness-dispatch connect` " +
+          "after installing one",
+  };
+}
 
 /**
  * Can we actually persist state? Breaker cooldowns, quota counters and job
@@ -136,49 +228,7 @@ export async function cmdDoctor(
     // invisible from the client side — a client that cannot spawn its server
     // simply has no tools, which looks identical to never having installed
     // anything. Not-configured is NOT a failure; only a broken entry is.
-    (() => {
-      const entries = inspectClientEntries();
-      const broken = entries.filter((e) => e.missingPaths.length > 0);
-      if (entries.length === 0) {
-        // Name the client that IS here, so "not registered" reads as the
-        // next step rather than as "nothing to register with".
-        const present = clientConfigLocations()
-          .filter((c) => c.commands.some((cmd) => commandAvailable(cmd)))
-          .map((c) => c.client);
-        return {
-          name: "mcp-clients",
-          ok: true,
-          warn: true,
-          detail:
-            present.length > 0
-              ? `${present.join(", ")} installed but harness-dispatch is not registered with it — ` +
-                "run `harness-dispatch connect`"
-              : "not registered with any MCP client this tool knows how to read " +
-                "(Claude Code, Cursor), and none is installed — run `harness-dispatch connect` " +
-                "after installing one",
-        };
-      }
-      return {
-        name: "mcp-clients",
-        ok: broken.length === 0,
-        detail:
-          broken.length === 0
-            ? entries.map((e) => `${e.client}: ${e.entry} resolves`).join("; ")
-            : broken
-                .map(
-                  (e) =>
-                    // "references", not "launches ... from": missingPaths
-                    // holds any path the entry names that is not there, and
-                    // that is routinely the `--config` argument rather than
-                    // the launch binary.
-                    `${e.client} (${e.file}) references a path that does not exist: ` +
-                    `${e.missingPaths.join(", ")} (entry: ${e.entry}) — that client has been ` +
-                    "getting NO tools from this server, silently. `harness-dispatch connect` " +
-                    "rewrites the entry.",
-                )
-                .join(" | "),
-      };
-    })(),
+    mcpClientsCheck(),
     // Not required to dispatch. The `workspace` tool shells out to git for
     // diff/apply, so without it an isolated run's changes are recoverable
     // only by hand via workspaceRoot in the response.

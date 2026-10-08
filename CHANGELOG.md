@@ -32,6 +32,18 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Changed
 
+- **`dispatch` now requires `workingDir`.** Leaving it out used to run the task
+  in whatever directory the client had started the server from, with only a
+  warning on the reply. MCP clients now get an error naming the field before
+  anything runs. The HTTP chat endpoint still falls back to the server's
+  directory with a warning, because OpenAI-style clients cannot send the
+  field, and the CLI keeps using the shell's directory.
+- **`workspacePolicy` is a top-level field only.** It used to be accepted both
+  at the top level and inside `hints`, and the tool schema listed it twice as
+  "Workspace execution policy." Inside `hints` it is now refused, on MCP and
+  HTTP alike, with a message saying where it goes. The schema describes it
+  once, with what `shared`, `shared_locked`, `copy` and `git_worktree` each do
+  and what happens when it is left out.
 - **The built-in guidance stops telling agents to name a route on every
   dispatch.** The server's instructions, the tool descriptions, the plugin
   skill and the docs now say: pass `hints.taskType` and `hints.modelTier`,
@@ -154,6 +166,39 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **No more `EBADENGINE` warning when installing on Node 23, 25 or 24 before 24.15.**
+  The `which` dependency is pinned back to 6.x, whose supported Node versions
+  cover everything this package says it supports (`>=22.22.2`); 7.0.0 left
+  out Node 23, 25 and 24 before 24.15. A test now fails if any runtime
+  dependency accepts fewer Node versions than `package.json` claims.
+- **`harness-dispatch <command> --help` shows that command's help.** Each
+  command now prints its own usage line, its flags and one example, instead
+  of the same global block for every command. The global help no longer
+  shows `serve [--port 3333]`: without `--port`, `serve` binds a random free
+  port and prints it.
+- **`status` and `usage` no longer mark a route `ok` that the router will not
+  pick.** Each route line now starts with `ready` or `skipped (<reason>)`,
+  from the same verdict as the `Ready to route:` line, so the two cannot
+  disagree. A route whose effective safety is above the default (Cursor's
+  `full_auto`, for example) used to print `ok`; it now prints `skipped
+  (safety_incompatible)`, and the reason says the requested safety was the
+  default and that a dispatch asking for `full_auto` can use it.
+- **Installing the Claude Code plugin no longer leads to a second server.**
+  `doctor` now recognises an enabled harness-dispatch Claude Code plugin and
+  says Claude Code is "registered via the Claude Code plugin" instead of
+  telling you to run `connect`. It warns when the plugin and a `connect`
+  entry both register it, and points a disabled plugin at `/plugin`.
+  `connect` skips Claude Code while the plugin is enabled (`--force` writes
+  the entry anyway).
+- **The plugin has a published install line:** `/plugin marketplace add
+  fstubner/harness-dispatch`, then `/plugin install
+  harness-dispatch@harness-dispatch` (plugin/README.md, docs/interfaces.md).
+- **A test run can no longer write into your real `~/.harness-dispatch`.**
+  The suite now points the home directory and every state, log, jobs,
+  workspaces and token directory at one throwaway folder for the whole run,
+  including processes the tests start. Before, only part of that was
+  redirected, and test routes had ended up in the real dispatch log that
+  `usage` history is read from. A test now fails if any of this is missing.
 - **A job that finishes within a fraction of a second now sends its output as
   progress.** The server tails a job's progress log while `dispatch` waits, but
   a successful job deletes that log when it ends, so a job that printed two

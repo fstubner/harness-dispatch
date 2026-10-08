@@ -48,7 +48,7 @@
 
 import { ProtocolError, ProtocolErrorCode, type McpServer } from "@modelcontextprotocol/server";
 
-import { nearMissHintKey, nearMissMessage } from "../near-miss.js";
+import { HINTS_WORKSPACE_POLICY_MESSAGE, nearMissHintKey, nearMissMessage } from "../near-miss.js";
 
 /** The method the SDK registers its tool-call handler under. */
 const CALL_TOOL_METHOD = "tools/call";
@@ -106,13 +106,7 @@ export const MISPLACED_TOP_LEVEL_KEYS: Readonly<Record<string, string>> = {
   model_tier: snakeCaseMessage("model_tier", "modelTier", IN_HINTS),
   prefer_large_context: snakeCaseMessage("prefer_large_context", "preferLargeContext", IN_HINTS),
   timeout_ms: snakeCaseMessage("timeout_ms", "timeoutMs", IN_HINTS),
-  // Accepted in BOTH placements — a real top-level parameter as well as a
-  // hint, with the top-level value winning when both are given.
-  workspace_policy: snakeCaseMessage(
-    "workspace_policy",
-    "workspacePolicy",
-    `${TOP_LEVEL} or ${IN_HINTS}`,
-  ),
+  workspace_policy: snakeCaseMessage("workspace_policy", "workspacePolicy", TOP_LEVEL),
   working_dir: snakeCaseMessage("working_dir", "workingDir", TOP_LEVEL),
   context_jobs: snakeCaseMessage("context_jobs", "contextJobs", TOP_LEVEL),
   safetyProfile: hintKeyMessage("safetyProfile"),
@@ -139,6 +133,12 @@ export function nearMissInArguments(args: unknown, toolName?: string): string | 
   if (toolName === undefined || toolName === "dispatch") {
     for (const [key, message] of Object.entries(MISPLACED_TOP_LEVEL_KEYS)) {
       if (Object.hasOwn(record, key) && record[key] !== undefined) return message;
+    }
+    // `hints` is strict, so this would be refused anyway — as "Unrecognized
+    // key", which does not say where the field went.
+    const hints = record["hints"];
+    if (hints !== null && typeof hints === "object" && Object.hasOwn(hints, "workspacePolicy")) {
+      return HINTS_WORKSPACE_POLICY_MESSAGE;
     }
   }
   for (const key of Object.keys(record)) {

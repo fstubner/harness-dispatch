@@ -139,3 +139,62 @@ export function inspectClientEntries(home?: string): ClientEntryReport[] {
   }
   return out;
 }
+
+/** The harness-dispatch Claude Code plugin, as Claude Code itself records it. */
+export interface ClaudeCodePluginInstall {
+  /** The install id, `<plugin>@<marketplace>`: `harness-dispatch@harness-dispatch` from this repo's marketplace. */
+  id: string;
+  /** Turned on in the user's Claude Code settings. An installed but disabled plugin starts no server. */
+  enabled: boolean;
+}
+
+/** `harness-dispatch@<any marketplace>`: a fork or a renamed marketplace still installs the same plugin. */
+const PLUGIN_ID = /^harness-dispatch@[^@]+$/;
+
+function readJsonObject(file: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Is harness-dispatch installed as a Claude Code plugin, and is it on?
+ *
+ * A plugin's MCP server is declared by the plugin, not in `~/.claude.json`, so
+ * looking only there tells a plugin user they are not registered — and the fix
+ * that suggests, `connect`, gives Claude Code a SECOND server with the same
+ * tools.
+ *
+ * Claude Code records the two facts in two files (layout read from a real
+ * install made with `claude plugin install`, 2026-10-08):
+ *   - `~/.claude/plugins/installed_plugins.json`:
+ *     `{ version, plugins: { "<id>": [ { scope, installPath, version, ... } ] } }`
+ *   - `~/.claude/settings.json`: `enabledPlugins: { "<id>": true | false }`
+ * Enabled is read from user settings only; a plugin enabled for one project
+ * alone is not something a machine-wide check can speak for.
+ *
+ * Read only, and quiet on anything unreadable: a malformed file is Claude
+ * Code's to report, and guessing would misreport a working setup.
+ */
+export function claudeCodePluginInstall(home: string = homedir()): ClaudeCodePluginInstall | undefined {
+  const dir = path.join(home, ".claude");
+  const enabledMap = readJsonObject(path.join(dir, "settings.json"))?.["enabledPlugins"];
+  const listed = isPlainObject(enabledMap)
+    ? Object.entries(enabledMap).filter(([id]) => PLUGIN_ID.test(id))
+    : [];
+  const on = listed.find(([, value]) => value === true);
+  if (on !== undefined) return { id: on[0], enabled: true };
+  const installed = readJsonObject(path.join(dir, "plugins", "installed_plugins.json"))?.["plugins"];
+  const installedIds = isPlainObject(installed)
+    ? Object.keys(installed).filter((id) => PLUGIN_ID.test(id))
+    : [];
+  const id = installedIds[0] ?? listed[0]?.[0];
+  return id === undefined ? undefined : { id, enabled: false };
+}

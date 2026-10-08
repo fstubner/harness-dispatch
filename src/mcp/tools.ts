@@ -29,7 +29,6 @@ import type {
   RouteHints,
   RouteSkip,
   TaskType,
-  WorkspacePolicy,
   WorkspaceRun,
 } from "../types.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -63,7 +62,6 @@ import {
   DEFAULT_GRACE_SECONDS,
   dispatchInputShape,
   jobStatusInputShape,
-  publicHintsSchema,
   usageInputShape,
 } from "./tool-schemas.js";
 
@@ -272,29 +270,20 @@ export function jsonText(value: unknown): CallToolResult {
   };
 }
 
-function toHints(h: z.infer<typeof publicHintsSchema> | undefined): RouteHints {
-  if (!h) return {};
+/** The router's hints: the public ones, plus the TOP-LEVEL workspacePolicy (not a public hint). */
+function toHints(input: z.infer<z.ZodObject<typeof dispatchInputShape>>): RouteHints {
   const out: RouteHints = {};
+  if (input.workspacePolicy !== undefined) out.workspacePolicy = input.workspacePolicy;
+  const h = input.hints;
+  if (!h) return out;
   if (h.model !== undefined) out.model = h.model;
   if (h.modelTier !== undefined) out.modelTier = h.modelTier;
   if (h.taskType !== undefined) out.taskType = h.taskType;
   if (h.preferLargeContext !== undefined) out.preferLargeContext = h.preferLargeContext;
   if (h.safetyProfile !== undefined) out.safetyProfile = h.safetyProfile;
-  if (h.workspacePolicy !== undefined) out.workspacePolicy = h.workspacePolicy;
   if (h.routePolicy !== undefined) out.routePolicy = h.routePolicy as RoutePolicy;
   if (h.timeoutMs !== undefined) out.timeoutMs = h.timeoutMs;
   return out;
-}
-
-/**
- * Exported so the parity test drives the real resolver: a test that
- * re-implements this rule inline stays green when the resolver flips.
- */
-export function workspacePolicyFromInput(input: {
-  workspacePolicy?: WorkspacePolicy | undefined;
-  hints?: { workspacePolicy?: WorkspacePolicy | undefined } | undefined;
-}): WorkspacePolicy | undefined {
-  return input.workspacePolicy ?? input.hints?.workspacePolicy;
 }
 
 async function ensureFreshConfig(reloader: ConfigHotReloader | undefined): Promise<void> {
@@ -522,9 +511,7 @@ async function startSingle(
         `Call the \`usage\` tool to see each route's current model and quota.`,
     );
   }
-  const hints = toHints(input.hints);
-  const workspacePolicy = workspacePolicyFromInput(input);
-  if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+  const hints = toHints(input);
 
   const live = { value: true };
   const counter = { value: 0 };
@@ -536,7 +523,7 @@ async function startSingle(
       prompt: input.prompt,
       files: input.files ?? [],
       ...(input.contextJobs !== undefined ? { contextJobs: input.contextJobs } : {}),
-      ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
+      workingDir: input.workingDir,
       hints,
       ...(input.workspacePolicy !== undefined ? { workspacePolicy: input.workspacePolicy } : {}),
       ...(input.service !== undefined ? { service: input.service } : {}),
@@ -574,13 +561,11 @@ async function startFanout(
 ): Promise<DispatchResponse> {
   await ensureFreshConfig(deps.reloader);
   const state = deps.holder.state;
-  const hints = toHints(input.hints);
-  const workspacePolicy = workspacePolicyFromInput(input);
-  if (workspacePolicy !== undefined) hints.workspacePolicy = workspacePolicy;
+  const hints = toHints(input);
   const fanoutSafetyProfile = hints.safetyProfile ?? "read_only";
   if (
     fanoutSafetyProfile !== "read_only" &&
-    (hints.workspacePolicy === undefined || !isIsolatedWorkspacePolicy(hints.workspacePolicy))
+    (input.workspacePolicy === undefined || !isIsolatedWorkspacePolicy(input.workspacePolicy))
   ) {
     // A refusal must not be success-shaped: completed:true with empty results
     // and the reason tucked into skippedRoutes reads as "done" to an agent
@@ -660,7 +645,7 @@ async function startFanout(
           // fanout ("get three opinions building on job A") would run every
           // arm without the context and never say so.
           ...(input.contextJobs !== undefined ? { contextJobs: input.contextJobs } : {}),
-          ...(input.workingDir !== undefined ? { workingDir: input.workingDir } : {}),
+          workingDir: input.workingDir,
           hints,
           service: routeName,
           ...(deps.caller !== undefined ? { caller: deps.caller(extra) } : {}),
@@ -978,7 +963,7 @@ export function registerTools(server: McpServer, deps: ToolDeps, opts: RegisterT
         "workingDir and promptPreview are yours — other sessions on this machine share the " +
         "same list, so the newest entry may not be. Keep graceSeconds under your MCP client's own request " +
         "timeout, or skip the inline wait entirely with graceSeconds: 0. Always pass " +
-        "`workingDir` (the caller's project root) and `hints.taskType`.",
+        "`hints.taskType`; `workingDir` (the caller's project root) is required.",
       inputSchema: z.object(dispatchInputShape),
     },
     async (args, ctx) => jsonText(await handleDispatch(deps, args, ctx)),

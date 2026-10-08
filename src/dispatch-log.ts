@@ -24,7 +24,7 @@ import { dirFromEnv, stateRoot } from "./state-dir.js";
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_ERROR_CHARS = 300;
 
-function logDir(): string {
+export function logDir(): string {
   return dirFromEnv("HARNESS_DISPATCH_LOG_DIR", () => path.join(stateRoot(), "logs"));
 }
 
