@@ -49,7 +49,14 @@ async function main(): Promise<void> {
   // Every MCP and HTTP dispatch runs HERE, not in the server, so without this
   // their router and dispatcher spans were never exported, whatever the
   // config or environment said. Shut down before each exit to flush them.
-  await initObservability(state.config.telemetry?.enabled ? { enabled: true } : {});
+  // The server refuses to start when telemetry is on and its packages are
+  // missing. A runner that was already launched does not take a job down over
+  // missing traces: it says so in its log and runs the job.
+  try {
+    await initObservability(state.config.telemetry?.enabled ? { enabled: true } : {});
+  } catch (err) {
+    console.error(`harness-dispatch: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Pool mode: claim work from the queue and run several jobs at once, so
   // supervision costs a bounded number of processes rather than one per job.

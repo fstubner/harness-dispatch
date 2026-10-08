@@ -77,6 +77,21 @@ the author or any third party. OpenTelemetry tracing is available for your own
 use, but **it is off by default** — nothing OpenTelemetry-related initializes
 unless you opt in:
 
+- The OpenTelemetry packages are not part of a default install (they are
+  optional peer dependencies). To use tracing, install them into the same
+  `node_modules` as harness-dispatch, with the ranges below (the 0.x packages
+  must match, so a bare `npm install @opentelemetry/instrumentation` is refused):
+
+  ```sh
+  npm install @opentelemetry/api@^1.9.1 @opentelemetry/sdk-trace-node@^2.10.0 \
+    @opentelemetry/exporter-trace-otlp-http@^0.221.0 @opentelemetry/resources@^2.10.0 \
+    @opentelemetry/instrumentation@^0.221.0 @opentelemetry/instrumentation-http@^0.221.0 \
+    @opentelemetry/instrumentation-fs@^0.40.0
+  ```
+
+  Enabled without them, harness-dispatch stops with a message that says this.
+  `npx` runs a throwaway copy, so use a normal (local or global) install if you
+  want tracing.
 - Enable it with `telemetry: { enabled: true }` in `config.yaml`, or the
   `HARNESS_DISPATCH_TELEMETRY=1` env var.
 - Once enabled, traces export via OTLP/HTTP to `http://localhost:4318` (the

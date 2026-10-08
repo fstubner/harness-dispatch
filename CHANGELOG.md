@@ -77,6 +77,16 @@ pre-1.0, so minor versions can carry behaviour changes.
   `api_key:`, and `PRODUCT.md` lists each vendor's current terms with sources
   and dates.
 
+- **A default install is much smaller: tracing packages are now optional.**
+  The OpenTelemetry packages are only used when telemetry is switched on, which
+  it is not by default, yet they were most of what `npm install` fetched.
+  Installing the package from a tarball took 50 packages and 43.9 MB; it now
+  takes 14 packages and 16.9 MB. Nothing changes if you leave telemetry off.
+  To use it, install the packages listed in `docs/operations.md` next to
+  harness-dispatch. If telemetry is on and they are missing, the server and
+  one-shot commands stop and print that install command (a job already
+  running logs it and carries on without traces).
+
 ### Security
 
 - **A program planted in the current directory is no longer run in place of

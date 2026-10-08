@@ -12,11 +12,15 @@
  * helper sets standard attributes, records exceptions, sets status, and
  * ensures the span is ended regardless of whether `fn` resolves or throws.
  *
- * When the SDK is not initialized, these helpers fall back to `trace.getTracer`
- * which returns a no-op tracer — span creation is essentially free.
+ * The OpenTelemetry packages are optional: a default install does not have
+ * them. Nothing here imports `@opentelemetry/api` at run time; the types below
+ * are erased by the compiler. `initObservability` loads the API once telemetry
+ * is enabled and hands it over with `useOtelApi`. Until then every helper runs
+ * its function with a no-op span, so the cost of a span with telemetry off is
+ * one pointer check.
  */
 
-import { SpanStatusCode, trace, type Span, type Attributes } from "@opentelemetry/api";
+import type { Span, Attributes } from "@opentelemetry/api";
 import { redact } from "../redaction.js";
 
 import { VERSION } from "../version.js";
@@ -30,8 +34,27 @@ export interface SpanAttrs {
   [key: string]: string | number | boolean | undefined;
 }
 
-function tracer() {
-  return trace.getTracer(TRACER_NAME, TRACER_VERSION);
+type OtelApi = typeof import("@opentelemetry/api");
+
+let otel: OtelApi | undefined;
+
+/** Called by `initObservability` once the API is loaded, and by tests. `undefined` goes back to no-op spans. */
+export function useOtelApi(api: OtelApi | undefined): void {
+  otel = api;
+}
+
+/**
+ * A span that does nothing, for when the OpenTelemetry API is not loaded.
+ * Every method returns the span itself, which is the shape of the real
+ * no-op span, so callers chain the same way.
+ */
+const NOOP_SPAN: Span = new Proxy({} as Span, {
+  // Not "then": a span that looked like a promise would hang any `await span`.
+  get: (_target, key) => (key === "then" ? undefined : () => NOOP_SPAN),
+});
+
+function tracer(api: OtelApi) {
+  return api.trace.getTracer(TRACER_NAME, TRACER_VERSION);
 }
 
 function assignAttrs(span: Span, attrs: SpanAttrs): void {
@@ -52,14 +75,16 @@ async function withSpan<T>(
   attrs: SpanAttrs,
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
-  return tracer().startActiveSpan(name, async (span: Span) => {
+  const api = otel;
+  if (api === undefined) return fn(NOOP_SPAN);
+  return tracer(api).startActiveSpan(name, async (span: Span) => {
     const t0 = Date.now();
     try {
       assignAttrs(span, attrs);
       const out = await fn(span);
       const durationMs = Date.now() - t0;
       span.setAttribute("duration_ms", durationMs);
-      span.setStatus({ code: SpanStatusCode.OK });
+      span.setStatus({ code: api.SpanStatusCode.OK });
       return out;
     } catch (err) {
       const durationMs = Date.now() - t0;
@@ -71,7 +96,7 @@ async function withSpan<T>(
       const safe = new Error(redact(e.message));
       safe.name = e.name;
       span.recordException(safe);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: safe.message });
+      span.setStatus({ code: api.SpanStatusCode.ERROR, message: safe.message });
       throw err;
     } finally {
       span.end();
@@ -136,7 +161,8 @@ export async function* withRouterStreamSpan<T>(
   onEvent: (span: Span, event: T) => void,
 ): AsyncGenerator<T> {
   const { "router.op": op, ...rest } = attrs;
-  const span = tracer().startSpan(`harness-dispatch.router.${op}`);
+  const api = otel;
+  const span = api === undefined ? NOOP_SPAN : tracer(api).startSpan(`harness-dispatch.router.${op}`);
   assignAttrs(span, { ...rest, "router.op": op });
   const t0 = Date.now();
   try {
@@ -144,13 +170,13 @@ export async function* withRouterStreamSpan<T>(
       onEvent(span, event);
       yield event;
     }
-    span.setStatus({ code: SpanStatusCode.OK });
+    if (api !== undefined) span.setStatus({ code: api.SpanStatusCode.OK });
   } catch (err) {
     const e = err instanceof Error ? err : new Error(String(err));
     const safe = new Error(redact(e.message));
     safe.name = e.name;
     span.recordException(safe);
-    span.setStatus({ code: SpanStatusCode.ERROR, message: safe.message });
+    if (api !== undefined) span.setStatus({ code: api.SpanStatusCode.ERROR, message: safe.message });
     throw err;
   } finally {
     span.setAttribute("duration_ms", Date.now() - t0);

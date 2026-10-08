@@ -62,6 +62,45 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",
+    "cross-spawn": "^7.0.6",
+    "js-yaml": "^4.3.1",
+    "which": "^7.0.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/instrumentation-fs": "^0.40.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/exporter-trace-otlp-http": {
+      "optional": true
+    },
+    "@opentelemetry/instrumentation": {
+      "optional": true
+    },
+    "@opentelemetry/instrumentation-fs": {
+      "optional": true
+    },
+    "@opentelemetry/instrumentation-http": {
+      "optional": true
+    },
+    "@opentelemetry/resources": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-node": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
@@ -70,13 +109,6 @@
     "@opentelemetry/instrumentation-http": "^0.221.0",
     "@opentelemetry/resources": "^2.10.0",
     "@opentelemetry/sdk-trace-node": "^2.10.0",
-    "cross-spawn": "^7.0.6",
-    "js-yaml": "^4.3.1",
-    "which": "^7.0.0",
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@modelcontextprotocol/client": "^2.3.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.20.4",

@@ -1431,8 +1431,10 @@ describe("every tool emits an MCP span", () => {
     const tracer = {
       startActiveSpan: (_name: string, fn: (s: unknown) => unknown) => fn(span),
     };
-    const { trace } = await import("@opentelemetry/api");
-    const spy = vi.spyOn(trace, "getTracer").mockReturnValue(tracer as never);
+    const otelApi = await import("@opentelemetry/api");
+    const { useOtelApi } = await import("../../src/observability/spans.js");
+    const spy = vi.spyOn(otelApi.trace, "getTracer").mockReturnValue(tracer as never);
+    useOtelApi(otelApi);
     try {
       const holder = buildHolder(
         { a: makeService("a") },
@@ -1453,6 +1455,7 @@ describe("every tool emits an MCP span", () => {
         await invokeTool(name, args, { holder }).catch(() => undefined);
       }
     } finally {
+      useOtelApi(undefined);
       spy.mockRestore();
     }
     expect([...new Set(seen)].sort()).toEqual([...TOOL_NAMES].sort());
