@@ -58,7 +58,7 @@ Which one you want depends on the goal:
 
 Every key is listed in the [config reference](#config-reference) below. The shipped
 [`config.default.yaml`](../config.default.yaml) is worked examples of the four built-in
-harnesses, not a template: do not copy it (it is 479 lines of rationale). Start from
+harnesses, not a template: do not copy it (most of it is rationale). Start from
 the short file `harness-dispatch configure --print` shows and add entries to it.
 
 **A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
@@ -376,9 +376,7 @@ clis:
     tier: 3
     weight: 0.75
     cli_capability: 1.0
-    timeout_ms: 900000  # optional; overrides the 60-minute job default (10 min applies only to the CLI `dispatch` command and `doctor --live`). An endpoint route's HTTP request gets the same budget when this is unset: 60 minutes on MCP and HTTP dispatches (shared across fallbacks), 120 s only on the CLI `dispatch` command and `doctor --live`
-
-    timeout_ms: 900000  # optional; see "Time limits" below. An endpoint route's own HTTP request timeout defaults to 120 s when unset
+    timeout_ms: 900000  # optional; see "Time limits" above
     capabilities:
       execute: 0.8
       plan: 0.7

@@ -88,7 +88,7 @@ A user comparing their terminal against the docs should see the same shape.
 Plain, specific, unhedged. This is a tool that spends the user's money and runs
 agents with file access on their machine; the writing should read like it takes
 that seriously. State limits directly — "Cursor cannot serve `workspace_edit`
-on Windows" — rather than burying them in qualifiers.
+on any platform" — rather than burying them in qualifiers.
 
 ## Explicit non-goals
 
