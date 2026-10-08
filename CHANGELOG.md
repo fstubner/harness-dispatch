@@ -154,6 +154,12 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **A test run can no longer write into your real `~/.harness-dispatch`.**
+  The suite now points the home directory and every state, log, jobs,
+  workspaces and token directory at one throwaway folder for the whole run,
+  including processes the tests start. Before, only part of that was
+  redirected, and test routes had ended up in the real dispatch log that
+  `usage` history is read from. A test now fails if any of this is missing.
 - **A job that finishes within a fraction of a second now sends its output as
   progress.** The server tails a job's progress log while `dispatch` waits, but
   a successful job deletes that log when it ends, so a job that printed two

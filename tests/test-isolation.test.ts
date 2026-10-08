@@ -35,9 +35,76 @@
  * test.
  */
 
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { authDir } from "../src/auth.js";
 import { loadConfig, resolveConfigPath } from "../src/config.js";
+import { logDir } from "../src/dispatch-log.js";
+import { jobsRoot } from "../src/jobs/store.js";
+import { stateRoot } from "../src/state-dir.js";
+import { workspacesBase } from "../src/workspaces.js";
+import { ISOLATED_DIR_VARS } from "./global-setup.js";
+
+/**
+ * The user's real home, from the OS account record rather than HOME or
+ * USERPROFILE — the variables the run redirects, and so the ones that cannot
+ * be trusted to name it.
+ */
+const realHome = os.userInfo().homedir;
+const realState = path.join(realHome, ".harness-dispatch");
+
+function inside(child: string, parent: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+describe("the test run cannot write to the user's real state", () => {
+  it("redirects the home directory for the whole run", () => {
+    expect(os.homedir(), "global-setup.ts must point HOME/USERPROFILE at a scratch home").not.toBe(
+      realHome,
+    );
+  });
+
+  it("sets every directory variable the product reads", () => {
+    for (const name of Object.keys(ISOLATED_DIR_VARS)) {
+      expect(process.env[name], `${name} is not set by global-setup.ts`).toBeTruthy();
+    }
+  });
+
+  it("resolves every place the product writes to somewhere outside ~/.harness-dispatch", () => {
+    const resolved = {
+      stateRoot: stateRoot(),
+      logDir: logDir(),
+      jobsRoot: jobsRoot(),
+      workspacesBase: workspacesBase(),
+      authDir: authDir(),
+    };
+    for (const [what, dir] of Object.entries(resolved)) {
+      expect(inside(dir, realState), `${what} resolves to ${dir}, inside the real state dir`).toBe(false);
+    }
+  });
+
+  it("hands the same isolation to a process a test spawns with the inherited environment", () => {
+    // What the detached runners, the stdio server tests and the CLI tests do.
+    const out = execFileSync(
+      process.execPath,
+      [
+        "-e",
+        "const os = require('node:os'); process.stdout.write(JSON.stringify({ home: os.homedir(), state: process.env.HARNESS_DISPATCH_STATE_DIR, ws: process.env.HARNESS_DISPATCH_WORKSPACES_DIR }))",
+      ],
+      { encoding: "utf8", env: { ...process.env } },
+    );
+    const child = JSON.parse(out) as { home: string; state?: string; ws?: string };
+    expect(child.home).not.toBe(realHome);
+    expect(child.state).toBeTruthy();
+    expect(child.ws).toBeTruthy();
+    expect(inside(child.state!, realState)).toBe(false);
+  });
+});
 
 describe("the test suite is isolated from real harnesses", () => {
   it("points config resolution at a sandbox, not the user's own", () => {
