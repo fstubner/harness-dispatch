@@ -154,6 +154,13 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`status` and `usage` no longer mark a route `ok` that the router will not
+  pick.** Each route line now starts with `ready` or `skipped (<reason>)`,
+  from the same verdict as the `Ready to route:` line, so the two cannot
+  disagree. A route whose effective safety is above the default (Cursor's
+  `full_auto`, for example) used to print `ok`; it now prints `skipped
+  (safety_incompatible)`, and the reason says the requested safety was the
+  default and that a dispatch asking for `full_auto` can use it.
 - **Installing the Claude Code plugin no longer leads to a second server.**
   `doctor` now recognises an enabled harness-dispatch Claude Code plugin and
   says Claude Code is "registered via the Claude Code plugin" instead of

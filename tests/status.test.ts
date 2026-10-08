@@ -299,37 +299,57 @@ describe("the mark on a listed route reflects whether the router will use it", (
     );
 
     const usage = renderUsageText(buildUsage(status));
-    expect(usage).toMatch(/^skip groq_api/m);
+    expect(usage).toMatch(/^skipped \(credential_unset\) groq_api/m);
     // And the reason travels with it: the mark alone says "not this one"
     // without saying what to do about it.
     expect(usage).toContain("${GROQ_API_KEY}");
-    expect(renderStatusText(status)).toMatch(/^skip groq_api/m);
+    expect(renderStatusText(status)).toMatch(/^skipped \(credential_unset\) groq_api/m);
   });
 
-  it("leaves a route skipped only for THIS request marked ok", () => {
-    // The listing surfaces evaluate policy with no safety profile, task type
-    // or route policy, so several skip codes answer a question nobody asked.
-    // cursor_cli declares full_auto, which exceeds the default requested
-    // profile — marking it skipped would call a route broken that a full_auto
-    // dispatch uses successfully, 11 times out of 14 on this machine.
-    const status = makeStatus(
-      [
-        makeRoute({
-          id: "cursor_cli",
-          skipped: {
-            route: "cursor_cli",
-            code: "safety_incompatible",
-            message: "effective safety full_auto exceeds requested safety",
-          },
-        }),
-      ],
-      ["cursor_cli"],
+  it("marks a route skipped for the default request the same way `Ready to route:` does", async () => {
+    // cursor_cli's effective safety is full_auto, above the default
+    // workspace_edit a dispatch gets when it asks for nothing. The router
+    // skips it for such a dispatch and `Ready to route:` leaves it out, yet
+    // the line above used to start `ok`, which read as healthy. The mark now
+    // comes from the same verdict, and the reason names the request it fails
+    // and the one that would use it.
+    const { buildStatus } = await import("../src/status.js");
+    const svc = {
+      name: "cursor_cli", enabled: true, type: "cli", tier: 2, weight: 1, cliCapability: 1,
+      capabilities: { execute: 1, plan: 1, review: 1 }, escalateOn: [],
+      effectiveSafety: "full_auto",
+      provider: "cursor", surface: "cursor_agent_cli", authSource: "product_login",
+      billingKind: "local_compute", paidUsagePossible: false, billingConfidence: "documented",
+    };
+    const status = await buildStatus(
+      { services: { cursor_cli: svc } } as never,
+      { cursor_cli: { isAvailable: () => true } } as never,
+      {
+        fullStatus: async () => ({}),
+        getQuotaScore: async () => 1,
+        localCountsPersistError: () => undefined,
+      } as never,
+      {
+        circuitBreakerStatus: () => ({}),
+        breakerStateUnreadable: () => [], breakerWriteError: () => undefined,
+        pickService: () => undefined,
+        getBreaker: () => undefined,
+      } as never,
     );
 
-    const usage = renderUsageText(buildUsage(status));
-    expect(usage).toMatch(/^ok cursor_cli/m);
-    // Still reported, because it is information — just not a verdict.
-    expect(usage).toContain("safety_incompatible");
+    expect(status.ready).toEqual([]);
+    for (const text of [renderUsageText(buildUsage(status)), renderStatusText(status)]) {
+      expect(text).toMatch(/^skipped \(safety_incompatible\) cursor_cli/m);
+      expect(text).not.toMatch(/^ok /m);
+      expect(text).toContain("the default when a dispatch sets no hints.safetyProfile");
+      expect(text).toContain("only a dispatch with hints.safetyProfile 'full_auto' can use this route");
+    }
+  });
+
+  it("marks a route the router will use as ready", () => {
+    const status = makeStatus([makeRoute({ id: "codex" })], ["codex"]);
+    expect(renderUsageText(buildUsage(status))).toMatch(/^ready codex/m);
+    expect(renderStatusText(status)).toMatch(/^ready codex/m);
   });
 });
 
@@ -367,7 +387,7 @@ describe("the listing and the router agree about a dead route", () => {
     );
 
     expect(status.routes[0]?.skipped?.code).toBe("never_succeeded");
-    expect(renderUsageText(buildUsage(status))).toMatch(/^skip dead_local/m);
+    expect(renderUsageText(buildUsage(status))).toMatch(/^skipped \(never_succeeded\) dead_local/m);
   });
 });
 
