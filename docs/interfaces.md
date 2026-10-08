@@ -42,6 +42,22 @@ commands is not queued; it is as parallel as you make it.
 and `mcp --http <port>` is the same as `serve --port <port>`. `serve` picks a free
 port unless you pass `--port`, and prints the one it chose on startup.
 
+### Claude Code plugin
+
+Instead of `connect`, Claude Code users can install the plugin, which registers
+the server and adds a delegation skill and the `/route`, `/jobs` and `/setup`
+commands:
+
+```
+/plugin marketplace add fstubner/harness-dispatch
+/plugin install harness-dispatch@harness-dispatch
+```
+
+The `owner/repo` form clones over SSH; without a GitHub SSH key, add
+`https://github.com/fstubner/harness-dispatch.git` instead. With the plugin
+enabled, `connect` leaves Claude Code alone (a second entry would start a second
+server) and `doctor` reports it as registered. Details: [plugin/README.md](../plugin/README.md).
+
 Hidden compatibility aliases map old alpha commands to the new surface:
 `dashboard` and `list-services` map to `status`, and `route <prompt>` is an alias
 of `dispatch`. They are not part of the public vocabulary and may be removed

@@ -22,7 +22,7 @@ import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFi
 import path from "node:path";
 
 import { commandAvailable } from "./dispatchers/shared/which-available.js";
-import { clientConfigLocations, type ClientConfigLocation } from "./mcp-clients.js";
+import { claudeCodePluginInstall, clientConfigLocations, type ClientConfigLocation } from "./mcp-clients.js";
 
 /** The key this server is registered under, and the only one we ever touch. */
 export const ENTRY_KEY = "harness-dispatch";
@@ -62,6 +62,12 @@ export interface ClientPlan {
   current?: unknown;
   /** What we would write. */
   desired: ServerEntry;
+  /**
+   * Claude Code only: the install id of an ENABLED harness-dispatch Claude Code
+   * plugin. That plugin already starts this server, so writing an entry too
+   * gives the client two servers with the same tools.
+   */
+  plugin?: string;
 }
 
 /**
@@ -168,7 +174,8 @@ export function planClientWrites(
   const installed = opts.installed ?? ((commands) => commands.some((c) => commandAvailable(c)));
   const locations: ClientConfigLocation[] = clientConfigLocations(opts.home);
   return locations.map(({ id, client, file, serversKey, commands }) => {
-    const base = { id, client, file, serversKey, desired };
+    const plugin = id === "claude-code" ? claudeCodePluginInstall(opts.home) : undefined;
+    const base = { id, client, file, serversKey, desired, ...(plugin?.enabled === true ? { plugin: plugin.id } : {}) };
     if (!existsSync(file)) {
       return { ...base, state: installed(commands) ? ("missing-file" as const) : ("absent" as const) };
     }

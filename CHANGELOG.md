@@ -154,6 +154,16 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **Installing the Claude Code plugin no longer leads to a second server.**
+  `doctor` now recognises an enabled harness-dispatch Claude Code plugin and
+  says Claude Code is "registered via the Claude Code plugin" instead of
+  telling you to run `connect`. It warns when the plugin and a `connect`
+  entry both register it, and points a disabled plugin at `/plugin`.
+  `connect` skips Claude Code while the plugin is enabled (`--force` writes
+  the entry anyway).
+- **The plugin has a published install line:** `/plugin marketplace add
+  fstubner/harness-dispatch`, then `/plugin install
+  harness-dispatch@harness-dispatch` (plugin/README.md, docs/interfaces.md).
 - **A test run can no longer write into your real `~/.harness-dispatch`.**
   The suite now points the home directory and every state, log, jobs,
   workspaces and token directory at one throwaway folder for the whole run,

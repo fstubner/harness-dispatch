@@ -1,5 +1,6 @@
 {
   "name": "harness-dispatch",
+  "description": "The harness-dispatch plugin: delegate coding tasks from Claude Code to the other coding agents installed on this machine.",
   "owner": {
     "name": "Felix Stubner"
   },
