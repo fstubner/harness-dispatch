@@ -61,10 +61,10 @@ Every key is listed in the [config reference](#config-reference) below. The ship
 harnesses, not a template: do not copy it (most of it is rationale). Start from
 the short file `harness-dispatch configure --print` shows and add entries to it.
 
-**A wholly new CLI harness — one of the 4 built in isn't it — needs no new code
+**A wholly new CLI harness (one of the 4 built in isn't it) needs no new code
 either.** `harness: generic` takes a `protocol:` block instead of reusing one of the
 4 built-in harnesses' flag/output conventions. `protocol.args` is a literal
-command-line argument list, written the same way you'd type it by hand — a handful of
+command-line argument list, written the same way you'd type it by hand. A handful of
 reserved `{{name}}` tokens are substituted (or expanded to zero or more real tokens) at
 dispatch time; everything else passes through verbatim:
 
@@ -132,13 +132,13 @@ preset name or `extends:` too — it's parsed through the exact same code path a
 other route.
 
 The `harness: claude_code | codex | cursor | antigravity_cli` routes aren't special
-either — there is no per-harness dispatcher class or hardcoded TypeScript data for any
+either: there is no per-harness dispatcher class or hardcoded TypeScript data for any
 of them in this codebase. All 4 are ordinary `clis:` entries in the shipped
-[`config.default.yaml`](../config.default.yaml) — not a separate "defaults registry" in
+[`config.default.yaml`](../config.default.yaml), not a separate "defaults registry" in
 some other format, loaded through the exact same parser as your own `config.yaml`,
 covering each CLI's real flags including Codex's mid-run tool_use/thinking/usage
-streaming events via `event_rules` (see below). Every CLI-type route — built-in or
-user-added — runs through the one `GenericCliDispatcher` interpreter. Copy an entry
+streaming events via `event_rules` (see below). Every CLI-type route, built-in or
+user-added, runs through the one `GenericCliDispatcher` interpreter. Copy an entry
 from the shipped file into your own `config.yaml` and edit it directly (or add a
 `protocol:` block under `overrides.claude_code_cli`, etc.) and it replaces the default
 entirely — nothing about the 4 built-ins is more hardcoded than a route you add
