@@ -11,8 +11,8 @@ One plugin directory serving both ecosystems (the SKILL.md format is shared):
 
 ## Install — Claude Code / Claude Desktop
 
-This repository is its own plugin marketplace (`.claude-plugin/marketplace.json`
-at the root, per the
+This repository is its own plugin marketplace (its manifest is in the
+`.claude-plugin` folder at the repository root, per the
 [Claude Code marketplace docs](https://code.claude.com/docs/en/plugin-marketplaces)).
 In a Claude Code session:
 
