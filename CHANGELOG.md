@@ -166,6 +166,11 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **No more `EBADENGINE` warning when installing on Node 23, 25 or 24 before 24.15.**
+  The `which` dependency is pinned back to 6.x, whose supported Node versions
+  cover everything this package says it supports (`>=22.22.2`); 7.0.0 left
+  out Node 23, 25 and 24 before 24.15. A test now fails if any runtime
+  dependency accepts fewer Node versions than `package.json` claims.
 - **`harness-dispatch <command> --help` shows that command's help.** Each
   command now prints its own usage line, its flags and one example, instead
   of the same global block for every command. The global help no longer
