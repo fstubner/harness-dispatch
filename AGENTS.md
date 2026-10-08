@@ -5,8 +5,8 @@ available. The public MCP surface is intentionally small:
 
 - Tools: `dispatch`, `job_status`, `cancel_job`, `retry_job`, `workspace`, `usage`
 - Resources: `harness-dispatch://status`, `harness-dispatch://status.json`
-- Protocol: MCP 2026-07-28, and 2025-11-25 back to 2024-10-07 for clients that
-  open with `initialize`; the same surface either way.
+- Protocol: MCP 2026-07-28 and the 2025-era revisions; the same surface either way
+  ([revisions](docs/interfaces.md#protocol-revisions)).
 
 ## Routing
 
@@ -55,3 +55,10 @@ route, and pass `hints.model` (an exact model id) only together with it.
 
 Read `harness-dispatch://status.json` before routing when route readiness,
 billing policy, safety, quota state, or breaker state matters.
+
+## Working on this repo
+
+Build and test with `npm run build` and `npm run check`; the conventions, the claims
+checker and the pull request rules are in [CONTRIBUTING.md](CONTRIBUTING.md). Do not
+cut a release without reading [RELEASING.md](RELEASING.md): at most one a day, and
+the GitHub release stays a draft.

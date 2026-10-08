@@ -1,7 +1,7 @@
 {
   "name": "harness-dispatch",
   "version": "0.12.0",
-  "description": "Turn locally installed coding harnesses (Claude Code, Codex, Cursor, Antigravity) and local/remote API endpoints into tools any AI can call, with async job handling for long-running agent work.",
+  "description": "An MCP server that lets your AI coding agent hand bounded tasks to the other agent CLIs you already have (Claude Code, Codex, Cursor, Antigravity, local models), with fallback and background jobs.",
   "keywords": [
     "mcp",
     "claude",

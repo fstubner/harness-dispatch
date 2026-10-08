@@ -41,7 +41,8 @@ parts that decide what they can touch matter most:
 - A delegate with shell access (`full_auto`, or a route whose harness grants shell)
   can reach anything your user account can. The workspace policies isolate project
   state, not the host. This is documented in the
-  [README](README.md#safety-profiles-and-cursor) and is not a vulnerability.
+  [configuration guide](docs/configuration.md#safety-profiles-and-cursor) and is not
+  a vulnerability.
 - Bugs in the harness CLIs themselves (Claude Code, Codex, Cursor Agent,
   Antigravity). Report those to their vendors.
 - A malicious `config.yaml` you chose to load. The config decides what commands run,

@@ -280,6 +280,74 @@ endpoints:
   hide the client config file.
 - A literal `api_key:` works and is not recommended.
 
+## Safety profiles and Cursor
+
+A caller asks for one of three profiles, and each is a limit rather than a
+capability:
+
+| Profile | Means |
+|---|---|
+| `read_only` | Look, don't touch |
+| `workspace_edit` | Edit files in the workspace, no arbitrary shell |
+| `full_auto` | Edit files and run shell |
+
+A route declares the floor it actually runs at (`effective_safety`), and is
+skipped when that floor exceeds what was asked for. A route is never quietly
+given more access than the caller requested.
+
+`cursor_cli` is the interesting case, because its capability differs by mode:
+
+- `read_only` uses `--mode plan`, which is genuinely read-only (verified: asked
+  to create one file and overwrite another, it did neither).
+- `full_auto` uses print mode, which edits and runs shell.
+- `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
+  write and shell together. `--sandbox enabled`, the flag that would constrain
+  shell while allowing edits, exists only on macOS and Linux, so the shipped
+  route does not use it anywhere. There is no edit-without-shell mode to route
+  to, and claiming that level would mean handing shell access to a caller who
+  explicitly asked not to have it.
+
+Cursor still edits code. Ask for `full_auto`.
+
+### Overriding the Cursor floor
+
+If you accept that Cursor's editing mode carries shell access and you want it
+to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml`.
+Your value replaces the shipped default:
+
+```yaml
+overrides:
+  cursor_cli:
+    effective_safety:
+      read_only: read_only
+      workspace_edit: workspace_edit   # you are accepting shell access here
+      full_auto: full_auto
+```
+
+Use `overrides:`, not a `clis:` entry: a config that lists any `clis:` entry is
+authoritative and drops every harness it does not name, so a lone `cursor_cli` entry
+would remove Claude Code, Codex and Antigravity from your routes. See
+[listing a route turns detection off](#listing-a-route-turns-detection-off).
+
+That is a deliberate local decision, not a bug workaround: the shipped default
+is conservative because the tool cannot verify what a given `cursor-agent`
+build will do. On macOS and Linux the better route is `--sandbox enabled`,
+which constrains shell for real. It is untested here, so it is not shipped on by
+default.
+
+`antigravity_cli` declares the same floor, for the same reason: in headless
+mode every profile has to auto-approve tool requests, and its edit mode does
+that with nothing restricting the terminal. It serves `read_only` (`--mode plan
+--sandbox`) and `full_auto`, and the same override applies.
+
+Each profile is enforced by the harness itself, and the strength differs: Codex
+runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
+permission rules, and Antigravity's `full_auto` approves everything. A Claude
+Code delegate at `read_only` or `workspace_edit` gets only the file tools
+(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
+Claude Code login, user settings, user-level hooks and `CLAUDE.md` files, but not
+the project's own settings or hooks (`--setting-sources user`).
+
 ## Time limits
 
 Two per-route limits, both optional, both in milliseconds:

@@ -9,17 +9,21 @@ it spawns.
 |---|---|---|
 | MCP server (stdio) | `bin.ts` (default) | Child of the calling agent |
 | HTTP server | `bin.ts serve` -> `http/server.ts` | Long-lived local server |
-| CLI | `bin.ts status \| doctor \| configure \| usage \| auth`, each command in `cli/` | One-shot |
+| CLI | `bin.ts status \| doctor \| configure \| connect \| usage \| dispatch \| breaker \| auth`, commands in `cli/` | One-shot |
 | Job supervisor | `job-runner.ts --supervisor` | Detached, spawned by the above |
 
-All four share `router.ts` and the config in `config.ts`. There is no server
-the user does not run themselves, and no shared multi-tenant state.
+All four share `router.ts` and the config loaded by `config.ts`. There is no server
+the user does not run themselves, and no shared multi-tenant state. `jobs.ts` is a
+re-export facade: the job code lives in `jobs/` (`start.ts` admits a job,
+`supervisor.ts` runs the queue and the pool, `lifecycle.ts` cancels and retries,
+`read.ts` and `store.ts` read and persist the job directory).
 
 ## Core flow
 
 ```
 caller -> mcp/server.ts (dispatch tool)
-            -> jobs.ts        create job dir, prompt.md, manifest
+            -> jobs/start.ts  refuse nested dispatch, validate, create job dir,
+                              prompt.md, manifest
             -> drainSlotQueue release within max_concurrent_runs, FIFO
             -> spawn supervisor pool (<= 4 processes)
                  -> router.ts   score routes, pick one
@@ -46,9 +50,10 @@ POSIX uses the plain detached spawn (setsid).
 
 ## Parts and boundaries
 
-**`config.ts`** — the only place that reads user config or shipped harness
-defaults. Everything downstream consumes `RouterConfig`. Note it is the widest
-file in the codebase and the one where silently-dropped keys have hidden
+**`config.ts` and `config/`** — the only place that reads user config or shipped
+harness defaults (`config/` holds the pieces: validation, route fields, protocol
+blocks, env interpolation). Everything downstream consumes `RouterConfig`. Note it is
+the widest part of the codebase and the one where silently-dropped keys have hidden
 (`workspace_policy` on `clis:` was parsed for two of three route shapes).
 
 **`router.ts`** — scoring and selection. Score is
@@ -80,7 +85,7 @@ writes); quota counters are informational only and never feed routing.
 
 1. **Caller -> MCP surface.** The calling agent may be steered by injected
    content, so inputs are validated at the boundary: `jobId` format (and again
-   in `jobs.ts`), `files` count, safety enums. Not "the caller is trusted".
+   in `jobs/store.ts`), `files` count, safety enums. Not "the caller is trusted".
 2. **Dispatcher -> harness process.** The child inherits `process.env` minus
    every other route's API key. Its working directory is governed by
    `workspace_policy`.
@@ -88,6 +93,21 @@ writes); quota counters are informational only and never feed routing.
    passed to another delegate (`contextJobs`), it is explicitly framed as work
    to build on, not instructions.
 4. **HTTP surface.** Bearer token, bound to loopback by default.
+5. **`connect` -> other applications' config files.** `connect` (and `configure`'s
+   offer to register) writes into files that belong to Claude Code and Cursor
+   (`src/mcp-clients.ts`, `src/client-register.ts`). It writes the one server entry
+   and nothing else. Every write is backed up first and merged, not replaced; an
+   entry that exists and differs is reported and left alone without consent; and
+   `connect --remove` takes the entry back out.
+6. **Delegate -> dispatch.** An agent that harness-dispatch started may not
+   dispatch. Every agent it starts carries `HARNESS_DISPATCH_DEPTH`, one deeper than
+   the process that started it, and `jobs/start.ts` (the MCP and HTTP paths) and the
+   CLI `dispatch` command refuse a dispatch from a process at depth 1 or more
+   (`src/nested-dispatch.ts`). The check reads the environment of the process that
+   accepts the dispatch, not the one that runs the job, because supervisors are shared
+   between sessions. Without it a
+   delegate with a shell, or with this server among its MCP servers, could delegate
+   again without bound.
 
 ## Trust
 
@@ -107,8 +127,9 @@ What this system assumes, and what it refuses to assume:
 
 ## Concurrency model
 
-- `max_concurrent_runs` bounds agent CLIs machine-wide. The binding constraint
-  is **memory, not cores** — agent CLIs are heavyweight processes.
+- `max_concurrent_runs` bounds agent CLIs machine-wide (the default, and what
+  happens past it, are in [docs/operations.md](docs/operations.md#concurrency)). The
+  binding constraint is **memory, not cores**: agent CLIs are heavyweight processes.
 - Supervision is a pool of at most 4 supervisor processes. Each claims jobs up
   to its share of `max_concurrent_runs` (`ceil(limit / 4)`), so at the default
   of 4 each runs exactly one job and there is a supervisor per running job;

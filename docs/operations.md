@@ -119,19 +119,21 @@ default — set `retention: { jobs_days: N }` in `config.yaml` (or
 window. `0` means keep forever, and a running or queued job with a live
 heartbeat is never pruned regardless of the window.
 
-At most **4 agent CLIs run at once**, machine-wide. Dispatches past that limit
-wait in `queued` and start as slots free — you still get a `jobId` back
-immediately and nothing is rejected or lost, only delayed. The bound exists
-because agent CLIs are heavyweight processes, not fan-outable HTTP calls: a
-measured burst of 13 concurrent runs exhausted memory and failed half of them.
-Change it with `max_concurrent_runs: N` in `config.yaml`. `0` lifts the cap —
-jobs no longer queue for a slot — while still running them through the
-supervisor pool, so runner processes stay bounded at 4 however many jobs are in
-flight. Memory then scales with the harnesses you actually launch rather than
-with a per-job wrapper.
+Prompts and outputs flow only to the harnesses/endpoints you configured. **harness-dispatch
+makes no other network call by default.**
 
-Prompts and outputs flow only to the harnesses/endpoints you configured. **The
-router makes no other network call by default.**
+## Concurrency
+
+At most **4 agent CLIs run at once**, machine-wide. Dispatches past that limit
+wait in `queued` and start as slots free: you still get a `jobId` back
+immediately and nothing is rejected or lost, only delayed. The bound exists
+because agent CLIs are heavyweight processes, not fan-outable HTTP calls, so memory
+is the limit, not cores. Change it with `max_concurrent_runs: N` in `config.yaml`.
+`0` lifts the cap (jobs no longer queue for a slot) while still running them
+through the supervisor pool, so runner processes stay bounded at 4 however many
+jobs are in flight. Memory then scales with the harnesses you actually launch rather
+than with a per-job wrapper. The CLI `dispatch` command runs in its own process and
+is outside this cap.
 
 ### How a route is chosen
 

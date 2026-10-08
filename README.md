@@ -46,7 +46,8 @@ still worth doing. No global install needed either: `npx harness-dispatch config
 - Those harnesses **read and write files** under the `workingDir` you pass (that is the
   point of the tool) and **run shell commands**, depending on the safety and workspace
   policy in effect.
-- At most **4 agent CLIs run at once** (`max_concurrent_runs`); extra dispatches queue.
+- At most **4 agent CLIs run at once** (`max_concurrent_runs`); extra dispatches queue
+  ([concurrency](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md#concurrency)).
 - `serve` additionally binds a local HTTP port: loopback only by default, bearer-token
   gated. Read [the HTTP surface docs](https://github.com/fstubner/harness-dispatch/blob/main/docs/interfaces.md) before pointing `--host`
   anywhere else.
@@ -113,13 +114,10 @@ Real agent work usually runs longer than that, so the reply you will see most is
 
 Carry on working, then call `job_status` with that id for a live output tail or the
 finished result. The run lives in a detached process, so **nothing is lost to a client
-timeout, or to the server itself restarting mid-run**. On Windows the process is
-started through WMI so that a launcher which kills its child processes when the
-session ends cannot take it along; if WMI is unavailable it falls back to a plain
-detached process, which does not survive such a launcher, and `doctor` says which
-you have (see
-[Operating it](https://github.com/fstubner/harness-dispatch/blob/main/OPERATIONS.md#failure-modes)
-for the cases where a job is reported `orphaned` instead).
+timeout, or to the server itself restarting mid-run**. If the process running a job
+dies, the job is reported `orphaned` rather than lost. On Windows, `doctor` checks
+that the run really outlives a launcher that kills its children; see
+[A run outlives its server](https://github.com/fstubner/harness-dispatch/blob/main/docs/operations.md#a-run-outlives-its-server).
 
 ## Setup details
 
@@ -252,73 +250,14 @@ is currently on the npm registry, which can lag a local clone's `dist/`. Check w
 
 </details>
 
-## Safety profiles, and Cursor
+## Safety profiles
 
-A caller asks for one of three profiles, and each is a limit rather than a
-capability:
-
-| Profile | Means |
-|---|---|
-| `read_only` | Look, don't touch |
-| `workspace_edit` | Edit files in the workspace, no arbitrary shell |
-| `full_auto` | Edit files and run shell |
-
-A route declares the floor it actually runs at (`effective_safety`), and is
-skipped when that floor exceeds what was asked for. A route is never quietly
-given more access than the caller requested.
-
-`cursor_cli` is the interesting case, because its capability differs by mode:
-
-- `read_only` uses `--mode plan`, which is genuinely read-only (verified: asked
-  to create one file and overwrite another, it did neither).
-- `full_auto` uses print mode, which edits and runs shell.
-- `workspace_edit` is **skipped, on every platform**. Cursor's print mode grants
-  write and shell together. `--sandbox enabled`, the flag that would constrain
-  shell while allowing edits, exists only on macOS and Linux, so the shipped
-  route does not use it anywhere. There is no edit-without-shell mode to route
-  to, and claiming that level would mean handing shell access to a caller who
-  explicitly asked not to have it.
-
-Cursor still edits code. Ask for `full_auto`.
-
-### Overriding it
-
-If you accept that Cursor's editing mode carries shell access and you want it
-to serve `workspace_edit` anyway, declare the floor yourself in `config.yaml`.
-Your value replaces the shipped default:
-
-```yaml
-overrides:
-  cursor_cli:
-    effective_safety:
-      read_only: read_only
-      workspace_edit: workspace_edit   # you are accepting shell access here
-      full_auto: full_auto
-```
-
-Use `overrides:`, not a `clis:` entry: a config that lists any `clis:` entry is
-authoritative and drops every harness it does not name, so a lone `cursor_cli` entry
-would remove Claude Code, Codex and Antigravity from your routes. See
-[listing a route turns detection off](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#listing-a-route-turns-detection-off).
-
-That is a deliberate local decision, not a bug workaround: the shipped default
-is conservative because the tool cannot verify what a given `cursor-agent`
-build will do. On macOS and Linux the better route is `--sandbox enabled`,
-which constrains shell for real. It is untested here, so it is not shipped on by
-default.
-
-`antigravity_cli` declares the same floor, for the same reason: in headless
-mode every profile has to auto-approve tool requests, and its edit mode does
-that with nothing restricting the terminal. It serves `read_only` (`--mode plan
---sandbox`) and `full_auto`, and the same override applies.
-
-Each profile is enforced by the harness itself, and the strength differs: Codex
-runs inside an OS sandbox, Claude Code and Cursor apply their own in-process
-permission rules, and Antigravity's `full_auto` approves everything. A Claude
-Code delegate at `read_only` or `workspace_edit` gets only the file tools
-(`--tools`) and no MCP servers (`--strict-mcp-config`); it still runs with your
-Claude Code login, user settings, user-level hooks and `CLAUDE.md` files, but not
-the project's own settings or hooks (`--setting-sources user`).
+A caller asks for one of three profiles: `read_only`, `workspace_edit` (the default)
+or `full_auto`. Each is a limit, not a capability: a route is skipped rather than
+given more access than was asked for. Cursor and Antigravity cannot offer
+`workspace_edit`, so ask for `full_auto` there. What each profile means, how each
+harness enforces it, and how to override the floor are in the
+[configuration guide](https://github.com/fstubner/harness-dispatch/blob/main/docs/configuration.md#safety-profiles-and-cursor).
 
 ## CLI
 
