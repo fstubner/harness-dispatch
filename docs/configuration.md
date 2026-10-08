@@ -224,17 +224,17 @@ fast, but not free); `configure --yes` once removes that.
 
 ## Instructions for connecting agents
 
-Routing policy for this machine — which model tier for which kind of task, which
-route to prefer — can live in `config.yaml` instead of in every client's own
+Routing policy for this machine — which `hints.modelTier` for which kind of task,
+which route to prefer — can live in `config.yaml` instead of in every client's own
 instruction file (CLAUDE.md, AGENTS.md and the like):
 
 ```yaml
 instructions: |              # told to every agent that connects
-  Prefer Codex for refactors; keep the strongest models for hard judgment.
+  Prefer Codex for refactors; modelTier strong only for hard judgment.
 
 overrides:                   # an auto-detected route
   claude_code_cli:
-    instructions: "haiku for sweeps, sonnet for most work, opus only for hard judgment"
+    instructions: "best for plan and review; slow to start, so expect a jobId"
 endpoints:
   - name: local_box
     base_url: http://127.0.0.1:1234/v1
@@ -400,6 +400,7 @@ These work on `clis:` and `endpoints:` entries, on `overrides:` entries, and on 
 | `model` | text | none (required for an endpoint) | The model passed to the harness or endpoint. Unset on a CLI route, the harness runs its own default. |
 | `models` | list of text | harness default | Operator-curated model ids. `usage` lists them, and `listModels` returns them instead of querying the endpoint. |
 | `model_hint` | text | harness default | Where this harness's real model catalog is documented; shown by `usage`. |
+| `model_tiers` | map of `cheap`, `standard`, `strong` to a model id | harness default (`claude_code_cli`: `haiku`, `sonnet`, `opus`; `codex_cli`: `gpt-5.6-terra` for standard, `gpt-5.6-sol` for strong), but only on an entry with no `model:` of its own | The model this route runs for a dispatch's `hints.modelTier`. A tier with no entry runs the route's default model, reported as `routing.modelTierMatched: false`. A declared map replaces the harness default rather than merging with it. `hints.model` wins over it. Shown by `usage`. |
 | `instructions` | text, at most 1,000 characters | none | Policy for agents using this route; shown by `usage` and in the server instructions. |
 | `tier` | integer | harness default; `3` for an endpoint | Lower tiers are tried first; routes in a tier are ranked by score. |
 | `weight` | number | `1.0`; `0.6` for an endpoint | Multiplier in the route's score. |

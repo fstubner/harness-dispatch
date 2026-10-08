@@ -203,6 +203,8 @@ export interface RouteStatus {
   baseUrl?: string;
   model?: string;
   models?: string[];
+  /** What `hints.modelTier` runs on this route (`model_tiers:` in config). */
+  modelTiers?: ServiceConfig["modelTiers"];
   modelHint?: string;
   /** Operator instructions for this route (`instructions:` in config). */
   instructions?: string;
@@ -374,6 +376,7 @@ export async function buildStatus(
     }
     if (svc.model !== undefined) route.model = svc.model;
     if (svc.models !== undefined) route.models = svc.models;
+    if (svc.modelTiers !== undefined) route.modelTiers = svc.modelTiers;
     if (svc.modelHint !== undefined) route.modelHint = svc.modelHint;
     if (svc.instructions !== undefined) route.instructions = svc.instructions;
     if (svc.maxInputTokens !== undefined) route.maxInputTokens = svc.maxInputTokens;
@@ -476,6 +479,8 @@ export interface RouteUsage {
   tier: number;
   model?: string;
   models?: string[];
+  /** What `hints.modelTier` runs on this route (`model_tiers:` in config). */
+  modelTiers?: ServiceConfig["modelTiers"];
   modelHint?: string;
   /** Operator instructions for this route (`instructions:` in config). */
   instructions?: string;
@@ -561,6 +566,7 @@ export function buildUsage(status: HarnessDispatchStatus): HarnessDispatchUsage 
       if (route.recent !== undefined) usage.recent = route.recent;
       if (route.model !== undefined) usage.model = route.model;
       if (route.models !== undefined) usage.models = route.models;
+      if (route.modelTiers !== undefined) usage.modelTiers = route.modelTiers;
       const hint = modelDiscoveryHint(route);
       if (hint !== undefined) usage.modelHint = hint;
       if (route.instructions !== undefined) usage.instructions = route.instructions;

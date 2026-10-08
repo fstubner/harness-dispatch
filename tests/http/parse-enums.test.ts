@@ -24,6 +24,7 @@ describe("HTTP hint values are rejected, not dropped", () => {
     ["hints.routePolicy", { hints: { routePolicy: "bloked" } }],
     ["hints.workspacePolicy", { hints: { workspacePolicy: "copyy" } }],
     ["hints.taskType", { hints: { taskType: "excute" } }],
+    ["hints.modelTier", { hints: { modelTier: "strongest" } }],
     ["safetyProfile", { safetyProfile: "read_onlyy" }],
     ["workspacePolicy", { workspacePolicy: "worktree" }],
   ])("rejects a typo in %s", (field, body) => {
@@ -40,12 +41,14 @@ describe("HTTP hint values are rejected, not dropped", () => {
         routePolicy: "local_only",
         workspacePolicy: "git_worktree",
         taskType: "review",
+        modelTier: "cheap",
       },
     });
     expect(parsed.hints.safetyProfile).toBe("workspace_edit");
     expect(parsed.hints.routePolicy).toBe("local_only");
     expect(parsed.hints.workspacePolicy).toBe("git_worktree");
     expect(parsed.hints.taskType).toBe("review");
+    expect(parsed.hints.modelTier).toBe("cheap");
   });
 
   it("leaves an omitted hint omitted rather than defaulting it", () => {

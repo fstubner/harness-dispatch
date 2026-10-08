@@ -41,17 +41,19 @@ a short grace window (default 25s, tune with `graceSeconds`):
 - Finished in time → the response has `completed: true` and the full result
   inline. Done.
 - Still running → `completed: false` plus a `jobId`, `nextPollSeconds`, and
-  `instructions`. Do other work or wait ~5 minutes, then call `job_status`
-  with that `jobId`: while `status` is `"running"` you get `partialOutput`
-  (live tail); once `"completed"` or `"failed"` you get the full result.
+  `instructions`. Do other work or wait about `nextPollSeconds`, then call
+  `job_status` with that `jobId`: while `status` is `"running"` you get
+  `partialOutput` (live tail); once `"completed"` or `"failed"` you get the
+  full result.
   Results persist on disk (`~/.harness-dispatch/jobs/<jobId>/`), so checking
   late loses nothing — and an MCP client timeout on the original `dispatch`
   call loses nothing either, since the run never depended on that call
   staying open.
 
-CLI harnesses take 3–15 minutes, so expect the check-later path for real
-work. `graceSeconds: 0` on `dispatch` skips the inline wait entirely;
-`job_status` with no `jobId` lists the 20 most recent background dispatches,
+`nextPollSeconds` grows with the job's age: about 15 seconds for a job that
+has just started, doubling at each check, up to 5 minutes. Real CLI work often
+runs for minutes, so expect the check-later path for it. `graceSeconds: 0` on
+`dispatch` skips the inline wait entirely; `job_status` with no `jobId` lists the 20 most recent background dispatches,
 newest first, each with its `workingDir` and the start of its prompt
 (`promptPreview`) so you can pick out your own among other sessions' jobs.
 
@@ -80,14 +82,17 @@ Two things cancelling does NOT do, and both matter before you rely on it:
 
 - Call `usage` first when unsure: it lists valid route ids, their default
   models, per-session call counts, quota, and breaker state.
-- Set `hints.model` on every dispatch, chosen for the task: a cheap model for
-  mechanical sweeps and lookups, a mid-tier one for ordinary work and most
-  reviews, the strongest only for hard judgment. A route left on its default
-  may run its most expensive model on a trivial task.
-- A model name belongs to one harness, so name that route with `service` as
-  well. Without it, the first route the router picks is sent the name as-is
-  even when it does not declare it (`routing.modelHintMatched: false`); only
-  fallback routes fall back to their own default.
+- Set `hints.modelTier` on every dispatch, chosen for the task: `cheap` for
+  mechanical sweeps and lookups, `standard` for ordinary work and most
+  reviews, `strong` only for hard judgment. The router still picks the route,
+  and that route runs its own model for the tier — a fallback route too. A
+  route with no model for the tier runs its default, reported as
+  `routing.modelTierMatched: false`; `usage` shows each route's
+  `modelTiers`.
+- Do NOT set `service` unless the task needs that exact route. A named route
+  gets no fallback: if it is rate-limited or fails, the dispatch fails.
+- `hints.model` is an exact model id, and a model id belongs to one harness, so
+  use it only together with `service`. It wins over `hints.modelTier`.
 - `hints.model` is not validated against the harness's own catalog — an unknown
   name is forwarded to the picked harness as-is and fails there. An empty or
   whitespace-only string is refused by the schema. A value naming a configured
@@ -98,9 +103,9 @@ Two things cancelling does NOT do, and both matter before you rely on it:
   REJECTED with `Unknown service: <name>` and the list of valid ids.
 - Route ids carry their suffix — `codex_cli`, not `codex`; `usage` lists the ids
   on this machine.
-- Omit `service` to let the router pick by per-task capability scores;
-  pass it only when you specifically want one harness (e.g. `service:
-  "codex_cli"` with `hints.model: "gpt-5.6-sol"` for a hard refactor).
+- Omit `service` to let the router pick by per-task capability scores and
+  fall back on failure; pass it only when you specifically need one harness
+  (e.g. `service: "codex_cli"` with `hints.model: "gpt-5.6-sol"`).
 
 ## Fanout (multiple independent opinions)
 

@@ -37,13 +37,12 @@ const SERVER_INSTRUCTIONS =
   "(the caller's project root — it is NOT inferred) and hints.taskType " +
   "(execute | plan | review | local) on every " +
   "call; omitting either degrades routing or runs the task in the wrong directory. " +
-  "Also set hints.model on every dispatch, chosen for the task — a cheap model for " +
-  "mechanical work, the strongest only for hard judgment — rather than leaving each " +
-  "route on its default, and name the route it belongs to with `service`. Its " +
-  "full rules (what a route-named value does, the routing.* response fields) are in " +
-  "the hints.model schema description; check the `usage` tool before passing an " +
-  "unfamiliar model or route name. `service` forces one route; fanout `models` only " +
-  "selects which routes run, it does not set their model. Read harness-dispatch://status or " +
+  "Choose the model's strength with hints.modelTier (cheap | standard | strong): the " +
+  "router picks the route and that route runs its own model for the tier, on a " +
+  "fallback too. Do not set `service` unless the task needs that exact route — a " +
+  "named route gets no fallback when it is rate-limited or fails. Use hints.model " +
+  "(an exact model id) only together with `service`. Fanout `models` only selects " +
+  "which routes run. Read harness-dispatch://status or " +
   "harness-dispatch://status.json for route readiness, billing policy, and safety " +
   "detail.";
 

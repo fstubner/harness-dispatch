@@ -18,6 +18,7 @@ export const HINT_KEY_NAMES = [
   "safetyProfile",
   "routePolicy",
   "taskType",
+  "modelTier",
   "workspacePolicy",
   "preferLargeContext",
   "timeoutMs",

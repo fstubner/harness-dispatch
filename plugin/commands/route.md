@@ -9,14 +9,16 @@ Follow the `delegating-work` skill. Specifically:
 
 1. Determine the correct `workingDir` (the current project root) and the
    right `hints.taskType` for this task (`execute`, `plan`, `review`, or
-   `local`). Use `hints.safetyProfile: "read_only"` if the task is a review
-   or plan.
+   `local`), and a `hints.modelTier` (`cheap`, `standard` or `strong`). Use
+   `hints.safetyProfile: "read_only"` if the task is a review or plan. Leave
+   `service` unset so the router can fall back if a route fails.
 2. Start it with the `dispatch` tool. A fast task returns its full result
    inline (`completed: true`) — skip to step 4. A slower one returns
    `completed: false` plus a `jobId`; report that `jobId` to the user
    immediately so they have the ticket.
-3. Wait ~`nextPollSeconds` (do other useful work first if any is pending,
-   otherwise sleep), then call `job_status` with that `jobId`. While
+3. Wait about `nextPollSeconds` (it starts short and grows with the job's
+   age; do other useful work first if any is pending), then call
+   `job_status` with that `jobId`. While
    running, relay a one-line progress summary from `partialOutput`.
    Repeat until it completes or fails.
 4. Present the final output, flag any `warning` or `skippedRoutes`, and

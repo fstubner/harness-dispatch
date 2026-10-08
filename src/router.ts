@@ -71,6 +71,7 @@
 import type {
   DispatchResult,
   DispatcherEvent,
+  ModelTier,
   RouterConfig,
   RoutingDecision,
   RouteHints,
@@ -160,6 +161,8 @@ export interface ExplicitDispatchOpts {
   workspacePolicy?: ServiceConfig["workspacePolicy"];
   routePolicy?: import("./types.js").RoutePolicy;
   model?: string;
+  /** Run this route's model for that tier, when `model` is not given. */
+  modelTier?: ModelTier;
   taskType?: TaskType;
   timeoutMs?: number;
   /**
@@ -187,6 +190,23 @@ function resolveModel(svc: ServiceConfig, taskType: TaskType): string | undefine
     return svc.escalateModel;
   }
   return svc.model;
+}
+
+/**
+ * The model a route runs when the caller forwarded no model of its own: its
+ * model for the requested tier, else its default. A tier is a strength, not a
+ * model, so every route — including a fallback — answers it with ITS OWN id;
+ * a raw model name followed a dispatch onto routes that did not have it.
+ */
+function tierAwareModel(
+  svc: ServiceConfig,
+  taskType: TaskType,
+  tier: ModelTier | undefined,
+): { model: string | undefined; modelTier?: ModelTier; modelTierMatched?: boolean } {
+  const routeDefault = resolveModel(svc, taskType);
+  if (tier === undefined) return { model: routeDefault };
+  const forTier = svc.modelTiers?.[tier];
+  return { model: forTier ?? routeDefault, modelTier: tier, modelTierMatched: forTier !== undefined };
 }
 
 function sameModel(a: string | undefined, b: string | undefined): boolean {
@@ -219,7 +239,8 @@ export function declaresModel(svc: ServiceConfig, model: string | undefined): bo
     sameModel(svc.model, model) ||
     sameModel(svc.escalateModel, model) ||
     // The operator's known-good list, which `usage` advertises as such.
-    (svc.models ?? []).some((m) => sameModel(m, model))
+    (svc.models ?? []).some((m) => sameModel(m, model)) ||
+    Object.values(svc.modelTiers ?? {}).some((m) => sameModel(m, model))
   );
 }
 
@@ -244,12 +265,18 @@ function resolveNamedRouteModel(
   svc: ServiceConfig,
   requested: string | undefined,
   taskType: TaskType,
-): { model: string | undefined; modelHintMatched?: boolean; modelHintDropped?: boolean } {
-  const routeDefault = resolveModel(svc, taskType);
-  if (requested === undefined) return { model: routeDefault };
+  tier?: ModelTier,
+): {
+  model: string | undefined;
+  modelHintMatched?: boolean;
+  modelHintDropped?: boolean;
+  modelTier?: ModelTier;
+  modelTierMatched?: boolean;
+} {
+  if (requested === undefined) return tierAwareModel(svc, taskType, tier);
   const matched = declaresModel(svc, requested);
   if (sameModel(serviceName, requested)) {
-    return { model: routeDefault, modelHintMatched: matched, modelHintDropped: true };
+    return { ...tierAwareModel(svc, taskType, tier), modelHintMatched: matched, modelHintDropped: true };
   }
   return { model: requested, modelHintMatched: matched };
 }
@@ -625,7 +652,7 @@ export class Router {
         // the CLI rejects it, and discarding it silently would leave a
         // mismatched hints.model with no error and no explanation. See
         // resolveNamedRouteModel for the one case that is suppressed.
-        ...resolveNamedRouteModel(forceService, svc, preferredModel, taskType),
+        ...resolveNamedRouteModel(forceService, svc, preferredModel, taskType, hints.modelTier),
         finalScore,
         reason: "forced",
         skippedRoutes: skippedRoutes.slice(),
@@ -738,6 +765,7 @@ export class Router {
           reason: `route named by hints.model (tier ${named.tier})`,
           compared: [named, ...others],
           modelOverride,
+          modelTier: hints.modelTier,
           preferredModel,
           modelIsRouteId,
           skippedRoutes,
@@ -771,6 +799,7 @@ export class Router {
             `(${localCandidates.length} local of ${localTiers.reduce((n, t) => n + (tierCandidates.get(t)?.length ?? 0), 0)} eligible)`,
           compared: localCandidates,
           modelOverride,
+          modelTier: hints.modelTier,
           preferredModel,
           modelIsRouteId,
           skippedRoutes,
@@ -798,6 +827,7 @@ export class Router {
         reason,
         compared: candidates,
         modelOverride,
+        modelTier: hints.modelTier,
         preferredModel,
         modelIsRouteId,
         skippedRoutes,
@@ -829,6 +859,8 @@ export class Router {
        */
       compared: Candidate[];
       modelOverride: string | undefined;
+      /** Applies only when no model is forwarded — see tierAwareModel. */
+      modelTier: ModelTier | undefined;
       preferredModel: string | undefined;
       modelIsRouteId: boolean;
       skippedRoutes: RouteSkip[];
@@ -845,7 +877,9 @@ export class Router {
       cliCapability: best.cliCapability,
       capabilityScore: best.capScore,
       taskType: o.taskType,
-      model: o.modelOverride ?? resolveModel(svc, o.taskType),
+      ...(o.modelOverride !== undefined
+        ? { model: o.modelOverride }
+        : tierAwareModel(svc, o.taskType, o.modelTier)),
       ...(o.preferredModel !== undefined
         ? { modelHintMatched: declaresModel(svc, o.preferredModel) }
         : {}),
@@ -1137,7 +1171,7 @@ export class Router {
       cliCapability: svc.cliCapability,
       capabilityScore: capScore,
       taskType,
-      ...resolveNamedRouteModel(service, svc, opts.model, taskType),
+      ...resolveNamedRouteModel(service, svc, opts.model, taskType, opts.modelTier),
       finalScore: svc.cliCapability * capScore * quotaScore * svc.weight,
       reason: "explicit",
       safetyProfile: requestedSafetyProfile(svc, opts.safetyProfile),

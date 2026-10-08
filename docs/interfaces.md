@@ -109,9 +109,8 @@ Starting a task:
   "files": [],
   "workingDir": "/path/to/project",
   "workspacePolicy": "shared_locked",
-  "service": "codex_cli",
   "hints": {
-    "model": "gpt-5.6-terra",
+    "modelTier": "standard",
     "taskType": "review",
     "preferLargeContext": false,
     "safetyProfile": "read_only"
@@ -119,8 +118,21 @@ Starting a task:
 }
 ```
 
-`service` names the route the `model` belongs to; both are optional, and the route
-ids on your machine are the ones `usage` lists.
+`hints.modelTier` (`cheap`, `standard` or `strong`) asks for a strength of model
+without naming one. The router picks the route, and that route runs its own model for
+the tier (`model_tiers:` in [configuration](configuration.md#config-reference)) — on a
+fallback route too. A route with no model for the tier runs its default model, and the
+reply says so with `routing.modelTierMatched: false`; `routing.modelTier` and `model`
+say what ran.
+
+To run one exact route, add a top-level `service` (a route id from `usage`), and with
+it, if you need one, an exact `hints.model`. A named route has no fallback: if it is
+rate-limited or fails, the dispatch fails. `hints.model` wins over `hints.modelTier`.
+
+The reply to a job still running carries `nextPollSeconds`: about as long as the job
+has already run, from 15 seconds for a job that has just started up to 5 minutes.
+Checking at that pace picks up a quick job quickly without polling a long one every few
+seconds.
 
 For fanout (each route that outlives the grace window returns its own `jobId`). `models`
 takes route ids from `usage` (or model names a route declares), never a model you hope

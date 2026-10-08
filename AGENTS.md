@@ -17,10 +17,15 @@ Use `dispatch` for normal coding work:
   "prompt": "<full task description>",
   "workingDir": "<absolute path to project>",
   "hints": {
-    "taskType": "execute"
+    "taskType": "execute",
+    "modelTier": "standard"
   }
 }
 ```
+
+Pick `hints.modelTier` for the task: `cheap` for mechanical work, `standard` for
+ordinary work, `strong` only for hard judgment. Each route runs its own model for the
+tier, so leave `service` unset and the router can fall back when a route fails.
 
 A fast task returns its full result inline (`completed: true`). A slow one returns
 `completed: false` plus a `jobId` — call `job_status` with that `jobId` to check on
@@ -44,8 +49,9 @@ them); without it every eligible route runs and consumes quota:
 ```
 
 Call `job_status` with no `jobId` to see all background dispatches. On `dispatch`,
-pass `graceSeconds: 0` to skip the inline wait, or a top-level `service` to force a
-specific backend (single mode only).
+pass `graceSeconds: 0` to skip the inline wait. A top-level `service` forces one
+backend with no fallback (single mode only); use it only when the task needs that exact
+route, and pass `hints.model` (an exact model id) only together with it.
 
 Read `harness-dispatch://status.json` before routing when route readiness,
 billing policy, safety, quota state, or breaker state matters.
