@@ -166,6 +166,11 @@ pre-1.0, so minor versions can carry behaviour changes.
 
 ### Fixed
 
+- **`harness-dispatch <command> --help` shows that command's help.** Each
+  command now prints its own usage line, its flags and one example, instead
+  of the same global block for every command. The global help no longer
+  shows `serve [--port 3333]`: without `--port`, `serve` binds a random free
+  port and prints it.
 - **`status` and `usage` no longer mark a route `ok` that the router will not
   pick.** Each route line now starts with `ready` or `skipped (<reason>)`,
   from the same verdict as the `Ready to route:` line, so the two cannot
