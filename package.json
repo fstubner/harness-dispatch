@@ -71,7 +71,7 @@
     "cross-spawn": "^7.0.6",
     "js-yaml": "^4.3.1",
     "which": "^6.0.1",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.1",
